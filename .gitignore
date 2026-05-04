@@ -13,3 +13,6 @@ logs/
 *.swp
 *.swo
 *~
+
+# Backups
+*.bak
