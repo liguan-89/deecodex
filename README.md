@@ -95,7 +95,36 @@ wire_api = "responses"
 - 端口号写成了 `4444`（默认值） → 改为 `4446`
 - `requires_openai_auth = false` 或漏写 → 必须为 `true`
 
-### 6. 验证连通
+
+### 6. （可选）CC Switch 用户配置
+
+如果你使用 [CC Switch](https://github.com/YiNNx/cc-switch) 管理 Codex 配置，
+不需要手动编辑 `config.toml`，直接在 CC Switch UI 中新增 provider：
+
+**Codex 端（新增 provider）：**
+
+| 字段 | 值 | 说明 |
+|------|-----|------|
+| name | `deecodex` 或随意 | 显示名称 |
+| base_url | `http://127.0.0.1:4446/v1` | 务必指向 deecodex 端口 |
+| API Key | 任意字符串（如 `sk-123456`） | 不会被校验，但不能为空 |
+| wire_api | `responses` | 必须选 Responses API |
+| requires_openai_auth | 开启 | 必须打开 |
+
+配置后保存，CC Switch 会自动生成 `config.toml` 中对应的 `[model_providers.custom]` 段。
+
+**常见 CC Switch 配置错误：**
+
+- base_url 末尾写了 `/` → 去掉末尾 `/`
+- API Key 留空 → 填任意字符串
+- wire_api 选了 chat completions → 改为 responses
+- 保存后没有在 CC Switch 中切换到该 provider → 手动切换
+
+如果已有手动编辑的 `config.toml`，CC Switch 不会覆盖它。
+建议先用 CC Switch 新建 provider 并切换到它，CC Switch 会自动管理配置。
+
+
+### 7. 验证连通
 
 在 Codex 里随便发一条消息。如果日志里出现 `← codex:` 和 `→ upstream:` 两行，说明一切正常。
 
