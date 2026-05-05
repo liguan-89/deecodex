@@ -144,8 +144,11 @@ pub fn translate_stream(
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
+        let mut injected_reasoning_prefix = false;
+        let mut reasoning_separator_emitted = false;
         let mut final_usage: Option<ChatUsage> = None;
         let mut source = upstream.bytes_stream().eventsource();
+        let mut stream_completed = false;
 
         while let Some(ev) = source.next().await {
             match ev {
@@ -153,7 +156,7 @@ pub fn translate_stream(
                     warn!("SSE parse error: {e}");
                     break;
                 }
-                Ok(ev) if ev.data.trim() == "[DONE]" => break,
+                Ok(ev) if ev.data.trim() == "[DONE]" => { stream_completed = true; break; }
                 Ok(ev) if ev.data.is_empty() => continue,
                 Ok(ev) => {
                     match serde_json::from_str::<ChatStreamChunk>(&ev.data) {
@@ -177,6 +180,7 @@ pub fn translate_stream(
                                             emitted_reasoning_item = true;
                                         }
                                         accumulated_reasoning.push_str(rc);
+                                        // Emit reasoning delta for the reasoning item (index 0)
                                         yield Ok(Event::default()
                                             .event("response.reasoning_text.delta")
                                             .data(json!({
@@ -186,10 +190,60 @@ pub fn translate_stream(
                                                 "content_index": 0,
                                                 "delta": rc
                                             }).to_string()));
+                                        // Also inject reasoning into message text for Codex visibility
+                                        if !injected_reasoning_prefix {
+                                            if !emitted_message_item {
+                                                yield Ok(Event::default()
+                                                    .event("response.output_item.added")
+                                                    .data(json!({
+                                                        "type": "response.output_item.added",
+                                                        "output_index": 1,
+                                                        "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
+                                                    }).to_string()));
+                                                emitted_message_item = true;
+                                            }
+                                            let prefix = "💭 思考过程:\n";
+                                            accumulated_text.push_str(prefix);
+                                            yield Ok(Event::default()
+                                                .event("response.output_text.delta")
+                                                .data(json!({
+                                                    "type": "response.output_text.delta",
+                                                    "item_id": &msg_item_id,
+                                                    "output_index": 1,
+                                                    "content_index": 0,
+                                                    "delta": prefix
+                                                }).to_string()));
+                                            injected_reasoning_prefix = true;
+                                        }
+                                        accumulated_text.push_str(rc);
+                                        yield Ok(Event::default()
+                                            .event("response.output_text.delta")
+                                            .data(json!({
+                                                "type": "response.output_text.delta",
+                                                "item_id": &msg_item_id,
+                                                "output_index": 1,
+                                                "content_index": 0,
+                                                "delta": rc
+                                            }).to_string()));
                                     }
                                 }
                                 let content = choice.delta.content.as_deref().unwrap_or("");
                                 if !content.is_empty() {
+                                    // Insert separator between reasoning and response
+                                    if emitted_reasoning_item && !reasoning_separator_emitted {
+                                        let sep = "\n\n";
+                                        accumulated_text.push_str(sep);
+                                        yield Ok(Event::default()
+                                            .event("response.output_text.delta")
+                                            .data(json!({
+                                                "type": "response.output_text.delta",
+                                                "item_id": &msg_item_id,
+                                                "output_index": 1,
+                                                "content_index": 0,
+                                                "delta": sep
+                                            }).to_string()));
+                                        reasoning_separator_emitted = true;
+                                    }
                                     if !emitted_message_item {
                                         let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
                                         yield Ok(Event::default()
@@ -239,22 +293,6 @@ pub fn translate_stream(
             }
         }
 
-        // Close reasoning item
-        if emitted_reasoning_item {
-            yield Ok(Event::default()
-                .event("response.output_item.done")
-                .data(json!({
-                    "type": "response.output_item.done",
-                    "output_index": 0,
-                    "item": {
-                        "type": "reasoning",
-                        "id": &reasoning_item_id,
-                        "status": "completed",
-                        "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
-                    }
-                }).to_string()));
-        }
-
         // Log streaming token usage
         let usage_str = format_usage(final_usage.as_ref());
         info!("↑ done {}", usage_str);
@@ -295,6 +333,9 @@ pub fn translate_stream(
         for (rel_idx, (_, tc)) in tool_calls.iter().enumerate() {
             let fc_item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
             let output_index = base_index + rel_idx;
+            let arguments = tc.arguments.clone();
+            // apply_patch → exec_command transparent translation
+            let tool_name = if tc.name == "apply_patch" { "exec_command" } else { tc.name.as_str() };
 
             yield Ok(Event::default()
                 .event("response.output_item.added")
@@ -305,20 +346,20 @@ pub fn translate_stream(
                         "type": "function_call",
                         "id": &fc_item_id,
                         "call_id": &tc.id,
-                        "name": &tc.name,
+                        "name": tool_name,
                         "arguments": "",
                         "status": "in_progress"
                     }
                 }).to_string()));
 
-            if !tc.arguments.is_empty() {
+            if !arguments.is_empty() {
                 yield Ok(Event::default()
                     .event("response.function_call_arguments.delta")
                     .data(json!({
                         "type": "response.function_call_arguments.delta",
                         "item_id": &fc_item_id,
                         "output_index": output_index,
-                        "delta": &tc.arguments
+                        "delta": &arguments
                     }).to_string()));
             }
 
@@ -331,8 +372,8 @@ pub fn translate_stream(
                         "type": "function_call",
                         "id": &fc_item_id,
                         "call_id": &tc.id,
-                        "name": &tc.name,
-                        "arguments": &tc.arguments,
+                        "name": tool_name,
+                        "arguments": &arguments,
                         "status": "completed"
                     }
                 }).to_string()));
@@ -341,8 +382,8 @@ pub fn translate_stream(
                 "type": "function_call",
                 "id": fc_item_id,
                 "call_id": &tc.id,
-                "name": &tc.name,
-                "arguments": &tc.arguments,
+                "name": tool_name,
+                "arguments": &arguments,
                 "status": "completed"
             }));
         }
@@ -419,14 +460,15 @@ pub fn translate_stream(
                 "response": response_obj
             }).to_string()));
 
-        // Store in request cache
-        if let (Some(c), Some(key)) = (cache, cache_key) {
+        // Store in request cache (only if stream completed normally)
+        if stream_completed {
+            if let (Some(c), Some(key)) = (cache, cache_key) {
             let cached = CachedResponse {
                 text: accumulated_text.clone(),
                 reasoning: accumulated_reasoning.clone(),
                 tool_calls: tool_calls.values().map(|tc| CachedToolCall {
                     id: tc.id.clone(),
-                    name: tc.name.clone(),
+                    name: if tc.name == "apply_patch" { "exec_command".into() } else { tc.name.clone() },
                     arguments: tc.arguments.clone(),
                 }).collect(),
                 usage: usage_to_cached(cache_usage.as_ref()),
@@ -436,6 +478,7 @@ pub fn translate_stream(
                     .as_secs(),
             };
             c.insert(key, cached);
+            }
         }
     };
 

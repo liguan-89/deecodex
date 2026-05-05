@@ -22,10 +22,15 @@ fn base_req(input: ResponsesInput) -> ResponsesRequest {
         tools: vec![],
         stream: false,
         temperature: None,
+        top_p: None,
         max_output_tokens: None,
         system: None,
         instructions: None,
         reasoning: None,
+        tool_choice: None,
+        store: None,
+        metadata: None,
+        truncation: None,
     }
 }
 
@@ -63,7 +68,7 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_text_only() {
         json!({"type": "message", "role": "user", "content": "Continue"}),
     ]));
 
-    let chat = to_chat_request(&req, vec![], &store, &empty_map());
+    let chat = to_chat_request(&req, vec![], &store, &empty_map(), false);
 
     assert_eq!(chat.chat.messages.len(), 3);
     assert_eq!(chat.chat.messages[1].role, "assistant");
@@ -101,7 +106,7 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_with_tool_calls() {
         json!({"type": "message", "role": "user", "content": "What next?"}),
     ]));
 
-    let chat = to_chat_request(&req, vec![], &store, &empty_map());
+    let chat = to_chat_request(&req, vec![], &store, &empty_map(), false);
 
     assert_eq!(chat.chat.messages.len(), 5);
 
@@ -140,7 +145,7 @@ fn test_deepseek_v4_pro_multi_turn_reasoning() {
         json!({"type": "message", "role": "user", "content": "Finalize"}),
     ]));
 
-    let chat = to_chat_request(&req, vec![], &store, &empty_map());
+    let chat = to_chat_request(&req, vec![], &store, &empty_map(), false);
 
     assert_eq!(chat.chat.messages.len(), 5);
 
@@ -169,7 +174,7 @@ fn test_non_thinking_model_no_reasoning_content() {
         json!({"type": "message", "role": "user", "content": "Thanks"}),
     ]));
 
-    let chat = to_chat_request(&req, vec![], &store, &empty_map());
+    let chat = to_chat_request(&req, vec![], &store, &empty_map(), false);
 
     assert_eq!(chat.chat.messages.len(), 3);
     assert_eq!(chat.chat.messages[1].role, "assistant");
@@ -190,7 +195,7 @@ fn test_kimi_k2_6_reasoning_via_call_id() {
         json!({"type": "message", "role": "user", "content": "Continue"}),
     ]));
 
-    let chat = to_chat_request(&req, vec![], &store, &empty_map());
+    let chat = to_chat_request(&req, vec![], &store, &empty_map(), false);
 
     assert_eq!(chat.chat.messages.len(), 4);
     assert_eq!(chat.chat.messages[1].role, "assistant");

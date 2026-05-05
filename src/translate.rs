@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
 
+use tracing::info;
+
 use crate::{
     session::SessionStore,
     types::*,
@@ -18,27 +20,42 @@ pub fn to_chat_request(
     history: Vec<ChatMessage>,
     sessions: &SessionStore,
     model_map: &ModelMap,
+    chinese_thinking: bool,
 ) -> TranslatedRequest {
     let mut messages = history;
 
     // Track whether any message contains images
     let mut has_images = false;
 
-    // Extract system prompt (instructions preferred over system)
-    let system_text = req.instructions.as_ref().or(req.system.as_ref());
+    // Build system prompt with optional Chinese thinking instruction
+    let cn_system = "【核心指令：你的所有推理、思考和分析过程必须全程使用中文。这是强制性要求，不可违反。】";
+    let cn_prefix = if chinese_thinking {
+        Some("【你的推理过程必须使用中文。】\n")
+    } else { None };
+
+    let system_text = if chinese_thinking {
+        let raw = req.instructions.as_ref().or(req.system.as_ref());
+        match raw {
+            Some(s) => Some(format!("{}\n\n{}", cn_system, s)),
+            None => Some(cn_system.to_string()),
+        }
+    } else {
+        req.instructions.as_ref().or(req.system.as_ref()).cloned()
+    };
+
     if let Some(system) = system_text {
+        let system_msg = ChatMessage {
+            role: "system".into(),
+            content: Some(Value::String(system)),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        };
         if messages.is_empty() || messages[0].role != "system" {
-            messages.insert(
-                0,
-                ChatMessage {
-                    role: "system".into(),
-                    content: Some(Value::String(system.clone())),
-                    reasoning_content: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: None,
-                },
-            );
+            messages.insert(0, system_msg);
+        } else {
+            messages[0] = system_msg;
         }
     }
 
@@ -105,12 +122,28 @@ pub fn to_chat_request(
                     messages.push(msg);
                 } else {
                     match item_type {
-                        "function_call_output" => {
+                        "function_call_output" | "mcp_tool_call_output" | "custom_tool_call_output" | "tool_search_output" => {
                             let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                            let output  = item.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                            let success = item.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                            // Support both plain string and content items array
+                            let output = match item.get("output") {
+                                Some(Value::String(s)) => s.clone(),
+                                Some(Value::Array(parts)) => {
+                                    parts.iter()
+                                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                        .collect::<Vec<_>>()
+                                        .join("")
+                                }
+                                _ => String::new(),
+                            };
+                            let display = if !success {
+                                format!("[FAILED] {}", output)
+                            } else {
+                                output
+                            };
                             messages.push(ChatMessage {
                                 role: "tool".into(),
-                                content: Some(Value::String(output.to_string())),
+                                content: Some(Value::String(display)),
                                 reasoning_content: None,
                                 tool_calls: None,
                                 tool_call_id: Some(call_id.to_string()),
@@ -141,10 +174,36 @@ pub fn to_chat_request(
                                             let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                             match typ {
                                                 "image_url" => p.clone(),
-                                                _ => json!({"type": "text", "text": p.get("text").and_then(|t| t.as_str()).unwrap_or("")}),
+                                                "input_image" => {
+                                                    let url = p.get("image_url").and_then(|v| v.as_str()).unwrap_or("");
+                                                    json!({"type": "image_url", "image_url": {"url": url}})
+                                                }
+                                                _ => {
+                                                    let text = p.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                                    if text.contains("data:image/") {
+                                                        json!({"type": "image_url", "image_url": {"url": text}})
+                                                    } else {
+                                                        json!({"type": "text", "text": text})
+                                                    }
+                                                }
                                             }
                                         }).collect();
                                         msg.content = Some(Value::Array(multimodal));
+                                    } else if let Some(s) = raw_content.as_str() {
+                                        if let Some(pos) = s.find("data:image/") {
+                                            let text_before = s[..pos].trim().to_string();
+                                            let image_url = s[pos..].trim().to_string();
+                                            let mut parts: Vec<Value> = Vec::new();
+                                            if !text_before.is_empty() {
+                                                parts.push(json!({"type": "text", "text": text_before}));
+                                            }
+                                            if !image_url.is_empty() {
+                                                parts.push(json!({"type": "image_url", "image_url": {"url": image_url}}));
+                                            }
+                                            if !parts.is_empty() {
+                                                msg.content = Some(Value::Array(parts));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -156,6 +215,21 @@ pub fn to_chat_request(
                     }
                     i += 1;
                 }
+            }
+        }
+    }
+
+    // Chinese thinking: prepend instruction to last user message
+    if let Some(ref prefix) = cn_prefix {
+        if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
+            match last_user.content {
+                Some(Value::String(ref mut s)) => {
+                    *s = format!("{}{}", prefix, s);
+                }
+                Some(Value::Array(ref mut parts)) => {
+                    parts.insert(0, json!({"type": "text", "text": prefix}));
+                }
+                _ => {}
             }
         }
     }
@@ -174,10 +248,13 @@ pub fn to_chat_request(
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
     let (reasoning_effort, thinking) = map_effort(effort);
 
+    // Filter + convert Codex tools → OpenAI Chat tools.
+    // apply_patch is translated to exec_command-compatible function tool.
     let tools: Vec<Value> = req.tools.iter()
         .filter(|t| {
             let typ = t.get("type").and_then(Value::as_str).unwrap_or("");
-            typ != "web_search" && typ != "web_search_preview"
+            typ != "web_search"
+                && typ != "web_search_preview"
         })
         .flat_map(|t| {
             let converted = convert_tool(t);
@@ -216,10 +293,12 @@ pub fn to_chat_request(
             messages,
             tools,
             temperature: req.temperature,
+            top_p: req.top_p,
             max_tokens: req.max_output_tokens,
             stream: req.stream,
             reasoning_effort,
             thinking,
+            tool_choice: req.tool_choice.clone(),
             stream_options: Some(StreamOptions { include_usage: true }),
             web_search_options: if web_search_enabled {
                 Some(json!({"search_context": {"cache_control": {"type": "ephemeral"}}}))
@@ -294,21 +373,54 @@ fn convert_tool(tool: &Value) -> Value {
             let name = obj.get("name").and_then(Value::as_str).unwrap_or("custom_tool");
             let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
 
-            // apply_patch: add standard params
+            // apply_patch → mapped to exec_command (identical parameter schema)
             let params = if name == "apply_patch" {
                 json!({
                     "type": "object",
                     "properties": {
-                        "file_path": {
+                        "cmd": {
                             "type": "string",
-                            "description": "Absolute path to the file to patch"
+                            "description": "Shell command to execute."
                         },
-                        "patch": {
+                        "workdir": {
                             "type": "string",
-                            "description": "The patch content in unified diff or apply_patch format"
+                            "description": "Optional working directory to run the command in; defaults to the turn cwd."
+                        },
+                        "shell": {
+                            "type": "string",
+                            "description": "Shell binary to launch. Defaults to the user's default shell."
+                        },
+                        "tty": {
+                            "type": "boolean",
+                            "description": "Whether to allocate a TTY for the command. Defaults to false (plain pipes)."
+                        },
+                        "sandbox_permissions": {
+                            "type": "string",
+                            "description": "Sandbox permissions. Defaults to \"use_default\"."
+                        },
+                        "max_output_tokens": {
+                            "type": "number",
+                            "description": "Maximum number of tokens to return."
+                        },
+                        "justification": {
+                            "type": "string",
+                            "description": "Justification for running outside sandbox (only when sandbox_permissions is require_escalated)."
+                        },
+                        "login": {
+                            "type": "boolean",
+                            "description": "Whether to run the shell with -l/-i semantics. Defaults to true."
+                        },
+                        "yield_time_ms": {
+                            "type": "number",
+                            "description": "How long to wait (ms) for output before yielding."
+                        },
+                        "prefix_rule": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Prefix command pattern for future sandbox escalation."
                         }
                     },
-                    "required": ["file_path", "patch"]
+                    "required": ["cmd"]
                 })
             } else {
                 // Generic custom tool: make a simple text parameter
@@ -329,6 +441,21 @@ fn convert_tool(tool: &Value) -> Value {
                     "name": name,
                     "description": desc,
                     "parameters": params
+                }
+            })
+        }
+
+        // LocalShell → wrap as exec_command-compatible function
+        "local_shell" => {
+            info!("🐚 local_shell tool converted");
+            let name = obj.get("name").and_then(Value::as_str).unwrap_or("local_shell");
+            let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
+            json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": obj.get("parameters").unwrap_or(&json!({"type": "object"}))
                 }
             })
         }
@@ -389,6 +516,7 @@ pub fn from_chat_response(
                 kind: "output_text".into(),
                 text: Some(text.as_str().unwrap_or("").to_string()),
             }],
+            phase: None,
         }],
         usage: ResponsesUsage {
             input_tokens: usage.prompt_tokens,
@@ -404,12 +532,22 @@ pub fn from_chat_response(
 fn value_to_text_with_flag(v: Option<&Value>) -> (String, bool) {
     match v {
         None => (String::new(), false),
-        Some(Value::String(s)) => (s.clone(), false),
+        Some(Value::String(s)) => {
+            let has_img = s.contains("data:image/");
+            (s.clone(), has_img)
+        }
         Some(Value::Array(parts)) => {
-            let has_img = parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+            let has_img = parts.iter().any(|p| {
+                let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                typ == "image_url" || typ == "input_image"
+                || p.get("text").and_then(|t| t.as_str()).map(|s| s.contains("data:image/")).unwrap_or(false)
+            });
             let text = parts
                 .iter()
-                .filter(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"))
+                .filter(|p| {
+                    let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    typ != "image_url" && typ != "input_image"
+                })
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("");
@@ -442,10 +580,15 @@ mod tests {
             tools: vec![],
             stream: false,
             temperature: None,
+            top_p: None,
             max_output_tokens: None,
             system: None,
             instructions: None,
             reasoning: None,
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
         }
     }
 
@@ -453,7 +596,7 @@ mod tests {
     fn test_text_input() {
         let sessions = SessionStore::new();
         let req = base_req(ResponsesInput::Text("hello".into()));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, "user");
         assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("hello"));
@@ -464,7 +607,7 @@ mod tests {
         let sessions = SessionStore::new();
         let mut req = base_req(ResponsesInput::Text("hi".into()));
         req.instructions = Some("be helpful".into());
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages[0].role, "system");
         assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("be helpful"));
     }
@@ -475,7 +618,7 @@ mod tests {
         let req = base_req(ResponsesInput::Messages(vec![
             json!({"type": "message", "role": "developer", "content": "secret"}),
         ]));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages[0].role, "system");
     }
 
@@ -486,7 +629,7 @@ mod tests {
             json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
             json!({"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"}),
         ]));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages.len(), 1);
         let calls = chat.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(calls.len(), 2);
@@ -499,7 +642,7 @@ mod tests {
         req.model = "gpt-5.5".into();
         let mut map: ModelMap = HashMap::new();
         map.insert("gpt-5.5".into(), "deepseek-v4-pro".into());
-        let chat = to_chat_request(&req, vec![], &sessions, &map).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &map, false).chat;
         assert_eq!(chat.model, "deepseek-v4-pro");
     }
 
@@ -517,7 +660,7 @@ mod tests {
     fn test_null_content_fixed() {
         let sessions = SessionStore::new();
         let req = base_req(ResponsesInput::Text("".into()));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some(""));
     }
 
@@ -537,6 +680,20 @@ mod tests {
 
     #[test]
     fn test_effort_mapping_none() {
+        let (eff, think) = map_effort(Some("none"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_effort_mapping_minimal() {
+        let (eff, think) = map_effort(Some("minimal"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_effort_mapping_default() {
         let (eff, think) = map_effort(None);
         assert_eq!(eff, None);
         assert_eq!(think, Some(json!({"type": "disabled"})));
@@ -561,7 +718,7 @@ mod tests {
             json!({"type": "function_call", "call_id": "tc_x", "name": "f", "arguments": "{}"}),
             json!({"type": "function_call_output", "call_id": "tc_x", "output": "result"}),
         ]));
-        let chat = to_chat_request(&req, history, &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, history, &sessions, &empty_map(), false).chat;
         let fc_msg = chat.messages.iter().find(|m| m.role == "assistant" && m.tool_calls.is_some());
         assert!(fc_msg.is_some());
         assert_eq!(fc_msg.unwrap().reasoning_content.as_deref(), Some("prior_reason"));
@@ -591,7 +748,7 @@ mod tests {
         let sessions = SessionStore::new();
         let mut req = base_req(ResponsesInput::Text("hi".into()));
         req.stream = true;
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert!(chat.stream_options.is_some());
         assert!(chat.stream_options.as_ref().unwrap().include_usage);
     }

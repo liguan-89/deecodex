@@ -17,6 +17,8 @@ pub struct ResponsesRequest {
     #[serde(default)]
     pub temperature: Option<f64>,
     #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub system: Option<String>,
@@ -24,12 +26,22 @@ pub struct ResponsesRequest {
     pub instructions: Option<String>,
     #[serde(default)]
     pub reasoning: Option<ReasoningConfig>,
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
+    #[serde(default)]
+    pub store: Option<bool>,
+    #[serde(default)]
+    pub metadata: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub truncation: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ReasoningConfig {
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +73,10 @@ pub struct ResponsesOutputItem {
     #[serde(rename = "type")]
     pub kind: String,
     pub role: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ContentPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -82,12 +97,16 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
     /// Request token usage stats in the final streaming chunk (DeepSeek)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
@@ -214,13 +233,17 @@ pub fn resolve_model(model: &str, map: &ModelMap) -> String {
 ///
 /// | Codex effort | reasoning_effort | thinking            |
 /// |-------------|-----------------|---------------------|
+/// | none        | (none)          | {"type":"disabled"} |
+/// | minimal     | (none)          | {"type":"disabled"} |
 /// | low         | (none)          | {"type":"disabled"} |
 /// | medium      | "high"          | {"type":"disabled"} |
 /// | high        | "high"          | {"type":"enabled"}  |
 /// | xhigh       | "max"           | {"type":"enabled"}  |
-/// | none/other  | "high"          | {"type":"disabled"} |
+/// | default     | "high"          | {"type":"disabled"} |
 pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
     match effort.unwrap_or("medium") {
+        "none" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "medium" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "high" => (Some("high".into()), Some(serde_json::json!({"type": "enabled"}))),
@@ -285,10 +308,8 @@ pub fn non_function_tool_types(tools: &[Value]) -> Vec<String> {
         .filter_map(|t| {
             let typ = t.get("type").and_then(|v| v.as_str()).unwrap_or("?");
             if typ == "web_search" || typ == "web_search_preview" {
-                // Handled via web_search_options, not dropped
                 None
             } else {
-                // All other tool types (function, custom, namespace) are forwarded as function
                 None
             }
         })

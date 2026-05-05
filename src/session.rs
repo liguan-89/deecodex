@@ -8,6 +8,16 @@ use crate::types::ChatMessage;
 /// In-memory session store: response_id → messages, call_id → reasoning_content,
 /// and turn-level reasoning fingerprints.
 ///
+/// Maximum number of sessions to retain. Oldest entries are evicted
+/// when this limit is exceeded.
+const MAX_SESSIONS: usize = 256;
+
+/// Maximum number of reasoning entries to retain.
+const MAX_REASONING: usize = 512;
+
+/// Maximum number of turn-reasoning entries to retain.
+const MAX_TURN_REASONING: usize = 256;
+
 /// NOTE: All data is in-memory and lost on restart. For conversations in
 /// progress, Codex replays the full conversation in the `input` array,
 /// so the relay reconstructs history from the replay. The reasoning_content
@@ -32,6 +42,12 @@ impl SessionStore {
 
     pub fn store_reasoning(&self, call_id: String, reasoning: String) {
         if !reasoning.is_empty() {
+            if self.reasoning.len() >= MAX_REASONING {
+                // Evict oldest entry
+                if let Some(key) = self.reasoning.iter().next().map(|e| e.key().clone()) {
+                    self.reasoning.remove(&key);
+                }
+            }
             self.reasoning.insert(call_id, reasoning);
         }
     }
@@ -46,6 +62,11 @@ impl SessionStore {
     /// This handles both text-only and tool-call-only assistant messages.
     pub fn store_turn_reasoning(&self, _prior: &[ChatMessage], assistant: &ChatMessage, reasoning: String) {
         if !reasoning.is_empty() {
+            if self.turn_reasoning.len() >= MAX_TURN_REASONING {
+                if let Some(key) = self.turn_reasoning.iter().next().map(|e| e.key().clone()) {
+                    self.turn_reasoning.remove(&key);
+                }
+            }
             let combined_key = Self::turn_key(assistant);
             self.turn_reasoning.insert(combined_key, reasoning.clone());
             // Also store under content-only key for text-only assistant lookup
@@ -149,6 +170,11 @@ impl SessionStore {
     }
 
     pub fn save_with_id(&self, id: String, messages: Vec<ChatMessage>) {
+        if self.inner.len() >= MAX_SESSIONS {
+            if let Some(key) = self.inner.iter().next().map(|e| e.key().clone()) {
+                self.inner.remove(&key);
+            }
+        }
         self.inner.insert(id, messages);
     }
 

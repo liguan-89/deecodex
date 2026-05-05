@@ -76,8 +76,14 @@ impl RequestCache {
     pub fn insert(&self, hash: u64, resp: CachedResponse) {
         // Evict oldest if at capacity (simple: just remove a random entry)
         if self.inner.len() >= self.max_entries {
-            if let Some(key) = self.inner.iter().next().map(|e| *e.key()) {
-                self.inner.remove(&key);
+            // Collect the key in a block scope so the DashMap Iter read guard
+            // is dropped before remove() tries to acquire a write lock,
+            // avoiding an RwLock deadlock.
+            let evict_key = {
+                self.inner.iter().next().map(|e| *e.key())
+            };
+            if let Some(k) = evict_key {
+                self.inner.remove(&k);
             }
         }
         self.inner.insert(hash, resp);
