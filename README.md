@@ -67,6 +67,37 @@ CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 
 
 ## 项目结构
 
+## API 端点
+
+deecodex 实现了完整的 Responses API 端点集合，远超出简单的请求翻译：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/responses` | POST | 创建响应（主入口，流式/非流式） |
+| `/v1/responses/:id` | GET | 获取已存储的响应详情 |
+| `/v1/responses/:id` | DELETE | 删除已存储的响应 |
+| `/v1/responses/:id/cancel` | POST | 取消正在进行的流式响应 |
+| `/v1/responses/:id/input_items` | GET | 获取响应的输入项列表 |
+| `/v1/responses/compact` | POST | 压缩存储中的响应 |
+| `/v1/responses/input_tokens` | POST | 计算输入 token 数 |
+| `/v1/conversations` | POST | 创建会话 |
+| `/v1/conversations/:id` | GET | 获取会话详情 |
+| `/v1/conversations/:id` | DELETE | 删除会话 |
+| `/v1/conversations/:id/items` | GET | 获取会话消息列表 |
+| `/v1/models` | GET | 模型列表（透传上游） |
+| `/v1/health` | GET | 健康检查 |
+
+### 会话存储
+
+deecodex 内置内存会话存储，支持响应的生命周期管理：
+
+- 响应创建后自动存储到 `SessionStore`
+- `background: true` 时放入后台任务队列，返回 `queued` 状态
+- 支持通过 `conversation` 字段关联响应到会话
+- 存储包含完整响应体和用量数据
+- 服务重启后数据丢失（Codex 会重放历史）
+
+
 ```
 deecodex/
 ├── Cargo.toml            # Rust 项目配置
@@ -82,6 +113,29 @@ deecodex/
 ├── .env.example          # 环境变量模板
 └── tests/                # 63 个测试
 ```
+
+### 新增字段透传（0.4.0）
+
+| Responses API 字段 | 说明 |
+|---|---|
+| `background` | 后台完成模式（返回 `queued` 状态） |
+| `store` | 存储响应到会话（透传到 upstream 存储） |
+| `conversation` | 关联会话 ID |
+| `text.format` | 输出格式控制 |
+| `include` | 响应包含的字段列表（`output_text`/`usage` 等） |
+| `include[]` (input_items) | 列出存储的输入项 |
+| `parallel_tool_calls` | 并行工具调用 |
+| `max_tool_calls` | 最大工具调用次数 |
+| `top_logprobs` | Top-logprobs 采样 |
+| `user` | 用户标识 |
+| `safety_identifier` | 安全标识 |
+| `prompt_cache_key` | 提示缓存键 |
+| `prompt_cache_retention` | 缓存保留策略 |
+| `service_tier` | 服务层级（`auto`/`default`） |
+| `input_items` 响应 | 列出输入消息项 |
+| `text.response_format` | 结构化输出格式 |
+
+### 请求方向（Codex → DeepSeek）
 
 ## 协议转换全表
 
@@ -270,6 +324,26 @@ Codex 发送的工具定义（tools）与 OpenAI Chat API 格式不同，deecode
 ```
 
 ## 日常管理
+
+### 调试端点
+
+```bash
+# 获取已存储的响应
+curl http://127.0.0.1:4446/v1/responses/<response_id>
+
+# 获取响应输入项
+curl http://127.0.0.1:4446/v1/responses/<response_id>/input_items
+
+# 取消正在进行的响应
+curl -X POST http://127.0.0.1:4446/v1/responses/<response_id>/cancel
+
+# 健康检查
+curl http://127.0.0.1:4446/v1/health
+
+# 模型列表
+curl http://127.0.0.1:4446/v1/models
+```
+
 
 ```bash
 ./deecodex.sh start      # 启动（自动日志轮转）
