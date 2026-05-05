@@ -16,3 +16,7 @@ logs/
 
 # Backups
 *.bak
+
+# Rust build
+target/
+pyproject.toml

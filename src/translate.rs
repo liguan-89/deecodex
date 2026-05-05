@@ -1,0 +1,576 @@
+use serde_json::{json, Value};
+
+use crate::{
+    session::SessionStore,
+    types::*,
+};
+
+/// Convert a Responses API request into a Chat Completions request.
+pub fn to_chat_request(
+    req: &ResponsesRequest,
+    history: Vec<ChatMessage>,
+    sessions: &SessionStore,
+    model_map: &ModelMap,
+) -> ChatRequest {
+    let mut messages = history;
+
+    // Extract system prompt (instructions preferred over system)
+    let system_text = req.instructions.as_ref().or(req.system.as_ref());
+    if let Some(system) = system_text {
+        if messages.is_empty() || messages[0].role != "system" {
+            messages.insert(
+                0,
+                ChatMessage {
+                    role: "system".into(),
+                    content: Some(system.clone()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+            );
+        }
+    }
+
+    // Append new input items
+    match &req.input {
+        ResponsesInput::Text(text) => {
+            messages.push(ChatMessage {
+                role: "user".into(),
+                content: Some(text.clone()),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        }
+        ResponsesInput::Messages(items) => {
+            let mut i = 0;
+            while i < items.len() {
+                let item = &items[i];
+                let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                if item_type == "function_call" {
+                    let mut grouped: Vec<Value> = Vec::new();
+                    let mut reasoning_content: Option<String> = None;
+                    let mut call_ids: Vec<String> = Vec::new();
+
+                    while i < items.len() {
+                        let cur = &items[i];
+                        if cur.get("type").and_then(|v| v.as_str()).unwrap_or("") != "function_call" {
+                            break;
+                        }
+                        let call_id = cur.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let name    = cur.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let args    = cur.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+
+                        call_ids.push(call_id.to_string());
+
+                        if reasoning_content.is_none() {
+                            reasoning_content = sessions.get_reasoning(call_id);
+                        }
+
+                        grouped.push(json!({
+                            "id": call_id,
+                            "type": "function",
+                            "function": { "name": name, "arguments": args }
+                        }));
+                        i += 1;
+                    }
+
+                    let mut msg = ChatMessage {
+                        role: "assistant".into(),
+                        content: None,
+                        reasoning_content,
+                        tool_calls: Some(grouped),
+                        tool_call_id: None,
+                        name: None,
+                    };
+                    if msg.reasoning_content.is_none() {
+                        msg.reasoning_content = sessions.get_turn_reasoning(&messages, &msg);
+                    }
+                    if msg.reasoning_content.is_none() {
+                        msg.reasoning_content = sessions.scan_history_reasoning(&messages, &call_ids);
+                    }
+                    messages.push(msg);
+                } else {
+                    match item_type {
+                        "function_call_output" => {
+                            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let output  = item.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                            messages.push(ChatMessage {
+                                role: "tool".into(),
+                                content: Some(output.to_string()),
+                                reasoning_content: None,
+                                tool_calls: None,
+                                tool_call_id: Some(call_id.to_string()),
+                                name: None,
+                            });
+                        }
+                        _ => {
+                            let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+                            let role = match role {
+                                "developer" => "system",
+                                other => other,
+                            }.to_string();
+                            let content = value_to_text(item.get("content"));
+                            let mut msg = ChatMessage {
+                                role,
+                                content: Some(content),
+                                reasoning_content: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                name: None,
+                            };
+                            if msg.role == "assistant" {
+                                msg.reasoning_content = sessions.get_turn_reasoning(&messages, &msg);
+                            }
+                            messages.push(msg);
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    // Sanitize: replace null content with "" (DeepSeek rejects null)
+    for msg in &mut messages {
+        if msg.content.is_none() && msg.tool_calls.is_none() {
+            msg.content = Some(String::new());
+        }
+    }
+
+    // Resolve model name
+    let mapped_model = resolve_model(&req.model, model_map);
+
+    // Map reasoning effort
+    let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
+    let (reasoning_effort, thinking) = map_effort(effort);
+
+    let tools: Vec<Value> = req.tools.iter()
+        .filter(|t| {
+            let typ = t.get("type").and_then(Value::as_str).unwrap_or("");
+            typ != "web_search" && typ != "web_search_preview"
+        })
+        .flat_map(|t| {
+            let converted = convert_tool(t);
+            // Namespace tools expand to arrays; flatten them
+            if let Some(arr) = converted.as_array() {
+                arr.clone()
+            } else {
+                vec![converted]
+            }
+        })
+        .collect();
+
+    // Detect web_search tool → enable DeepSeek web_search_options
+    let web_search_enabled = req.tools.iter().any(|t| {
+        let typ = t.get("type").and_then(Value::as_str).unwrap_or("");
+        typ == "web_search" || typ == "web_search_preview"
+    });
+
+    ChatRequest {
+        model: mapped_model,
+        messages,
+        tools,
+        temperature: req.temperature,
+        max_tokens: req.max_output_tokens,
+        stream: req.stream,
+        reasoning_effort,
+        thinking,
+        stream_options: Some(StreamOptions { include_usage: true }),
+        web_search_options: if web_search_enabled {
+            Some(json!({"search_context": {"cache_control": {"type": "ephemeral"}}}))
+        } else {
+            None
+        },
+    }
+}
+
+/// Responses API flat tool → Chat Completions nested format.
+/// Handles function, custom (apply_patch), and namespace (MCP) types.
+fn convert_tool(tool: &Value) -> Value {
+    let Some(obj) = tool.as_object() else {
+        return tool.clone();
+    };
+    let typ = obj.get("type").and_then(Value::as_str).unwrap_or("");
+
+    match typ {
+        // Already in the right format
+        _ if obj.contains_key("function") => tool.clone(),
+
+        // Standard function type → nest under "function" key
+        "function" => {
+            let mut func = serde_json::Map::new();
+            if let Some(v) = obj.get("name") { func.insert("name".into(), v.clone()); }
+            if let Some(v) = obj.get("description") { func.insert("description".into(), v.clone()); }
+            if let Some(v) = obj.get("parameters") { func.insert("parameters".into(), v.clone()); }
+            if let Some(v) = obj.get("strict") { func.insert("strict".into(), v.clone()); }
+            json!({"type": "function", "function": func})
+        }
+
+        // Namespace tools (MCP) → expand sub-tools as individual functions
+        "namespace" => {
+            let name = obj.get("name").and_then(Value::as_str).unwrap_or("namespace");
+            let mut expanded = Vec::new();
+            if let Some(tools) = obj.get("tools").and_then(Value::as_array) {
+                for sub_tool in tools {
+                    let sub = convert_tool(sub_tool);
+                    // Prefix sub-tool names with namespace for dedup
+                    if let Some(sub_name) = sub.get("function").and_then(|f| f.get("name")).and_then(Value::as_str) {
+                        let full_name = format!("{}__{}", name, sub_name);
+                        let mut sub_obj = sub.as_object().cloned().unwrap_or_default();
+                        if let Some(func) = sub_obj.get_mut("function") {
+                            if let Some(fobj) = func.as_object_mut() {
+                                fobj.insert("name".into(), json!(full_name));
+                            }
+                        }
+                        expanded.push(Value::Object(sub_obj));
+                    }
+                }
+            }
+            // If no sub-tools, create a basic placeholder
+            if expanded.is_empty() {
+                let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
+                let full_name = format!("{}", name);
+                expanded.push(json!({
+                    "type": "function",
+                    "function": {
+                        "name": full_name,
+                        "description": desc
+                    }
+                }));
+            }
+            // Return first tool as the converted value (outer iter handles collection)
+            json!(expanded)
+        }
+
+        // Custom tools like apply_patch → wrap with a reasonable parameter schema
+        "custom" => {
+            let name = obj.get("name").and_then(Value::as_str).unwrap_or("custom_tool");
+            let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
+
+            // apply_patch: add standard params
+            let params = if name == "apply_patch" {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path to the file to patch"
+                        },
+                        "patch": {
+                            "type": "string",
+                            "description": "The patch content in unified diff or apply_patch format"
+                        }
+                    },
+                    "required": ["file_path", "patch"]
+                })
+            } else {
+                // Generic custom tool: make a simple text parameter
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": format!("Input for {}", name)
+                        }
+                    }
+                })
+            };
+
+            json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": params
+                }
+            })
+        }
+
+        // Unknown type → best-effort
+        _ => {
+            let mut func = serde_json::Map::new();
+            if let Some(v) = obj.get("name") { func.insert("name".into(), v.clone()); }
+            if let Some(v) = obj.get("description") { func.insert("description".into(), v.clone()); }
+            if let Some(v) = obj.get("parameters") { func.insert("parameters".into(), v.clone()); }
+            if !func.contains_key("name") {
+                func.insert("name".into(), json!(typ));
+            }
+            if !func.contains_key("description") {
+                func.insert("description".into(), json!(format!("Codex tool: {}", typ)));
+            }
+            json!({"type": "function", "function": func})
+        }
+    }
+}
+
+/// Convert Chat Completions response → Responses API response.
+pub fn from_chat_response(
+    id: String,
+    model: &str,
+    chat: ChatResponse,
+) -> (ResponsesResponse, Vec<ChatMessage>) {
+    let choice = chat.choices.into_iter().next().unwrap_or_else(|| ChatChoice {
+        message: ChatMessage {
+            role: "assistant".into(),
+            content: Some(String::new()),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    });
+
+    let text = choice.message.content.clone().unwrap_or_default();
+    let usage = chat.usage.unwrap_or(ChatUsage {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        completion_tokens_details: None,
+        prompt_cache_hit_tokens: None,
+        prompt_cache_miss_tokens: None,
+        prompt_tokens_details: None,
+    });
+
+    let response = ResponsesResponse {
+        id,
+        object: "response",
+        model: model.to_string(),
+        output: vec![ResponsesOutputItem {
+            kind: "message".into(),
+            role: "assistant".into(),
+            content: vec![ContentPart {
+                kind: "output_text".into(),
+                text: Some(text),
+            }],
+        }],
+        usage: ResponsesUsage {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        },
+    };
+
+    (response, vec![choice.message])
+}
+
+/// Collapse a Responses API content value to plain text, filtering images.
+fn value_to_text(v: Option<&Value>) -> String {
+    match v {
+        None => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"))
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        Some(other) => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn empty_map() -> ModelMap {
+        HashMap::new()
+    }
+
+    fn base_req(input: ResponsesInput) -> ResponsesRequest {
+        ResponsesRequest {
+            model: "test".into(),
+            input,
+            previous_response_id: None,
+            tools: vec![],
+            stream: false,
+            temperature: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: None,
+        }
+    }
+
+    #[test]
+    fn test_text_input() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Text("hello".into()));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].role, "user");
+        assert_eq!(chat.messages[0].content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_system_from_instructions() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("hi".into()));
+        req.instructions = Some("be helpful".into());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert_eq!(chat.messages[0].role, "system");
+        assert_eq!(chat.messages[0].content.as_deref(), Some("be helpful"));
+    }
+
+    #[test]
+    fn test_developer_to_system() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "message", "role": "developer", "content": "secret"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert_eq!(chat.messages[0].role, "system");
+    }
+
+    #[test]
+    fn test_function_call_grouping() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
+            json!({"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert_eq!(chat.messages.len(), 1);
+        let calls = chat.messages[0].tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn test_model_remapping() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("hi".into()));
+        req.model = "gpt-5.5".into();
+        let mut map: ModelMap = HashMap::new();
+        map.insert("gpt-5.5".into(), "deepseek-v4-pro".into());
+        let chat = to_chat_request(&req, vec![], &sessions, &map);
+        assert_eq!(chat.model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn test_image_filtered_from_text() {
+        let result = value_to_text(Some(&json!([
+            {"type": "input_text", "text": "hello "},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "input_text", "text": "world"}
+        ])));
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_null_content_fixed() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Text("".into()));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert_eq!(chat.messages[0].content.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_effort_mapping_low() {
+        let (eff, think) = map_effort(Some("low"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_effort_mapping_xhigh() {
+        let (eff, think) = map_effort(Some("xhigh"));
+        assert_eq!(eff, Some("max".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
+    }
+
+    #[test]
+    fn test_effort_mapping_none() {
+        let (eff, think) = map_effort(None);
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_scan_history_fallback() {
+        let sessions = SessionStore::new();
+        let prev = ChatMessage {
+            role: "assistant".into(),
+            content: None,
+            reasoning_content: Some("prior_reason".into()),
+            tool_calls: Some(vec![json!({"id": "tc_x", "type": "function", "function": {"name": "f", "arguments": "{}"}})]),
+            tool_call_id: None,
+            name: None,
+        };
+        let history = vec![
+            ChatMessage { role: "user".into(), content: Some("q".into()), reasoning_content: None, tool_calls: None, tool_call_id: None, name: None },
+            prev,
+        ];
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "tc_x", "name": "f", "arguments": "{}"}),
+            json!({"type": "function_call_output", "call_id": "tc_x", "output": "result"}),
+        ]));
+        let chat = to_chat_request(&req, history, &sessions, &empty_map());
+        let fc_msg = chat.messages.iter().find(|m| m.role == "assistant" && m.tool_calls.is_some());
+        assert!(fc_msg.is_some());
+        assert_eq!(fc_msg.unwrap().reasoning_content.as_deref(), Some("prior_reason"));
+    }
+
+    #[test]
+    fn test_non_function_tool_types_empty() {
+        let tools: Vec<Value> = vec![
+            json!({"type": "function", "name": "my_fn", "description": "x"}),
+        ];
+        assert!(non_function_tool_types(&tools).is_empty());
+    }
+
+    #[test]
+    fn test_non_function_tool_types_no_longer_drops_web_search() {
+        let tools: Vec<Value> = vec![
+            json!({"type": "function", "name": "my_fn"}),
+            json!({"type": "web_search", "name": "web_search"}),
+            json!({"type": "web_search_preview", "name": "web_search_preview"}),
+        ];
+        let dropped = non_function_tool_types(&tools);
+        assert!(dropped.is_empty(), "web_search types should be handled, not dropped");
+    }
+
+    #[test]
+    fn test_stream_options_included() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("hi".into()));
+        req.stream = true;
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        assert!(chat.stream_options.is_some());
+        assert!(chat.stream_options.as_ref().unwrap().include_usage);
+    }
+
+    #[test]
+    fn test_format_usage_basic() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("in=100 out=50"));
+    }
+
+    #[test]
+    fn test_format_usage_with_reasoning() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: Some(TokenDetails { reasoning_tokens: Some(30) }),
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("reason=30"));
+    }
+}

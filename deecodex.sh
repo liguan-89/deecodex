@@ -93,7 +93,6 @@ cmd_start() {
     nohup "$BIN" \
         --port "$port" \
         --upstream "${DEECODEX_UPSTREAM}" \
-        --api-key "${DEECODEX_API_KEY}" \
         --model-map "${DEECODEX_MODEL_MAP:-}" \
         >> "$LOG_FILE" 2>&1 &
     local pid=$!
