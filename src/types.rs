@@ -304,8 +304,8 @@ pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
         "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "medium" => (
-            Some("high".into()),
-            Some(serde_json::json!({"type": "enabled"})),
+            None,
+            Some(serde_json::json!({"type": "disabled"})),
         ),
         "high" => (
             Some("high".into()),

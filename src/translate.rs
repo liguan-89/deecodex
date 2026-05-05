@@ -572,6 +572,7 @@ pub fn from_chat_response(
             },
         });
 
+    let reasoning_content = choice.message.reasoning_content.clone().unwrap_or_default();
     let text = choice.message.content.clone().unwrap_or_default();
     let tool_calls = choice.message.tool_calls.clone().unwrap_or_default();
     let usage = chat.usage.unwrap_or(ChatUsage {
@@ -585,6 +586,25 @@ pub fn from_chat_response(
     });
 
     let mut output = Vec::new();
+
+    // Reasoning as independent output item (matches Responses API format)
+    if !reasoning_content.is_empty() {
+        output.push(ResponsesOutputItem {
+            kind: "reasoning".into(),
+            role: None,
+            content: vec![ContentPart {
+                kind: "summary_text".into(),
+                text: Some(reasoning_content.clone()),
+            }],
+            id: None,
+            call_id: None,
+            name: None,
+            arguments: None,
+            status: Some("completed".into()),
+            phase: None,
+        });
+    }
+
     let text_out = text.as_str().unwrap_or("").to_string();
     if !text_out.is_empty() || tool_calls.is_empty() {
         output.push(ResponsesOutputItem {
@@ -841,8 +861,8 @@ mod tests {
     #[test]
     fn test_effort_mapping_default() {
         let (eff, think) = map_effort(None);
-        assert_eq!(eff, Some("high".into()));
-        assert_eq!(think, Some(json!({"type": "enabled"})));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
     }
 
     #[test]

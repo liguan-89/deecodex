@@ -1,5 +1,6 @@
 mod cache;
 mod session;
+mod sse;
 mod stream;
 mod translate;
 mod types;
@@ -1655,14 +1656,18 @@ async fn handle_vlm(args: VlmArgs) -> Response {
     let mut response_obj = json!({
         "id": &response_id,
         "object": "response",
+        "created_at": now_unix_secs(),
         "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
         "model": &model,
         "output": [{
             "type": "message",
             "id": &msg_id,
             "role": "assistant",
             "status": "completed",
-            "content": [{"type": "output_text", "text": &text}]
+            "content": [{"type": "output_text", "text": &text, "annotations": [], "logprobs": []}]
         }],
         "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     });
@@ -1678,28 +1683,37 @@ async fn handle_vlm(args: VlmArgs) -> Response {
     }
 
     use axum::response::sse::{Event, KeepAlive, Sse};
+    use crate::sse::SseState;
+    let mut vss = SseState::new();
+    let vlm_oi = vss.alloc_output_index();
+
     let events: Vec<Result<Event, std::convert::Infallible>> = vec![
-        Ok(Event::default().event("response.created").data(json!({
-            "type": "response.created",
-            "response": { "id": &response_id, "status": "in_progress", "model": &model }
-        }).to_string())),
-        Ok(Event::default().event("response.output_item.added").data(json!({
-            "type": "response.output_item.added", "output_index": 0,
-            "item": { "type": "message", "id": &msg_id, "role": "assistant", "content": [], "status": "in_progress" }
-        }).to_string())),
-        Ok(Event::default().event("response.output_text.delta").data(json!({
-            "type": "response.output_text.delta", "item_id": &msg_id, "output_index": 0,
-            "content_index": 0, "delta": &text
-        }).to_string())),
-        Ok(Event::default().event("response.output_item.done").data(json!({
-            "type": "response.output_item.done", "output_index": 0,
-            "item": { "type": "message", "id": &msg_id, "role": "assistant", "status": "completed",
-                "content": [{"type": "output_text", "text": &text}] }
-        }).to_string())),
-        Ok(Event::default().event("response.completed").data(json!({
-            "type": "response.completed",
-            "response": response_obj
-        }).to_string())),
+        vss.response_created(&response_id, &model),
+        vss.response_in_progress(&response_id),
+        vss.output_item_added(
+            vlm_oi, &msg_id, "message",
+            json!({"role": "assistant", "content": []})
+        ),
+        vss.content_part_added(
+            &msg_id, vlm_oi, 0,
+            json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []})
+        ),
+        vss.output_text_delta(&msg_id, vlm_oi, 0, &text),
+        vss.output_text_done(&msg_id, vlm_oi, 0, &text),
+        vss.content_part_done(&msg_id, vlm_oi, 0, json!({
+            "type": "output_text",
+            "text": &text,
+            "annotations": [],
+            "logprobs": []
+        })),
+        vss.output_item_done(vlm_oi, json!({
+            "type": "message",
+            "id": &msg_id,
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": &text, "annotations": [], "logprobs": []}]
+        })),
+        vss.response_completed(&response_obj),
     ];
 
     Sse::new(futures_util::stream::iter(events))
