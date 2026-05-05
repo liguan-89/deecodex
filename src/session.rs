@@ -49,7 +49,7 @@ impl SessionStore {
             let combined_key = Self::turn_key(assistant);
             self.turn_reasoning.insert(combined_key, reasoning.clone());
             // Also store under content-only key for text-only assistant lookup
-            let content = assistant.content.as_deref().unwrap_or("");
+            let content = assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("");
             if !content.is_empty() {
                 self.turn_reasoning.insert(Self::content_key(content), reasoning.clone());
             }
@@ -75,7 +75,7 @@ impl SessionStore {
             return Some(v.clone());
         }
         // Fallback: try content-only key (for text-only assistant messages)
-        let content = assistant.content.as_deref().unwrap_or("");
+        let content = assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("");
         if !content.is_empty() {
             let content_key = Self::content_key(content);
             if let Some(v) = self.turn_reasoning.get(&content_key) {
@@ -88,7 +88,7 @@ impl SessionStore {
     /// Combined fingerprint: text content + sorted tool call IDs.
     fn turn_key(assistant: &ChatMessage) -> u64 {
         let mut hasher = DefaultHasher::new();
-        assistant.content.as_deref().unwrap_or("").hash(&mut hasher);
+        assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("").hash(&mut hasher);
         if let Some(tcs) = &assistant.tool_calls {
             for tc in tcs {
                 if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
@@ -167,7 +167,7 @@ mod tests {
     fn msg(role: &str, content: Option<&str>) -> ChatMessage {
         ChatMessage {
             role: role.into(),
-            content: content.map(Into::into),
+            content: content.map(|s| serde_json::Value::String(s.to_string())),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,

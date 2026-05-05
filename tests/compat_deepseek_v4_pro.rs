@@ -65,11 +65,11 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_text_only() {
 
     let chat = to_chat_request(&req, vec![], &store, &empty_map());
 
-    assert_eq!(chat.messages.len(), 3);
-    assert_eq!(chat.messages[1].role, "assistant");
-    assert_eq!(chat.messages[1].content.as_deref(), Some("Let me analyze this"));
+    assert_eq!(chat.chat.messages.len(), 3);
+    assert_eq!(chat.chat.messages[1].role, "assistant");
+    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Let me analyze this"));
     assert_eq!(
-        chat.messages[1].reasoning_content.as_deref(),
+        chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>analyzing the problem...</think>"),
         "assistant text message should have reasoning_content recovered"
     );
@@ -103,20 +103,20 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_with_tool_calls() {
 
     let chat = to_chat_request(&req, vec![], &store, &empty_map());
 
-    assert_eq!(chat.messages.len(), 5);
+    assert_eq!(chat.chat.messages.len(), 5);
 
-    assert_eq!(chat.messages[1].role, "assistant");
-    assert_eq!(chat.messages[1].content.as_deref(), Some("Let me check"));
+    assert_eq!(chat.chat.messages[1].role, "assistant");
+    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Let me check"));
     assert_eq!(
-        chat.messages[1].reasoning_content.as_deref(),
+        chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>need to read files</think>"),
         "assistant text message should have reasoning_content"
     );
 
-    assert_eq!(chat.messages[2].role, "assistant");
-    assert!(chat.messages[2].tool_calls.is_some());
+    assert_eq!(chat.chat.messages[2].role, "assistant");
+    assert!(chat.chat.messages[2].tool_calls.is_some());
     assert_eq!(
-        chat.messages[2].reasoning_content.as_deref(),
+        chat.chat.messages[2].reasoning_content.as_deref(),
         Some("<think>need to read files</think>"),
         "assistant tool-call message should have reasoning_content via call_id fallback"
     );
@@ -142,19 +142,19 @@ fn test_deepseek_v4_pro_multi_turn_reasoning() {
 
     let chat = to_chat_request(&req, vec![], &store, &empty_map());
 
-    assert_eq!(chat.messages.len(), 5);
+    assert_eq!(chat.chat.messages.len(), 5);
 
-    assert_eq!(chat.messages[1].role, "assistant");
-    assert_eq!(chat.messages[1].content.as_deref(), Some("Step 1 analysis"));
+    assert_eq!(chat.chat.messages[1].role, "assistant");
+    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Step 1 analysis"));
     assert_eq!(
-        chat.messages[1].reasoning_content.as_deref(),
+        chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>first pass thinking</think>"),
     );
 
-    assert_eq!(chat.messages[3].role, "assistant");
-    assert_eq!(chat.messages[3].content.as_deref(), Some("Step 2 deeper look"));
+    assert_eq!(chat.chat.messages[3].role, "assistant");
+    assert_eq!(chat.chat.messages[3].content.as_ref().and_then(|v| v.as_str()), Some("Step 2 deeper look"));
     assert_eq!(
-        chat.messages[3].reasoning_content.as_deref(),
+        chat.chat.messages[3].reasoning_content.as_deref(),
         Some("<think>second pass thinking</think>"),
     );
 }
@@ -171,10 +171,10 @@ fn test_non_thinking_model_no_reasoning_content() {
 
     let chat = to_chat_request(&req, vec![], &store, &empty_map());
 
-    assert_eq!(chat.messages.len(), 3);
-    assert_eq!(chat.messages[1].role, "assistant");
-    assert_eq!(chat.messages[1].content.as_deref(), Some("Hi there!"));
-    assert!(chat.messages[1].reasoning_content.is_none());
+    assert_eq!(chat.chat.messages.len(), 3);
+    assert_eq!(chat.chat.messages[1].role, "assistant");
+    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Hi there!"));
+    assert!(chat.chat.messages[1].reasoning_content.is_none());
 }
 
 #[test]
@@ -192,11 +192,11 @@ fn test_kimi_k2_6_reasoning_via_call_id() {
 
     let chat = to_chat_request(&req, vec![], &store, &empty_map());
 
-    assert_eq!(chat.messages.len(), 4);
-    assert_eq!(chat.messages[1].role, "assistant");
-    assert!(chat.messages[1].tool_calls.is_some());
+    assert_eq!(chat.chat.messages.len(), 4);
+    assert_eq!(chat.chat.messages[1].role, "assistant");
+    assert!(chat.chat.messages[1].tool_calls.is_some());
     assert_eq!(
-        chat.messages[1].reasoning_content.as_deref(),
+        chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>kimi is thinking</think>"),
     );
 }

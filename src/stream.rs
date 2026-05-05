@@ -304,7 +304,7 @@ pub fn translate_stream(
         };
         let assistant_msg = ChatMessage {
             role: "assistant".into(),
-            content: if accumulated_text.is_empty() { None } else { Some(accumulated_text.clone()) },
+            content: if accumulated_text.is_empty() { None } else { Some(serde_json::Value::String(accumulated_text.clone())) },
             reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
             tool_calls: assistant_tool_calls,
             tool_call_id: None,

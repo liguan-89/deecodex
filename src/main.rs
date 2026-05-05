@@ -42,6 +42,14 @@ struct Args {
 
     #[arg(long, env = "CODEX_RELAY_MAX_BODY_MB", default_value = "100")]
     max_body_mb: usize,
+
+    /// Vision/multimodal API upstream (e.g. MiniMax for image support)
+    #[arg(long, env = "CODEX_RELAY_VISION_UPSTREAM", default_value = "")]
+    vision_upstream: String,
+
+    /// Vision/multimodal API key
+    #[arg(long, env = "CODEX_RELAY_VISION_API_KEY", default_value = "")]
+    vision_api_key: String,
 }
 
 #[derive(Clone)]
@@ -53,6 +61,10 @@ struct AppState {
     model_map: Arc<ModelMap>,
     /// Track which non-function tool names have already been warned about.
     tool_drop_warned: DashSet<String>,
+    /// Optional vision/multimodal upstream (e.g. MiniMax for images)
+    vision_upstream: Option<Arc<Url>>,
+    /// Optional vision API key
+    vision_api_key: Arc<String>,
 }
 
 #[tokio::main]
@@ -78,6 +90,15 @@ async fn main() -> Result<()> {
 
     let upstream = validate_upstream(&args.upstream)?;
 
+    let vision_upstream = if args.vision_upstream.is_empty() {
+        None
+    } else {
+        Some(Arc::new(validate_upstream(&args.vision_upstream)?))
+    };
+    if vision_upstream.is_some() {
+        info!("vision upstream configured: {}", args.vision_upstream);
+    }
+
     let state = AppState {
         sessions: SessionStore::new(),
         client: Client::builder()
@@ -88,6 +109,8 @@ async fn main() -> Result<()> {
         api_key: Arc::new(args.api_key),
         model_map: Arc::new(model_map),
         tool_drop_warned: DashSet::new(),
+        vision_upstream,
+        vision_api_key: Arc::new(args.vision_api_key),
     };
 
     let max_bytes = args.max_body_mb * 1024 * 1024;
@@ -245,12 +268,24 @@ async fn handle_responses_inner(
         }
     }
 
-    let mut chat_req = translate::to_chat_request(&req, history.clone(), &state.sessions, &state.model_map);
-    let url = format!("{}chat/completions", join_base(&state.upstream));
+    let translated = translate::to_chat_request(&req, history.clone(), &state.sessions, &state.model_map);
+    let mut chat_req = translated.chat;
 
+    // Route to vision API if images are present and a vision upstream is configured
+    let (url, api_key) = if translated.has_images && state.vision_upstream.is_some() {
+        let vu = state.vision_upstream.as_ref().unwrap();
+        let url = format!("{}chat/completions", join_base(vu.as_ref()));
+        info!("📷 routing to vision upstream: {}", vu.as_ref());
+        (url, state.vision_api_key.clone())
+    } else {
+        let url = format!("{}chat/completions", join_base(&state.upstream));
+        (url, state.api_key.clone())
+    };
+
+    let vision_label = if translated.has_images { " 📷" } else { "" };
     info!(
-        "→ {} effort={} thinking={} msgs={}",
-        mapped_model, fmt_effort(&reasoning_effort), fmt_thinking(&thinking), msg_count
+        "→ {} effort={} thinking={} msgs={}{}",
+        mapped_model, fmt_effort(&reasoning_effort), fmt_thinking(&thinking), msg_count, vision_label
     );
 
     if req.stream {
@@ -260,7 +295,7 @@ async fn handle_responses_inner(
         stream::translate_stream(stream::StreamArgs {
             client: state.client,
             url,
-            api_key: state.api_key,
+            api_key,
             chat_req,
             response_id,
             sessions: state.sessions,
@@ -273,7 +308,7 @@ async fn handle_responses_inner(
     } else {
         chat_req.stream = false;
         let start = Instant::now();
-        let resp = handle_blocking(state.clone(), chat_req, url, mapped_model).await;
+        let resp = handle_blocking(state.clone(), chat_req, url, mapped_model, api_key).await;
         let elapsed = start.elapsed();
         debug!("blocking request completed in {:.0}ms", elapsed.as_millis());
         resp
@@ -285,14 +320,15 @@ async fn handle_blocking(
     chat_req: types::ChatRequest,
     url: String,
     model: String,
+    api_key: Arc<String>,
 ) -> Response {
     let mut builder = state
         .client
         .post(&url)
         .header("Content-Type", "application/json");
 
-    if !state.api_key.is_empty() {
-        builder = builder.bearer_auth(state.api_key.as_str());
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
 
     match builder.json(&chat_req).send().await {
@@ -326,7 +362,7 @@ async fn handle_blocking(
                     .map(|c| c.message.clone())
                     .unwrap_or_else(|| ChatMessage {
                         role: "assistant".into(),
-                        content: Some(String::new()),
+                        content: Some(serde_json::Value::String(String::new())),
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,

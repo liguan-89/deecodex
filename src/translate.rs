@@ -5,14 +5,24 @@ use crate::{
     types::*,
 };
 
+/// Result of converting a Responses API request into a Chat Completions request.
+pub struct TranslatedRequest {
+    pub chat: ChatRequest,
+    /// Whether the request contains image content that needs vision support
+    pub has_images: bool,
+}
+
 /// Convert a Responses API request into a Chat Completions request.
 pub fn to_chat_request(
     req: &ResponsesRequest,
     history: Vec<ChatMessage>,
     sessions: &SessionStore,
     model_map: &ModelMap,
-) -> ChatRequest {
+) -> TranslatedRequest {
     let mut messages = history;
+
+    // Track whether any message contains images
+    let mut has_images = false;
 
     // Extract system prompt (instructions preferred over system)
     let system_text = req.instructions.as_ref().or(req.system.as_ref());
@@ -22,7 +32,7 @@ pub fn to_chat_request(
                 0,
                 ChatMessage {
                     role: "system".into(),
-                    content: Some(system.clone()),
+                    content: Some(Value::String(system.clone())),
                     reasoning_content: None,
                     tool_calls: None,
                     tool_call_id: None,
@@ -37,7 +47,7 @@ pub fn to_chat_request(
         ResponsesInput::Text(text) => {
             messages.push(ChatMessage {
                 role: "user".into(),
-                content: Some(text.clone()),
+                content: Some(Value::String(text.clone())),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -100,7 +110,7 @@ pub fn to_chat_request(
                             let output  = item.get("output").and_then(|v| v.as_str()).unwrap_or("");
                             messages.push(ChatMessage {
                                 role: "tool".into(),
-                                content: Some(output.to_string()),
+                                content: Some(Value::String(output.to_string())),
                                 reasoning_content: None,
                                 tool_calls: None,
                                 tool_call_id: Some(call_id.to_string()),
@@ -113,15 +123,31 @@ pub fn to_chat_request(
                                 "developer" => "system",
                                 other => other,
                             }.to_string();
-                            let content = value_to_text(item.get("content"));
+                            let (text, has_img) = value_to_text_with_flag(item.get("content"));
                             let mut msg = ChatMessage {
                                 role,
-                                content: Some(content),
+                                content: Some(Value::String(text.clone())),
                                 reasoning_content: None,
                                 tool_calls: None,
                                 tool_call_id: None,
                                 name: None,
                             };
+                            if has_img {
+                                has_images = true;
+                                // Reconstruct multimodal content with images
+                                if let Some(raw_content) = item.get("content") {
+                                    if let Some(parts) = raw_content.as_array() {
+                                        let multimodal: Vec<Value> = parts.iter().map(|p| {
+                                            let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                            match typ {
+                                                "image_url" => p.clone(),
+                                                _ => json!({"type": "text", "text": p.get("text").and_then(|t| t.as_str()).unwrap_or("")}),
+                                            }
+                                        }).collect();
+                                        msg.content = Some(Value::Array(multimodal));
+                                    }
+                                }
+                            }
                             if msg.role == "assistant" {
                                 msg.reasoning_content = sessions.get_turn_reasoning(&messages, &msg);
                             }
@@ -137,7 +163,7 @@ pub fn to_chat_request(
     // Sanitize: replace null content with "" (DeepSeek rejects null)
     for msg in &mut messages {
         if msg.content.is_none() && msg.tool_calls.is_none() {
-            msg.content = Some(String::new());
+            msg.content = Some(Value::String(String::new()));
         }
     }
 
@@ -170,21 +196,24 @@ pub fn to_chat_request(
         typ == "web_search" || typ == "web_search_preview"
     });
 
-    ChatRequest {
-        model: mapped_model,
-        messages,
-        tools,
-        temperature: req.temperature,
-        max_tokens: req.max_output_tokens,
-        stream: req.stream,
-        reasoning_effort,
-        thinking,
-        stream_options: Some(StreamOptions { include_usage: true }),
-        web_search_options: if web_search_enabled {
-            Some(json!({"search_context": {"cache_control": {"type": "ephemeral"}}}))
-        } else {
-            None
+    TranslatedRequest {
+        chat: ChatRequest {
+            model: mapped_model,
+            messages,
+            tools,
+            temperature: req.temperature,
+            max_tokens: req.max_output_tokens,
+            stream: req.stream,
+            reasoning_effort,
+            thinking,
+            stream_options: Some(StreamOptions { include_usage: true }),
+            web_search_options: if web_search_enabled {
+                Some(json!({"search_context": {"cache_control": {"type": "ephemeral"}}}))
+            } else {
+                None
+            },
         },
+        has_images,
     }
 }
 
@@ -316,7 +345,7 @@ pub fn from_chat_response(
     let choice = chat.choices.into_iter().next().unwrap_or_else(|| ChatChoice {
         message: ChatMessage {
             role: "assistant".into(),
-            content: Some(String::new()),
+            content: Some(Value::String(String::new())),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
@@ -344,7 +373,7 @@ pub fn from_chat_response(
             role: "assistant".into(),
             content: vec![ContentPart {
                 kind: "output_text".into(),
-                text: Some(text),
+                text: Some(text.as_str().unwrap_or("").to_string()),
             }],
         }],
         usage: ResponsesUsage {
@@ -357,19 +386,28 @@ pub fn from_chat_response(
     (response, vec![choice.message])
 }
 
-/// Collapse a Responses API content value to plain text, filtering images.
-fn value_to_text(v: Option<&Value>) -> String {
+/// Collapse a Responses API content value to plain text + has_images flag.
+fn value_to_text_with_flag(v: Option<&Value>) -> (String, bool) {
     match v {
-        None => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"))
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .collect::<Vec<_>>()
-            .join(""),
-        Some(other) => other.to_string(),
+        None => (String::new(), false),
+        Some(Value::String(s)) => (s.clone(), false),
+        Some(Value::Array(parts)) => {
+            let has_img = parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+            let text = parts
+                .iter()
+                .filter(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"))
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("");
+            (text, has_img)
+        }
+        Some(other) => (other.to_string(), false),
     }
+}
+
+/// Collapse a Responses API content value to plain text, filtering images (for backwards compat).
+fn value_to_text(v: Option<&Value>) -> String {
+    value_to_text_with_flag(v).0
 }
 
 #[cfg(test)]
@@ -401,10 +439,10 @@ mod tests {
     fn test_text_input() {
         let sessions = SessionStore::new();
         let req = base_req(ResponsesInput::Text("hello".into()));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, "user");
-        assert_eq!(chat.messages[0].content.as_deref(), Some("hello"));
+        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("hello"));
     }
 
     #[test]
@@ -412,9 +450,9 @@ mod tests {
         let sessions = SessionStore::new();
         let mut req = base_req(ResponsesInput::Text("hi".into()));
         req.instructions = Some("be helpful".into());
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
         assert_eq!(chat.messages[0].role, "system");
-        assert_eq!(chat.messages[0].content.as_deref(), Some("be helpful"));
+        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("be helpful"));
     }
 
     #[test]
@@ -423,7 +461,7 @@ mod tests {
         let req = base_req(ResponsesInput::Messages(vec![
             json!({"type": "message", "role": "developer", "content": "secret"}),
         ]));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
         assert_eq!(chat.messages[0].role, "system");
     }
 
@@ -434,7 +472,7 @@ mod tests {
             json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
             json!({"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"}),
         ]));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
         assert_eq!(chat.messages.len(), 1);
         let calls = chat.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(calls.len(), 2);
@@ -447,7 +485,7 @@ mod tests {
         req.model = "gpt-5.5".into();
         let mut map: ModelMap = HashMap::new();
         map.insert("gpt-5.5".into(), "deepseek-v4-pro".into());
-        let chat = to_chat_request(&req, vec![], &sessions, &map);
+        let chat = to_chat_request(&req, vec![], &sessions, &map).chat;
         assert_eq!(chat.model, "deepseek-v4-pro");
     }
 
@@ -465,8 +503,8 @@ mod tests {
     fn test_null_content_fixed() {
         let sessions = SessionStore::new();
         let req = base_req(ResponsesInput::Text("".into()));
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
-        assert_eq!(chat.messages[0].content.as_deref(), Some(""));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
+        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some(""));
     }
 
     #[test]
@@ -509,7 +547,7 @@ mod tests {
             json!({"type": "function_call", "call_id": "tc_x", "name": "f", "arguments": "{}"}),
             json!({"type": "function_call_output", "call_id": "tc_x", "output": "result"}),
         ]));
-        let chat = to_chat_request(&req, history, &sessions, &empty_map());
+        let chat = to_chat_request(&req, history, &sessions, &empty_map()).chat;
         let fc_msg = chat.messages.iter().find(|m| m.role == "assistant" && m.tool_calls.is_some());
         assert!(fc_msg.is_some());
         assert_eq!(fc_msg.unwrap().reasoning_content.as_deref(), Some("prior_reason"));
@@ -539,7 +577,7 @@ mod tests {
         let sessions = SessionStore::new();
         let mut req = base_req(ResponsesInput::Text("hi".into()));
         req.stream = true;
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map());
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map()).chat;
         assert!(chat.stream_options.is_some());
         assert!(chat.stream_options.as_ref().unwrap().include_usage);
     }
