@@ -313,7 +313,7 @@ async fn handle_responses_inner(
     }
 
     let (url, api_key) = if route_to_vision {
-        let vu = state.vision_upstream.as_ref().unwrap();
+        let vu = state.vision_upstream.as_ref().expect("vision_upstream must be set");
         let use_vlm = state.vision_endpoint.contains("vlm");
         let url = format!("{}{}", join_base(vu.as_ref()), state.vision_endpoint.as_str());
         let vmodel = state.vision_model.as_ref().clone();

@@ -558,6 +558,7 @@ fn value_to_text_with_flag(v: Option<&Value>) -> (String, bool) {
 }
 
 /// Collapse a Responses API content value to plain text, filtering images (for backwards compat).
+#[cfg(test)]
 fn value_to_text(v: Option<&Value>) -> String {
     value_to_text_with_flag(v).0
 }
@@ -695,8 +696,8 @@ mod tests {
     #[test]
     fn test_effort_mapping_default() {
         let (eff, think) = map_effort(None);
-        assert_eq!(eff, None);
-        assert_eq!(think, Some(json!({"type": "disabled"})));
+        assert_eq!(eff, Some("high".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
     }
 
     #[test]
@@ -724,24 +725,6 @@ mod tests {
         assert_eq!(fc_msg.unwrap().reasoning_content.as_deref(), Some("prior_reason"));
     }
 
-    #[test]
-    fn test_non_function_tool_types_empty() {
-        let tools: Vec<Value> = vec![
-            json!({"type": "function", "name": "my_fn", "description": "x"}),
-        ];
-        assert!(non_function_tool_types(&tools).is_empty());
-    }
-
-    #[test]
-    fn test_non_function_tool_types_no_longer_drops_web_search() {
-        let tools: Vec<Value> = vec![
-            json!({"type": "function", "name": "my_fn"}),
-            json!({"type": "web_search", "name": "web_search"}),
-            json!({"type": "web_search_preview", "name": "web_search_preview"}),
-        ];
-        let dropped = non_function_tool_types(&tools);
-        assert!(dropped.is_empty(), "web_search types should be handled, not dropped");
-    }
 
     #[test]
     fn test_stream_options_included() {

@@ -90,10 +90,12 @@ impl RequestCache {
         info!("request cache: stored entry (total: {})", self.inner.len());
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    #[allow(dead_code)]
     pub fn stats(&self) -> (usize, usize) {
         (self.inner.len(), self.max_entries)
     }

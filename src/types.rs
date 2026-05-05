@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 // ── Responses API (inbound from Codex CLI) ──────────────────────────────────
 
+#[allow(dead_code)] // reserved fields for API compat
 #[derive(Debug, Deserialize)]
 pub struct ResponsesRequest {
     pub model: String,
@@ -36,6 +37,7 @@ pub struct ResponsesRequest {
     pub truncation: Option<String>,
 }
 
+#[allow(dead_code)] // reserved fields for API compat
 #[derive(Debug, Deserialize, Clone)]
 pub struct ReasoningConfig {
     #[serde(default)]
@@ -148,6 +150,7 @@ pub struct ChatChoice {
     pub message: ChatMessage,
 }
 
+#[allow(dead_code)] // reserved fields for upstream API compat
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatUsage {
     pub prompt_tokens: u32,
@@ -171,6 +174,7 @@ pub struct TokenDetails {
     pub reasoning_tokens: Option<u32>,
 }
 
+#[allow(dead_code)] // reserved for upstream API compat
 #[derive(Debug, Deserialize, Clone)]
 pub struct CachedTokenDetails {
     #[serde(default)]
@@ -245,7 +249,7 @@ pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
         "none" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
-        "medium" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "medium" => (Some("high".into()), Some(serde_json::json!({"type": "enabled"}))),
         "high" => (Some("high".into()), Some(serde_json::json!({"type": "enabled"}))),
         "xhigh" => (Some("max".into()), Some(serde_json::json!({"type": "enabled"}))),
         _ => (None, Some(serde_json::json!({"type": "disabled"}))),
@@ -297,21 +301,4 @@ pub fn fmt_codex_effort(e: Option<&str>) -> &str {
         Some(s) => s,
         None => "-",
     }
-}
-
-/// Extract tool type names that are NOT forwarded in any form.
-/// web_search → web_search_options, everything else → function type (via convert_tool).
-/// This should always return empty.
-pub fn non_function_tool_types(tools: &[Value]) -> Vec<String> {
-    tools
-        .iter()
-        .filter_map(|t| {
-            let typ = t.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-            if typ == "web_search" || typ == "web_search_preview" {
-                None
-            } else {
-                None
-            }
-        })
-        .collect()
 }

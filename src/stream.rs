@@ -105,7 +105,7 @@ pub fn translate_stream(
                     let status_code = status.as_u16();
                     let body = r.text().await.unwrap_or_default();
 
-                    let retryable = matches!(status_code, 429 | 502 | 503)
+                    let retryable = matches!(status_code, 401 | 429 | 502 | 503)
                         || (status_code == 400 && body.contains("reasoning_content") && attempt == 0);
 
                     if retryable && attempt < max_retries {
@@ -144,8 +144,6 @@ pub fn translate_stream(
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
-        let mut injected_reasoning_prefix = false;
-        let mut reasoning_separator_emitted = false;
         let mut final_usage: Option<ChatUsage> = None;
         let mut source = upstream.bytes_stream().eventsource();
         let mut stream_completed = false;
@@ -180,7 +178,6 @@ pub fn translate_stream(
                                             emitted_reasoning_item = true;
                                         }
                                         accumulated_reasoning.push_str(rc);
-                                        // Emit reasoning delta for the reasoning item (index 0)
                                         yield Ok(Event::default()
                                             .event("response.reasoning_text.delta")
                                             .data(json!({
@@ -190,60 +187,10 @@ pub fn translate_stream(
                                                 "content_index": 0,
                                                 "delta": rc
                                             }).to_string()));
-                                        // Also inject reasoning into message text for Codex visibility
-                                        if !injected_reasoning_prefix {
-                                            if !emitted_message_item {
-                                                yield Ok(Event::default()
-                                                    .event("response.output_item.added")
-                                                    .data(json!({
-                                                        "type": "response.output_item.added",
-                                                        "output_index": 1,
-                                                        "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
-                                                    }).to_string()));
-                                                emitted_message_item = true;
-                                            }
-                                            let prefix = "💭 思考过程:\n";
-                                            accumulated_text.push_str(prefix);
-                                            yield Ok(Event::default()
-                                                .event("response.output_text.delta")
-                                                .data(json!({
-                                                    "type": "response.output_text.delta",
-                                                    "item_id": &msg_item_id,
-                                                    "output_index": 1,
-                                                    "content_index": 0,
-                                                    "delta": prefix
-                                                }).to_string()));
-                                            injected_reasoning_prefix = true;
-                                        }
-                                        accumulated_text.push_str(rc);
-                                        yield Ok(Event::default()
-                                            .event("response.output_text.delta")
-                                            .data(json!({
-                                                "type": "response.output_text.delta",
-                                                "item_id": &msg_item_id,
-                                                "output_index": 1,
-                                                "content_index": 0,
-                                                "delta": rc
-                                            }).to_string()));
                                     }
                                 }
                                 let content = choice.delta.content.as_deref().unwrap_or("");
                                 if !content.is_empty() {
-                                    // Insert separator between reasoning and response
-                                    if emitted_reasoning_item && !reasoning_separator_emitted {
-                                        let sep = "\n\n";
-                                        accumulated_text.push_str(sep);
-                                        yield Ok(Event::default()
-                                            .event("response.output_text.delta")
-                                            .data(json!({
-                                                "type": "response.output_text.delta",
-                                                "item_id": &msg_item_id,
-                                                "output_index": 1,
-                                                "content_index": 0,
-                                                "delta": sep
-                                            }).to_string()));
-                                        reasoning_separator_emitted = true;
-                                    }
                                     if !emitted_message_item {
                                         let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
                                         yield Ok(Event::default()
