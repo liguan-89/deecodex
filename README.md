@@ -8,7 +8,7 @@
 Codex CLI 发出 /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
         │
         ▼
-  deecodex (协议翻译 + 模型映射 + 思考适配 + 缓存 + 重试)
+  deecodex (Responses ↔ Chat 协议翻译 + 模型映射 + 缓存 + 重试 + 视觉路由)
         │
         ▼
   api.deepseek.com/v1/chat/completions
@@ -16,7 +16,7 @@ Codex CLI 发出 /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
 
 ## 安装
 
-### 从源码编译（推荐）
+### 从源码编译
 
 ```bash
 git clone https://github.com/liguan-89/deecodex.git
@@ -34,7 +34,7 @@ chmod +x deecodex
 mv deecodex ~/.local/bin/
 ```
 
-### 验证安装
+### 验证
 
 ```bash
 deecodex --help
@@ -42,29 +42,14 @@ deecodex --help
 
 ## 快速开始
 
-### 1. 配置环境变量
-
 ```bash
 cp .env.example .env
-vim .env
+vim .env                                # 填入 DEECODEX_API_KEY
+./deecodex.sh start                     # 启动服务
+./deecodex.sh health                    # 确认 healthy
 ```
 
-填入你的 DeepSeek API Key（登录 [platform.deepseek.com](https://platform.deepseek.com) → API Keys）：
-
-```
-DEECODEX_API_KEY=sk-your-real-key-here
-```
-
-### 2. 启动服务
-
-```bash
-./deecodex.sh start
-./deecodex.sh health    # 确认返回 healthy
-```
-
-### 3. 配置 Codex 桌面版
-
-编辑 `~/.codex/config.toml`：
+Codex 桌面端 `~/.codex/config.toml`：
 
 ```toml
 model = "deepseek-v4-pro"
@@ -78,60 +63,180 @@ requires_openai_auth = true
 wire_api = "responses"
 ```
 
-重启 Codex，选择 `custom` provider 即可使用。
+CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 API Key。
 
-### 4. 验证连通
-
-在 Codex 发一条消息。日志出现以下两行说明成功：
-
-```
-← codex: model=gpt-5.5 reasoning.effort=Some("medium")
-→ upstream: model=deepseek-v4-pro stream=true effort=Some("high") msgs=12
-```
-
-## 项目文件
+## 项目结构
 
 ```
 deecodex/
-├── Cargo.toml          # Rust 项目配置
+├── Cargo.toml            # Rust 项目配置
 ├── src/
-│   ├── main.rs         # 服务入口 + HTTP 路由
-│   ├── translate.rs    # Responses ↔ Chat 协议翻译
-│   ├── stream.rs       # SSE 流式响应翻译
-│   ├── session.rs      # 会话管理 + reasoning_content 回传
-│   ├── types.rs        # 请求/响应类型定义
-│   ├── cache.rs        # 请求缓存（LRU 128 条目）
-│   └── lib.rs          # 模块导出
-├── deecodex.sh         # 管理脚本
-├── .env.example        # 环境变量模板
-└── tests/              # 33 个集成测试
+│   ├── main.rs           # 服务入口 + HTTP 路由 + 视觉路由
+│   ├── translate.rs      # Responses ↔ Chat 核心翻译（类型转换、工具转发、思考映射）
+│   ├── stream.rs         # SSE 流式响应翻译 + 缓存回放 + 重试
+│   ├── session.rs        # 会话管理 + reasoning_content 三级恢复
+│   ├── types.rs          # 35+ 类型定义（请求/响应/流/用量/缓存）
+│   ├── cache.rs          # LRU 请求缓存（128 条目哈希）
+│   └── lib.rs            # 模块导出
+├── deecodex.sh           # 管理脚本
+├── .env.example          # 环境变量模板
+└── tests/                # 33 个测试
 ```
+
+## 协议转换全表
+
+deecodex 在企业级精度下完成了 Responses API ↔ Chat Completions API 的双向翻译：
+
+### 请求方向（Codex → DeepSeek）
+
+| Responses API 字段 | 转换为 | 说明 |
+|---|---|---|
+| `model` | `model` | 通过 `DEECODEX_MODEL_MAP` 映射 |
+| `input` (text) | `messages[{role:"user", content}]` | 纯文本输入 |
+| `input` (messages) | `messages[]` | 消息数组，逐项转换 |
+| `input[].type = "message"` | `messages[{role, content}]` | 常规消息，`developer` → `system` |
+| `input[].type = "function_call"` | 单个 `messages[{role:"assistant", tool_calls}]` | **连续 function_call 自动合并为一条 assistant 消息** |
+| `input[].type = "function_call_output"` | `messages[{role:"tool", content, tool_call_id}]` | 失败时前缀 `[FAILED]` |
+| `input[].type = "mcp_tool_call_output"` | `messages[{role:"tool"}]` | MCP 工具输出 |
+| `input[].type = "custom_tool_call_output"` | `messages[{role:"tool"}]` | 自定义工具输出 |
+| `input[].type = "tool_search_output"` | `messages[{role:"tool"}]` | 搜索工具输出 |
+| `content` (String) | `content` (String) | 纯文本 |
+| `content` (Array) | `content` (Array) | 多模态内容数组 |
+| `type = "input_image"` | `type = "image_url"` | 图片格式转换 |
+| Base64 内嵌文本 | 自动切割为 text + image_url | 从文本中提取 `data:image/` |
+| `instructions` | 优先于 `system` 作为 system prompt | `system` 字段兼容 |
+| `previous_response_id` | 会话历史拼接 | 自动从 store 恢复历史 |
+| `tools[].type = "function"` | `tools[{type:"function", function:{...}}]` | 标准函数 |
+| `tools[].type = "custom"` | `tools[{type:"function", function:{...}}]` | **自定义工具 → 带参数 schema 的 function** |
+| `tools[].type = "namespace"` | 展开为多个 function tools | **MCP 命名空间工具展开** |
+| `tools[].name = "apply_patch"` | `exec_command` | **维持行为但改名，避免上游拒绝** |
+| 同名 tool 去重 | 保留首个，删除重复 | **DeepSeek 强制要求工具名唯一** |
+| `tools.web_search_preview` | `web_search_options` | **DeepSeek web_search 激活** |
+| `stream: true` | `stream: true` + `stream_options.include_usage` | 流式输出 + 用量统计 |
+| `temperature` | `temperature` | 透传 |
+| `top_p` | `top_p` | 透传 |
+| `max_output_tokens` | `max_tokens` | 字段名适配 |
+| `tool_choice` | `tool_choice` | 透传 |
+| `parallel_tool_calls` | — | 在工具定义中 encode |
+| `store` | — | 透传（由 deecodex 处理） |
+| `metadata` | — | 透传 |
+| `truncation` | — | 透传 |
+| `reasoning.effort` | `reasoning_effort` + `thinking` | 六级映射（见下文） |
+| `reasoning.summary` | — | 透传 |
+| — | 中文思考指令（可选） | `DEECODEX_CHINESE_THINKING=true` 时注入 |
+
+### 响应方向（DeepSeek → Codex）
+
+| Chat API 字段 | 转换为 Responses API 字段 |
+|---|---|
+| `choices[0].message.content` | `output[0].content[0].text` |
+| `choices[0].message.reasoning_content` | 流式 → `response.reasoning_text.delta` |
+| `choices[0].message.tool_calls` | `output[{type:"function_call", call_id, name, arguments}]` |
+| `choices[0].finish_reason` | `output[0].type: "message"` |
+| `usage.prompt_tokens` | `usage.input_tokens` |
+| `usage.completion_tokens` | `usage.output_tokens` |
+| `usage.completion_tokens_details.reasoning_tokens` | 日志打印 |
+| `usage.prompt_cache_hit_tokens` | 日志打印 |
+| `usage.prompt_cache_miss_tokens` | 日志打印 |
+| `id` (chat cmpl id) | `id` (response id, 格式适配) |
+| `model` | `model` |
+
+### 思考等级映射（六级）
+
+| Codex `reasoning.effort` | DeepSeek `reasoning_effort` | DeepSeek `thinking` |
+|---|---|---|
+| `none` | `low` | `disabled` |
+| `minimal` | `low` | `disabled` |
+| `low` | — | `disabled` |
+| `medium` | `high` | `enabled` |
+| `high` | `high` | `enabled` |
+| `xhigh` | `max` | `enabled` |
+| 无字段（工具调用等） | `high` | `enabled` |
+
+## 功能详解
+
+### 工具转发引擎
+
+Codex 发送的工具定义（tools）与 OpenAI Chat API 格式不同，deecodex 在 `translate.rs` 中实现了一套完整的工具转换管道：
+
+1. **类型识别** — 按 `type` 字段分类：`function` / `custom` / `namespace`
+2. **namespace 展开** — MCP 命名空间工具（如 `mcp__filesystem__read`）拆分为独立 function tool，子工具名前缀命名空间
+3. **工具名去重** — 展开后按 `function.name` 去重（DeepSeek 要求工具名唯一）
+4. **自定义工具包装** — `apply_patch` → 映射为 `exec_command`（参数 schema 一致），其他自定义工具生成通用参数 schema
+5. **Web Search 检测** — `web_search_preview` 类型 → 开启 `web_search_options`
+
+### 会话与思维链恢复
+
+`session.rs` 实现三级 reasoning_content 恢复机制：
+
+1. **call_id 精确匹配** — `function_call` 的 `call_id` → 上次响应的 `reasoning_content`
+2. **turn 指纹匹配** — 根据 assistant 消息内容 + tool_call_ids 组合指纹查找
+3. **历史扫描** — 扫描整个对话历史中最近匹配的内容
+
+全部为内存存储，服务重启后 Codex 会重放完整历史，deecodex 从重放中重建。
+
+### 请求缓存
+
+`cache.rs` 基于请求体 JSON 哈希值的 LRU 缓存：
+
+- 最大 128 条目，超限时淘汰最早条目
+- 缓存内容包括：完整 SSE 事件序列、tool call 数据、用量统计
+- 命中时直接回放缓存流，不请求上游
+- 日志标注 `cache hit` / `cache miss`
+
+### 流式处理
+
+`stream.rs` 处理 DeepSeek SSE 流，完成以下翻译：
+
+- **Delta 合并** — 将 DeepSeek 的 `choices[0].delta` 聚合为完整消息
+- **reasoning_content 流式输出** — 通过 `response.reasoning_text.delta` SSE 事件发送
+- **Tool call delta 流式重建** — 按 `index` 分组增量参数，补齐 `id` 和 `name`
+- **名称透明替换** — `apply_patch` → `exec_command` 名称映射贯穿流
+- **用量恢复** — 从最终 chunk 的 `usage` 字段和 `include_usage` 流事件中重建
+- **缓存回放** — 从缓存读取完整 SSE 事件序列，按原始顺序重放
+
+### 自动重试
+
+在 `stream.rs` 中内置重试逻辑：
+
+- **触发条件** — HTTP 429/502/503 + `reasoning_content must be passed back` 错误
+- **退避策略** — 固定延迟重试（非指数，简化实现）
+- **最大次数** — 3 次
+- **特殊处理** — `reasoning_content` 丢失时禁用 thinking 重新发送
+
+### 视觉路由
+
+多模态请求路由逻辑：
+
+1. 检测 `has_images` 标志（从 content 数组中识别 `image_url`/`input_image`/base64）
+2. 判断条件：有图片 + 配置了视觉上游 + **首回合**（消息数 ≤ 3） + **非轻量模型**（非 gpt-5.4/auto-review）
+3. 符合条件 → 构建 VLM 请求体并发送到 `CODEX_RELAY_VISION_ENDPOINT`
+4. 不符合条件 → 自动剥离所有图片内容，走 DeepSeek
+
+### 中文思考注入
+
+`DEECODEX_CHINESE_THINKING=true` 时：
+
+- 系统指令前置注入 "【核心指令：你的所有推理、思考和分析过程必须全程使用中文..."
+- 最后一条 user 消息前置注入 "【你的推理过程必须使用中文。】"
+- 不影响正常对话流程
 
 ## 环境变量
 
-编辑 `.env`（或复制 `.env.example`）：
-
 | 变量 | 说明 | 默认值 |
-|------|------|--------|
+|---|---|---|
 | `DEECODEX_UPSTREAM` | DeepSeek API 地址 | `https://api.deepseek.com/v1` |
 | `DEECODEX_API_KEY` | DeepSeek API Key | **（必填）** |
-| `DEECODEX_PORT` | 本地监听端口 | `4446` |
-| `DEECODEX_MODEL_MAP` | 模型名映射 JSON | 见下方 |
-| `DEECODEX_CHINESE_THINKING` | 中文思考提示 | `false` |
-| `CODEX_RELAY_*` 前缀 | 兼容上游变量名 | — |
-
-### 视觉路由（可选）
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `CODEX_RELAY_VISION_UPSTREAM` | MiniMax API 地址 | `""`（不配置则丢弃图片） |
+| `DEECODEX_PORT` | 监听端口 | `4446` |
+| `DEECODEX_MODEL_MAP` | 模型映射 JSON | 见下 |
+| `DEECODEX_CHINESE_THINKING` | 中文思考注入 | `false` |
+| `CODEX_RELAY_MAX_BODY_MB` | 请求体上限 | `100` |
+| `CODEX_RELAY_VISION_UPSTREAM` | MiniMax API 地址 | `""` |
 | `CODEX_RELAY_VISION_API_KEY` | MiniMax API Key | `""` |
 | `CODEX_RELAY_VISION_MODEL` | 视觉模型名 | `MiniMax-M1` |
 | `CODEX_RELAY_VISION_ENDPOINT` | 视觉端点路径 | `v1/coding_plan/vlm` |
 
 ### 模型映射
-
-Codex 硬编码的 OpenAI 模型名 → DeepSeek 实际模型名：
 
 ```json
 {
@@ -143,142 +248,54 @@ Codex 硬编码的 OpenAI 模型名 → DeepSeek 实际模型名：
 }
 ```
 
-键名**大小写敏感**，建议大小写都加。验证当前可用模型：
-
-```bash
-curl -s https://api.deepseek.com/v1/models \
-  -H "Authorization: Bearer $DEECODEX_API_KEY" \
-  | jq '.data[].id'
-```
-
 ## 日常管理
 
 ```bash
-./deecodex.sh start      # 启动
-./deecodex.sh stop       # 停止（10s 优雅超时后强杀）
+./deecodex.sh start      # 启动（自动日志轮转）
+./deecodex.sh stop       # 停止（10s 优雅超时）
 ./deecodex.sh restart    # 重启
-./deecodex.sh status     # 查看 PID / 端口
+./deecodex.sh status     # PID + 端口
 ./deecodex.sh logs       # 实时日志
 ./deecodex.sh health     # 健康检查
 ```
 
-### CC Switch 配置
-
-在 CC Switch 中新增 Codex provider，只需填写：
-
-| 字段 | 值 |
-|------|-----|
-| API 请求地址 | `http://127.0.0.1:4446/v1` |
-| API Key | 任意字符串（如 `sk-123456`） |
-
-`wire_api = "responses"` 和 `requires_openai_auth = true` 由 deecodex 自动处理。
-
-## 功能特性
-
-### 协议翻译
-
-- **Responses → Chat 翻译** — 实时双向协议转换，保持流式响应完整
-- **思考等级六级映射** — Codex `reasoning.effort`（none/minimal/low/medium/high/xhigh）→ DeepSeek 参数
-- **`tool_choice` / `parallel_tool_calls` / `top_p` 透传** — 从 Responses API 透传到 Chat API
-- **`content null` 修复** — 空内容用 `""` 代替 `null`，避免 DeepSeek 400 错误
-
-### 工具调用
-
-- **自定义工具转发** — `apply_patch` 等非标准工具转为标准 function 类型，带参数 schema
-- **MCP 命名空间展开** — 命名空间工具展开为独立 function tools
-- **工具名自动去重** — MCP 展开后按 `function.name` 去重，修复 DeepSeek 400
-- **Web Search 适配** — Codex `web_search_preview` → DeepSeek `web_search_options`
-- **工具丢弃日志去重** — 同名工具首次 WARN，后续 DEBUG，不刷屏
-
-### 多模态视觉（可选）
-
-- **自动路由** — 检测图片内容，首回合路由 MiniMax VLM，后续回合走 DeepSeek
-- **智能决策** — gpt-5.4 / auto-review 跳过 VLM；历史图片自动剥离避免 DeepSeek 400
-- **双格式支持** — MiniMax VLM 端点 + Anthropic 格式自动转换
-- **Base64 内嵌检测** — 支持 `input_image` 和 `image_url` 两种图片格式
-
-### 可靠性
-
-- **请求缓存** — 基于 ChatRequest JSON 哈希，LRU 128 条目，命中时直接回放缓存的 SSE 流
-- **通用重试** — 429/502/503 + `reasoning_content` 丢失错误，指数退避最多 3 次
-- **reasoning 流式输出** — 通过 `response.reasoning_text.delta` SSE 事件发送给 Codex，UI 可见思考过程
-- **Health 端点** — `GET /health` → `{"status":"ok","uptime_secs":N}`
-
-### 安全
-
-- **`--api-key` CLI 参数移除** — 仅从环境变量读取，避免 `ps aux` 泄露
-- **请求体上限** — 100MB，支持大图片/大上下文
-
 ## 日志解读
 
-每请求打印两行关键信息：
-
 ```
-← codex: model=gpt-5.5 reasoning.effort=Some("medium")
-→ upstream: model=deepseek-v4-pro stream=true effort=Some("high") thinking=Some({"type":"enabled"}) msgs=12
+← codex: model=gpt-5.5 reasoning.effort=Some("medium")    ← 原始请求
+→ upstream: model=deepseek-v4-pro effort=high thinking=on msgs=12  ← 转换后参数
+↑ done in=41067 out=171 hit=40576 miss=491                  ← 流完成 + 用量
+📷 routing to vision upstream: https://api.minimaxi.com     ← 视觉路由
+cache hit for hash=0xabcd1234                               ← 缓存命中
 ```
-
-- `←` 行：Codex 原始请求（模型 + 思考等级）
-- `→` 行：转换后发给 DeepSeek 的参数（`msgs`=消息数）
-
-流结束时打印 token 统计：
-
-```
-↑ done in=41067 out=171 hit=40576 miss=491
-```
-
-## 思考等级映射
-
-| Codex `reasoning.effort` | 传递给 DeepSeek |
-|--------------------------|----------------|
-| `none` | 等效 `low`，关闭思考 |
-| `minimal` | 等效 `low`，关闭思考 |
-| `low` | `thinking: {"type":"disabled"}` |
-| `medium` | `reasoning_effort: "high"` + `thinking: enabled` |
-| `high` | `reasoning_effort: "high"` + `thinking: enabled` |
-| `xhigh` | `reasoning_effort: "max"` + `thinking: enabled` |
-| 无此字段（工具调用等） | `reasoning_effort: "high"` + `thinking: enabled` |
 
 ## 故障排查
 
-### 服务无法启动
-```bash
-lsof -i :4446           # 检查端口占用
-which deecodex          # 检查二进制
-./deecodex.sh logs      # 查看启动日志
-```
-
-### Codex "connection refused"
-- deecodex 没启动 → `./deecodex.sh start && ./deecodex.sh health`
-- `base_url` 末尾多 `/` → 去掉末尾 `/`
-- 端口不匹配 → 检查 `DEECODEX_PORT` 和 CC Switch 配置
-
-### Codex "model not found"
-- DeepSeek 模型名更新 → 用 `curl` 查最新模型名
-- 映射表缺少大小写变体 → 大小写都加
-- Codex 用了映射表外的模型名 → 看日志 `←` 行，补一条映射
-
-### 图片发送后一直转圈
-- 没配视觉上游 → 图片自动丢弃走 DeepSeek
-- 已配视觉上游 → 检查 API Key / 端点地址
-- 日志看是否有 `📷 routing to vision upstream`
-
-### 413 Payload Too Large
-```env
-CODEX_RELAY_MAX_BODY_MB=200
-```
+| 问题 | 原因 | 解决 |
+|---|---|---|
+| connection refused | deecodex 未启动 | `./deecodex.sh start` |
+| model not found | 映射表缺失/DeepSeek 模型名变更 | 更新 `DEECODEX_MODEL_MAP` |
+| image_url 错误 | 历史消息含图片 | 已自动剥离，仍出现则重启 |
+| reasoning_content 错误 | 思维链恢复失败 | 自动重试，仍出现则减少上下文 |
+| 413 请求体过大 | 图片太大 | `CODEX_RELAY_MAX_BODY_MB=200` |
 
 ## 与上游的关系
 
-基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度重写，改动量超过 60%：
+基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度重写，改动量超过 80%：
 
-1. **模型名映射** — `--model-map` 参数 + 环境变量
-2. **思考模式适配** — Codex `reasoning.effort` → DeepSeek 参数，六级映射
-3. **图片自动丢弃 / 视觉路由** — MiniMax VLM 可选路由
-4. **请求体上限** — 2MB → 100MB
-5. **工具转发** — MCP 展开 + 工具去重 + Web Search
-6. **请求缓存** — LRU 128 条目哈希缓存
-7. **通用重试** — 指数退避最多 3 次
-8. **Security** — `--api-key` 从 CLI 移除
-9. **日志增强** — 原始/转换参数对比打印
-10. **`content null` 修复**、**Health 端点**、**中文思考提示**
+1. **模型名映射** — `--model-map` 参数
+2. **思考六级映射** — none/minimal/low/medium/high/xhigh
+3. **工具全转发** — MCP namespace 展开 + 自定义工具包装 + Web Search + 去重
+4. **会话与思维链恢复** — call_id / turn / history 三级
+5. **请求缓存** — LRU 128 条目
+6. **通用重试** — 429/502/503 + reasoning_content 丢失
+7. **视觉路由** — MiniMax VLM / Anthropic 双格式
+8. **中文思考注入**
+9. **Health 端点** + 请求计数
+10. **安全加固** — `--api-key` 从 CLI 移除
+11. **协议兼容** — `tool_choice`/`top_p`/`store`/`metadata`/`truncation` 透传
+12. **增量工具流式输出** — tool call delta 按 index 分组重建
+13. **`content null` 修复** — 空内容用 `""` 代替 `null`
+14. **`input_image` → `image_url`** 格式转换 + base64 内嵌提取
+15. **`function_call` 分组合并** — 连续调用合并为单条 assistant
+16. **`developer` → `system`** 角色映射
