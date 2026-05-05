@@ -279,23 +279,6 @@ cache hit for hash=0xabcd1234                               ← 缓存命中
 | reasoning_content 错误 | 思维链恢复失败 | 自动重试，仍出现则减少上下文 |
 | 413 请求体过大 | 图片太大 | `CODEX_RELAY_MAX_BODY_MB=200` |
 
-## 与上游的关系
+## License
 
-基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度重写，改动量超过 80%：
-
-1. **模型名映射** — `--model-map` 参数
-2. **思考六级映射** — none/minimal/low/medium/high/xhigh
-3. **工具全转发** — MCP namespace 展开 + 自定义工具包装 + Web Search + 去重
-4. **会话与思维链恢复** — call_id / turn / history 三级
-5. **请求缓存** — LRU 128 条目
-6. **通用重试** — 429/502/503 + reasoning_content 丢失
-7. **视觉路由** — MiniMax VLM / Anthropic 双格式
-8. **中文思考注入**
-9. **Health 端点** + 请求计数
-10. **安全加固** — `--api-key` 从 CLI 移除
-11. **协议兼容** — `tool_choice`/`top_p`/`store`/`metadata`/`truncation` 透传
-12. **增量工具流式输出** — tool call delta 按 index 分组重建
-13. **`content null` 修复** — 空内容用 `""` 代替 `null`
-14. **`input_image` → `image_url`** 格式转换 + base64 内嵌提取
-15. **`function_call` 分组合并** — 连续调用合并为单条 assistant
-16. **`developer` → `system`** 角色映射
+MIT License. 初始代码基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT)，后续功能已全面重写（Rust 源码 2,920 行，相对上游增加 58%，每文件 40-70% 重写）。

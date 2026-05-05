@@ -5,7 +5,7 @@ edition = "2021"
 description = "DeepSeek API → Codex CLI 兼容代理"
 license = "MIT"
 repository = "https://github.com/liguan-89/deecodex"
-keywords = ["codex", "openai", "llm", "proxy", "relay"]
+keywords = ["codex", "deepseek", "llm", "proxy", "responses-api"]
 categories = ["command-line-utilities", "network-programming"]
 
 [lib]
