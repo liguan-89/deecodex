@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 use types::*;
 
 #[derive(Parser, Debug)]
-#[command(name = "codex-relay", about = "Responses API <-> Chat Completions bridge")]
+#[command(name = "deecodex", about = "Responses API <-> Chat Completions bridge")]
 struct Args {
     #[arg(long, env = "CODEX_RELAY_PORT", default_value = "4444")]
     port: u16,
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "codex_relay=info".into()),
+                .unwrap_or_else(|_| "deecodex=info".into()),
         )
         .init();
 

@@ -4,9 +4,9 @@
 //! when talking to DeepSeek V4 Pro (and similar thinking models) through the
 //! relay.
 
-use codex_relay::session::SessionStore;
-use codex_relay::translate::to_chat_request;
-use codex_relay::types::*;
+use deecodex::session::SessionStore;
+use deecodex::translate::to_chat_request;
+use deecodex::types::*;
 use serde_json::json;
 use std::collections::HashMap;
 

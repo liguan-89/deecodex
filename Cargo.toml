@@ -1,19 +1,19 @@
 [package]
-name = "codex-relay"
-version = "0.1.4"
+name = "deecodex"
+version = "0.3.0"
 edition = "2021"
-description = "Responses API ↔ Chat Completions translation bridge for Codex CLI"
+description = "DeepSeek API → Codex CLI 兼容代理"
 license = "MIT"
-repository = "https://github.com/MetaFARS/codex-relay"
+repository = "https://github.com/liguan-89/deecodex"
 keywords = ["codex", "openai", "llm", "proxy", "relay"]
 categories = ["command-line-utilities", "network-programming"]
 
 [lib]
-name = "codex_relay"
+name = "deecodex"
 path = "src/lib.rs"
 
 [[bin]]
-name = "codex-relay"
+name = "deecodex"
 path = "src/main.rs"
 
 [dependencies]
