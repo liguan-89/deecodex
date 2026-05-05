@@ -90,10 +90,18 @@ cmd_start() {
     rotate_logs
     local port="${DEECODEX_PORT:-4446}"
     echo "启动 deecodex (端口: $port, 二进制: $(command -v "$BIN"))..."
+    local vision_upstream="${DEECODEX_VISION_UPSTREAM:-${CODEX_RELAY_VISION_UPSTREAM:-}}"
+    local vision_api_key="${DEECODEX_VISION_API_KEY:-${CODEX_RELAY_VISION_API_KEY:-}}"
+    local vision_model="${DEECODEX_VISION_MODEL:-${CODEX_RELAY_VISION_MODEL:-MiniMax-M1}}"
+    local vision_endpoint="${DEECODEX_VISION_ENDPOINT:-${CODEX_RELAY_VISION_ENDPOINT:-v1/coding_plan/vlm}}"
     nohup "$BIN" \
         --port "$port" \
         --upstream "${DEECODEX_UPSTREAM}" \
         --model-map "${DEECODEX_MODEL_MAP:-}" \
+        --vision-upstream "${vision_upstream}" \
+        --vision-api-key "${vision_api_key}" \
+        --vision-model "${vision_model}" \
+        --vision-endpoint "${vision_endpoint}" \
         >> "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"

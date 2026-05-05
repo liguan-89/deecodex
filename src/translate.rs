@@ -134,17 +134,43 @@ pub fn to_chat_request(
                             };
                             if has_img {
                                 has_images = true;
-                                // Reconstruct multimodal content with images
                                 if let Some(raw_content) = item.get("content") {
                                     if let Some(parts) = raw_content.as_array() {
                                         let multimodal: Vec<Value> = parts.iter().map(|p| {
                                             let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                             match typ {
                                                 "image_url" => p.clone(),
-                                                _ => json!({"type": "text", "text": p.get("text").and_then(|t| t.as_str()).unwrap_or("")}),
+                                                "input_image" => {
+                                                    let url = p.get("image_url").and_then(|v| v.as_str()).unwrap_or("");
+                                                    json!({"type": "image_url", "image_url": {"url": url}})
+                                                }
+                                                _ => {
+                                                    let text = p.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                                    if text.contains("data:image/") {
+                                                        json!({"type": "image_url", "image_url": {"url": text}})
+                                                    } else {
+                                                        json!({"type": "text", "text": text})
+                                                    }
+                                                }
                                             }
                                         }).collect();
                                         msg.content = Some(Value::Array(multimodal));
+                                    } else if let Some(s) = raw_content.as_str() {
+                                        if let Some(pos) = s.find("data:image/") {
+                                            // Split text before data URL from the image URL itself
+                                            let text_before = s[..pos].trim().to_string();
+                                            let image_url = s[pos..].trim().to_string();
+                                            let mut parts: Vec<Value> = Vec::new();
+                                            if !text_before.is_empty() {
+                                                parts.push(json!({"type": "text", "text": text_before}));
+                                            }
+                                            if !image_url.is_empty() {
+                                                parts.push(json!({"type": "image_url", "image_url": {"url": image_url}}));
+                                            }
+                                            if !parts.is_empty() {
+                                                msg.content = Some(Value::Array(parts));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -212,6 +238,9 @@ pub fn to_chat_request(
             } else {
                 None
             },
+            top_p: req.top_p,
+            tool_choice: req.tool_choice.clone(),
+            parallel_tool_calls: req.parallel_tool_calls,
         },
         has_images,
     }
@@ -390,12 +419,22 @@ pub fn from_chat_response(
 fn value_to_text_with_flag(v: Option<&Value>) -> (String, bool) {
     match v {
         None => (String::new(), false),
-        Some(Value::String(s)) => (s.clone(), false),
+        Some(Value::String(s)) => {
+            let has_img = s.contains("data:image/");
+            (s.clone(), has_img)
+        }
         Some(Value::Array(parts)) => {
-            let has_img = parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+            let has_img = parts.iter().any(|p| {
+                let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                typ == "image_url" || typ == "input_image"
+                || p.get("text").and_then(|t| t.as_str()).map(|s| s.contains("data:image/")).unwrap_or(false)
+            });
             let text = parts
                 .iter()
-                .filter(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"))
+                .filter(|p| {
+                    let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    typ != "image_url" && typ != "input_image"
+                })
                 .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("");
@@ -406,6 +445,7 @@ fn value_to_text_with_flag(v: Option<&Value>) -> (String, bool) {
 }
 
 /// Collapse a Responses API content value to plain text, filtering images (for backwards compat).
+#[allow(dead_code)]
 fn value_to_text(v: Option<&Value>) -> String {
     value_to_text_with_flag(v).0
 }
@@ -432,6 +472,9 @@ mod tests {
             system: None,
             instructions: None,
             reasoning: None,
+            top_p: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 
@@ -497,6 +540,39 @@ mod tests {
             {"type": "input_text", "text": "world"}
         ])));
         assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_input_image_detected() {
+        let (text, has_img) = value_to_text_with_flag(Some(&json!([
+            {"type": "input_text", "text": "look at "},
+            {"type": "input_image", "image_url": "data:image/png;base64,abc123"},
+            {"type": "input_text", "text": " this"}
+        ])));
+        assert!(has_img);
+        assert_eq!(text, "look at  this");
+    }
+
+    #[test]
+    fn test_input_image_reconstructed() {
+        use std::collections::HashMap;
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "describe"},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+            ]})
+        ]));
+        let mut map: ModelMap = HashMap::new();
+        map.insert("test".into(), "deepseek".into());
+        let translated = to_chat_request(&req, vec![], &sessions, &map);
+        assert!(translated.has_images);
+        let content = translated.chat.messages[0].content.as_ref().unwrap();
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,abc");
     }
 
     #[test]

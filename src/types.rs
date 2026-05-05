@@ -24,6 +24,12 @@ pub struct ResponsesRequest {
     pub instructions: Option<String>,
     #[serde(default)]
     pub reasoning: Option<ReasoningConfig>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
+    #[serde(default)]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -94,6 +100,12 @@ pub struct ChatRequest {
     /// DeepSeek web_search activation via web_search_options (non-standard extension)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_search_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -117,19 +129,19 @@ pub struct ChatMessage {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
     #[serde(default)]
     pub usage: Option<ChatUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatChoice {
     pub message: ChatMessage,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -143,18 +155,20 @@ pub struct ChatUsage {
     #[serde(default)]
     pub prompt_cache_miss_tokens: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub prompt_tokens_details: Option<CachedTokenDetails>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenDetails {
     #[serde(default)]
     pub reasoning_tokens: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CachedTokenDetails {
     #[serde(default)]
+    #[allow(dead_code)]
     pub cached_tokens: Option<u32>,
 }
 

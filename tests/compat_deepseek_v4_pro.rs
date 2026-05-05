@@ -26,6 +26,9 @@ fn base_req(input: ResponsesInput) -> ResponsesRequest {
         system: None,
         instructions: None,
         reasoning: None,
+        top_p: None,
+        tool_choice: None,
+        parallel_tool_calls: None,
     }
 }
 

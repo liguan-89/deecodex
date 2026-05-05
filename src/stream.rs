@@ -204,7 +204,7 @@ pub fn translate_stream(
         info!("↑ done {}", usage_str);
 
         // Build usage for response.completed
-        let completion_usage = final_usage.map(|u| json!({
+        let completion_usage = final_usage.clone().map(|u| json!({
             "input_tokens": u.prompt_tokens,
             "output_tokens": u.completion_tokens,
             "total_tokens": u.total_tokens
