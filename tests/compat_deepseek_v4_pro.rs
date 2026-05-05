@@ -31,6 +31,21 @@ fn base_req(input: ResponsesInput) -> ResponsesRequest {
         store: None,
         metadata: None,
         truncation: None,
+        background: None,
+        conversation: None,
+        include: None,
+        include_obfuscation: None,
+        max_tool_calls: None,
+        parallel_tool_calls: None,
+        prompt: None,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
+        safety_identifier: None,
+        service_tier: None,
+        stream_options: None,
+        text: None,
+        top_logprobs: None,
+        user: None,
     }
 }
 
@@ -60,7 +75,11 @@ fn assistant_msg_with_tool_calls(content: &str, tool_calls: Vec<serde_json::Valu
 fn test_deepseek_v4_pro_reasoning_roundtrip_text_only() {
     let store = SessionStore::new();
     let assistant = assistant_msg("Let me analyze this");
-    store.store_turn_reasoning(&[], &assistant, "<think>analyzing the problem...</think>".into());
+    store.store_turn_reasoning(
+        &[],
+        &assistant,
+        "<think>analyzing the problem...</think>".into(),
+    );
 
     let req = base_req(ResponsesInput::Messages(vec![
         json!({"type": "message", "role": "user", "content": "Research task prompt"}),
@@ -72,7 +91,13 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_text_only() {
 
     assert_eq!(chat.chat.messages.len(), 3);
     assert_eq!(chat.chat.messages[1].role, "assistant");
-    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Let me analyze this"));
+    assert_eq!(
+        chat.chat.messages[1]
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str()),
+        Some("Let me analyze this")
+    );
     assert_eq!(
         chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>analyzing the problem...</think>"),
@@ -92,11 +117,7 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_with_tool_calls() {
             "function": {"name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}
         })],
     );
-    store.store_turn_reasoning(
-        &[],
-        &assistant,
-        "<think>need to read files</think>".into(),
-    );
+    store.store_turn_reasoning(&[], &assistant, "<think>need to read files</think>".into());
 
     let req = base_req(ResponsesInput::Messages(vec![
         json!({"type": "message", "role": "user", "content": "Prompt"}),
@@ -111,7 +132,13 @@ fn test_deepseek_v4_pro_reasoning_roundtrip_with_tool_calls() {
     assert_eq!(chat.chat.messages.len(), 5);
 
     assert_eq!(chat.chat.messages[1].role, "assistant");
-    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Let me check"));
+    assert_eq!(
+        chat.chat.messages[1]
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str()),
+        Some("Let me check")
+    );
     assert_eq!(
         chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>need to read files</think>"),
@@ -132,10 +159,18 @@ fn test_deepseek_v4_pro_multi_turn_reasoning() {
     let store = SessionStore::new();
 
     let assistant1 = assistant_msg("Step 1 analysis");
-    store.store_turn_reasoning(&[], &assistant1, "<think>first pass thinking</think>".into());
+    store.store_turn_reasoning(
+        &[],
+        &assistant1,
+        "<think>first pass thinking</think>".into(),
+    );
 
     let assistant2 = assistant_msg("Step 2 deeper look");
-    store.store_turn_reasoning(&[], &assistant2, "<think>second pass thinking</think>".into());
+    store.store_turn_reasoning(
+        &[],
+        &assistant2,
+        "<think>second pass thinking</think>".into(),
+    );
 
     let req = base_req(ResponsesInput::Messages(vec![
         json!({"type": "message", "role": "user", "content": "Start research"}),
@@ -150,14 +185,26 @@ fn test_deepseek_v4_pro_multi_turn_reasoning() {
     assert_eq!(chat.chat.messages.len(), 5);
 
     assert_eq!(chat.chat.messages[1].role, "assistant");
-    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Step 1 analysis"));
+    assert_eq!(
+        chat.chat.messages[1]
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str()),
+        Some("Step 1 analysis")
+    );
     assert_eq!(
         chat.chat.messages[1].reasoning_content.as_deref(),
         Some("<think>first pass thinking</think>"),
     );
 
     assert_eq!(chat.chat.messages[3].role, "assistant");
-    assert_eq!(chat.chat.messages[3].content.as_ref().and_then(|v| v.as_str()), Some("Step 2 deeper look"));
+    assert_eq!(
+        chat.chat.messages[3]
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str()),
+        Some("Step 2 deeper look")
+    );
     assert_eq!(
         chat.chat.messages[3].reasoning_content.as_deref(),
         Some("<think>second pass thinking</think>"),
@@ -178,7 +225,13 @@ fn test_non_thinking_model_no_reasoning_content() {
 
     assert_eq!(chat.chat.messages.len(), 3);
     assert_eq!(chat.chat.messages[1].role, "assistant");
-    assert_eq!(chat.chat.messages[1].content.as_ref().and_then(|v| v.as_str()), Some("Hi there!"));
+    assert_eq!(
+        chat.chat.messages[1]
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str()),
+        Some("Hi there!")
+    );
     assert!(chat.chat.messages[1].reasoning_content.is_none());
 }
 

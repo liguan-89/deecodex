@@ -5,9 +5,10 @@ use std::collections::HashMap;
 // ── Responses API (inbound from Codex CLI) ──────────────────────────────────
 
 #[allow(dead_code)] // reserved fields for API compat
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ResponsesRequest {
     pub model: String,
+    #[serde(default)]
     pub input: ResponsesInput,
     #[serde(default)]
     pub previous_response_id: Option<String>,
@@ -35,6 +36,36 @@ pub struct ResponsesRequest {
     pub metadata: Option<HashMap<String, String>>,
     #[serde(default)]
     pub truncation: Option<String>,
+    #[serde(default)]
+    pub background: Option<bool>,
+    #[serde(default)]
+    pub conversation: Option<Value>,
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    #[serde(default)]
+    pub include_obfuscation: Option<bool>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(default)]
+    pub prompt: Option<Value>,
+    #[serde(default)]
+    pub prompt_cache_key: Option<String>,
+    #[serde(default)]
+    pub prompt_cache_retention: Option<String>,
+    #[serde(default)]
+    pub safety_identifier: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub stream_options: Option<Value>,
+    #[serde(default)]
+    pub text: Option<Value>,
+    #[serde(default)]
+    pub top_logprobs: Option<u32>,
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 #[allow(dead_code)] // reserved fields for API compat
@@ -46,11 +77,17 @@ pub struct ReasoningConfig {
     pub summary: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum ResponsesInput {
     Text(String),
     Messages(Vec<Value>),
+}
+
+impl Default for ResponsesInput {
+    fn default() -> Self {
+        Self::Messages(Vec::new())
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -61,7 +98,7 @@ pub struct ContentPart {
     pub text: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponsesResponse {
     pub id: String,
     pub object: &'static str,
@@ -70,18 +107,29 @@ pub struct ResponsesResponse {
     pub usage: ResponsesUsage,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ResponsesOutputItem {
     #[serde(rename = "type")]
     pub kind: String,
-    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub content: Vec<ContentPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct ResponsesUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -109,6 +157,12 @@ pub struct ChatRequest {
     pub thinking: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     /// Request token usage stats in the final streaming chunk (DeepSeek)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
@@ -249,9 +303,18 @@ pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
         "none" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
-        "medium" => (Some("high".into()), Some(serde_json::json!({"type": "enabled"}))),
-        "high" => (Some("high".into()), Some(serde_json::json!({"type": "enabled"}))),
-        "xhigh" => (Some("max".into()), Some(serde_json::json!({"type": "enabled"}))),
+        "medium" => (
+            Some("high".into()),
+            Some(serde_json::json!({"type": "enabled"})),
+        ),
+        "high" => (
+            Some("high".into()),
+            Some(serde_json::json!({"type": "enabled"})),
+        ),
+        "xhigh" => (
+            Some("max".into()),
+            Some(serde_json::json!({"type": "enabled"})),
+        ),
         _ => (None, Some(serde_json::json!({"type": "disabled"}))),
     }
 }
@@ -264,14 +327,20 @@ pub fn format_usage(usage: Option<&ChatUsage>) -> String {
             let mut s = format!("in={} out={}", u.prompt_tokens, u.completion_tokens);
             if let Some(ref det) = u.completion_tokens_details {
                 if let Some(rt) = det.reasoning_tokens {
-                    if rt > 0 { s.push_str(&format!(" reason={rt}")); }
+                    if rt > 0 {
+                        s.push_str(&format!(" reason={rt}"));
+                    }
                 }
             }
             if let Some(hit) = u.prompt_cache_hit_tokens {
-                if hit > 0 { s.push_str(&format!(" hit={hit}")); }
+                if hit > 0 {
+                    s.push_str(&format!(" hit={hit}"));
+                }
             }
             if let Some(miss) = u.prompt_cache_miss_tokens {
-                if miss > 0 { s.push_str(&format!(" miss={miss}")); }
+                if miss > 0 {
+                    s.push_str(&format!(" miss={miss}"));
+                }
             }
             s
         }

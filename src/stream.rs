@@ -11,9 +11,9 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::{
-    cache::{CachedResponse, CachedToolCall, RequestCache, usage_to_cached},
+    cache::{usage_to_cached, CachedResponse, CachedToolCall, RequestCache},
     session::SessionStore,
-    types::{ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap, format_usage},
+    types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
 };
 
 pub struct StreamArgs {
@@ -25,6 +25,10 @@ pub struct StreamArgs {
     pub sessions: SessionStore,
     pub prior_messages: Vec<ChatMessage>,
     pub request_messages: Vec<ChatMessage>,
+    pub request_input_items: Vec<Value>,
+    pub store_response: bool,
+    pub conversation_id: Option<String>,
+    pub response_extra: Value,
     pub model: String,
     #[allow(dead_code)]
     pub model_map: ModelMap,
@@ -39,6 +43,11 @@ pub struct CachedArgs {
     pub response_id: String,
     pub model: String,
     pub cached: CachedResponse,
+    pub sessions: SessionStore,
+    pub request_input_items: Vec<Value>,
+    pub store_response: bool,
+    pub conversation_id: Option<String>,
+    pub response_extra: Value,
 }
 
 struct ToolCallAccum {
@@ -57,8 +66,12 @@ pub fn translate_stream(
         chat_req,
         response_id,
         sessions,
-        prior_messages,
+        prior_messages: _prior_messages,
         request_messages,
+        request_input_items,
+        store_response,
+        conversation_id,
+        response_extra,
         model,
         model_map: _model_map,
         cache,
@@ -74,6 +87,18 @@ pub fn translate_stream(
                 "type": "response.created",
                 "response": { "id": &response_id, "status": "in_progress", "model": &model }
             }).to_string()));
+        if store_response {
+            let mut created_response = json!({
+                "id": &response_id,
+                "object": "response",
+                "status": "in_progress",
+                "model": &model,
+                "output": []
+            });
+            merge_response_extra(&mut created_response, &response_extra);
+            sessions.save_response(response_id.clone(), created_response);
+            sessions.save_input_items(response_id.clone(), request_input_items.clone());
+        }
 
         // Build and send the upstream request.
         // If DeepSeek rejects with "reasoning_content must be passed back"
@@ -82,14 +107,14 @@ pub fn translate_stream(
         let max_retries = 3;
         let mut attempt = 0;
         let mut delay_ms: u64 = 500;
+        let mut disable_thinking_retry = false;
         let upstream = loop {
             let mut builder = client.post(&url).header("Content-Type", "application/json");
             if !api_key.is_empty() {
                 builder = builder.bearer_auth(api_key.as_str());
             }
 
-            let req_to_send = if attempt > 0 && attempt == 1 {
-                // First retry: disable thinking if reasoning_content error
+            let req_to_send = if disable_thinking_retry {
                 let mut fallback_req = chat_req.clone();
                 fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
                 fallback_req.reasoning_effort = None;
@@ -105,11 +130,16 @@ pub fn translate_stream(
                     let status_code = status.as_u16();
                     let body = r.text().await.unwrap_or_default();
 
+                    let reasoning_content_error =
+                        status_code == 400 && body.contains("reasoning_content");
                     let retryable = matches!(status_code, 401 | 429 | 502 | 503)
-                        || (status_code == 400 && body.contains("reasoning_content") && attempt == 0);
+                        || (reasoning_content_error && !disable_thinking_retry);
 
                     if retryable && attempt < max_retries {
                         attempt += 1;
+                        if reasoning_content_error {
+                            disable_thinking_retry = true;
+                        }
                         warn!("upstream {status_code} (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms");
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                         delay_ms *= 2;
@@ -117,6 +147,18 @@ pub fn translate_stream(
                     }
 
                     error!("upstream {}: {}", status_code, body);
+                    if store_response {
+                        let mut failed = json!({
+                            "id": &response_id,
+                            "object": "response",
+                            "status": "failed",
+                            "model": &model,
+                            "output": [],
+                            "error": {"code": status_code.to_string(), "message": body.clone()}
+                        });
+                        merge_response_extra(&mut failed, &response_extra);
+                        sessions.save_response(response_id.clone(), failed);
+                    }
                     yield Ok(Event::default().event("response.failed").data(
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": body}}}).to_string()
                     ));
@@ -131,6 +173,18 @@ pub fn translate_stream(
                         continue;
                     }
                     error!("upstream request failed: {e}");
+                    if store_response {
+                        let mut failed = json!({
+                            "id": &response_id,
+                            "object": "response",
+                            "status": "failed",
+                            "model": &model,
+                            "output": [],
+                            "error": {"code": "connection_error", "message": e.to_string()}
+                        });
+                        merge_response_extra(&mut failed, &response_extra);
+                        sessions.save_response(response_id.clone(), failed);
+                    }
                     yield Ok(Event::default().event("response.failed").data(
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e.to_string()}}}).to_string()
                     ));
@@ -147,18 +201,24 @@ pub fn translate_stream(
         let mut final_usage: Option<ChatUsage> = None;
         let mut source = upstream.bytes_stream().eventsource();
         let mut stream_completed = false;
+        let mut stream_error: Option<String> = None;
 
         while let Some(ev) = source.next().await {
             match ev {
                 Err(e) => {
                     warn!("SSE parse error: {e}");
+                    stream_error = Some(e.to_string());
                     break;
                 }
                 Ok(ev) if ev.data.trim() == "[DONE]" => { stream_completed = true; break; }
                 Ok(ev) if ev.data.is_empty() => continue,
                 Ok(ev) => {
                     match serde_json::from_str::<ChatStreamChunk>(&ev.data) {
-                        Err(e) => warn!("chunk parse: {} — data: {}", e, &ev.data[..ev.data.len().min(120)]),
+                        Err(e) => {
+                            warn!("chunk parse: {} — data prefix: {}", e, &ev.data[..ev.data.len().min(120)]);
+                            stream_error = Some(format!("invalid upstream stream chunk: {e}"));
+                            break;
+                        }
                         Ok(chunk) => {
                             // Capture usage from final chunk (enabled via stream_options.include_usage)
                             if chunk.usage.is_some() {
@@ -240,6 +300,27 @@ pub fn translate_stream(
             }
         }
 
+        if !stream_completed {
+            let message = stream_error.unwrap_or_else(|| "upstream stream ended before [DONE]".into());
+            error!("upstream stream incomplete: {message}");
+            if store_response {
+                let mut failed = json!({
+                    "id": &response_id,
+                    "object": "response",
+                    "status": "failed",
+                    "model": &model,
+                    "output": [],
+                    "error": {"code": "stream_incomplete", "message": message.clone()}
+                });
+                merge_response_extra(&mut failed, &response_extra);
+                sessions.save_response(response_id.clone(), failed);
+            }
+            yield Ok(Event::default().event("response.failed").data(
+                json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}).to_string()
+            ));
+            return;
+        }
+
         // Log streaming token usage
         let usage_str = format_usage(final_usage.as_ref());
         info!("↑ done {}", usage_str);
@@ -253,6 +334,22 @@ pub fn translate_stream(
             "output_tokens": u.completion_tokens,
             "total_tokens": u.total_tokens
         }));
+
+        // Close reasoning item
+        if emitted_reasoning_item {
+            yield Ok(Event::default()
+                .event("response.output_item.done")
+                .data(json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {
+                        "type": "reasoning",
+                        "id": &reasoning_item_id,
+                        "status": "completed",
+                        "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
+                    }
+                }).to_string()));
+        }
 
         // Close message item
         if emitted_message_item {
@@ -364,9 +461,31 @@ pub fn translate_stream(
             sessions.store_turn_reasoning(&request_messages, &assistant_msg, accumulated_reasoning.clone());
         }
 
-        let mut messages = prior_messages;
+        let mut messages = request_messages.clone();
         messages.push(assistant_msg);
-        sessions.save_with_id(response_id.clone(), messages);
+        if store_response {
+            sessions.save_with_id(response_id.clone(), messages);
+        }
+        if let Some(id) = conversation_id.clone() {
+            let mut conversation_messages = request_messages;
+            conversation_messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: if accumulated_text.is_empty() { None } else { Some(serde_json::Value::String(accumulated_text.clone())) },
+                reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls.values().map(|tc| json!({
+                        "id": &tc.id,
+                        "type": "function",
+                        "function": { "name": &tc.name, "arguments": &tc.arguments }
+                    })).collect())
+                },
+                tool_call_id: None,
+                name: None,
+            });
+            sessions.save_conversation(id, conversation_messages);
+        }
 
         // Build output for response.completed
         let mut output_items: Vec<Value> = Vec::new();
@@ -388,6 +507,11 @@ pub fn translate_stream(
             }));
         }
         output_items.extend(fc_items);
+        if let Some(id) = conversation_id {
+            let mut conversation_items = sessions.get_conversation_items(&id);
+            conversation_items.extend(output_items.iter().cloned());
+            sessions.save_conversation_items(id, conversation_items);
+        }
 
         // Include usage in response.completed
         let mut response_obj = json!({
@@ -399,6 +523,11 @@ pub fn translate_stream(
         if let Some(ref u) = completion_usage {
             response_obj["usage"] = u.clone();
         }
+        response_obj["object"] = json!("response");
+        merge_response_extra(&mut response_obj, &response_extra);
+        if store_response {
+            sessions.save_response(response_id.clone(), response_obj.clone());
+        }
 
         yield Ok(Event::default()
             .event("response.completed")
@@ -408,7 +537,7 @@ pub fn translate_stream(
             }).to_string()));
 
         // Store in request cache (only if stream completed normally)
-        if stream_completed {
+        if stream_completed && store_response {
             if let (Some(c), Some(key)) = (cache, cache_key) {
             let cached = CachedResponse {
                 text: accumulated_text.clone(),
@@ -436,7 +565,16 @@ pub fn translate_stream(
 pub fn translate_cached(
     args: CachedArgs,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let CachedArgs { response_id, model, cached } = args;
+    let CachedArgs {
+        response_id,
+        model,
+        cached,
+        sessions,
+        request_input_items,
+        store_response,
+        conversation_id: _conversation_id,
+        response_extra,
+    } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
 
@@ -447,6 +585,9 @@ pub fn translate_cached(
                 "type": "response.created",
                 "response": { "id": &response_id, "status": "in_progress", "model": &model }
             }).to_string()));
+        if store_response {
+            sessions.save_input_items(response_id.clone(), request_input_items);
+        }
 
         let mut output_index: usize = 0;
 
@@ -526,6 +667,7 @@ pub fn translate_cached(
         }
 
         // Tool call items
+        let mut cached_fc_items: Vec<Value> = Vec::new();
         for tc in &cached.tool_calls {
             let fc_item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
 
@@ -556,6 +698,14 @@ pub fn translate_cached(
                     "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": &tc.name, "arguments": &tc.arguments, "status": "completed" }
                 }).to_string()));
 
+            cached_fc_items.push(json!({
+                "type": "function_call",
+                "id": &fc_item_id,
+                "call_id": &tc.id,
+                "name": &tc.name,
+                "arguments": &tc.arguments,
+                "status": "completed"
+            }));
             output_index += 1;
         }
 
@@ -573,12 +723,7 @@ pub fn translate_cached(
                 "content": [{"type": "output_text", "text": &cached.text}]
             }));
         }
-        for tc in &cached.tool_calls {
-            output_items.push(json!({
-                "type": "function_call", "id": format!("fc_{}", uuid::Uuid::new_v4().simple()),
-                "call_id": &tc.id, "name": &tc.name, "arguments": &tc.arguments, "status": "completed"
-            }));
-        }
+        output_items.extend(cached_fc_items);
 
         let mut response_obj = json!({
             "id": &response_id, "status": "completed", "model": &model, "output": output_items
@@ -589,6 +734,11 @@ pub fn translate_cached(
                 "output_tokens": u.completion_tokens,
                 "total_tokens": u.total_tokens
             });
+        }
+        response_obj["object"] = json!("response");
+        merge_response_extra(&mut response_obj, &response_extra);
+        if store_response {
+            sessions.save_response(response_id.clone(), response_obj.clone());
         }
 
         yield Ok(Event::default()
@@ -603,4 +753,41 @@ pub fn translate_cached(
     };
 
     Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
+fn merge_response_extra(response: &mut Value, extra: &Value) {
+    let Some(extra_obj) = extra.as_object() else {
+        return;
+    };
+    for (key, value) in extra_obj {
+        if response.get(key).is_none() || response.get(key) == Some(&Value::Null) {
+            response[key] = value.clone();
+        }
+    }
+    if let Some(max) = extra
+        .get("max_tool_calls")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+    {
+        limit_function_call_outputs(response, max);
+    }
+}
+
+fn limit_function_call_outputs(response: &mut Value, max_tool_calls: usize) {
+    let Some(output) = response.get_mut("output").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut seen = 0usize;
+    output.retain(|item| {
+        if item.get("type").and_then(Value::as_str) == Some("function_call") {
+            seen += 1;
+            seen <= max_tool_calls
+        } else {
+            true
+        }
+    });
+    if seen > max_tool_calls {
+        response["status"] = json!("incomplete");
+        response["incomplete_details"] = json!({"reason": "max_tool_calls"});
+    }
 }

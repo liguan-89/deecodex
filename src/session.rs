@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use serde_json::Value;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -26,6 +27,10 @@ const MAX_TURN_REASONING: usize = 256;
 #[derive(Clone)]
 pub struct SessionStore {
     inner: Arc<DashMap<String, Vec<ChatMessage>>>,
+    responses: Arc<DashMap<String, Value>>,
+    input_items: Arc<DashMap<String, Vec<Value>>>,
+    conversations: Arc<DashMap<String, Vec<ChatMessage>>>,
+    conversation_items: Arc<DashMap<String, Vec<Value>>>,
     reasoning: Arc<DashMap<String, String>>,
     /// fingerprint → reasoning_content for turn-level recovery
     turn_reasoning: Arc<DashMap<u64, String>>,
@@ -35,6 +40,10 @@ impl SessionStore {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            responses: Arc::new(DashMap::new()),
+            input_items: Arc::new(DashMap::new()),
+            conversations: Arc::new(DashMap::new()),
+            conversation_items: Arc::new(DashMap::new()),
             reasoning: Arc::new(DashMap::new()),
             turn_reasoning: Arc::new(DashMap::new()),
         }
@@ -59,20 +68,31 @@ impl SessionStore {
     /// Store turn-level reasoning. Uses a combined fingerprint of:
     /// - assistant text content (if any)
     /// - tool call IDs (if any)
+    ///
     /// This handles both text-only and tool-call-only assistant messages.
-    pub fn store_turn_reasoning(&self, _prior: &[ChatMessage], assistant: &ChatMessage, reasoning: String) {
+    pub fn store_turn_reasoning(
+        &self,
+        _prior: &[ChatMessage],
+        assistant: &ChatMessage,
+        reasoning: String,
+    ) {
         if !reasoning.is_empty() {
             if self.turn_reasoning.len() >= MAX_TURN_REASONING {
-                if let Some(key) = self.turn_reasoning.iter().next().map(|e| e.key().clone()) {
+                if let Some(key) = self.turn_reasoning.iter().next().map(|e| *e.key()) {
                     self.turn_reasoning.remove(&key);
                 }
             }
             let combined_key = Self::turn_key(assistant);
             self.turn_reasoning.insert(combined_key, reasoning.clone());
             // Also store under content-only key for text-only assistant lookup
-            let content = assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("");
+            let content = assistant
+                .content
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !content.is_empty() {
-                self.turn_reasoning.insert(Self::content_key(content), reasoning.clone());
+                self.turn_reasoning
+                    .insert(Self::content_key(content), reasoning.clone());
             }
             // Also store under each individual tool call_id for direct lookup
             if let Some(tcs) = &assistant.tool_calls {
@@ -89,14 +109,22 @@ impl SessionStore {
 
     /// Look up reasoning_content for an assistant turn.
     /// Uses a combined key of text content + tool call IDs.
-    pub fn get_turn_reasoning(&self, _prior: &[ChatMessage], assistant: &ChatMessage) -> Option<String> {
+    pub fn get_turn_reasoning(
+        &self,
+        _prior: &[ChatMessage],
+        assistant: &ChatMessage,
+    ) -> Option<String> {
         // Try the combined key first (text + tool call IDs)
         let key = Self::turn_key(assistant);
         if let Some(v) = self.turn_reasoning.get(&key) {
             return Some(v.clone());
         }
         // Fallback: try content-only key (for text-only assistant messages)
-        let content = assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("");
+        let content = assistant
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !content.is_empty() {
             let content_key = Self::content_key(content);
             if let Some(v) = self.turn_reasoning.get(&content_key) {
@@ -109,7 +137,12 @@ impl SessionStore {
     /// Combined fingerprint: text content + sorted tool call IDs.
     fn turn_key(assistant: &ChatMessage) -> u64 {
         let mut hasher = DefaultHasher::new();
-        assistant.content.as_ref().and_then(|v| v.as_str()).unwrap_or("").hash(&mut hasher);
+        assistant
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .hash(&mut hasher);
         if let Some(tcs) = &assistant.tool_calls {
             for tc in tcs {
                 if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
@@ -149,7 +182,9 @@ impl SessionStore {
                     .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()))
                     .collect();
                 if msg_ids.len() == tool_call_ids.len()
-                    && msg_ids.iter().all(|id| tool_call_ids.iter().any(|tid| tid == id))
+                    && msg_ids
+                        .iter()
+                        .all(|id| tool_call_ids.iter().any(|tid| tid == id))
                 {
                     return msg.reasoning_content.clone();
                 }
@@ -173,15 +208,110 @@ impl SessionStore {
         if self.inner.len() >= MAX_SESSIONS {
             if let Some(key) = self.inner.iter().next().map(|e| e.key().clone()) {
                 self.inner.remove(&key);
+                self.responses.remove(&key);
+                self.input_items.remove(&key);
             }
         }
         self.inner.insert(id, messages);
     }
 
-    pub fn save(&self, messages: Vec<ChatMessage>) -> String {
-        let id = self.new_id();
-        self.inner.insert(id.clone(), messages);
-        id
+    pub fn save_response(&self, id: String, response: Value) {
+        if self.responses.len() >= MAX_SESSIONS {
+            if let Some(key) = self.responses.iter().next().map(|e| e.key().clone()) {
+                self.responses.remove(&key);
+                self.inner.remove(&key);
+                self.input_items.remove(&key);
+            }
+        }
+        self.responses.insert(id, response);
+    }
+
+    pub fn get_response(&self, response_id: &str) -> Option<Value> {
+        self.responses.get(response_id).map(|v| v.clone())
+    }
+
+    pub fn response_status(&self, response_id: &str) -> Option<String> {
+        self.responses
+            .get(response_id)
+            .and_then(|v| v.get("status").and_then(Value::as_str).map(str::to_string))
+    }
+
+    pub fn delete_response(&self, response_id: &str) -> bool {
+        let removed = self.responses.remove(response_id).is_some();
+        self.inner.remove(response_id);
+        self.input_items.remove(response_id);
+        removed
+    }
+
+    pub fn save_input_items(&self, response_id: String, items: Vec<Value>) {
+        if self.input_items.len() >= MAX_SESSIONS {
+            if let Some(key) = self.input_items.iter().next().map(|e| e.key().clone()) {
+                self.input_items.remove(&key);
+                self.inner.remove(&key);
+                self.responses.remove(&key);
+            }
+        }
+        self.input_items.insert(response_id, items);
+    }
+
+    pub fn get_input_items(&self, response_id: &str) -> Option<Vec<Value>> {
+        self.input_items.get(response_id).map(|v| v.clone())
+    }
+
+    pub fn save_conversation(&self, conversation_id: String, messages: Vec<ChatMessage>) {
+        if self.conversations.len() >= MAX_SESSIONS {
+            if let Some(key) = self.conversations.iter().next().map(|e| e.key().clone()) {
+                self.conversations.remove(&key);
+                self.conversation_items.remove(&key);
+            }
+        }
+        self.conversations.insert(conversation_id, messages);
+    }
+
+    pub fn get_conversation(&self, conversation_id: &str) -> Vec<ChatMessage> {
+        self.conversations
+            .get(conversation_id)
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn save_conversation_items(&self, conversation_id: String, items: Vec<Value>) {
+        if self.conversation_items.len() >= MAX_SESSIONS {
+            if let Some(key) = self
+                .conversation_items
+                .iter()
+                .next()
+                .map(|e| e.key().clone())
+            {
+                self.conversation_items.remove(&key);
+                self.conversations.remove(&key);
+            }
+        }
+        self.conversation_items.insert(conversation_id, items);
+    }
+
+    pub fn get_conversation_items(&self, conversation_id: &str) -> Vec<Value> {
+        self.conversation_items
+            .get(conversation_id)
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn conversation_exists(&self, conversation_id: &str) -> bool {
+        self.conversations.contains_key(conversation_id)
+            || self.conversation_items.contains_key(conversation_id)
+    }
+
+    pub fn delete_conversation(&self, conversation_id: &str) -> bool {
+        let removed_messages = self.conversations.remove(conversation_id).is_some();
+        let removed_items = self.conversation_items.remove(conversation_id).is_some();
+        removed_messages || removed_items
+    }
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -262,9 +392,13 @@ mod tests {
     #[test]
     fn test_turn_key_different_for_different_tool_ids() {
         let mut a = msg("assistant", None);
-        a.tool_calls = Some(vec![serde_json::json!({"id": "id_a", "type": "function", "function": {"name": "f", "arguments": "{}"}})]);
+        a.tool_calls = Some(vec![
+            serde_json::json!({"id": "id_a", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
+        ]);
         let mut b = msg("assistant", None);
-        b.tool_calls = Some(vec![serde_json::json!({"id": "id_b", "type": "function", "function": {"name": "f", "arguments": "{}"}})]);
+        b.tool_calls = Some(vec![
+            serde_json::json!({"id": "id_b", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
+        ]);
         assert_ne!(SessionStore::turn_key(&a), SessionStore::turn_key(&b));
     }
 }

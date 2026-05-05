@@ -40,7 +40,10 @@ pub fn usage_to_cached(u: Option<&ChatUsage>) -> Option<CachedUsage> {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
-        reasoning_tokens: u.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens),
+        reasoning_tokens: u
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens),
         cache_hit_tokens: u.prompt_cache_hit_tokens,
         cache_miss_tokens: u.prompt_cache_miss_tokens,
     })
@@ -79,9 +82,7 @@ impl RequestCache {
             // Collect the key in a block scope so the DashMap Iter read guard
             // is dropped before remove() tries to acquire a write lock,
             // avoiding an RwLock deadlock.
-            let evict_key = {
-                self.inner.iter().next().map(|e| *e.key())
-            };
+            let evict_key = { self.inner.iter().next().map(|e| *e.key()) };
             if let Some(k) = evict_key {
                 self.inner.remove(&k);
             }
@@ -93,6 +94,11 @@ impl RequestCache {
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     #[allow(dead_code)]
@@ -132,13 +138,16 @@ mod tests {
     fn test_cache_eviction() {
         let cache = RequestCache::new(2);
         for i in 0..4 {
-            cache.insert(i, CachedResponse {
-                text: format!("r{i}"),
-                reasoning: String::new(),
-                tool_calls: vec![],
-                usage: None,
-                created_at: 0,
-            });
+            cache.insert(
+                i,
+                CachedResponse {
+                    text: format!("r{i}"),
+                    reasoning: String::new(),
+                    tool_calls: vec![],
+                    usage: None,
+                    created_at: 0,
+                },
+            );
         }
         assert!(cache.len() <= 2);
     }
