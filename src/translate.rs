@@ -190,6 +190,20 @@ pub fn to_chat_request(
         })
         .collect();
 
+    // Deduplicate tools by function name (DeepSeek requires unique names)
+    use std::collections::HashSet;
+    let mut seen_names = HashSet::new();
+    let tools: Vec<Value> = tools
+        .into_iter()
+        .filter(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+                .map(|name| seen_names.insert(name.to_string()))
+                .unwrap_or(true) // keep tools without a function name
+        })
+        .collect();
+
     // Detect web_search tool → enable DeepSeek web_search_options
     let web_search_enabled = req.tools.iter().any(|t| {
         let typ = t.get("type").and_then(Value::as_str).unwrap_or("");

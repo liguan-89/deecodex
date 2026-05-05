@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::{
+    cache::{CachedResponse, CachedToolCall, RequestCache, usage_to_cached},
     session::SessionStore,
     types::{ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap, format_usage},
 };
@@ -27,6 +28,17 @@ pub struct StreamArgs {
     pub model: String,
     #[allow(dead_code)]
     pub model_map: ModelMap,
+    /// Optional request cache for storing completed responses
+    pub cache: Option<RequestCache>,
+    /// Precomputed cache key for this request
+    pub cache_key: Option<u64>,
+}
+
+/// Arguments for replaying a cached response as SSE.
+pub struct CachedArgs {
+    pub response_id: String,
+    pub model: String,
+    pub cached: CachedResponse,
 }
 
 struct ToolCallAccum {
@@ -49,8 +61,11 @@ pub fn translate_stream(
         request_messages,
         model,
         model_map: _model_map,
+        cache,
+        cache_key,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
 
     let event_stream = stream! {
         yield Ok(Event::default()
@@ -64,59 +79,63 @@ pub fn translate_stream(
         // If DeepSeek rejects with "reasoning_content must be passed back"
         // (e.g. after relay restart lost in-memory reasoning state),
         // retry once with thinking disabled.
-        let mut builder = client.post(&url).header("Content-Type", "application/json");
-        if !api_key.is_empty() {
-            builder = builder.bearer_auth(api_key.as_str());
-        }
+        let max_retries = 3;
+        let mut attempt = 0;
+        let mut delay_ms: u64 = 500;
+        let upstream = loop {
+            let mut builder = client.post(&url).header("Content-Type", "application/json");
+            if !api_key.is_empty() {
+                builder = builder.bearer_auth(api_key.as_str());
+            }
 
-        let upstream = match builder.json(&chat_req).send().await {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                let status = r.status();
-                let body = r.text().await.unwrap_or_default();
-                if status.as_u16() == 400 && body.contains("reasoning_content") {
-                    warn!("reasoning_content missing after relay restart — retrying with thinking disabled");
-                    // Rebuild request without thinking
-                    let mut fallback_req = chat_req.clone();
-                    fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
-                    fallback_req.reasoning_effort = None;
-                    let mut fb = client.post(&url).header("Content-Type", "application/json");
-                    if !api_key.is_empty() {
-                        fb = fb.bearer_auth(api_key.as_str());
+            let req_to_send = if attempt > 0 && attempt == 1 {
+                // First retry: disable thinking if reasoning_content error
+                let mut fallback_req = chat_req.clone();
+                fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
+                fallback_req.reasoning_effort = None;
+                fallback_req
+            } else {
+                chat_req.clone()
+            };
+
+            match builder.json(&req_to_send).send().await {
+                Ok(r) if r.status().is_success() => break r,
+                Ok(r) => {
+                    let status = r.status();
+                    let status_code = status.as_u16();
+                    let body = r.text().await.unwrap_or_default();
+
+                    let retryable = matches!(status_code, 429 | 502 | 503)
+                        || (status_code == 400 && body.contains("reasoning_content") && attempt == 0);
+
+                    if retryable && attempt < max_retries {
+                        attempt += 1;
+                        warn!("upstream {status_code} (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms");
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2;
+                        continue;
                     }
-                    match fb.json(&fallback_req).send().await {
-                        Ok(r2) if r2.status().is_success() => r2,
-                        Ok(r2) => {
-                            let s2 = r2.status();
-                            let b2 = r2.text().await.unwrap_or_default();
-                            error!("upstream retry {}: {}", s2.as_u16(), b2);
-                            yield Ok(Event::default().event("response.failed").data(
-                                json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": s2.as_u16().to_string(), "message": b2}}}).to_string()
-                            ));
-                            return;
-                        }
-                        Err(e2) => {
-                            error!("upstream retry failed: {e2}");
-                            yield Ok(Event::default().event("response.failed").data(
-                                json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e2.to_string()}}}).to_string()
-                            ));
-                            return;
-                        }
-                    }
-                } else {
-                    error!("upstream {}: {}", status.as_u16(), body);
+
+                    error!("upstream {}: {}", status_code, body);
                     yield Ok(Event::default().event("response.failed").data(
-                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status.as_u16().to_string(), "message": body}}}).to_string()
+                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": body}}}).to_string()
                     ));
                     return;
                 }
-            }
-            Err(e) => {
-                error!("upstream request failed: {e}");
-                yield Ok(Event::default().event("response.failed").data(
-                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e.to_string()}}}).to_string()
-                ));
-                return;
+                Err(e) => {
+                    if attempt < max_retries {
+                        attempt += 1;
+                        warn!("upstream connection error (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2;
+                        continue;
+                    }
+                    error!("upstream request failed: {e}");
+                    yield Ok(Event::default().event("response.failed").data(
+                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e.to_string()}}}).to_string()
+                    ));
+                    return;
+                }
             }
         };
 
@@ -124,6 +143,7 @@ pub fn translate_stream(
         let mut accumulated_reasoning = String::new();
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
         let mut emitted_message_item = false;
+        let mut emitted_reasoning_item = false;
         let mut final_usage: Option<ChatUsage> = None;
         let mut source = upstream.bytes_stream().eventsource();
 
@@ -146,17 +166,37 @@ pub fn translate_stream(
                             for choice in &chunk.choices {
                                 if let Some(rc) = choice.delta.reasoning_content.as_deref() {
                                     if !rc.is_empty() {
+                                        if !emitted_reasoning_item {
+                                            yield Ok(Event::default()
+                                                .event("response.output_item.added")
+                                                .data(json!({
+                                                    "type": "response.output_item.added",
+                                                    "output_index": 0,
+                                                    "item": { "type": "reasoning", "id": &reasoning_item_id, "status": "in_progress" }
+                                                }).to_string()));
+                                            emitted_reasoning_item = true;
+                                        }
                                         accumulated_reasoning.push_str(rc);
+                                        yield Ok(Event::default()
+                                            .event("response.reasoning_text.delta")
+                                            .data(json!({
+                                                "type": "response.reasoning_text.delta",
+                                                "item_id": &reasoning_item_id,
+                                                "output_index": 0,
+                                                "content_index": 0,
+                                                "delta": rc
+                                            }).to_string()));
                                     }
                                 }
                                 let content = choice.delta.content.as_deref().unwrap_or("");
                                 if !content.is_empty() {
                                     if !emitted_message_item {
+                                        let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
                                         yield Ok(Event::default()
                                             .event("response.output_item.added")
                                             .data(json!({
                                                 "type": "response.output_item.added",
-                                                "output_index": 0,
+                                                "output_index": msg_oi,
                                                 "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
                                             }).to_string()));
                                         emitted_message_item = true;
@@ -167,7 +207,7 @@ pub fn translate_stream(
                                         .data(json!({
                                             "type": "response.output_text.delta",
                                             "item_id": &msg_item_id,
-                                            "output_index": 0,
+                                            "output_index": if emitted_reasoning_item { 1 } else { 0 },
                                             "content_index": 0,
                                             "delta": content
                                         }).to_string()));
@@ -199,9 +239,28 @@ pub fn translate_stream(
             }
         }
 
+        // Close reasoning item
+        if emitted_reasoning_item {
+            yield Ok(Event::default()
+                .event("response.output_item.done")
+                .data(json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {
+                        "type": "reasoning",
+                        "id": &reasoning_item_id,
+                        "status": "completed",
+                        "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
+                    }
+                }).to_string()));
+        }
+
         // Log streaming token usage
         let usage_str = format_usage(final_usage.as_ref());
         info!("↑ done {}", usage_str);
+
+        // Clone for cache before moving into completion_usage
+        let cache_usage = final_usage.clone();
 
         // Build usage for response.completed
         let completion_usage = final_usage.map(|u| json!({
@@ -212,11 +271,12 @@ pub fn translate_stream(
 
         // Close message item
         if emitted_message_item {
+            let msg_output_index: usize = if emitted_reasoning_item { 1 } else { 0 };
             yield Ok(Event::default()
                 .event("response.output_item.done")
                 .data(json!({
                     "type": "response.output_item.done",
-                    "output_index": 0,
+                    "output_index": msg_output_index,
                     "item": {
                         "type": "message",
                         "id": &msg_item_id,
@@ -228,7 +288,8 @@ pub fn translate_stream(
         }
 
         // Emit function_call items
-        let base_index: usize = if emitted_message_item { 1 } else { 0 };
+        let base_index: usize = if emitted_reasoning_item { 1 } else { 0 }
+            + if emitted_message_item { 1 } else { 0 };
         let mut fc_items: Vec<Value> = Vec::new();
 
         for (rel_idx, (_, tc)) in tool_calls.iter().enumerate() {
@@ -321,6 +382,14 @@ pub fn translate_stream(
 
         // Build output for response.completed
         let mut output_items: Vec<Value> = Vec::new();
+        if emitted_reasoning_item {
+            output_items.push(json!({
+                "type": "reasoning",
+                "id": &reasoning_item_id,
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
+            }));
+        }
         if emitted_message_item {
             output_items.push(json!({
                 "type": "message",
@@ -349,6 +418,198 @@ pub fn translate_stream(
                 "type": "response.completed",
                 "response": response_obj
             }).to_string()));
+
+        // Store in request cache
+        if let (Some(c), Some(key)) = (cache, cache_key) {
+            let cached = CachedResponse {
+                text: accumulated_text.clone(),
+                reasoning: accumulated_reasoning.clone(),
+                tool_calls: tool_calls.values().map(|tc| CachedToolCall {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                }).collect(),
+                usage: usage_to_cached(cache_usage.as_ref()),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            c.insert(key, cached);
+        }
+    };
+
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
+/// Replay a cached response as a full SSE event stream.
+pub fn translate_cached(
+    args: CachedArgs,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let CachedArgs { response_id, model, cached } = args;
+    let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
+
+    let event_stream = stream! {
+        yield Ok(Event::default()
+            .event("response.created")
+            .data(json!({
+                "type": "response.created",
+                "response": { "id": &response_id, "status": "in_progress", "model": &model }
+            }).to_string()));
+
+        let mut output_index: usize = 0;
+
+        // Reasoning item
+        if !cached.reasoning.is_empty() {
+            yield Ok(Event::default()
+                .event("response.output_item.added")
+                .data(json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": { "type": "reasoning", "id": &reasoning_item_id, "status": "in_progress" }
+                }).to_string()));
+
+            yield Ok(Event::default()
+                .event("response.reasoning_text.delta")
+                .data(json!({
+                    "type": "response.reasoning_text.delta",
+                    "item_id": &reasoning_item_id,
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "delta": &cached.reasoning
+                }).to_string()));
+
+            yield Ok(Event::default()
+                .event("response.output_item.done")
+                .data(json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": {
+                        "type": "reasoning",
+                        "id": &reasoning_item_id,
+                        "status": "completed",
+                        "content": [{"type": "reasoning_text", "text": &cached.reasoning}]
+                    }
+                }).to_string()));
+
+            output_index += 1;
+        }
+
+        // Message item
+        if !cached.text.is_empty() || cached.tool_calls.is_empty() {
+            yield Ok(Event::default()
+                .event("response.output_item.added")
+                .data(json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
+                }).to_string()));
+
+            if !cached.text.is_empty() {
+                yield Ok(Event::default()
+                    .event("response.output_text.delta")
+                    .data(json!({
+                        "type": "response.output_text.delta",
+                        "item_id": &msg_item_id,
+                        "output_index": output_index,
+                        "content_index": 0,
+                        "delta": &cached.text
+                    }).to_string()));
+            }
+
+            yield Ok(Event::default()
+                .event("response.output_item.done")
+                .data(json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": {
+                        "type": "message",
+                        "id": &msg_item_id,
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": &cached.text}]
+                    }
+                }).to_string()));
+
+            output_index += 1;
+        }
+
+        // Tool call items
+        for tc in &cached.tool_calls {
+            let fc_item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
+
+            yield Ok(Event::default()
+                .event("response.output_item.added")
+                .data(json!({
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": &tc.name, "arguments": "", "status": "in_progress" }
+                }).to_string()));
+
+            if !tc.arguments.is_empty() {
+                yield Ok(Event::default()
+                    .event("response.function_call_arguments.delta")
+                    .data(json!({
+                        "type": "response.function_call_arguments.delta",
+                        "item_id": &fc_item_id,
+                        "output_index": output_index,
+                        "delta": &tc.arguments
+                    }).to_string()));
+            }
+
+            yield Ok(Event::default()
+                .event("response.output_item.done")
+                .data(json!({
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": &tc.name, "arguments": &tc.arguments, "status": "completed" }
+                }).to_string()));
+
+            output_index += 1;
+        }
+
+        // Build output and usage
+        let mut output_items: Vec<Value> = Vec::new();
+        if !cached.reasoning.is_empty() {
+            output_items.push(json!({
+                "type": "reasoning", "id": &reasoning_item_id, "status": "completed",
+                "content": [{"type": "reasoning_text", "text": &cached.reasoning}]
+            }));
+        }
+        if !cached.text.is_empty() || cached.tool_calls.is_empty() {
+            output_items.push(json!({
+                "type": "message", "id": &msg_item_id, "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": &cached.text}]
+            }));
+        }
+        for tc in &cached.tool_calls {
+            output_items.push(json!({
+                "type": "function_call", "id": format!("fc_{}", uuid::Uuid::new_v4().simple()),
+                "call_id": &tc.id, "name": &tc.name, "arguments": &tc.arguments, "status": "completed"
+            }));
+        }
+
+        let mut response_obj = json!({
+            "id": &response_id, "status": "completed", "model": &model, "output": output_items
+        });
+        if let Some(ref u) = cached.usage {
+            response_obj["usage"] = json!({
+                "input_tokens": u.prompt_tokens,
+                "output_tokens": u.completion_tokens,
+                "total_tokens": u.total_tokens
+            });
+        }
+
+        yield Ok(Event::default()
+            .event("response.completed")
+            .data(json!({
+                "type": "response.completed",
+                "response": response_obj
+            }).to_string()));
+
+        info!("request cache: replayed (text={}b reasoning={}b tools={})",
+            cached.text.len(), cached.reasoning.len(), cached.tool_calls.len());
     };
 
     Sse::new(event_stream).keep_alive(KeepAlive::default())

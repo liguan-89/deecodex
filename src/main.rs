@@ -1,5 +1,6 @@
 mod session;
 mod stream;
+mod cache;
 mod translate;
 mod types;
 
@@ -15,6 +16,7 @@ use clap::Parser;
 use reqwest::{Client, Url};
 use session::SessionStore;
 use dashmap::DashSet;
+use crate::cache::RequestCache;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -65,6 +67,10 @@ struct AppState {
     vision_upstream: Option<Arc<Url>>,
     /// Optional vision API key
     vision_api_key: Arc<String>,
+    /// Server start time for uptime calculation
+    start_time: std::time::Instant,
+    /// Request cache for identical payloads
+    request_cache: RequestCache,
 }
 
 #[tokio::main]
@@ -111,6 +117,8 @@ async fn main() -> Result<()> {
         tool_drop_warned: DashSet::new(),
         vision_upstream,
         vision_api_key: Arc::new(args.vision_api_key),
+            start_time: std::time::Instant::now(),
+            request_cache: RequestCache::default(),
     };
 
     let max_bytes = args.max_body_mb * 1024 * 1024;
@@ -119,6 +127,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/v1/responses", post(handle_responses))
         .route("/v1/models", get(handle_models))
+        .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
         .fallback(handle_fallback)
         .layer(body_limit)
@@ -148,6 +157,15 @@ fn validate_upstream(raw: &str) -> Result<Url> {
 fn join_base(url: &Url) -> String {
     let s = url.as_str();
     if s.ends_with('/') { s.to_string() } else { format!("{s}/") }
+}
+
+async fn handle_health(State(state): State<AppState>) -> Response {
+    let uptime = state.start_time.elapsed().as_secs();
+    Json(serde_json::json!({
+        "status": "ok",
+        "uptime_secs": uptime,
+        "version": env!("CARGO_PKG_VERSION"),
+    })).into_response()
 }
 
 async fn handle_v1() -> Response {
@@ -292,6 +310,18 @@ async fn handle_responses_inner(
         let response_id = state.sessions.new_id();
         chat_req.stream = true;
         let request_messages = chat_req.messages.clone();
+
+        // Check request cache
+        let cache_key = RequestCache::hash_request(&chat_req);
+        if let Some(cached) = state.request_cache.get(cache_key) {
+            info!("request cache: hit (key={})", cache_key);
+            return stream::translate_cached(stream::CachedArgs {
+                response_id,
+                model: mapped_model,
+                cached,
+            }).into_response();
+        }
+
         stream::translate_stream(stream::StreamArgs {
             client: state.client,
             url,
@@ -303,6 +333,8 @@ async fn handle_responses_inner(
             request_messages,
             model: mapped_model,
             model_map: state.model_map.as_ref().clone(),
+            cache: Some(state.request_cache.clone()),
+            cache_key: Some(cache_key),
         })
         .into_response()
     } else {
