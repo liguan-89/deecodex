@@ -779,18 +779,34 @@ async fn handle_responses_inner(state: AppState, req: ResponsesRequest) -> Respo
     );
     let mut chat_req = translated.chat;
 
-    // Route to VLM only for first-turn image requests (msgs <= 3), not review models
+    // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
-    let is_first_turn = chat_req.messages.len() <= 5;
+    let has_new_image = match &req.input {
+        ResponsesInput::Text(t) => t.contains("data:image/"),
+        ResponsesInput::Messages(items) => items.last().is_some_and(|item| {
+            let content = match item.get("content") {
+                Some(c) => c,
+                None => return item.get("image_url").is_some(),
+            };
+            match content {
+                Value::Array(parts) => parts.iter().any(|p| {
+                    let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    typ == "image_url" || typ == "input_image"
+                }),
+                Value::String(s) => s.contains("data:image/"),
+                _ => false,
+            }
+        }),
+    };
     let route_to_vision = translated.has_images
         && state.vision_upstream.is_some()
         && !is_review_model
-        && is_first_turn;
+        && has_new_image;
     info!(
-        "route_to_vision: has_images={} review={} first_turn={} msgs={} route={}",
+        "route_to_vision: has_images={} review={} new_image={} msgs={} route={}",
         translated.has_images,
         is_review_model,
-        is_first_turn,
+        has_new_image,
         chat_req.messages.len(),
         route_to_vision
     );
