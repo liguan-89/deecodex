@@ -5,6 +5,8 @@ mod stream;
 mod translate;
 mod types;
 
+use std::io::{self, Write};
+
 use crate::cache::RequestCache;
 use anyhow::{bail, Result};
 use axum::{
@@ -128,9 +130,23 @@ struct VlmArgs {
     response_extra: Value,
 }
 
+struct FlushWriter<W: Write>(W);
+
+impl<W: Write> Write for FlushWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.0.write(buf)?;
+        self.0.flush()?;
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(|| FlushWriter(std::io::stderr()))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "deecodex=info".into()),
@@ -849,13 +865,7 @@ async fn handle_responses_inner(state: AppState, req: ResponsesRequest) -> Respo
     }
 
     let conversation_id = conversation_id_from_request(&req);
-    let history = if let Some(id) = req.previous_response_id.as_deref() {
-        state.sessions.get_history(id)
-    } else if let Some(id) = conversation_id.as_deref() {
-        state.sessions.get_conversation(id)
-    } else {
-        Vec::new()
-    };
+    let history = Vec::new();
 
     let original_model = req.model.clone();
     let request_input_items = response_input_items(&req);
