@@ -1,7 +1,9 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use tracing::info;
 
@@ -53,6 +55,7 @@ pub fn usage_to_cached(u: Option<&ChatUsage>) -> Option<CachedUsage> {
 #[derive(Clone)]
 pub struct RequestCache {
     inner: Arc<DashMap<u64, CachedResponse>>,
+    order: Arc<Mutex<VecDeque<u64>>>,
     max_entries: usize,
 }
 
@@ -60,6 +63,7 @@ impl RequestCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            order: Arc::new(Mutex::new(VecDeque::new())),
             max_entries,
         }
     }
@@ -73,37 +77,34 @@ impl RequestCache {
     }
 
     pub fn get(&self, hash: u64) -> Option<CachedResponse> {
-        self.inner.get(&hash).map(|v| v.clone())
+        let result = self.inner.get(&hash).map(|v| v.clone());
+        if result.is_some() {
+            let mut order = self.order.lock().unwrap();
+            if let Some(pos) = order.iter().position(|k| *k == hash) {
+                order.remove(pos);
+                order.push_back(hash);
+            }
+        }
+        result
     }
 
     pub fn insert(&self, hash: u64, resp: CachedResponse) {
-        // Evict oldest if at capacity (simple: just remove a random entry)
+        let mut order = self.order.lock().unwrap();
         if self.inner.len() >= self.max_entries {
-            // Collect the key in a block scope so the DashMap Iter read guard
-            // is dropped before remove() tries to acquire a write lock,
-            // avoiding an RwLock deadlock.
-            let evict_key = { self.inner.iter().next().map(|e| *e.key()) };
-            if let Some(k) = evict_key {
+            if let Some(k) = order.pop_front() {
                 self.inner.remove(&k);
             }
         }
+        order.push_back(hash);
+        drop(order);
         self.inner.insert(hash, resp);
         info!("request cache: stored entry (total: {})", self.inner.len());
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.inner.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
-    #[allow(dead_code)]
-    pub fn stats(&self) -> (usize, usize) {
-        (self.inner.len(), self.max_entries)
     }
 }
 

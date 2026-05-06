@@ -14,6 +14,7 @@ use crate::{
     cache::{usage_to_cached, CachedResponse, CachedToolCall, RequestCache},
     session::SessionStore,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
+    utils::merge_response_extra,
 };
 
 pub struct StreamArgs {
@@ -670,13 +671,14 @@ pub fn translate_cached(
         let mut cached_fc_items: Vec<Value> = Vec::new();
         for tc in &cached.tool_calls {
             let fc_item_id = format!("fc_{}", uuid::Uuid::new_v4().simple());
+            let tool_name = if tc.name == "apply_patch" { "exec_command" } else { tc.name.as_str() };
 
             yield Ok(Event::default()
                 .event("response.output_item.added")
                 .data(json!({
                     "type": "response.output_item.added",
                     "output_index": output_index,
-                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": &tc.name, "arguments": "", "status": "in_progress" }
+                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": tool_name, "arguments": "", "status": "in_progress" }
                 }).to_string()));
 
             if !tc.arguments.is_empty() {
@@ -695,14 +697,14 @@ pub fn translate_cached(
                 .data(json!({
                     "type": "response.output_item.done",
                     "output_index": output_index,
-                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": &tc.name, "arguments": &tc.arguments, "status": "completed" }
+                    "item": { "type": "function_call", "id": &fc_item_id, "call_id": &tc.id, "name": tool_name, "arguments": &tc.arguments, "status": "completed" }
                 }).to_string()));
 
             cached_fc_items.push(json!({
                 "type": "function_call",
                 "id": &fc_item_id,
                 "call_id": &tc.id,
-                "name": &tc.name,
+                "name": tool_name,
                 "arguments": &tc.arguments,
                 "status": "completed"
             }));
@@ -755,39 +757,255 @@ pub fn translate_cached(
     Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
-fn merge_response_extra(response: &mut Value, extra: &Value) {
-    let Some(extra_obj) = extra.as_object() else {
-        return;
-    };
-    for (key, value) in extra_obj {
-        if response.get(key).is_none() || response.get(key) == Some(&Value::Null) {
-            response[key] = value.clone();
-        }
-    }
-    if let Some(max) = extra
-        .get("max_tool_calls")
-        .and_then(Value::as_u64)
-        .map(|v| v as usize)
-    {
-        limit_function_call_outputs(response, max);
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
 
-fn limit_function_call_outputs(response: &mut Value, max_tool_calls: usize) {
-    let Some(output) = response.get_mut("output").and_then(Value::as_array_mut) else {
-        return;
-    };
-    let mut seen = 0usize;
-    output.retain(|item| {
-        if item.get("type").and_then(Value::as_str) == Some("function_call") {
-            seen += 1;
-            seen <= max_tool_calls
-        } else {
-            true
-        }
-    });
-    if seen > max_tool_calls {
-        response["status"] = json!("incomplete");
-        response["incomplete_details"] = json!({"reason": "max_tool_calls"});
+    fn parse_sse_events(body: &[u8]) -> Vec<(String, serde_json::Value)> {
+        let text = std::str::from_utf8(body).unwrap();
+        text.split("\n\n")
+            .filter(|s| !s.trim().is_empty())
+            .map(|block| {
+                let mut event_type = String::new();
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(val) = line.strip_prefix("event: ") {
+                        event_type = val.to_string();
+                    } else if let Some(val) = line.strip_prefix("data: ") {
+                        data = val.to_string();
+                    }
+                }
+                let data_value: serde_json::Value =
+                    serde_json::from_str(&data).unwrap_or_default();
+                (event_type, data_value)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_cached_text_only() {
+        let sessions = SessionStore::new();
+        let cached = CachedResponse {
+            text: "Hello, world!".into(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            usage: None,
+            created_at: 0,
+        };
+        let args = CachedArgs {
+            response_id: "test_resp_1".into(),
+            model: "test-model".into(),
+            cached,
+            sessions,
+            request_input_items: vec![],
+            store_response: false,
+            conversation_id: None,
+            response_extra: json!({}),
+        };
+        let sse = translate_cached(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].0, "response.created");
+        assert_eq!(events[0].1["type"], "response.created");
+        assert_eq!(events[0].1["response"]["id"], "test_resp_1");
+        assert_eq!(events[1].0, "response.output_item.added");
+        assert_eq!(events[1].1["item"]["type"], "message");
+        assert_eq!(events[2].0, "response.output_text.delta");
+        assert_eq!(events[2].1["delta"], "Hello, world!");
+        assert_eq!(events[3].0, "response.output_item.done");
+        assert_eq!(events[3].1["item"]["type"], "message");
+        assert_eq!(events[3].1["item"]["content"][0]["text"], "Hello, world!");
+        assert_eq!(events[4].0, "response.completed");
+        assert_eq!(events[4].1["response"]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn test_cached_text_and_reasoning() {
+        let sessions = SessionStore::new();
+        let cached = CachedResponse {
+            text: "Hello".into(),
+            reasoning: "Let me think...".into(),
+            tool_calls: vec![],
+            usage: None,
+            created_at: 0,
+        };
+        let args = CachedArgs {
+            response_id: "test_resp_2".into(),
+            model: "test-model".into(),
+            cached,
+            sessions,
+            request_input_items: vec![],
+            store_response: false,
+            conversation_id: None,
+            response_extra: json!({}),
+        };
+        let sse = translate_cached(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert_eq!(events.len(), 8);
+        assert_eq!(events[0].0, "response.created");
+        // reasoning comes first
+        assert_eq!(events[1].0, "response.output_item.added");
+        assert_eq!(events[1].1["item"]["type"], "reasoning_summary");
+        assert_eq!(events[2].0, "response.reasoning_summary_text.delta");
+        assert_eq!(events[2].1["delta"], "Let me think...");
+        assert_eq!(events[3].0, "response.output_item.done");
+        assert_eq!(events[3].1["item"]["type"], "reasoning");
+        assert_eq!(
+            events[3].1["item"]["content"][0]["text"],
+            "Let me think..."
+        );
+        // then message
+        assert_eq!(events[4].0, "response.output_item.added");
+        assert_eq!(events[4].1["item"]["type"], "message");
+        assert_eq!(events[5].0, "response.output_text.delta");
+        assert_eq!(events[5].1["delta"], "Hello");
+        assert_eq!(events[6].0, "response.output_item.done");
+        assert_eq!(events[6].1["item"]["type"], "message");
+        assert_eq!(events[6].1["item"]["content"][0]["text"], "Hello");
+        assert_eq!(events[7].0, "response.completed");
+        assert_eq!(
+            events[7].1["response"]["output"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cached_tool_calls() {
+        let sessions = SessionStore::new();
+        let cached = CachedResponse {
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: vec![CachedToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"/tmp/test.txt"}"#.into(),
+            }],
+            usage: None,
+            created_at: 0,
+        };
+        let args = CachedArgs {
+            response_id: "test_resp_3".into(),
+            model: "test-model".into(),
+            cached,
+            sessions,
+            request_input_items: vec![],
+            store_response: false,
+            conversation_id: None,
+            response_extra: json!({}),
+        };
+        let sse = translate_cached(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].0, "response.created");
+        assert_eq!(events[1].0, "response.output_item.added");
+        assert_eq!(events[1].1["item"]["type"], "function_call");
+        assert_eq!(events[1].1["item"]["name"], "read_file");
+        assert_eq!(events[1].1["item"]["call_id"], "call_1");
+        assert_eq!(events[2].0, "response.function_call_arguments.delta");
+        assert_eq!(events[3].0, "response.output_item.done");
+        assert_eq!(events[3].1["item"]["type"], "function_call");
+        assert_eq!(events[3].1["item"]["name"], "read_file");
+        assert_eq!(events[3].1["item"]["call_id"], "call_1");
+        assert!(events[3].1["item"]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("/tmp/test.txt"));
+        assert_eq!(events[4].0, "response.completed");
+    }
+
+    #[tokio::test]
+    async fn test_cached_empty_response() {
+        let sessions = SessionStore::new();
+        let cached = CachedResponse {
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            usage: None,
+            created_at: 0,
+        };
+        let args = CachedArgs {
+            response_id: "test_resp_4".into(),
+            model: "test-model".into(),
+            cached,
+            sessions,
+            request_input_items: vec![],
+            store_response: false,
+            conversation_id: None,
+            response_extra: json!({}),
+        };
+        let sse = translate_cached(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].0, "response.created");
+        assert_eq!(events[1].0, "response.output_item.added");
+        assert_eq!(events[1].1["item"]["type"], "message");
+        assert_eq!(events[2].0, "response.output_item.done");
+        assert_eq!(events[2].1["item"]["type"], "message");
+        assert_eq!(events[2].1["item"]["content"][0]["text"], "");
+        assert_eq!(events[3].0, "response.completed");
+    }
+
+    #[tokio::test]
+    async fn test_cached_apply_patch_translation() {
+        let sessions = SessionStore::new();
+        let cached = CachedResponse {
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: vec![CachedToolCall {
+                id: "patch_1".into(),
+                name: "apply_patch".into(),
+                arguments: r#"{"patch":"diff..."}"#.into(),
+            }],
+            usage: None,
+            created_at: 0,
+        };
+        let args = CachedArgs {
+            response_id: "test_resp_5".into(),
+            model: "test-model".into(),
+            cached,
+            sessions,
+            request_input_items: vec![],
+            store_response: false,
+            conversation_id: None,
+            response_extra: json!({}),
+        };
+        let sse = translate_cached(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].0, "response.created");
+        assert_eq!(events[1].0, "response.output_item.added");
+        assert_eq!(events[1].1["item"]["type"], "function_call");
+        assert_eq!(events[1].1["item"]["name"], "exec_command");
+        assert_eq!(events[2].0, "response.function_call_arguments.delta");
+        assert_eq!(events[3].0, "response.output_item.done");
+        assert_eq!(events[3].1["item"]["type"], "function_call");
+        assert_eq!(events[3].1["item"]["name"], "exec_command");
+        assert_eq!(events[4].0, "response.completed");
     }
 }

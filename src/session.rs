@@ -1,7 +1,8 @@
 use dashmap::DashMap;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::types::ChatMessage;
@@ -34,6 +35,10 @@ pub struct SessionStore {
     reasoning: Arc<DashMap<String, String>>,
     /// fingerprint → reasoning_content for turn-level recovery
     turn_reasoning: Arc<DashMap<u64, String>>,
+    response_order: Arc<Mutex<VecDeque<String>>>,
+    conversation_order: Arc<Mutex<VecDeque<String>>>,
+    reasoning_order: Arc<Mutex<VecDeque<String>>>,
+    turn_reasoning_order: Arc<Mutex<VecDeque<u64>>>,
 }
 
 impl SessionStore {
@@ -46,18 +51,24 @@ impl SessionStore {
             conversation_items: Arc::new(DashMap::new()),
             reasoning: Arc::new(DashMap::new()),
             turn_reasoning: Arc::new(DashMap::new()),
+            response_order: Arc::new(Mutex::new(VecDeque::new())),
+            conversation_order: Arc::new(Mutex::new(VecDeque::new())),
+            reasoning_order: Arc::new(Mutex::new(VecDeque::new())),
+            turn_reasoning_order: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
     pub fn store_reasoning(&self, call_id: String, reasoning: String) {
         if !reasoning.is_empty() {
+            let is_new = self.reasoning.insert(call_id.clone(), reasoning).is_none();
+            if is_new {
+                self.reasoning_order.lock().unwrap().push_back(call_id);
+            }
             if self.reasoning.len() >= MAX_REASONING {
-                // Evict oldest entry
-                if let Some(key) = self.reasoning.iter().next().map(|e| e.key().clone()) {
-                    self.reasoning.remove(&key);
+                if let Some(oldest) = self.reasoning_order.lock().unwrap().pop_front() {
+                    self.reasoning.remove(&oldest);
                 }
             }
-            self.reasoning.insert(call_id, reasoning);
         }
     }
 
@@ -78,12 +89,14 @@ impl SessionStore {
     ) {
         if !reasoning.is_empty() {
             if self.turn_reasoning.len() >= MAX_TURN_REASONING {
-                if let Some(key) = self.turn_reasoning.iter().next().map(|e| *e.key()) {
-                    self.turn_reasoning.remove(&key);
+                if let Some(oldest) = self.turn_reasoning_order.lock().unwrap().pop_front() {
+                    self.turn_reasoning.remove(&oldest);
                 }
             }
             let combined_key = Self::turn_key(assistant);
-            self.turn_reasoning.insert(combined_key, reasoning.clone());
+            if self.turn_reasoning.insert(combined_key, reasoning.clone()).is_none() {
+                self.turn_reasoning_order.lock().unwrap().push_back(combined_key);
+            }
             // Also store under content-only key for text-only assistant lookup
             let content = assistant
                 .content
@@ -91,8 +104,10 @@ impl SessionStore {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if !content.is_empty() {
-                self.turn_reasoning
-                    .insert(Self::content_key(content), reasoning.clone());
+                let content_key = Self::content_key(content);
+                if self.turn_reasoning.insert(content_key, reasoning.clone()).is_none() {
+                    self.turn_reasoning_order.lock().unwrap().push_back(content_key);
+                }
             }
             // Also store under each individual tool call_id for direct lookup
             if let Some(tcs) = &assistant.tool_calls {
@@ -193,37 +208,36 @@ impl SessionStore {
         None
     }
 
-    pub fn get_history(&self, response_id: &str) -> Vec<ChatMessage> {
-        self.inner
-            .get(response_id)
-            .map(|v| v.clone())
-            .unwrap_or_default()
-    }
-
     pub fn new_id(&self) -> String {
         format!("resp_{}", Uuid::new_v4().simple())
     }
 
     pub fn save_with_id(&self, id: String, messages: Vec<ChatMessage>) {
+        let is_new = self.inner.insert(id.clone(), messages).is_none();
+        if is_new {
+            self.response_order.lock().unwrap().push_back(id);
+        }
         if self.inner.len() >= MAX_SESSIONS {
-            if let Some(key) = self.inner.iter().next().map(|e| e.key().clone()) {
-                self.inner.remove(&key);
-                self.responses.remove(&key);
-                self.input_items.remove(&key);
+            if let Some(oldest) = self.response_order.lock().unwrap().pop_front() {
+                self.inner.remove(&oldest);
+                self.responses.remove(&oldest);
+                self.input_items.remove(&oldest);
             }
         }
-        self.inner.insert(id, messages);
     }
 
     pub fn save_response(&self, id: String, response: Value) {
+        let is_new = self.responses.insert(id.clone(), response).is_none();
+        if is_new {
+            self.response_order.lock().unwrap().push_back(id);
+        }
         if self.responses.len() >= MAX_SESSIONS {
-            if let Some(key) = self.responses.iter().next().map(|e| e.key().clone()) {
-                self.responses.remove(&key);
-                self.inner.remove(&key);
-                self.input_items.remove(&key);
+            if let Some(oldest) = self.response_order.lock().unwrap().pop_front() {
+                self.responses.remove(&oldest);
+                self.inner.remove(&oldest);
+                self.input_items.remove(&oldest);
             }
         }
-        self.responses.insert(id, response);
     }
 
     pub fn get_response(&self, response_id: &str) -> Option<Value> {
@@ -244,14 +258,17 @@ impl SessionStore {
     }
 
     pub fn save_input_items(&self, response_id: String, items: Vec<Value>) {
+        let is_new = self.input_items.insert(response_id.clone(), items).is_none();
+        if is_new {
+            self.response_order.lock().unwrap().push_back(response_id);
+        }
         if self.input_items.len() >= MAX_SESSIONS {
-            if let Some(key) = self.input_items.iter().next().map(|e| e.key().clone()) {
-                self.input_items.remove(&key);
-                self.inner.remove(&key);
-                self.responses.remove(&key);
+            if let Some(oldest) = self.response_order.lock().unwrap().pop_front() {
+                self.input_items.remove(&oldest);
+                self.inner.remove(&oldest);
+                self.responses.remove(&oldest);
             }
         }
-        self.input_items.insert(response_id, items);
     }
 
     pub fn get_input_items(&self, response_id: &str) -> Option<Vec<Value>> {
@@ -259,35 +276,29 @@ impl SessionStore {
     }
 
     pub fn save_conversation(&self, conversation_id: String, messages: Vec<ChatMessage>) {
+        let is_new = self.conversations.insert(conversation_id.clone(), messages).is_none();
+        if is_new {
+            self.conversation_order.lock().unwrap().push_back(conversation_id);
+        }
         if self.conversations.len() >= MAX_SESSIONS {
-            if let Some(key) = self.conversations.iter().next().map(|e| e.key().clone()) {
-                self.conversations.remove(&key);
-                self.conversation_items.remove(&key);
+            if let Some(oldest) = self.conversation_order.lock().unwrap().pop_front() {
+                self.conversations.remove(&oldest);
+                self.conversation_items.remove(&oldest);
             }
         }
-        self.conversations.insert(conversation_id, messages);
-    }
-
-    pub fn get_conversation(&self, conversation_id: &str) -> Vec<ChatMessage> {
-        self.conversations
-            .get(conversation_id)
-            .map(|v| v.clone())
-            .unwrap_or_default()
     }
 
     pub fn save_conversation_items(&self, conversation_id: String, items: Vec<Value>) {
+        let is_new = self.conversation_items.insert(conversation_id.clone(), items).is_none();
+        if is_new {
+            self.conversation_order.lock().unwrap().push_back(conversation_id);
+        }
         if self.conversation_items.len() >= MAX_SESSIONS {
-            if let Some(key) = self
-                .conversation_items
-                .iter()
-                .next()
-                .map(|e| e.key().clone())
-            {
-                self.conversation_items.remove(&key);
-                self.conversations.remove(&key);
+            if let Some(oldest) = self.conversation_order.lock().unwrap().pop_front() {
+                self.conversation_items.remove(&oldest);
+                self.conversations.remove(&oldest);
             }
         }
-        self.conversation_items.insert(conversation_id, items);
     }
 
     pub fn get_conversation_items(&self, conversation_id: &str) -> Vec<Value> {

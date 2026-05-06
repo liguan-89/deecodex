@@ -14,6 +14,12 @@ pub struct SseState {
     next_output_index: usize,
 }
 
+impl Default for SseState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SseState {
     pub fn new() -> Self {
         Self { seq: 0, next_output_index: 0 }
@@ -241,12 +247,9 @@ impl SseState {
 }
 
 fn merge(target: &mut Value, source: &Value) {
-    match (target, source) {
-        (Value::Object(t), Value::Object(s)) => {
-            for (k, v) in s {
-                t.insert(k.clone(), v.clone());
-            }
+    if let (Value::Object(t), Value::Object(s)) = (target, source) {
+        for (k, v) in s {
+            t.insert(k.clone(), v.clone());
         }
-        _ => {}
     }
 }

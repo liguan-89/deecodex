@@ -1,6 +1,6 @@
 [package]
 name = "deecodex"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "DeepSeek API → Codex CLI 兼容代理"
 license = "MIT"
@@ -15,6 +15,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "deecodex"
 path = "src/main.rs"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
 
 [dependencies]
 axum = { version = "0.7", features = ["json"] }
