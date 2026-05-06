@@ -14,6 +14,81 @@ MAX_LOG_FILES=5
 BIN="deecodex"
 GRACEFUL_TIMEOUT=10
 
+# === Codex 配置管理 ===
+CODEX_CONFIG="$HOME/.codex/config.toml"
+CODEX_CONFIG_OPENAI="${CODEX_CONFIG}.openai.txt"
+CODEX_CONFIG_DEECODEX="${CODEX_CONFIG}.deecodex.txt"
+_DEECODEX_CONFIG_ACTIVE=0
+
+codex_config_init() {
+    local port="${DEECODEX_PORT:-4446}"
+    [ ! -f "$CODEX_CONFIG" ] && return 0
+
+    local is_openai_version=true
+    if grep -q "# === 以下由 deecodex 自动管理 ===" "$CODEX_CONFIG" 2>/dev/null; then
+        is_openai_version=false
+    fi
+
+    if [ ! -f "$CODEX_CONFIG_OPENAI" ]; then
+        cp "$CODEX_CONFIG" "$CODEX_CONFIG_OPENAI"
+        echo "已创建 $CODEX_CONFIG_OPENAI"
+    elif $is_openai_version; then
+        cp "$CODEX_CONFIG" "$CODEX_CONFIG_OPENAI"
+        echo "已同步 $CODEX_CONFIG → $CODEX_CONFIG_OPENAI"
+    fi
+
+    rm -f "$CODEX_CONFIG_DEECODEX"
+    cp "$CODEX_CONFIG_OPENAI" "$CODEX_CONFIG_DEECODEX"
+
+    sed -i '' "/^model_reasoning_effort/a\\
+model_provider = \"custom\"
+" "$CODEX_CONFIG_DEECODEX"
+
+    cat >> "$CODEX_CONFIG_DEECODEX" << 'CODEX_EOF'
+
+# === 以下由 deecodex 自动管理 ===
+[model_providers.custom]
+base_url = "http://127.0.0.1:__DEECODEX_PORT__/v1"
+name = "custom"
+requires_openai_auth = false
+api_key = "deecodex-local"
+wire_api = "responses"
+CODEX_EOF
+    sed -i '' "s|__DEECODEX_PORT__|$port|g" "$CODEX_CONFIG_DEECODEX"
+    echo "已更新 $CODEX_CONFIG_DEECODEX (端口: $port)"
+}
+
+codex_config_switch_to_deecodex() {
+    [ -f "$CODEX_CONFIG_DEECODEX" ] || return 0
+    cp "$CODEX_CONFIG_DEECODEX" "$CODEX_CONFIG"
+    _DEECODEX_CONFIG_ACTIVE=1
+    echo "Codex 配置 → deecodex"
+}
+
+codex_config_switch_to_openai() {
+    [ -f "$CODEX_CONFIG_OPENAI" ] || return 0
+    cp "$CODEX_CONFIG_OPENAI" "$CODEX_CONFIG"
+    _DEECODEX_CONFIG_ACTIVE=0
+    echo "Codex 配置 → OpenAI"
+}
+
+cleanup_config() {
+    if [ "${_CLEANUP_RUN:-0}" -eq 1 ]; then
+        return
+    fi
+    _CLEANUP_RUN=1
+    if [ "${_DEECODEX_CONFIG_ACTIVE:-0}" -eq 1 ]; then
+        echo "中断信号，正在还原配置..."
+        codex_config_switch_to_openai
+    fi
+    if is_running; then
+        kill "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null || true
+        rm -f "$PID_FILE"
+    fi
+}
+
+trap cleanup_config INT TERM
+
 usage() {
     echo "用法: $0 {start|stop|restart|status|logs|health}"
     exit 1
@@ -36,12 +111,16 @@ map_env() {
     DEECODEX_API_KEY="${DEECODEX_API_KEY:-${CODEX_RELAY_API_KEY:-}}"
     DEECODEX_PORT="${DEECODEX_PORT:-${CODEX_RELAY_PORT:-4446}}"
     DEECODEX_MODEL_MAP="${DEECODEX_MODEL_MAP:-${CODEX_RELAY_MODEL_MAP:-}}"
+    DEECODEX_CLIENT_API_KEY="${DEECODEX_CLIENT_API_KEY:-${CODEX_RELAY_CLIENT_API_KEY:-${DEECODEX_API_KEY:-}}}"
+    DEECODEX_PROMPTS_DIR="${DEECODEX_PROMPTS_DIR:-${CODEX_RELAY_PROMPTS_DIR:-prompts}}"
 
     # 反向导出 CODEX_RELAY_* 供二进制使用（二进制通过 clap env 属性读取 CODEX_RELAY_*）
     export CODEX_RELAY_UPSTREAM="${DEECODEX_UPSTREAM}"
     export CODEX_RELAY_API_KEY="${DEECODEX_API_KEY}"
     export CODEX_RELAY_PORT="${DEECODEX_PORT}"
     export CODEX_RELAY_MODEL_MAP="${DEECODEX_MODEL_MAP}"
+    export CODEX_RELAY_CLIENT_API_KEY="${DEECODEX_CLIENT_API_KEY}"
+    export CODEX_RELAY_PROMPTS_DIR="${DEECODEX_PROMPTS_DIR}"
     export CODEX_RELAY_VISION_UPSTREAM="${DEECODEX_VISION_UPSTREAM:-}"
     export CODEX_RELAY_VISION_API_KEY="${DEECODEX_VISION_API_KEY:-}"
     export CODEX_RELAY_VISION_MODEL="${DEECODEX_VISION_MODEL:-MiniMax-M1}"
@@ -97,6 +176,8 @@ cmd_start() {
     fi
     load_env
     map_env
+    codex_config_init
+    codex_config_switch_to_deecodex
     rotate_logs
     local port="${DEECODEX_PORT:-4446}"
     echo "启动 deecodex (端口: $port, 二进制: $(command -v "$BIN"))..."
@@ -118,12 +199,14 @@ cmd_start() {
     done
     echo "启动失败，查看日志: tail -20 $LOG_FILE"
     rm -f "$PID_FILE"
+    codex_config_switch_to_openai
     return 1
 }
 
 cmd_stop() {
     if ! is_running; then
         echo "deecodex 未运行"
+        codex_config_switch_to_openai
         rm -f "$PID_FILE"
         return 0
     fi
@@ -135,6 +218,7 @@ cmd_stop() {
     while [ $waited -lt "$GRACEFUL_TIMEOUT" ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "已停止 (优雅退出, 耗时 ${waited}s)"
+            codex_config_switch_to_openai
             rm -f "$PID_FILE"
             return 0
         fi
@@ -149,6 +233,7 @@ cmd_stop() {
         return 1
     fi
     echo "已强制停止"
+    codex_config_switch_to_openai
     rm -f "$PID_FILE"
 }
 
