@@ -233,15 +233,15 @@ pub fn translate_stream(
                                                 .data(json!({
                                                     "type": "response.output_item.added",
                                                     "output_index": 0,
-                                                    "item": { "type": "reasoning", "id": &reasoning_item_id, "status": "in_progress" }
+                                                    "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
                                                 }).to_string()));
                                             emitted_reasoning_item = true;
                                         }
                                         accumulated_reasoning.push_str(rc);
                                         yield Ok(Event::default()
-                                            .event("response.reasoning_text.delta")
+                                            .event("response.reasoning_summary_text.delta")
                                             .data(json!({
-                                                "type": "response.reasoning_text.delta",
+                                                "type": "response.reasoning_summary_text.delta",
                                                 "item_id": &reasoning_item_id,
                                                 "output_index": 0,
                                                 "content_index": 0,
@@ -346,7 +346,7 @@ pub fn translate_stream(
                         "type": "reasoning",
                         "id": &reasoning_item_id,
                         "status": "completed",
-                        "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
+                        "content": [{"type": "summary_text", "text": &accumulated_reasoning}]
                     }
                 }).to_string()));
         }
@@ -494,7 +494,7 @@ pub fn translate_stream(
                 "type": "reasoning",
                 "id": &reasoning_item_id,
                 "status": "completed",
-                "content": [{"type": "reasoning_text", "text": &accumulated_reasoning}]
+                "content": [{"type": "summary_text", "text": &accumulated_reasoning}]
             }));
         }
         if emitted_message_item {
@@ -598,13 +598,13 @@ pub fn translate_cached(
                 .data(json!({
                     "type": "response.output_item.added",
                     "output_index": output_index,
-                    "item": { "type": "reasoning", "id": &reasoning_item_id, "status": "in_progress" }
+                    "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
                 }).to_string()));
 
             yield Ok(Event::default()
-                .event("response.reasoning_text.delta")
+                .event("response.reasoning_summary_text.delta")
                 .data(json!({
-                    "type": "response.reasoning_text.delta",
+                    "type": "response.reasoning_summary_text.delta",
                     "item_id": &reasoning_item_id,
                     "output_index": output_index,
                     "content_index": 0,
@@ -620,7 +620,7 @@ pub fn translate_cached(
                         "type": "reasoning",
                         "id": &reasoning_item_id,
                         "status": "completed",
-                        "content": [{"type": "reasoning_text", "text": &cached.reasoning}]
+                        "content": [{"type": "summary_text", "text": &cached.reasoning}]
                     }
                 }).to_string()));
 
@@ -713,8 +713,8 @@ pub fn translate_cached(
         let mut output_items: Vec<Value> = Vec::new();
         if !cached.reasoning.is_empty() {
             output_items.push(json!({
-                "type": "reasoning", "id": &reasoning_item_id, "status": "completed",
-                "content": [{"type": "reasoning_text", "text": &cached.reasoning}]
+                "type": "reasoning_summary", "id": &reasoning_item_id, "status": "completed", "summary_index": 0,
+                "content": [{"type": "summary_text", "text": &cached.reasoning}]
             }));
         }
         if !cached.text.is_empty() || cached.tool_calls.is_empty() {

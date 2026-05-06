@@ -387,14 +387,14 @@ fn replay_response_stream(
                 "reasoning" => {
                     if let Some(content) = item.get("content").and_then(Value::as_array) {
                         for (content_idx, part) in content.iter().enumerate() {
-                            if part.get("type").and_then(Value::as_str) == Some("reasoning_text") {
+                            if part.get("type").and_then(Value::as_str) .map_or(false, |s| s == "reasoning_text" || s == "summary_text") {
                                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
                                 if !text.is_empty() {
                                     push_replay_event(
                                         &mut events,
-                                        "response.reasoning_text.delta",
+                                        "response.reasoning_summary_text.delta",
                                         json!({
-                                            "type": "response.reasoning_text.delta",
+                                            "type": "response.reasoning_summary_text.delta",
                                             "item_id": item.get("id").and_then(Value::as_str).unwrap_or(""),
                                             "output_index": idx,
                                             "content_index": content_idx,
