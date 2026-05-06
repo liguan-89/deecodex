@@ -15,6 +15,7 @@ fn test_state() -> AppState {
         client: reqwest::Client::builder().build().unwrap(),
         upstream: Arc::new(reqwest::Url::parse("https://example.com").unwrap()),
         api_key: Arc::new("test".into()),
+        client_api_key: Arc::new(String::new()),
         model_map: Arc::new(std::collections::HashMap::new()),
         vision_upstream: None,
         vision_api_key: Arc::new(String::new()),
@@ -22,6 +23,9 @@ fn test_state() -> AppState {
         vision_endpoint: Arc::new("v1/test".into()),
         start_time: Instant::now(),
         request_cache: deecodex::cache::RequestCache::default(),
+        prompts: Arc::new(deecodex::prompts::PromptRegistry::new("prompts")),
+        files: deecodex::files::FileStore::new(),
+        vector_stores: deecodex::vector_stores::VectorStoreRegistry::new(),
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: false,
     }

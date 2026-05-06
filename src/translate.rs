@@ -130,7 +130,8 @@ pub fn to_chat_request(
                         "function_call_output"
                         | "mcp_tool_call_output"
                         | "custom_tool_call_output"
-                        | "tool_search_output" => {
+                        | "tool_search_output"
+                        | "computer_call_output" => {
                             let call_id =
                                 item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
                             let success = item
@@ -270,7 +271,10 @@ pub fn to_chat_request(
         .iter()
         .filter(|t| {
             let typ = t.get("type").and_then(Value::as_str).unwrap_or("");
-            typ != "web_search" && typ != "web_search_preview"
+            !matches!(
+                typ,
+                "web_search" | "web_search_preview" | "file_search" | "file_search_preview"
+            )
         })
         .flat_map(|t| {
             let converted = convert_tool(t);
@@ -528,6 +532,80 @@ fn convert_tool(tool: &Value) -> Value {
             })
         }
 
+        "computer_use" | "computer_use_preview" => {
+            let display_width = obj
+                .get("display_width")
+                .and_then(Value::as_u64)
+                .unwrap_or(1024);
+            let display_height = obj
+                .get("display_height")
+                .and_then(Value::as_u64)
+                .unwrap_or(768);
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "local_computer",
+                    "description": format!(
+                        "Bridge for Responses computer_use. Request one local browser/computer action for a {display_width}x{display_height} display and wait for a computer_call_output screenshot before continuing."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["screenshot", "click", "double_click", "scroll", "keypress", "type", "wait", "open_url"],
+                                "description": "Computer action type."
+                            },
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "button": {"type": "string"},
+                            "scroll_x": {"type": "number"},
+                            "scroll_y": {"type": "number"},
+                            "keys": {"type": "array", "items": {"type": "string"}},
+                            "text": {"type": "string"},
+                            "url": {"type": "string"}
+                        },
+                        "required": ["type"]
+                    }
+                }
+            })
+        }
+
+        "mcp" | "remote_mcp" => {
+            let server_label = obj
+                .get("server_label")
+                .or_else(|| obj.get("server_url"))
+                .and_then(Value::as_str)
+                .unwrap_or("remote_mcp");
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "local_mcp_call",
+                    "description": format!(
+                        "Bridge for Responses remote MCP tool calls against {server_label}. Return a tool name and JSON arguments for the local MCP executor."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "server_label": {
+                                "type": "string",
+                                "description": "MCP server label or URL."
+                            },
+                            "tool": {
+                                "type": "string",
+                                "description": "MCP tool name to call."
+                            },
+                            "arguments": {
+                                "type": "object",
+                                "description": "JSON arguments for the MCP tool."
+                            }
+                        },
+                        "required": ["tool", "arguments"]
+                    }
+                }
+            })
+        }
+
         // Unknown type → best-effort
         _ => {
             let mut func = serde_json::Map::new();
@@ -600,6 +678,7 @@ pub fn from_chat_response(
             call_id: None,
             name: None,
             arguments: None,
+            action: None,
             status: Some("completed".into()),
             phase: None,
         });
@@ -618,6 +697,7 @@ pub fn from_chat_response(
             call_id: None,
             name: None,
             arguments: None,
+            action: None,
             status: None,
             phase: None,
         });
@@ -625,8 +705,21 @@ pub fn from_chat_response(
 
     for tool_call in &tool_calls {
         let function = tool_call.get("function").unwrap_or(&Value::Null);
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let arguments = function
+            .get("arguments")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let is_computer_call = name == "local_computer";
         output.push(ResponsesOutputItem {
-            kind: "function_call".into(),
+            kind: if is_computer_call {
+                "computer_call".into()
+            } else {
+                "function_call".into()
+            },
             role: None,
             content: Vec::new(),
             id: tool_call
@@ -637,14 +730,24 @@ pub fn from_chat_response(
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            name: function
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            arguments: function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            name: if is_computer_call {
+                None
+            } else {
+                Some(name.to_string())
+            },
+            arguments: if is_computer_call {
+                None
+            } else {
+                arguments.clone()
+            },
+            action: if is_computer_call {
+                arguments
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .or_else(|| Some(json!({"type": "unknown"})))
+            } else {
+                None
+            },
             status: Some("completed".into()),
             phase: None,
         });

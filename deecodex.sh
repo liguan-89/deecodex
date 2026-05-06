@@ -44,17 +44,24 @@ codex_config_init() {
 model_provider = \"custom\"
 " "$CODEX_CONFIG_DEECODEX"
 
+    local requires_openai_auth="false"
+    if [ -n "${DEECODEX_CLIENT_API_KEY:-}" ]; then
+        requires_openai_auth="true"
+    fi
+
     cat >> "$CODEX_CONFIG_DEECODEX" << 'CODEX_EOF'
 
 # === 以下由 deecodex 自动管理 ===
 [model_providers.custom]
 base_url = "http://127.0.0.1:__DEECODEX_PORT__/v1"
 name = "custom"
-requires_openai_auth = false
-api_key = "deecodex-local"
+requires_openai_auth = __DEECODEX_REQUIRES_OPENAI_AUTH__
+api_key = "__DEECODEX_CLIENT_API_KEY__"
 wire_api = "responses"
 CODEX_EOF
     sed -i '' "s|__DEECODEX_PORT__|$port|g" "$CODEX_CONFIG_DEECODEX"
+    sed -i '' "s|__DEECODEX_REQUIRES_OPENAI_AUTH__|${requires_openai_auth}|g" "$CODEX_CONFIG_DEECODEX"
+    sed -i '' "s|__DEECODEX_CLIENT_API_KEY__|${DEECODEX_CLIENT_API_KEY}|g" "$CODEX_CONFIG_DEECODEX"
     echo "已更新 $CODEX_CONFIG_DEECODEX (端口: $port)"
 }
 
@@ -111,7 +118,7 @@ map_env() {
     DEECODEX_API_KEY="${DEECODEX_API_KEY:-${CODEX_RELAY_API_KEY:-}}"
     DEECODEX_PORT="${DEECODEX_PORT:-${CODEX_RELAY_PORT:-4446}}"
     DEECODEX_MODEL_MAP="${DEECODEX_MODEL_MAP:-${CODEX_RELAY_MODEL_MAP:-}}"
-    DEECODEX_CLIENT_API_KEY="${DEECODEX_CLIENT_API_KEY:-${CODEX_RELAY_CLIENT_API_KEY:-${DEECODEX_API_KEY:-}}}"
+    DEECODEX_CLIENT_API_KEY="${DEECODEX_CLIENT_API_KEY-${CODEX_RELAY_CLIENT_API_KEY-}}"
     DEECODEX_PROMPTS_DIR="${DEECODEX_PROMPTS_DIR:-${CODEX_RELAY_PROMPTS_DIR:-prompts}}"
 
     # 反向导出 CODEX_RELAY_* 供二进制使用（二进制通过 clap env 属性读取 CODEX_RELAY_*）

@@ -94,8 +94,15 @@ impl SessionStore {
                 }
             }
             let combined_key = Self::turn_key(assistant);
-            if self.turn_reasoning.insert(combined_key, reasoning.clone()).is_none() {
-                self.turn_reasoning_order.lock().unwrap().push_back(combined_key);
+            if self
+                .turn_reasoning
+                .insert(combined_key, reasoning.clone())
+                .is_none()
+            {
+                self.turn_reasoning_order
+                    .lock()
+                    .unwrap()
+                    .push_back(combined_key);
             }
             // Also store under content-only key for text-only assistant lookup
             let content = assistant
@@ -105,8 +112,15 @@ impl SessionStore {
                 .unwrap_or("");
             if !content.is_empty() {
                 let content_key = Self::content_key(content);
-                if self.turn_reasoning.insert(content_key, reasoning.clone()).is_none() {
-                    self.turn_reasoning_order.lock().unwrap().push_back(content_key);
+                if self
+                    .turn_reasoning
+                    .insert(content_key, reasoning.clone())
+                    .is_none()
+                {
+                    self.turn_reasoning_order
+                        .lock()
+                        .unwrap()
+                        .push_back(content_key);
                 }
             }
             // Also store under each individual tool call_id for direct lookup
@@ -258,7 +272,10 @@ impl SessionStore {
     }
 
     pub fn save_input_items(&self, response_id: String, items: Vec<Value>) {
-        let is_new = self.input_items.insert(response_id.clone(), items).is_none();
+        let is_new = self
+            .input_items
+            .insert(response_id.clone(), items)
+            .is_none();
         if is_new {
             self.response_order.lock().unwrap().push_back(response_id);
         }
@@ -276,9 +293,15 @@ impl SessionStore {
     }
 
     pub fn save_conversation(&self, conversation_id: String, messages: Vec<ChatMessage>) {
-        let is_new = self.conversations.insert(conversation_id.clone(), messages).is_none();
+        let is_new = self
+            .conversations
+            .insert(conversation_id.clone(), messages)
+            .is_none();
         if is_new {
-            self.conversation_order.lock().unwrap().push_back(conversation_id);
+            self.conversation_order
+                .lock()
+                .unwrap()
+                .push_back(conversation_id);
         }
         if self.conversations.len() >= MAX_SESSIONS {
             if let Some(oldest) = self.conversation_order.lock().unwrap().pop_front() {
@@ -289,9 +312,15 @@ impl SessionStore {
     }
 
     pub fn save_conversation_items(&self, conversation_id: String, items: Vec<Value>) {
-        let is_new = self.conversation_items.insert(conversation_id.clone(), items).is_none();
+        let is_new = self
+            .conversation_items
+            .insert(conversation_id.clone(), items)
+            .is_none();
         if is_new {
-            self.conversation_order.lock().unwrap().push_back(conversation_id);
+            self.conversation_order
+                .lock()
+                .unwrap()
+                .push_back(conversation_id);
         }
         if self.conversation_items.len() >= MAX_SESSIONS {
             if let Some(oldest) = self.conversation_order.lock().unwrap().pop_front() {

@@ -1,8 +1,11 @@
 pub mod cache;
+pub mod files;
 pub mod handlers;
+pub mod prompts;
 pub mod session;
 pub mod sse;
 pub mod stream;
 pub mod translate;
 pub mod types;
 pub mod utils;
+pub mod vector_stores;

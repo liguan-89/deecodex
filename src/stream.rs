@@ -776,8 +776,7 @@ mod tests {
                         data = val.to_string();
                     }
                 }
-                let data_value: serde_json::Value =
-                    serde_json::from_str(&data).unwrap_or_default();
+                let data_value: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
                 (event_type, data_value)
             })
             .collect()
@@ -861,10 +860,7 @@ mod tests {
         assert_eq!(events[2].1["delta"], "Let me think...");
         assert_eq!(events[3].0, "response.output_item.done");
         assert_eq!(events[3].1["item"]["type"], "reasoning");
-        assert_eq!(
-            events[3].1["item"]["content"][0]["text"],
-            "Let me think..."
-        );
+        assert_eq!(events[3].1["item"]["content"][0]["text"], "Let me think...");
         // then message
         assert_eq!(events[4].0, "response.output_item.added");
         assert_eq!(events[4].1["item"]["type"], "message");

@@ -1,13 +1,14 @@
 use crate::cache::RequestCache;
 use crate::session::SessionStore;
-use crate::utils::{limit_function_call_outputs, merge_response_extra};
 use crate::types::*;
-use crate::{stream, translate};
+use crate::utils::{limit_function_call_outputs, merge_response_extra};
+use crate::{files, prompts, stream, translate, vector_stores};
 use anyhow::{bail, Result};
 use axum::{
-    extract::{Path, Query, Request, State},
+    extract::{Multipart, Path, Query, Request, State},
     http::header,
     http::StatusCode,
+    middleware::{from_fn_with_state, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -30,6 +31,7 @@ pub struct AppState {
     pub client: Client,
     pub upstream: Arc<Url>,
     pub api_key: Arc<String>,
+    pub client_api_key: Arc<String>,
     pub model_map: Arc<ModelMap>,
     pub vision_upstream: Option<Arc<Url>>,
     pub vision_api_key: Arc<String>,
@@ -37,6 +39,9 @@ pub struct AppState {
     pub vision_endpoint: Arc<String>,
     pub start_time: std::time::Instant,
     pub request_cache: RequestCache,
+    pub prompts: Arc<prompts::PromptRegistry>,
+    pub files: files::FileStore,
+    pub vector_stores: vector_stores::VectorStoreRegistry,
     pub background_tasks: Arc<dashmap::DashMap<String, tokio::task::JoinHandle<()>>>,
     pub chinese_thinking: bool,
 }
@@ -83,6 +88,46 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/responses/:response_id/input_items",
             get(handle_input_items),
         )
+        .route("/v1/prompts", get(handle_list_prompts))
+        .route("/v1/prompts/:prompt_id", get(handle_get_prompt))
+        .route("/v1/files", get(handle_list_files).post(handle_create_file))
+        .route(
+            "/v1/files/:file_id",
+            get(handle_get_file).delete(handle_delete_file),
+        )
+        .route("/v1/files/:file_id/content", get(handle_get_file_content))
+        .route(
+            "/v1/vector_stores",
+            get(handle_list_vector_stores).post(handle_create_vector_store),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id",
+            get(handle_get_vector_store).delete(handle_delete_vector_store),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/files",
+            get(handle_list_vector_store_files).post(handle_create_vector_store_file),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/files/:file_id",
+            get(handle_get_vector_store_file).delete(handle_delete_vector_store_file),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/file_batches",
+            post(handle_create_vector_store_file_batch),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/file_batches/:batch_id",
+            get(handle_get_vector_store_file_batch),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/file_batches/:batch_id/cancel",
+            post(handle_cancel_vector_store_file_batch),
+        )
+        .route(
+            "/v1/vector_stores/:vector_store_id/file_batches/:batch_id/files",
+            get(handle_list_vector_store_file_batch_files),
+        )
         .route("/v1/conversations", post(handle_create_conversation))
         .route(
             "/v1/conversations/:conversation_id",
@@ -96,6 +141,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
         .fallback(handle_fallback)
+        .layer(from_fn_with_state(state.clone(), require_client_auth))
         .with_state(state)
 }
 
@@ -134,6 +180,45 @@ async fn handle_v1() -> Response {
     Json(serde_json::json!({"status": "ok"})).into_response()
 }
 
+async fn require_client_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if path == "/health" || path == "/v1" {
+        return next.run(req).await;
+    }
+    if state.client_api_key.is_empty() {
+        return next.run(req).await;
+    }
+    let authorized = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| authorization_matches(value, state.client_api_key.as_str()));
+    if authorized {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "Missing or invalid Authorization header",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })),
+        )
+            .into_response()
+    }
+}
+
+fn authorization_matches(header_value: &str, expected: &str) -> bool {
+    header_value
+        .strip_prefix("Bearer ")
+        .or_else(|| header_value.strip_prefix("bearer "))
+        .unwrap_or(header_value)
+        .trim()
+        == expected
+}
+
 #[derive(Debug, Deserialize)]
 struct RetrieveResponseQuery {
     #[serde(default)]
@@ -156,6 +241,27 @@ struct InputItemsQuery {
     order: Option<String>,
     #[serde(default)]
     include: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CreateVectorStoreRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    file_ids: Vec<String>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CreateVectorStoreFileRequest {
+    file_id: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CreateVectorStoreFileBatchRequest {
+    #[serde(default)]
+    file_ids: Vec<String>,
 }
 
 async fn handle_get_response(
@@ -255,7 +361,11 @@ fn replay_response_stream(
                 "reasoning" => {
                     if let Some(content) = item.get("content").and_then(Value::as_array) {
                         for (content_idx, part) in content.iter().enumerate() {
-                            if part.get("type").and_then(Value::as_str) .is_some_and(|s| s == "reasoning_text" || s == "summary_text") {
+                            if part
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| s == "reasoning_text" || s == "summary_text")
+                            {
                                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
                                 if !text.is_empty() {
                                     push_replay_event(
@@ -473,16 +583,16 @@ fn list_items_response(
 }
 
 async fn handle_input_tokens(body: axum::body::Bytes) -> Response {
-    let approx = match serde_json::from_slice::<ResponsesRequest>(&body) {
-        Ok(req) => approximate_input_tokens(&req),
+    let tokens = match serde_json::from_slice::<ResponsesRequest>(&body) {
+        Ok(req) => count_input_tokens(&req),
         Err(_) => match serde_json::from_slice::<Value>(&body) {
-            Ok(value) => approximate_value_tokens(&value),
+            Ok(value) => count_value_tokens(&value),
             Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
         },
     };
     Json(json!({
         "object": "response.input_tokens",
-        "input_tokens": approx
+        "input_tokens": tokens
     }))
     .into_response()
 }
@@ -666,6 +776,260 @@ async fn handle_models(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn handle_list_prompts(State(state): State<AppState>) -> Response {
+    Json(state.prompts.list_prompts()).into_response()
+}
+
+async fn handle_get_prompt(
+    State(state): State<AppState>,
+    Path(prompt_id): Path<String>,
+) -> Response {
+    match state.prompts.retrieve_prompt(&prompt_id) {
+        Ok(prompt) => Json(prompt).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_list_files(State(state): State<AppState>) -> Response {
+    Json(state.files.list()).into_response()
+}
+
+async fn handle_get_file(State(state): State<AppState>, Path(file_id): Path<String>) -> Response {
+    match state.files.get_object(&file_id) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_get_file_content(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Response {
+    match state.files.get_content(&file_id) {
+        Ok((bytes, content_type)) => {
+            let headers = [(header::CONTENT_TYPE, content_type)];
+            (headers, bytes).into_response()
+        }
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_delete_file(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Response {
+    match state.files.delete(&file_id) {
+        Ok(deleted) => Json(deleted).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_create_file(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+    let mut purpose = "assistants".to_string();
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut filename = "file".to_string();
+    let mut content_type = "application/octet-stream".to_string();
+
+    while let Some(field) = match multipart.next_field().await {
+        Ok(field) => field,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": format!("Invalid multipart upload: {e}"),
+                        "type": "invalid_request_error",
+                        "param": "file",
+                        "code": "invalid_multipart"
+                    }
+                })),
+            )
+                .into_response()
+        }
+    } {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "purpose" {
+            purpose = field.text().await.unwrap_or_else(|_| purpose.clone());
+            continue;
+        }
+        if name == "file" {
+            filename = field.file_name().unwrap_or("file").to_string();
+            content_type = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            match field.bytes().await {
+                Ok(bytes) => file_bytes = Some(bytes.to_vec()),
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": {
+                                "message": format!("Failed to read uploaded file: {e}"),
+                                "type": "invalid_request_error",
+                                "param": "file",
+                                "code": "invalid_file"
+                            }
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+    }
+
+    let Some(bytes) = file_bytes else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "multipart field `file` is required",
+                    "type": "invalid_request_error",
+                    "param": "file",
+                    "code": "missing_file"
+                }
+            })),
+        )
+            .into_response();
+    };
+
+    match state
+        .files
+        .insert(filename, purpose, content_type, bytes, now_unix_secs())
+    {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_list_vector_stores(State(state): State<AppState>) -> Response {
+    Json(state.vector_stores.list()).into_response()
+}
+
+async fn handle_create_vector_store(
+    State(state): State<AppState>,
+    Json(req): Json<CreateVectorStoreRequest>,
+) -> Response {
+    Json(state.vector_stores.create(
+        req.name,
+        req.file_ids,
+        req.metadata.unwrap_or_else(|| json!({})),
+        now_unix_secs(),
+    ))
+    .into_response()
+}
+
+async fn handle_get_vector_store(
+    State(state): State<AppState>,
+    Path(vector_store_id): Path<String>,
+) -> Response {
+    match state.vector_stores.get(&vector_store_id) {
+        Ok(store) => Json(store).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_delete_vector_store(
+    State(state): State<AppState>,
+    Path(vector_store_id): Path<String>,
+) -> Response {
+    match state.vector_stores.delete(&vector_store_id) {
+        Ok(deleted) => Json(deleted).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_create_vector_store_file(
+    State(state): State<AppState>,
+    Path(vector_store_id): Path<String>,
+    Json(req): Json<CreateVectorStoreFileRequest>,
+) -> Response {
+    match state.vector_stores.add_file(&vector_store_id, req.file_id) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_list_vector_store_files(
+    State(state): State<AppState>,
+    Path(vector_store_id): Path<String>,
+) -> Response {
+    match state.vector_stores.list_files(&vector_store_id) {
+        Ok(files) => Json(files).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_get_vector_store_file(
+    State(state): State<AppState>,
+    Path((vector_store_id, file_id)): Path<(String, String)>,
+) -> Response {
+    match state.vector_stores.get_file(&vector_store_id, &file_id) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_delete_vector_store_file(
+    State(state): State<AppState>,
+    Path((vector_store_id, file_id)): Path<(String, String)>,
+) -> Response {
+    match state.vector_stores.delete_file(&vector_store_id, &file_id) {
+        Ok(deleted) => Json(deleted).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_create_vector_store_file_batch(
+    State(state): State<AppState>,
+    Path(vector_store_id): Path<String>,
+    Json(req): Json<CreateVectorStoreFileBatchRequest>,
+) -> Response {
+    match state
+        .vector_stores
+        .create_batch(&vector_store_id, req.file_ids, now_unix_secs())
+    {
+        Ok(batch) => Json(batch).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_get_vector_store_file_batch(
+    State(state): State<AppState>,
+    Path((vector_store_id, batch_id)): Path<(String, String)>,
+) -> Response {
+    match state.vector_stores.get_batch(&vector_store_id, &batch_id) {
+        Ok(batch) => Json(batch).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_cancel_vector_store_file_batch(
+    State(state): State<AppState>,
+    Path((vector_store_id, batch_id)): Path<(String, String)>,
+) -> Response {
+    match state
+        .vector_stores
+        .cancel_batch(&vector_store_id, &batch_id)
+    {
+        Ok(batch) => Json(batch).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn handle_list_vector_store_file_batch_files(
+    State(state): State<AppState>,
+    Path((vector_store_id, batch_id)): Path<(String, String)>,
+) -> Response {
+    match state
+        .vector_stores
+        .list_batch_files(&vector_store_id, &batch_id)
+    {
+        Ok(files) => Json(files).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
 async fn handle_fallback(req: Request) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
@@ -677,7 +1041,7 @@ async fn handle_fallback(req: Request) -> Response {
 }
 
 async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
-    let req: ResponsesRequest = match serde_json::from_slice(&body) {
+    let mut req: ResponsesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             let mut hasher = DefaultHasher::new();
@@ -691,6 +1055,16 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
             return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response();
         }
     };
+    if let Err(err) = state.prompts.apply_to_request(&mut req) {
+        return err.into_response();
+    }
+    if let Err(err) = state.files.resolve_request_files(&mut req) {
+        return err.into_response();
+    }
+    let file_search_filter = state.vector_stores.file_ids_for_tools(&req.tools);
+    state
+        .files
+        .inject_file_search_context(&mut req, file_search_filter.as_ref());
 
     let original_model = req.model.clone();
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
@@ -1365,22 +1739,42 @@ fn response_input_items(req: &ResponsesRequest) -> Vec<Value> {
     }
 }
 
-fn approximate_input_tokens(req: &ResponsesRequest) -> u32 {
-    let mut chars = req.model.len()
-        + req.instructions.as_deref().unwrap_or("").len()
-        + req.system.as_deref().unwrap_or("").len();
-    match &req.input {
-        ResponsesInput::Text(text) => chars += text.len(),
-        ResponsesInput::Messages(items) => {
-            chars += serde_json::to_string(items).unwrap_or_default().len();
-        }
-    }
-    chars.div_ceil(4).max(1) as u32
+fn count_input_tokens(req: &ResponsesRequest) -> u32 {
+    count_tokens(&req.model, &input_token_text(req))
 }
 
-fn approximate_value_tokens(value: &Value) -> u32 {
-    let chars = serde_json::to_string(value).unwrap_or_default().len();
-    chars.div_ceil(4).max(1) as u32
+fn count_value_tokens(value: &Value) -> u32 {
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("gpt-4o");
+    let text = serde_json::to_string(value).unwrap_or_default();
+    count_tokens(model, &text)
+}
+
+fn count_tokens(model: &str, text: &str) -> u32 {
+    if let Ok(bpe) = tiktoken_rs::bpe_for_model(model) {
+        return bpe.encode_with_special_tokens(text).len().max(1) as u32;
+    }
+    match tiktoken_rs::cl100k_base() {
+        Ok(bpe) => bpe.encode_with_special_tokens(text).len().max(1) as u32,
+        Err(_) => text.chars().count().div_ceil(4).max(1) as u32,
+    }
+}
+
+fn input_token_text(req: &ResponsesRequest) -> String {
+    let mut text = String::new();
+    if let Some(instructions) = req.instructions.as_deref().or(req.system.as_deref()) {
+        text.push_str(instructions);
+        text.push('\n');
+    }
+    match &req.input {
+        ResponsesInput::Text(input) => text.push_str(input),
+        ResponsesInput::Messages(items) => {
+            text.push_str(&serde_json::to_string(items).unwrap_or_default());
+        }
+    }
+    text
 }
 
 /// Extract prompt text and image data URL for MiniMax VLM endpoint.
@@ -1528,8 +1922,8 @@ async fn handle_vlm(args: VlmArgs) -> Response {
         return Json(response_obj).into_response();
     }
 
-    use axum::response::sse::{Event, KeepAlive, Sse};
     use crate::sse::SseState;
+    use axum::response::sse::{Event, KeepAlive, Sse};
     let mut vss = SseState::new();
     let vlm_oi = vss.alloc_output_index();
 
@@ -1639,8 +2033,16 @@ mod tests {
     }
 
     #[test]
-    fn test_approximate_value_tokens_accepts_partial_body() {
-        let tokens = approximate_value_tokens(&json!({"input": "hello"}));
+    fn test_authorization_matches_bearer_token() {
+        assert!(authorization_matches("Bearer abc", "abc"));
+        assert!(authorization_matches("bearer abc", "abc"));
+        assert!(authorization_matches("abc", "abc"));
+        assert!(!authorization_matches("Bearer abc", "def"));
+    }
+
+    #[test]
+    fn test_count_value_tokens_accepts_partial_body() {
+        let tokens = count_value_tokens(&json!({"input": "hello"}));
         assert!(tokens > 0);
     }
 }

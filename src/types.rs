@@ -124,6 +124,8 @@ pub struct ResponsesOutputItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
@@ -303,10 +305,7 @@ pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
         "none" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
-        "medium" => (
-            None,
-            Some(serde_json::json!({"type": "disabled"})),
-        ),
+        "medium" => (None, Some(serde_json::json!({"type": "disabled"}))),
         "high" => (
             Some("high".into()),
             Some(serde_json::json!({"type": "enabled"})),

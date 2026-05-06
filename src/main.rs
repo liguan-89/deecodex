@@ -1,11 +1,14 @@
 mod cache;
+mod files;
+mod handlers;
+mod prompts;
 mod session;
 mod sse;
 mod stream;
 mod translate;
 mod types;
 mod utils;
-mod handlers;
+mod vector_stores;
 
 use std::io::{self, Write};
 
@@ -32,6 +35,10 @@ struct Args {
     #[arg(long, env = "CODEX_RELAY_API_KEY", default_value = "")]
     api_key: String,
 
+    /// Client-facing bearer token required by local callers. Empty disables local auth.
+    #[arg(long, env = "CODEX_RELAY_CLIENT_API_KEY", default_value = "")]
+    client_api_key: String,
+
     #[arg(long, env = "CODEX_RELAY_MODEL_MAP", default_value = "{}")]
     model_map: String,
 
@@ -56,6 +63,9 @@ struct Args {
 
     #[arg(long, env = "CODEX_RELAY_CHINESE_THINKING", default_value = "false")]
     chinese_thinking: bool,
+
+    #[arg(long, env = "CODEX_RELAY_PROMPTS_DIR", default_value = "prompts")]
+    prompts_dir: std::path::PathBuf,
 }
 
 struct FlushWriter<W: Write>(W);
@@ -98,7 +108,9 @@ async fn main() -> Result<()> {
     let vision_upstream = if args.vision_upstream.is_empty() {
         None
     } else {
-        Some(Arc::new(handlers::validate_upstream(&args.vision_upstream)?))
+        Some(Arc::new(handlers::validate_upstream(
+            &args.vision_upstream,
+        )?))
     };
     if vision_upstream.is_some() {
         info!("vision upstream configured: {}", args.vision_upstream);
@@ -113,6 +125,7 @@ async fn main() -> Result<()> {
             .build()?,
         upstream: Arc::new(upstream),
         api_key: Arc::new(args.api_key),
+        client_api_key: Arc::new(args.client_api_key),
         model_map: Arc::new(model_map),
         vision_upstream,
         vision_api_key: Arc::new(args.vision_api_key),
@@ -120,11 +133,22 @@ async fn main() -> Result<()> {
         vision_endpoint: Arc::new(args.vision_endpoint),
         start_time: std::time::Instant::now(),
         request_cache: crate::cache::RequestCache::default(),
+        prompts: Arc::new(crate::prompts::PromptRegistry::new(&args.prompts_dir)),
+        files: crate::files::FileStore::new(),
+        vector_stores: crate::vector_stores::VectorStoreRegistry::new(),
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: args.chinese_thinking,
     };
+    info!("local prompts registry: {}", args.prompts_dir.display());
     if args.chinese_thinking {
         info!("chinese thinking mode: enabled (system prompt will include Chinese instruction)");
+    }
+    if state.client_api_key.is_empty() {
+        tracing::warn!(
+            "client auth disabled because CODEX_RELAY_CLIENT_API_KEY and CODEX_RELAY_API_KEY are empty"
+        );
+    } else {
+        info!("client auth enabled for /v1 API routes");
     }
 
     let max_bytes = args.max_body_mb * 1024 * 1024;
