@@ -1,4 +1,6 @@
 mod cache;
+mod codex_config;
+mod config;
 mod files;
 mod handlers;
 mod metrics;
@@ -9,114 +11,22 @@ mod sse;
 mod stream;
 mod token_anomaly;
 mod translate;
+mod tui;
 mod types;
 mod utils;
 mod vector_stores;
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info};
 
-#[derive(Parser, Debug)]
-#[command(name = "deecodex", about = "Responses API <-> Chat Completions bridge")]
-struct Args {
-    #[arg(long, env = "CODEX_RELAY_PORT", default_value = "4444")]
-    port: u16,
-
-    #[arg(
-        long,
-        env = "CODEX_RELAY_UPSTREAM",
-        default_value = "https://openrouter.ai/api/v1"
-    )]
-    upstream: String,
-
-    #[arg(long, env = "CODEX_RELAY_API_KEY", default_value = "")]
-    api_key: String,
-
-    /// Client-facing bearer token required by local callers. Empty disables local auth.
-    #[arg(long, env = "CODEX_RELAY_CLIENT_API_KEY", default_value = "")]
-    client_api_key: String,
-
-    #[arg(long, env = "CODEX_RELAY_MODEL_MAP", default_value = "{}")]
-    model_map: String,
-
-    #[arg(long, env = "CODEX_RELAY_MAX_BODY_MB", default_value = "100")]
-    max_body_mb: usize,
-
-    #[arg(long, env = "CODEX_RELAY_VISION_UPSTREAM", default_value = "")]
-    vision_upstream: String,
-
-    #[arg(long, env = "CODEX_RELAY_VISION_API_KEY", default_value = "")]
-    vision_api_key: String,
-
-    #[arg(long, env = "CODEX_RELAY_VISION_MODEL", default_value = "MiniMax-M1")]
-    vision_model: String,
-
-    #[arg(
-        long,
-        env = "CODEX_RELAY_VISION_ENDPOINT",
-        default_value = "v1/coding_plan/vlm"
-    )]
-    vision_endpoint: String,
-
-    #[arg(long, env = "CODEX_RELAY_CHINESE_THINKING", default_value = "false")]
-    chinese_thinking: bool,
-
-    #[arg(long, env = "CODEX_RELAY_PROMPTS_DIR", default_value = "prompts")]
-    prompts_dir: std::path::PathBuf,
-
-    #[arg(long, env = "CODEX_RELAY_DATA_DIR", default_value = ".deecodex")]
-    data_dir: std::path::PathBuf,
-
-    /// Token anomaly: max prompt tokens before warning (0 disables).
-    #[arg(
-        long,
-        env = "CODEX_RELAY_TOKEN_ANOMALY_PROMPT_MAX",
-        default_value = "200000"
-    )]
-    token_anomaly_prompt_max: u32,
-
-    /// Token anomaly: prompt spike ratio vs moving average (0 disables).
-    #[arg(
-        long,
-        env = "CODEX_RELAY_TOKEN_ANOMALY_SPIKE_RATIO",
-        default_value = "5.0"
-    )]
-    token_anomaly_spike_ratio: f64,
-
-    /// Token anomaly: burn rate window in seconds.
-    #[arg(
-        long,
-        env = "CODEX_RELAY_TOKEN_ANOMALY_BURN_WINDOW",
-        default_value = "120"
-    )]
-    token_anomaly_burn_window: u64,
-
-    /// Token anomaly: burn rate warning threshold (tokens/min, 0 disables).
-    #[arg(
-        long,
-        env = "CODEX_RELAY_TOKEN_ANOMALY_BURN_RATE",
-        default_value = "500000"
-    )]
-    token_anomaly_burn_rate: u32,
-
-    /// Optional comma-separated allowlist for MCP server_label/server_url/name.
-    #[arg(long, env = "CODEX_RELAY_ALLOWED_MCP_SERVERS", default_value = "")]
-    allowed_mcp_servers: String,
-
-    /// Optional comma-separated allowlist for computer_use display/environment.
-    #[arg(
-        long,
-        env = "CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS",
-        default_value = ""
-    )]
-    allowed_computer_displays: String,
-}
+use config::{Args, Commands};
 
 struct FlushWriter<W: Write>(W);
 
@@ -131,22 +41,264 @@ impl<W: Write> Write for FlushWriter<W> {
     }
 }
 
+// ── Service helpers ─────────────────────────────────────────────────────────
+
+fn pid_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("deecodex.pid")
+}
+
+fn log_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("deecodex.log")
+}
+
+fn read_pid(data_dir: &std::path::Path) -> Option<u32> {
+    let content = std::fs::read_to_string(pid_path(data_dir)).ok()?;
+    content.trim().parse().ok()
+}
+
+fn is_running(pid: u32) -> bool {
+    // 发送信号 0 检测进程是否存在
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn stop_service(data_dir: &std::path::Path) -> Result<()> {
+    let pid = read_pid(data_dir)
+        .ok_or_else(|| anyhow::anyhow!("未找到 PID 文件，deecodex 可能未在运行"))?;
+
+    if !is_running(pid) {
+        let _ = std::fs::remove_file(pid_path(data_dir));
+        codex_config::remove();
+        bail!("PID {} 对应的进程已不存在，已清理 PID 文件", pid);
+    }
+
+    info!("正在停止 deecodex (PID: {})...", pid);
+    std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status()?;
+
+    // 等待进程退出（最多 5 秒）
+    for _ in 0..50 {
+        if !is_running(pid) {
+            let _ = std::fs::remove_file(pid_path(data_dir));
+            codex_config::remove();
+            println!("deecodex 已停止 (PID: {})", pid);
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // 强制终止
+    std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status()?;
+    let _ = std::fs::remove_file(pid_path(data_dir));
+    codex_config::remove();
+    println!("deecodex 已强制停止 (PID: {})", pid);
+    Ok(())
+}
+
+fn start_service_daemon(args: &Args) -> Result<()> {
+    // 检查是否已在运行
+    if let Some(pid) = read_pid(&args.data_dir) {
+        if is_running(pid) {
+            bail!("deecodex 已在运行 (PID: {})", pid);
+        }
+        let _ = std::fs::remove_file(pid_path(&args.data_dir));
+    }
+
+    std::fs::create_dir_all(&args.data_dir)?;
+
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--daemon");
+
+    // 透传当前参数（排除子命令）
+    let current_args: Vec<String> = std::env::args().collect();
+    for arg in &current_args[1..] {
+        if arg != "start" && arg != "restart" {
+            cmd.arg(arg);
+        }
+    }
+
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    let pid = child.id();
+    std::fs::write(pid_path(&args.data_dir), pid.to_string())?;
+    println!("deecodex 已启动 (PID: {}, 日志: {})", pid, log_path(&args.data_dir).display());
+    Ok(())
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(|| FlushWriter(std::io::stderr()))
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "deecodex=info".into()),
-        )
-        .init();
+    // 加载 .env 文件（按优先级搜索：cwd → ~/.deecodex/ → exe目录）
+    let env_loaded = dotenvy::dotenv().is_ok()
+        || std::env::var("HOME").ok().as_ref().map_or(false, |h| {
+            dotenvy::from_path(std::path::Path::new(h).join(".deecodex").join(".env")).is_ok()
+        })
+        || std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).as_ref().map_or(false, |d| {
+            dotenvy::from_path(d.join(".env")).is_ok()
+        });
+    let _ = env_loaded;
 
-    let args = Args::parse();
+    // 向后兼容: CODEX_RELAY_* → DEECODEX_*
+    for (old, new) in [
+        ("CODEX_RELAY_PORT", "DEECODEX_PORT"),
+        ("CODEX_RELAY_UPSTREAM", "DEECODEX_UPSTREAM"),
+        ("CODEX_RELAY_API_KEY", "DEECODEX_API_KEY"),
+        ("CODEX_RELAY_CLIENT_API_KEY", "DEECODEX_CLIENT_API_KEY"),
+        ("CODEX_RELAY_MODEL_MAP", "DEECODEX_MODEL_MAP"),
+        ("CODEX_RELAY_MAX_BODY_MB", "DEECODEX_MAX_BODY_MB"),
+        ("CODEX_RELAY_VISION_UPSTREAM", "DEECODEX_VISION_UPSTREAM"),
+        ("CODEX_RELAY_VISION_API_KEY", "DEECODEX_VISION_API_KEY"),
+        ("CODEX_RELAY_VISION_MODEL", "DEECODEX_VISION_MODEL"),
+        ("CODEX_RELAY_VISION_ENDPOINT", "DEECODEX_VISION_ENDPOINT"),
+        ("CODEX_RELAY_CHINESE_THINKING", "DEECODEX_CHINESE_THINKING"),
+        ("CODEX_RELAY_PROMPTS_DIR", "DEECODEX_PROMPTS_DIR"),
+        ("CODEX_RELAY_DATA_DIR", "DEECODEX_DATA_DIR"),
+        ("CODEX_RELAY_TOKEN_ANOMALY_PROMPT_MAX", "DEECODEX_TOKEN_ANOMALY_PROMPT_MAX"),
+        ("CODEX_RELAY_TOKEN_ANOMALY_SPIKE_RATIO", "DEECODEX_TOKEN_ANOMALY_SPIKE_RATIO"),
+        ("CODEX_RELAY_TOKEN_ANOMALY_BURN_WINDOW", "DEECODEX_TOKEN_ANOMALY_BURN_WINDOW"),
+        ("CODEX_RELAY_TOKEN_ANOMALY_BURN_RATE", "DEECODEX_TOKEN_ANOMALY_BURN_RATE"),
+        ("CODEX_RELAY_ALLOWED_MCP_SERVERS", "DEECODEX_ALLOWED_MCP_SERVERS"),
+        ("CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS", "DEECODEX_ALLOWED_COMPUTER_DISPLAYS"),
+    ] {
+        if std::env::var(new).is_err() {
+            if let Ok(val) = std::env::var(old) {
+                std::env::set_var(new, val);
+            }
+        }
+    }
+
+    let mut args = Args::parse();
+
+    // 将相对 data_dir/prompts_dir 解析为绝对路径（相对于 $HOME）
+    if args.data_dir.is_relative() {
+        if let Ok(home) = std::env::var("HOME") {
+            args.data_dir = std::path::PathBuf::from(home).join(&args.data_dir);
+        }
+    }
+    if args.prompts_dir.is_relative() {
+        if let Ok(home) = std::env::var("HOME") {
+            args.prompts_dir = std::path::PathBuf::from(home).join(&args.prompts_dir);
+        }
+    }
+
+    // ── 服务管理子命令（在 tracing 初始化之前处理，不需要日志系统） ──
+    match &args.command {
+        Some(Commands::Start) => {
+            start_service_daemon(&args)?;
+            return Ok(());
+        }
+        Some(Commands::Stop) => {
+            stop_service(&args.data_dir)?;
+            return Ok(());
+        }
+        Some(Commands::Restart) => {
+            // 尝试停止已运行的服务（忽略错误，可能本来就没在运行）
+            if read_pid(&args.data_dir).map_or(false, |p| is_running(p)) {
+                let _ = stop_service(&args.data_dir);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            start_service_daemon(&args)?;
+            return Ok(());
+        }
+        Some(Commands::Status) => {
+            match read_pid(&args.data_dir) {
+                Some(pid) if is_running(pid) => {
+                    println!("deecodex 正在运行 (PID: {})", pid);
+                    println!("数据目录: {}", args.data_dir.display());
+                    println!("日志文件: {}", log_path(&args.data_dir).display());
+                }
+                _ => {
+                    println!("deecodex 未运行");
+                }
+            }
+            return Ok(());
+        }
+        Some(Commands::Logs) => {
+            let log = log_path(&args.data_dir);
+            if !log.exists() {
+                bail!("日志文件不存在: {}", log.display());
+            }
+            // tail -f 日志文件
+            let status = std::process::Command::new("tail")
+                .arg("-f")
+                .arg(&log)
+                .status()?;
+            if !status.success() {
+                bail!("tail 命令退出");
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // ── 初始化 tracing（daemon 模式写文件，否则写 stderr） ──
+    if args.daemon {
+        std::fs::create_dir_all(&args.data_dir)?;
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path(&args.data_dir))?;
+        tracing_subscriber::fmt()
+            .with_writer(move || FlushWriter(log_file.try_clone().expect("failed to clone log fd")))
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "deecodex=info".into()),
+            )
+            .init();
+        // 写入 PID 文件
+        let pid = std::process::id();
+        std::fs::write(pid_path(&args.data_dir), pid.to_string())?;
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(|| FlushWriter(std::io::stderr()))
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "deecodex=info".into()),
+            )
+            .init();
+    }
+
+    // TUI 交互模式: `deecodex tui`
+    let args = if matches!(args.command, Some(Commands::Tui)) {
+        match crate::tui::run(args).await {
+            Some(finalized_args) => {
+                info!("TUI 配置完成，启动服务...");
+                finalized_args
+            }
+            None => {
+                info!("用户取消，退出。");
+                return Ok(());
+            }
+        }
+    } else {
+        // 非 TUI 模式：从 config.json 加载持久化配置并合并
+        let merged = args.merge_with_file();
+        // 启动时自动保存配置（确保 config.json 与当前 CLI/env 一致）
+        let config_path = config::Args::default_config_path(&merged.data_dir);
+        let _ = merged.save_to_file(&config_path);
+        merged
+    };
 
     let model_map: HashMap<String, String> = match serde_json::from_str(&args.model_map) {
         Ok(m) => m,
         Err(e) => {
-            error!("Failed to parse CODEX_RELAY_MODEL_MAP: {e}");
+            error!("Failed to parse DEECODEX_MODEL_MAP: {e}");
             HashMap::new()
         }
     };
@@ -255,9 +407,7 @@ async fn main() -> Result<()> {
         );
     }
     if state.client_api_key.is_empty() {
-        tracing::warn!(
-            "client auth disabled because CODEX_RELAY_CLIENT_API_KEY and CODEX_RELAY_API_KEY are empty"
-        );
+        tracing::warn!("client auth disabled: client_api_key is empty");
     } else {
         info!("client auth enabled for /v1 API routes");
     }
@@ -277,6 +427,9 @@ async fn main() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
+    // 注入 deecodex 配置到 codex 的 config.toml
+    codex_config::inject(args.port, &state.client_api_key);
+
     async fn shutdown_signal() {
         let ctrl_c = tokio::signal::ctrl_c();
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -291,6 +444,12 @@ async fn main() -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // 清理 codex config.toml 中的 deecodex 配置
+    codex_config::remove();
+
+    // 清理 PID 文件
+    let _ = std::fs::remove_file(pid_path(&args.data_dir));
 
     Ok(())
 }
