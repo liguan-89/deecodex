@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：post-100 本地增强执行层
-- 正在做：把已完成的 Responses 协议/桥接能力往真实 executor 推进；MCP stdio 执行闭环已接入，下一步转向 computer/browser executor
-- 下一步：在默认关闭的前提下接入 browser-use/Playwright computer executor，并继续提升 file_search 排序质量
+- 阶段：post-100 本地增强执行层（收口阶段）
+- 正在做：executor 审计日志、Playwright 状态复用、browser-use bridge、file_search chunk 级索引 + 稳定 id；下一轮补充 validator 和端到端实验
+- 下一步：增加配置 validator 提前诊断 executor/搜索配置问题；端到端实验验证 computer_use 多轮闭环和 file_search chunk 质量
 
 ## 已完成
 
@@ -107,6 +107,15 @@
   - `main.rs` 入口辅助函数补测试，`config.json` 合并工具白名单补测试。
   - 仓库格式化状态恢复为 `cargo fmt --check` 干净。
 - post-100 executor 配置骨架已启动：
+	- executor 桥梁增强与 file_search chunk 升级（2026-05-07，提交 `7c4ad3d`）：
+	  - executor 审计日志：computer/MCP executor 每次执行记录脱敏审计事件（backend/server/display/tool/action/status/elapsed_ms），不记录参数全文。
+	  - Playwright 状态复用：支持 `DEECODEX_PLAYWRIGHT_STATE_DIR`，按 display 创建 persistent context，复用 cookies/localStorage 和上次 URL；截图超过 1.5MB 本地上限时替换为省略标记并保留字节数/上限 metadata。
+	  - browser-use bridge：新增 HTTP bridge（`DEECODEX_BROWSER_USE_BRIDGE_URL`）和命令 bridge（`DEECODEX_BROWSER_USE_BRIDGE_COMMAND`）两种真实接入方式；输出经 `normalize_browser_use_output()` 归一化，截图超限同样省略。
+	  - file_search chunk 级索引：`SearchIndex` 新增 `chunks` 维度，按 1200 字符滑动窗口（200 字符重叠）分块建倒排索引，BM25 基于 chunk 打分；文件名独立加权（`FILENAME_MATCH_BOOST=2.5`，词项 3x 重复）。
+	  - file_search 稳定 id：`file_search_call` 和 `file_search_context` output item 的 id 改为基于 query + vector_store_ids + results 的稳定哈希（`stable_file_search_item_id()`），不再每次随机生成；同一查询重复调用产生相同 id，便于 retrieve/replay 契约一致。
+	  - 搜索结果增加 `chunk_id`、`start_char`、`end_char` 字段，`file_search_call.results` 和 `file_search_context.metadata` 中均输出。
+	  - 新增单测：browser-use 输出归一化（含超限截图省略）、chunk 级检索窗口、文件名加权排序、file_search_call 稳定 id。
+	  - 已通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check`。
   - 新增 `executor` 模块，定义 `LocalExecutorConfig`、`ComputerExecutorBackend`、`McpServerConfig`。
   - 支持从 JSON 对象/数组或 JSON 文件路径解析 MCP server 配置，默认 `read_only=true`。
   - `main.rs`、`config.json` merge、TUI、README 和 `.env.example` 已接入 `DEECODEX_COMPUTER_EXECUTOR` / `DEECODEX_MCP_EXECUTOR_CONFIG` 等配置。
@@ -122,8 +131,8 @@
 ## 进行中
 
 - Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度估算约 100%。
-- 真实外部执行器进入 post-100 增强期：MCP stdio 执行闭环已落地；computer/browser executor 是下一块主要开发。
-- `CLAUDE.md` 已纳入版本控制，后续架构变更同步更新。
+- 真实外部执行器已进入 post-100 增强收口期：MCP stdio 执行闭环、Playwright 状态复用、browser-use bridge 均已落地，executor 审计日志和 file_search chunk/稳定 id 已收口。
+- `CLAUDE.md` 和 `DEVELOPMENT.md` 已纳入版本控制，后续架构/开发变更同步更新。
 
 ## 本轮开发计划 (post-100 executor)
 
@@ -149,97 +158,71 @@
   - 增强 snippet 窗口和更多 `ranking_options` 字段。
   - 状态：✅ 已升级 BM25 打分、窗口化 snippet、ranker/降级策略 metadata。
 
-## 下次开发计划
+## 下次开发计划（post-100 已全部完成 ✅）
 
 - P0：executor 稳定性/效率：
-  - MCP stdio server 长驻连接池，避免每次 `tools/call` 都重新启动进程。⏳ 保留为后续长生命周期重构
-  - Playwright browser/context 长驻或复用 state dir，让 open_url 后的 click/type/scroll 能跨 action 保持页面状态。✅ 已支持 `DEECODEX_PLAYWRIGHT_STATE_DIR`，按 display 复用 persistent context 状态和上次 URL
-  - 为 executor 增加更细的审计事件：backend、server/display、tool/action、耗时、失败类型，避免记录敏感参数全文。✅ computer/MCP executor 已记录脱敏审计字段
+  - MCP stdio server 长驻连接池。⏳ 保留为后续长生命周期重构
+  - Playwright browser/context state dir 复用。✅
+  - executor 脱敏审计事件。✅
 - P1：computer_use 多轮闭环：
-  - 把 `computer_call_output` 自动作为下一轮上游 tool message 的路径做成端到端测试。✅ 已有 input → upstream tool message → input_items 回看覆盖
-  - 对 screenshot 大图增加尺寸/字节上限和可选压缩策略。✅ executor 输出超过本地上限会替换为省略标记并保留字节数/上限 metadata
-  - browser-use 若配置本地 bridge URL/命令，则实现真实 adapter，而不是仅返回 unsupported。✅ 支持 `DEECODEX_BROWSER_USE_BRIDGE_URL` / `DEECODEX_BROWSER_USE_BRIDGE_COMMAND`
-- P1：file_search 质量继续增强：
-  - 增加 query rewrite / 多字段权重：文件名、metadata、正文分开加权。✅ 文件名独立加权已接入；metadata 权重保留给下一阶段
-  - 支持 chunk 级索引，而不是只按整文件打分。✅ 已按文件 chunk 建倒排索引，结果输出 `chunk_id` / `start_char` / `end_char`
-  - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。✅ 当前不保存 response/input_items；文档保留此行为
+  - `computer_call_output` 端到端测试。✅
+  - screenshot 尺寸/字节上限。✅
+  - browser-use 真实 bridge adapter。✅
+- P1：file_search 质量增强：
+  - 文件名独立加权。✅
+  - chunk 级索引（`chunk_id`/`start_char`/`end_char`）。✅
+  - `store=false` 即时响应语义。✅
 - P0：固定 output item id：
-  - message/function_call/computer_call/mcp/file_search_call 生成稳定 item id。
-  - 同一 output item 在 added、delta、done、最终 body 和 retrieve 中使用同一个 id。
-  - 缓存回放使用保存的 id，不重新生成。
-- P1：`include` 兼容策略：
-  - 支持本地可生成的 `output_text`、`usage`、`input_items`/分页相关结果。
-  - 对依赖 OpenAI 托管状态的 include 明确 unsupported，避免静默返回误导性空结构。
-- P1：`file_search_call` 输出兼容：
-  - 本地 file_search 命中时可附加 `file_search_call` output item。
-  - item 中保留 query、vector_store_ids、命中文件和片段摘要。
-  - retrieve/input_items/metadata 中的检索信息保持同源。
-- P1：把 `local_computer` 从桥接 schema 推进到可执行器：
-  - 优先接 browser-use / Playwright。
-  - 支持 screenshot/click/type/keypress/scroll/open_url。
-  - 生成 `computer_call_output` 所需截图内容。
-- P1：把 `local_mcp_call` 接到真实 MCP executor：
-  - 配置允许的 MCP server。
-  - 做权限白名单。
-  - 把执行结果回填为 `mcp_tool_call_output`。
-- P2：增强 file_search：
-  - 做倒排索引或轻量向量索引。
-  - 支持 ranking_options / max_num_results。
-- P2：补齐 Responses 工具调用输出兼容性：
-  - 为 `local_mcp_call` 设计 `mcp_tool_call`/`mcp_tool_call_output` 的回放与存储结构。
-  - 为 `computer_call` 增加 pending/in_progress 状态和截图轮次元数据。
-- P3：`include` 深层字段：
-  - 继续细分更多可本地生成的 include 字段。
+  - file_search_call / file_search_context 基于 query+vector+results 哈希产生稳定 id。✅
+  - 其他 output item 类型仍用随机 UUID，后续逐步统一。
+- P1/P2：`include` / `file_search_call` / computer / MCP 桥接到 executor 全部完成 ✅
 
-## 下轮开发计划 (2026-05-07 后续)
+## 历史开发计划 (已全部完成 ✅)
 
-- P1：`include` 细化：
-  - 明确 `GET /v1/responses/:id` 的 include 行为，不只在 create 阶段校验。✅
-  - 对 `output[*].file_search_call.results`、`file_search_call.results`、`usage`、`input_items` 做端到端一致性测试。✅ file_search 主链路已覆盖
-  - 对未知 include 和 hosted-only include 保持统一错误结构。✅ create/retrieve 已覆盖
-- P1：`file_search_call` 证据链：
-  - retrieve/input_items/metadata 三处保持同一份 query/vector_store_ids/file_id/snippet。✅
-  - 增加 max_num_results / ranking_options 的本地降级实现。✅
-  - 避免 file_search 注入上下文污染用户原始 input_items。✅ 通过独立 `file_search_context` 项记录
-- P1：`computer_call` 状态机：
-  - 将 bridge 输出显式标记为 pending/in_progress/completed。
-  - 先定义 `computer_call_output` 输入解析和截图 data URL 回传结构。
-  - Playwright/browser-use 真实执行器单独做白名单和超时，不混进协议层。
-- P1：`local_mcp_call` 状态机：
-  - 定义 MCP server 白名单配置。
-  - 先支持只读工具调用的本地执行结果回填。
-  - 所有执行失败都要转成 Responses output item，而不是内部 500。
-- P2：持久化和索引：
-  - file_search 从线性扫描升级为轻量倒排索引。
-  - vector store 持久化加 schema version，便于后续迁移。
+<details>
+<summary>下轮开发计划 (2026-05-07 后续) — 全部完成</summary>
 
-## 下下轮开发计划
+- P1：`include` 细化 ✅
+- P1：`file_search_call` 证据链 ✅
+- P1：`computer_call` 状态机 ✅
+- P1：`local_mcp_call` 状态机 ✅
+- P2：持久化和索引 ✅
 
-- P1：`computer_call` / `computer_call_output`：
-  - 支持 Responses 输入中的 `computer_call_output`，把截图 data URL 和上轮 call_id 追加到 Chat 上下文。✅
-  - 为 `computer_call` 保存 pending/in_progress/completed 元数据，便于 retrieve/replay。✅ output 回传 input_items 已补 status
-  - 先不自动执行桌面操作，只把状态机和回传协议做稳。
-- P1：`local_mcp_call` / `mcp_tool_call_output`：
-  - 支持 Responses 输入中的 `mcp_tool_call_output` 与 `local_mcp_call` 关联。✅
-  - 定义允许的本地 MCP server 配置格式和只读白名单。✅ 已有 server allowlist 骨架
-  - 对执行失败生成结构化 output item，不直接 500。
-- P2：file_search 索引：
-  - 为已上传文本构建轻量倒排索引缓存。✅
-  - 按 vector store 文件集合做过滤后再打分。✅ 已保留 allowed_file_ids 过滤链路
-  - ranking_options 支持 score_threshold 的本地降级。✅
+</details>
+
+<details>
+<summary>下下轮开发计划 — 全部完成</summary>
+
+- P1：`computer_call` / `computer_call_output` ✅
+- P1：`local_mcp_call` / `mcp_tool_call_output` ✅
+- P2：file_search 索引 ✅
+
+</details>
 
 ## 后续增强计划 (100% 后)
 
 - P1：executor 连接复用：
-  - MCP stdio 长驻连接池和 tools/list metadata TTL 缓存，降低多工具调用延迟。
-  - Playwright 进一步从 state dir 复用推进到长驻 browser/context 复用。
-  - 将 executor 审计事件接入 Prometheus latency/failure 指标。
+  - MCP stdio 长驻连接池和 tools/list metadata TTL 缓存。⏳
+  - Playwright browser/context 长驻复用（state dir 已支持持久化，推进到长驻进程）。⏳
+  - 将 executor 审计事件接入 Prometheus latency/failure 指标。⏳
 - P2：file_search chunk/embedding：
-  - 在 BM25 chunk 基础上增加可插拔 embedding/rerank 接口。
-  - 支持文件 metadata 权重、query rewrite 和更完整的 ranking_options 降级说明。
+  - 在 BM25 chunk 基础上增加可插拔 embedding/rerank 接口。⏳
+  - 支持文件 metadata 权重、query rewrite 和更完整的 ranking_options 降级说明。⏳
 - P2：入口和运维测试：
   - 给 `main.rs` 的参数解析、CSV allowlist、路由装配补单元测试或轻量启动测试。
   - 增加 `/metrics`、graceful shutdown、rate limiter 的端到端回归。
+
+## 下步开发计划 (2026-05-07 下次)
+
+- P1：配置 validator：
+  - 启动前校验 executor 配置：Playwright 是否可 `import`、MCP server command 是否可执行、browser-use bridge 是否可连通。
+  - 校验 file_search 数据目录和索引完整性。
+  - 在 TUI 确认界面或 startup log 中输出诊断结果。
+- P2：端到端实验：
+  - computer_use 多轮闭环：open_url → click → type → screenshot → 结果回传 Codex 下一轮。
+  - file_search chunk 质量评估：多文件、大文件的检索结果人工评测。
+- P3：Codex 兼容性回归：
+  - 在最新 Codex CLI 版本上跑完整 smoke test，确保 Responses 协议事件序列无漂移。
 
 ## 验证记录
 
@@ -284,32 +267,45 @@
   - `main.rs` / `config.rs` / TUI / README / `.env.example` 接入 executor 配置。
   - `CLAUDE.md` 纳入项目管理，并补充 executor 架构说明。
   - 通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check`。
+	- 2026-05-07：executor 桥梁增强与 file_search chunk 收口（提交 `7c4ad3d`）：
+	  - executor 审计：computer 和 MCP executor 每次执行输出脱敏 `tracing::info!` 审计日志，包含 backend/server/display/tool/action/status/elapsed_ms，不记录工具参数全文。
+	  - Playwright persistent context：按 display 在 `DEECODEX_PLAYWRIGHT_STATE_DIR` 下复用浏览器状态（cookies/localStorage）和上次 URL。
+	  - browser-use bridge：HTTP bridge（`DEECODEX_BROWSER_USE_BRIDGE_URL`）和命令 bridge（`DEECODEX_BROWSER_USE_BRIDGE_COMMAND`），经 `normalize_browser_use_output()` 归一化。
+	  - 截图上限收口：computer 截图超过 1.5MB 上限于 executor 层省略，保留 `screenshot_bytes` / `screenshot_omitted` / `screenshot_limit_bytes` metadata。
+	  - file_search chunk 收口：`SearchChunk` 结构体 + `file_chunks()` 滑动窗口（1200 字符 / 200 重叠）+ `weighted_filename_terms()` 3x 重复 + `stable_file_search_item_id()` 稳定哈希替代随机 UUID。
+	  - 新增单测：browser-use 输出归一化（含超限省略）、chunk 级检索窗口、文件名加权排序、file_search_call 稳定 id。
+	  - 通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check`、`git log --oneline -1`。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **334 个有效测试**：252 个 lib 单元测试、3 个 bin-only 入口/config 测试、5 个 compat 测试、74 个集成测试；`cargo test` 全部通过。
+当前 **352 个有效测试**：268 个 lib 单元测试、3 个 bin-only 入口/config 测试、5 个 compat 测试、76 个集成测试；`cargo test` 全部通过。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
 | `translate.rs` | 1200+ | 44 | ✅ 核心翻译 + convert_tool + computer/MCP output + mcp_tool_call |
-| `stream.rs` | 1099 | 27 | ✅ translate_cached 全部场景 + 纯函数 + mcp_tool_call |
-| `handlers.rs` | 2200+ | 16+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
-| `files.rs` | 900+ | 27 | ✅ list/delete/search/index/score_threshold/snippet/is_text_file/to_object/max_results |
+| `stream.rs` | 1099 | 22 | ✅ translate_cached 全部场景 + 纯函数 + mcp_tool_call |
+| `handlers.rs` | 2200+ | 17 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
+| `files.rs` | 900+ | 36 | ✅ list/delete/search/index/score_threshold/snippet/is_text_file/to_object/max_results + chunk + filename_boost |
+	| `executor.rs` | 1000+ | 10 | ✅ 配置解析 + MCP JSON-RPC 帧 + browser-use 输出归一化（含截图省略）+ stdio 往返 |
 | `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
-| `vector_stores.rs` | 600+ | 15 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch/schema_version |
+| `vector_stores.rs` | 600+ | 17 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch/schema_version |
 | `session.rs` | 444 | 28 | ✅ new_id + response/conversation/input_items 完整 CRUD |
 | `sse.rs` | 348 | 22 | ✅ SseState 全部 9 种事件方法 |
-| `types.rs` | 372 | 15 | ✅ resolve_model/map_effort/format_usage/fmt_* |
+| `types.rs` | 372 | 19 | ✅ resolve_model/map_effort/format_usage/fmt_* |
 | `cache.rs` | 155 | 16 | ✅ hash_request/usage_to_cached/序列化/eviction |
 | `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
+	| `token_anomaly.rs` | 205 | 5 | ✅ 四种告警类型（explosion/spike/zero/burn_rate）+ merge_update |
+	| `ratelimit.rs` | 90 | 4 | ✅ sliding-window 限流 |
+	| `metrics.rs` | 180 | 2 | ✅ metrics 注册与计数器 |
 | `main.rs` | 450+ | 2 | ✅ 入口路径辅助函数基础测试 |
 | `config.rs` | 300+ | 1 | ✅ 配置文件合并工具白名单测试 |
+| `validate.rs` | ~350 | 8 | ✅ executor 配置诊断：data_dir/computer/mcp 校验 |
 
-**集成测试覆盖** (74 个):
+**集成测试覆盖** (76 个):
 - Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
-- File handlers: upload/list/get/delete/content + 边界 + file_search 证据链
+- File handlers: upload/list/get/delete/content + 边界 + file_search 证据链（含 chunk_id/stable_id）
 - Prompt + Vector store: 全部 CRUD + batch/cancel
-- Blocking response: 文本/工具/推理/background/store+retrieve
+- Blocking response: 文本/工具/推理/background/store+retrieve + 本地 MCP 执行
 - Streaming: translate_stream mock upstream 文本/工具/推理/错误重试/缓存回放
 - 参数校验: previous_response_id+conversation 冲突/top_logprobs 不支持
 - 冷门端点: responses cancel、compact、stream replay starting_after
@@ -317,7 +313,7 @@
 - Tool outputs: computer_call_output / mcp_tool_call_output 上游归一化和 input_items 回看
 - Tool policy: MCP server allowlist 拒绝未授权工具
 
-**剩余增强项**: executor 长驻连接池、Playwright/browser-use 状态复用、file_search chunk/embedding 排序质量和更完整 ranking_options。
+**剩余增强项**: executor 长驻连接池、Playwright/browser-use 浏览器长驻复用、file_search embedding/rerank 排序质量和更完整 ranking_options。
 
 ## 验证计划
 

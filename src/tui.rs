@@ -101,6 +101,9 @@ struct TuiAppState {
     computer_executor_timeout_secs: String,
     mcp_executor_config: String,
     mcp_executor_timeout_secs: String,
+    playwright_state_dir: String,
+    browser_use_bridge_url: String,
+    browser_use_bridge_command: String,
 
     // Navigation
     config_path: String, // 当前使用的配置文件路径
@@ -146,6 +149,9 @@ impl TuiAppState {
             computer_executor_timeout_secs: args.computer_executor_timeout_secs.to_string(),
             mcp_executor_config: args.mcp_executor_config.clone(),
             mcp_executor_timeout_secs: args.mcp_executor_timeout_secs.to_string(),
+            playwright_state_dir: args.playwright_state_dir.clone(),
+            browser_use_bridge_url: args.browser_use_bridge_url.clone(),
+            browser_use_bridge_command: args.browser_use_bridge_command.clone(),
 
             config_path: String::new(),
             current_screen: Screen::MainMenu,
@@ -214,6 +220,9 @@ impl TuiAppState {
                 .mcp_executor_timeout_secs
                 .parse()
                 .map_err(|_| anyhow::anyhow!("MCP executor 超时无效"))?,
+            playwright_state_dir: self.playwright_state_dir,
+            browser_use_bridge_url: self.browser_use_bridge_url,
+            browser_use_bridge_command: self.browser_use_bridge_command,
             daemon: false,
         })
     }
@@ -244,6 +253,9 @@ impl TuiAppState {
             "computer_executor_timeout_secs" => self.computer_executor_timeout_secs.clone(),
             "mcp_executor_config" => self.mcp_executor_config.clone(),
             "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs.clone(),
+            "playwright_state_dir" => self.playwright_state_dir.clone(),
+            "browser_use_bridge_url" => self.browser_use_bridge_url.clone(),
+            "browser_use_bridge_command" => self.browser_use_bridge_command.clone(),
             _ => String::new(),
         }
     }
@@ -310,6 +322,27 @@ impl TuiAppState {
                 }
             }
             "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs.clone(),
+            "playwright_state_dir" => {
+                if self.playwright_state_dir.is_empty() {
+                    "(未设置)".into()
+                } else {
+                    self.playwright_state_dir.clone()
+                }
+            }
+            "browser_use_bridge_url" => {
+                if self.browser_use_bridge_url.is_empty() {
+                    "(未设置)".into()
+                } else {
+                    self.browser_use_bridge_url.clone()
+                }
+            }
+            "browser_use_bridge_command" => {
+                if self.browser_use_bridge_command.is_empty() {
+                    "(未设置)".into()
+                } else {
+                    self.browser_use_bridge_command.clone()
+                }
+            }
             _ => String::new(),
         }
     }
@@ -340,6 +373,9 @@ impl TuiAppState {
             }
             "mcp_executor_config" => self.mcp_executor_config = value.to_string(),
             "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs = value.to_string(),
+            "playwright_state_dir" => self.playwright_state_dir = value.to_string(),
+            "browser_use_bridge_url" => self.browser_use_bridge_url = value.to_string(),
+            "browser_use_bridge_command" => self.browser_use_bridge_command = value.to_string(),
             _ => {}
         }
     }
@@ -575,6 +611,24 @@ fn tool_policy_fields() -> Vec<FieldDef> {
             key: "mcp_executor_timeout_secs",
             kind: FieldKind::Number,
             help: "MCP 单次工具调用超时，默认 30 秒",
+        },
+        FieldDef {
+            label: "Playwright 状态目录",
+            key: "playwright_state_dir",
+            kind: FieldKind::Text,
+            help: "Playwright 浏览器状态持久化目录（可选）；设置后按 display 复用 cookies/localStorage 和上次 URL",
+        },
+        FieldDef {
+            label: "browser-use Bridge URL",
+            key: "browser_use_bridge_url",
+            kind: FieldKind::Text,
+            help: "browser-use 后端 HTTP bridge 地址；与 Bridge 命令二选一",
+        },
+        FieldDef {
+            label: "browser-use Bridge 命令",
+            key: "browser_use_bridge_command",
+            kind: FieldKind::Text,
+            help: "browser-use 后端命令 bridge；与 Bridge URL 二选一",
         },
     ]
 }
@@ -1038,6 +1092,27 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
                         "(不限制)".into()
                     } else {
                         state.allowed_computer_displays.clone()
+                    },
+                ),
+                ("computer 执行器", state.computer_executor.clone()),
+                (
+                    "Playwright 状态目录",
+                    if state.playwright_state_dir.is_empty() {
+                        "(未设置)".into()
+                    } else {
+                        state.playwright_state_dir.clone()
+                    },
+                ),
+                (
+                    "browser-use Bridge",
+                    if state.browser_use_bridge_url.is_empty()
+                        && state.browser_use_bridge_command.is_empty()
+                    {
+                        "(未设置)".into()
+                    } else if !state.browser_use_bridge_url.is_empty() {
+                        format!("URL: {}", state.browser_use_bridge_url)
+                    } else {
+                        format!("Cmd: {}", state.browser_use_bridge_command)
                     },
                 ),
             ],

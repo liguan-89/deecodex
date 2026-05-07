@@ -123,6 +123,18 @@ pub struct Args {
     #[arg(long, env = "DEECODEX_MCP_EXECUTOR_TIMEOUT_SECS", default_value = "30")]
     pub mcp_executor_timeout_secs: u64,
 
+    /// Playwright 后端的持久化浏览器状态目录；设置后按 display 复用 cookies/localStorage 和上次 URL。
+    #[arg(long, env = "DEECODEX_PLAYWRIGHT_STATE_DIR", default_value = "")]
+    pub playwright_state_dir: String,
+
+    /// browser-use 后端 HTTP bridge 地址；接收 {call_id, display, action} 并返回 JSON output。
+    #[arg(long, env = "DEECODEX_BROWSER_USE_BRIDGE_URL", default_value = "")]
+    pub browser_use_bridge_url: String,
+
+    /// browser-use 后端命令 bridge；通过 DEECODEX_COMPUTER_ACTION 环境变量接收 JSON 并向 stdout 输出 JSON。
+    #[arg(long, env = "DEECODEX_BROWSER_USE_BRIDGE_COMMAND", default_value = "")]
+    pub browser_use_bridge_command: String,
+
     /// 后台守护模式（内部使用）
     #[arg(long, hide = true)]
     #[serde(skip)]
@@ -258,6 +270,21 @@ impl Args {
                     30,
                     file.mcp_executor_timeout_secs,
                 ),
+                playwright_state_dir: pick_str(
+                    &self.playwright_state_dir,
+                    "",
+                    &file.playwright_state_dir,
+                ),
+                browser_use_bridge_url: pick_str(
+                    &self.browser_use_bridge_url,
+                    "",
+                    &file.browser_use_bridge_url,
+                ),
+                browser_use_bridge_command: pick_str(
+                    &self.browser_use_bridge_command,
+                    "",
+                    &file.browser_use_bridge_command,
+                ),
                 daemon: self.daemon,
             }
         } else {
@@ -328,6 +355,9 @@ mod tests {
             mcp_executor_config:
                 r#"{"filesystem":{"label":"","command":"mcp-filesystem","args":["/tmp"]}}"#.into(),
             mcp_executor_timeout_secs: 12,
+            playwright_state_dir: String::new(),
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
             daemon: false,
         };
         file_args.save_to_file(&config_path).unwrap();
@@ -358,6 +388,9 @@ mod tests {
             computer_executor_timeout_secs: 30,
             mcp_executor_config: String::new(),
             mcp_executor_timeout_secs: 30,
+            playwright_state_dir: String::new(),
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
             daemon: false,
         };
 

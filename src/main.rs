@@ -15,6 +15,7 @@ mod translate;
 mod tui;
 mod types;
 mod utils;
+mod validate;
 mod vector_stores;
 
 use std::io::{self, Write};
@@ -319,6 +320,22 @@ async fn main() -> Result<()> {
         let _ = merged.save_to_file(&config_path);
         merged
     };
+
+    // 启动前配置诊断
+    for diag in validate::validate(&args) {
+        match diag.severity {
+            validate::Severity::Error => tracing::error!(
+                category = diag.category,
+                "配置诊断 [错误]: {}",
+                diag.message
+            ),
+            validate::Severity::Warn => tracing::warn!(
+                category = diag.category,
+                "配置诊断 [警告]: {}",
+                diag.message
+            ),
+        }
+    }
 
     let model_map: HashMap<String, String> = match serde_json::from_str(&args.model_map) {
         Ok(m) => m,
