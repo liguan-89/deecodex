@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod executor;
 pub mod files;
 pub mod handlers;
 pub mod metrics;

@@ -97,6 +97,10 @@ struct TuiAppState {
     // Tool policy
     allowed_mcp_servers: String,
     allowed_computer_displays: String,
+    computer_executor: String,
+    computer_executor_timeout_secs: String,
+    mcp_executor_config: String,
+    mcp_executor_timeout_secs: String,
 
     // Navigation
     config_path: String, // 当前使用的配置文件路径
@@ -138,6 +142,10 @@ impl TuiAppState {
 
             allowed_mcp_servers: args.allowed_mcp_servers.clone(),
             allowed_computer_displays: args.allowed_computer_displays.clone(),
+            computer_executor: args.computer_executor.clone(),
+            computer_executor_timeout_secs: args.computer_executor_timeout_secs.to_string(),
+            mcp_executor_config: args.mcp_executor_config.clone(),
+            mcp_executor_timeout_secs: args.mcp_executor_timeout_secs.to_string(),
 
             config_path: String::new(),
             current_screen: Screen::MainMenu,
@@ -196,6 +204,16 @@ impl TuiAppState {
                 .map_err(|_| anyhow::anyhow!("Token 燃烧速率无效"))?,
             allowed_mcp_servers: self.allowed_mcp_servers,
             allowed_computer_displays: self.allowed_computer_displays,
+            computer_executor: self.computer_executor,
+            computer_executor_timeout_secs: self
+                .computer_executor_timeout_secs
+                .parse()
+                .map_err(|_| anyhow::anyhow!("computer executor 超时无效"))?,
+            mcp_executor_config: self.mcp_executor_config,
+            mcp_executor_timeout_secs: self
+                .mcp_executor_timeout_secs
+                .parse()
+                .map_err(|_| anyhow::anyhow!("MCP executor 超时无效"))?,
             daemon: false,
         })
     }
@@ -222,6 +240,10 @@ impl TuiAppState {
             "token_anomaly_burn_rate" => self.token_anomaly_burn_rate.clone(),
             "allowed_mcp_servers" => self.allowed_mcp_servers.clone(),
             "allowed_computer_displays" => self.allowed_computer_displays.clone(),
+            "computer_executor" => self.computer_executor.clone(),
+            "computer_executor_timeout_secs" => self.computer_executor_timeout_secs.clone(),
+            "mcp_executor_config" => self.mcp_executor_config.clone(),
+            "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs.clone(),
             _ => String::new(),
         }
     }
@@ -278,6 +300,16 @@ impl TuiAppState {
                     self.allowed_computer_displays.clone()
                 }
             }
+            "computer_executor" => self.computer_executor.clone(),
+            "computer_executor_timeout_secs" => self.computer_executor_timeout_secs.clone(),
+            "mcp_executor_config" => {
+                if self.mcp_executor_config.is_empty() {
+                    "(未配置)".into()
+                } else {
+                    self.mcp_executor_config.clone()
+                }
+            }
+            "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs.clone(),
             _ => String::new(),
         }
     }
@@ -302,6 +334,12 @@ impl TuiAppState {
             "token_anomaly_burn_rate" => self.token_anomaly_burn_rate = value.to_string(),
             "allowed_mcp_servers" => self.allowed_mcp_servers = value.to_string(),
             "allowed_computer_displays" => self.allowed_computer_displays = value.to_string(),
+            "computer_executor" => self.computer_executor = value.to_string(),
+            "computer_executor_timeout_secs" => {
+                self.computer_executor_timeout_secs = value.to_string()
+            }
+            "mcp_executor_config" => self.mcp_executor_config = value.to_string(),
+            "mcp_executor_timeout_secs" => self.mcp_executor_timeout_secs = value.to_string(),
             _ => {}
         }
     }
@@ -513,6 +551,30 @@ fn tool_policy_fields() -> Vec<FieldDef> {
             key: "allowed_computer_displays",
             kind: FieldKind::CsvList,
             help: "允许的 computer_use 显示器/环境，逗号分隔，为空不限制",
+        },
+        FieldDef {
+            label: "computer 执行器",
+            key: "computer_executor",
+            kind: FieldKind::Text,
+            help: "disabled/playwright/browser-use，默认 disabled",
+        },
+        FieldDef {
+            label: "computer 超时(秒)",
+            key: "computer_executor_timeout_secs",
+            kind: FieldKind::Number,
+            help: "computer_use 单步执行超时，默认 30 秒",
+        },
+        FieldDef {
+            label: "MCP 执行器配置",
+            key: "mcp_executor_config",
+            kind: FieldKind::JsonText,
+            help: "MCP server JSON 对象/数组，或 JSON 文件路径",
+        },
+        FieldDef {
+            label: "MCP 超时(秒)",
+            key: "mcp_executor_timeout_secs",
+            kind: FieldKind::Number,
+            help: "MCP 单次工具调用超时，默认 30 秒",
         },
     ]
 }

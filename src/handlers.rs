@@ -1,4 +1,5 @@
 use crate::cache::RequestCache;
+use crate::executor::LocalExecutorConfig;
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
@@ -52,6 +53,7 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub metrics: Arc<Metrics>,
     pub tool_policy: ToolPolicy,
+    pub executors: Arc<LocalExecutorConfig>,
     pub token_tracker: Arc<TokenTracker>,
 }
 

@@ -103,6 +103,26 @@ pub struct Args {
     #[arg(long, env = "DEECODEX_ALLOWED_COMPUTER_DISPLAYS", default_value = "")]
     pub allowed_computer_displays: String,
 
+    /// computer_use 本地执行器后端：disabled/playwright/browser-use。
+    #[arg(long, env = "DEECODEX_COMPUTER_EXECUTOR", default_value = "disabled")]
+    pub computer_executor: String,
+
+    /// computer_use 本地执行器单步超时秒数。
+    #[arg(
+        long,
+        env = "DEECODEX_COMPUTER_EXECUTOR_TIMEOUT_SECS",
+        default_value = "30"
+    )]
+    pub computer_executor_timeout_secs: u64,
+
+    /// MCP 本地执行器配置。可传 JSON 对象/数组，或 JSON 文件路径。
+    #[arg(long, env = "DEECODEX_MCP_EXECUTOR_CONFIG", default_value = "")]
+    pub mcp_executor_config: String,
+
+    /// MCP 本地执行器单次工具调用超时秒数。
+    #[arg(long, env = "DEECODEX_MCP_EXECUTOR_TIMEOUT_SECS", default_value = "30")]
+    pub mcp_executor_timeout_secs: u64,
+
     /// 后台守护模式（内部使用）
     #[arg(long, hide = true)]
     #[serde(skip)]
@@ -218,6 +238,26 @@ impl Args {
                     "",
                     &file.allowed_computer_displays,
                 ),
+                computer_executor: pick_str(
+                    &self.computer_executor,
+                    "disabled",
+                    &file.computer_executor,
+                ),
+                computer_executor_timeout_secs: pick(
+                    self.computer_executor_timeout_secs,
+                    30,
+                    file.computer_executor_timeout_secs,
+                ),
+                mcp_executor_config: pick_str(
+                    &self.mcp_executor_config,
+                    "",
+                    &file.mcp_executor_config,
+                ),
+                mcp_executor_timeout_secs: pick(
+                    self.mcp_executor_timeout_secs,
+                    30,
+                    file.mcp_executor_timeout_secs,
+                ),
                 daemon: self.daemon,
             }
         } else {
@@ -283,6 +323,11 @@ mod tests {
             token_anomaly_burn_rate: 500000,
             allowed_mcp_servers: "filesystem,github".into(),
             allowed_computer_displays: "browser".into(),
+            computer_executor: "playwright".into(),
+            computer_executor_timeout_secs: 15,
+            mcp_executor_config:
+                r#"{"filesystem":{"label":"","command":"mcp-filesystem","args":["/tmp"]}}"#.into(),
+            mcp_executor_timeout_secs: 12,
             daemon: false,
         };
         file_args.save_to_file(&config_path).unwrap();
@@ -309,6 +354,10 @@ mod tests {
             token_anomaly_burn_rate: 500000,
             allowed_mcp_servers: String::new(),
             allowed_computer_displays: String::new(),
+            computer_executor: "disabled".into(),
+            computer_executor_timeout_secs: 30,
+            mcp_executor_config: String::new(),
+            mcp_executor_timeout_secs: 30,
             daemon: false,
         };
 
@@ -316,6 +365,10 @@ mod tests {
 
         assert_eq!(merged.allowed_mcp_servers, "filesystem,github");
         assert_eq!(merged.allowed_computer_displays, "browser");
+        assert_eq!(merged.computer_executor, "playwright");
+        assert_eq!(merged.computer_executor_timeout_secs, 15);
+        assert!(merged.mcp_executor_config.contains("mcp-filesystem"));
+        assert_eq!(merged.mcp_executor_timeout_secs, 12);
         assert_eq!(merged.port, 5555);
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -45,6 +45,7 @@ fn test_state() -> AppState {
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         tool_policy: deecodex::handlers::ToolPolicy::default(),
+        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
     }
 }
 

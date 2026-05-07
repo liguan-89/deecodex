@@ -1,6 +1,7 @@
 mod cache;
 mod codex_config;
 mod config;
+mod executor;
 mod files;
 mod handlers;
 mod metrics;
@@ -24,7 +25,7 @@ use clap::Parser;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use config::{Args, Commands};
 
@@ -344,6 +345,12 @@ async fn main() -> Result<()> {
 
     let files = crate::files::FileStore::with_data_dir(&args.data_dir)?;
     let vector_stores = crate::vector_stores::VectorStoreRegistry::with_data_dir(&args.data_dir)?;
+    let executors = crate::executor::LocalExecutorConfig::from_raw(
+        &args.computer_executor,
+        args.computer_executor_timeout_secs,
+        &args.mcp_executor_config,
+        args.mcp_executor_timeout_secs,
+    )?;
 
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
@@ -379,6 +386,7 @@ async fn main() -> Result<()> {
             allowed_mcp_servers: parse_csv_list(&args.allowed_mcp_servers),
             allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
         },
+        executors: Arc::new(executors),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
@@ -429,6 +437,34 @@ async fn main() -> Result<()> {
             "computer tool policy: {} allowed display(s)",
             state.tool_policy.allowed_computer_displays.len()
         );
+    }
+    info!(
+        "computer executor: {} (timeout={}s)",
+        state.executors.computer.backend.as_str(),
+        state.executors.computer.timeout_secs
+    );
+    if state.executors.computer.enabled() {
+        info!("computer executor is enabled behind local tool policy");
+    }
+    if state.executors.mcp.enabled() {
+        info!(
+            "MCP executor: {} configured server(s), timeout={}s",
+            state.executors.mcp.servers.len(),
+            state.executors.mcp.timeout_secs
+        );
+        if let Some(label) = state.executors.mcp.servers.keys().next() {
+            debug!(
+                "first configured MCP executor server: {}",
+                state
+                    .executors
+                    .mcp
+                    .get_server(label)
+                    .map(|server| server.label.as_str())
+                    .unwrap_or(label)
+            );
+        }
+    } else {
+        info!("MCP executor: disabled (no configured servers)");
     }
     if state.client_api_key.is_empty() {
         tracing::warn!("client auth disabled: client_api_key is empty");

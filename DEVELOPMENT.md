@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：rollout `019dfe49` 最后 15% 协议收口
-- 正在做：把 Responses 增强层推进到约 100% 本地可实现范围，清掉已知失败并补齐 MCP 输出、入口/config 测试
-- 下一步：真实外部 computer/browser executor 与远程 MCP 进程执行器进入独立增强项，不再阻塞 Responses 协议层完成度
+- 阶段：post-100 本地增强执行层启动
+- 正在做：把已完成的 Responses 协议/桥接能力往真实 executor 推进，先落配置、权限和可测试接口骨架
+- 下一步：在默认关闭的前提下接入真实 MCP 进程执行器，再接 browser-use/Playwright computer executor
 
 ## 已完成
 
@@ -106,11 +106,38 @@
   - `mcp_tool_call` output item 保留稳定 `id`、`call_id`、`server_label`、`name` 和 `arguments`。
   - `main.rs` 入口辅助函数补测试，`config.json` 合并工具白名单补测试。
   - 仓库格式化状态恢复为 `cargo fmt --check` 干净。
+- post-100 executor 配置骨架已启动：
+  - 新增 `executor` 模块，定义 `LocalExecutorConfig`、`ComputerExecutorBackend`、`McpServerConfig`。
+  - 支持从 JSON 对象/数组或 JSON 文件路径解析 MCP server 配置，默认 `read_only=true`。
+  - `main.rs`、`config.json` merge、TUI、README 和 `.env.example` 已接入 `DEECODEX_COMPUTER_EXECUTOR` / `DEECODEX_MCP_EXECUTOR_CONFIG` 等配置。
+  - 默认保持 disabled/空配置，不启动外部进程，不改变现有 Responses 桥接行为。
 
 ## 进行中
 
 - Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度估算约 100%。
-- 真实外部执行器仍作为后续增强项：需要具体选择 browser-use/Playwright 运行形态和 MCP server 启动/权限模型，不能在协议层内假执行。
+- 真实外部执行器进入 post-100 增强期：本轮先完成 executor 配置模型、TUI/CLI/env/config.json 接入、README/.env 示例和测试，再进入真实进程/浏览器执行闭环。
+- `CLAUDE.md` 已确认是 Claude Code 项目说明文件，本轮需要纳入版本控制或显式忽略，避免长期未跟踪状态。
+
+## 本轮开发计划 (post-100 executor)
+
+- P0：项目计划归档
+  - 清理已完成 P0/P1 协议计划，保留为历史记录但不再作为下一轮阻塞项。
+  - 新增 executor 阶段的验收标准：默认关闭、白名单约束、失败回填 Responses output item、全量测试通过。
+- P0：本地 executor 配置骨架
+  - 增加 `LocalExecutorConfig`：包含 computer backend、timeout、MCP server 列表和只读标记。
+  - CLI/env/config.json/TUI 接入 `DEECODEX_COMPUTER_EXECUTOR`、`DEECODEX_MCP_EXECUTOR_CONFIG` 等配置。
+  - 默认关闭，不启动外部进程，保证现有桥接行为不变。
+- P1：MCP executor 执行闭环
+  - 读取 allowlist 内 server 配置。
+  - 启动/连接本地 MCP server，执行只读工具。
+  - 结果统一转为 `mcp_tool_call_output`；失败也以 output item 形式返回，不直接 500。
+- P1：computer executor 执行闭环
+  - 优先实现 browser-use/Playwright adapter 接口。
+  - 支持 open_url、screenshot、click、type、keypress、scroll。
+  - 每次动作都保留 call_id、display、timeout、截图摘要和状态。
+- P2：file_search 质量升级
+  - 在当前倒排索引上引入 BM25 打分。
+  - 增强 snippet 窗口和更多 `ranking_options` 字段。
 
 ## 下次开发计划
 
@@ -230,6 +257,11 @@
   - **修复 3** — 跨类型守卫：`tool_output_text` 中 `screenshot`/`image_url` 提取从 `computer_call_output` 专属改为所有 tool output 类型生效（MCP/custom/tool_search）。
   - **不截断**：Codex 原生在 `tool/truncate.ts` 中已做 2000 行 / 50KB 截断（可配置 `tool_output.max_lines` / `tool_output.max_bytes`），deecodex 作为翻译代理不应重复截断。大型 JSON 由 Codex 侧兜底 + token 异常检测报警。
   - 新增 token 异常检测模块 `token_anomaly.rs`：prompt_explosion (>200k)、prompt_spike (>5x avg)、zero_completion、high_burn_rate (>500k/min)，通过 Prometheus `token_anomalies_total` 指标 + WARN 日志报警。
+- 2026-05-07：post-100 executor 配置骨架落地：
+  - 新增 `executor.rs`，支持 computer backend 解析和 MCP server JSON/文件解析。
+  - `main.rs` / `config.rs` / TUI / README / `.env.example` 接入 executor 配置。
+  - `CLAUDE.md` 纳入项目管理，并补充 executor 架构说明。
+  - 通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check`。
 
 ## 测试覆盖状态 (2026-05-07)
 
