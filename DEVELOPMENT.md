@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：rollout `019dfe49` P1 include/file_search 证据链增强
+- 阶段：rollout `019dfe49` P1 computer/MCP output 状态机增强
 - 正在做：把 Codex 真实流量分析出的 Responses 兼容缺口落到实现与集成测试
-- 下一步：继续补齐 computer/MCP 执行器状态机和 file_search 索引能力
+- 下一步：继续补齐 computer/MCP 执行器白名单和 file_search 索引能力
 
 ## 已完成
 
@@ -89,10 +89,15 @@
   - 本地 file_search metadata 增加 `local_file_search_query`、`local_file_search_vector_store_ids`、`local_file_search_max_num_results`。
   - input_items 会追加显式 `file_search_context` 本地证据项，原始用户 message 不被改写。
   - `file_search.max_num_results` 和 `ranking_options.max_num_results` 做本地降级支持，限制轻量检索结果数量。
+- P1 computer/MCP output 状态机已补强：
+  - `computer_call_output` 会提取顶层 `screenshot` / `image_url`、`output`、`content`，转为上游 tool message。
+  - `mcp_tool_call_output` / `custom_tool_call_output` / `tool_search_output` 支持结构化 JSON output 序列化，不再只接受纯文本。
+  - output 类 input item 会补稳定 `id` 和默认 `status: completed`，便于 `/input_items` 回看。
+  - `computer_call_output` 截图 data URL 和文字结果会同时进入 Chat 上下文，并保留 `call_id` 关联。
 
 ## 进行中
 
-- 本轮已把 P1 include/file_search_call 证据链推进到端到端集成测试，剩余为真实 computer/MCP 执行器状态机和 file_search 索引质量。
+- 本轮已把 P1 computer/MCP output 回传状态机推进到端到端集成测试，剩余为真实 computer/MCP 执行器白名单和 file_search 索引质量。
 - P0 主线契约已从计划推进到测试覆盖：live SSE、缓存回放、retrieve stream replay 都有 sequence 或 echo 断言；P1 file_search 现在覆盖 output/metadata/input_items/retrieve 四处证据一致性。
 
 ## 下次开发计划
@@ -158,11 +163,11 @@
 ## 下下轮开发计划
 
 - P1：`computer_call` / `computer_call_output`：
-  - 支持 Responses 输入中的 `computer_call_output`，把截图 data URL 和上轮 call_id 追加到 Chat 上下文。
-  - 为 `computer_call` 保存 pending/in_progress/completed 元数据，便于 retrieve/replay。
+  - 支持 Responses 输入中的 `computer_call_output`，把截图 data URL 和上轮 call_id 追加到 Chat 上下文。✅
+  - 为 `computer_call` 保存 pending/in_progress/completed 元数据，便于 retrieve/replay。✅ output 回传 input_items 已补 status
   - 先不自动执行桌面操作，只把状态机和回传协议做稳。
 - P1：`local_mcp_call` / `mcp_tool_call_output`：
-  - 支持 Responses 输入中的 `mcp_tool_call_output` 与 `local_mcp_call` 关联。
+  - 支持 Responses 输入中的 `mcp_tool_call_output` 与 `local_mcp_call` 关联。✅
   - 定义允许的本地 MCP server 配置格式和只读白名单。
   - 对执行失败生成结构化 output item，不直接 500。
 - P2：file_search 索引：
@@ -185,16 +190,17 @@
 - 2026-05-07：运维安全补全：Rate limiter (120 req/60s、可配置)、pre-commit hook (防 .env + API key 泄露)、graceful shutdown (30s drain)、Prometheus metrics 端点 (`/metrics`)。**297 → 303 测试**，`cargo test` 全部通过。
 - 2026-05-07：rollout `019dfe49` replay/冷门端点补强：修复 cached reasoning final output 类型、修复 retrieve stream `starting_after` 序号偏移，增加 replay echo/sequence、cancel queued/conflict、compact previous input items 5 个集成测试。**303 → 308 测试**，`cargo test --test integration` 70/70 通过。
 - 2026-05-07：P1 include/file_search 证据链增强：retrieve include 统一校验，query include 支持单值解析，file_search output/metadata/input_items/retrieve 证据一致，支持 `max_num_results` / `ranking_options.max_num_results` 本地降级。**308 → 312 测试**，相关集成测试通过，待本轮最终全量复验。
+- 2026-05-07：P1 computer/MCP output 状态机增强：`computer_call_output` 提取 screenshot/image_url/output/content，`mcp_tool_call_output` 支持结构化 JSON output，output 类 input item 补 id/status，并增加 upstream/input_items 端到端集成测试。**312 → 316 测试**，相关测试通过，待本轮最终全量复验。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **312 测试** (235 单元 + 5 compat + 72 集成)，新增相关测试已通过，待本轮最终全量 `cargo test` 复验。
+当前 **316 测试** (239 单元 + 5 compat + 73 集成)，新增相关测试已通过，待本轮最终全量 `cargo test` 复验。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
-| `translate.rs` | 1162 | 41 | ✅ 核心翻译 + convert_tool 全分支 |
+| `translate.rs` | 1200+ | 43 | ✅ 核心翻译 + convert_tool + computer/MCP output |
 | `stream.rs` | 1099 | 25 | ✅ translate_cached 全部场景 + 纯函数; ⚠️ translate_stream 有集成测试 |
-| `handlers.rs` | 2200+ | 12+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search 等路径 |
+| `handlers.rs` | 2200+ | 13+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态等路径 |
 | `files.rs` | 780+ | 25 | ✅ list/delete/search/score/snippet/is_text_file/to_object/max_results |
 | `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
 | `vector_stores.rs` | 571 | 14 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch |
@@ -205,7 +211,7 @@
 | `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
 | `main.rs` | 178 | 0 | ❌ 入口无测试 |
 
-**集成测试覆盖** (72 个):
+**集成测试覆盖** (73 个):
 - Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
 - File handlers: upload/list/get/delete/content + 边界 + file_search 证据链
 - Prompt + Vector store: 全部 CRUD + batch/cancel
@@ -214,8 +220,9 @@
 - 参数校验: previous_response_id+conversation 冲突/top_logprobs 不支持
 - 冷门端点: responses cancel、compact、stream replay starting_after
 - Include/file_search: create/retrieve unsupported include、file_search output/metadata/input_items/retrieve 一致性
+- Tool outputs: computer_call_output / mcp_tool_call_output 上游归一化和 input_items 回看
 
-**仍有缺口**: main.rs 入口、真实 computer/MCP executor、file_search 倒排索引。
+**仍有缺口**: main.rs 入口、真实 computer/MCP executor 白名单、file_search 倒排索引。
 
 ## 验证计划
 

@@ -1946,6 +1946,126 @@ async fn test_responses_blocking_reasoning() {
     assert_eq!(json["output"][1]["content"][0]["text"], "The answer is 42.");
 }
 
+#[derive(Clone)]
+struct CaptureJsonState {
+    response_body: &'static str,
+    captured: Arc<Mutex<Vec<Value>>>,
+}
+
+async fn capture_json_handler(State(state): State<CaptureJsonState>, body: Body) -> Response<Body> {
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push(value);
+    let mut response = Response::new(Body::from(state.response_body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+async fn capture_json_upstream(
+    response_body: &'static str,
+) -> (reqwest::Url, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = CaptureJsonState {
+        response_body,
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/chat/completions", post(capture_json_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (
+        reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
+        captured,
+    )
+}
+
+#[tokio::test]
+async fn test_tool_call_outputs_are_normalized_for_upstream_and_input_items() {
+    let (upstream, captured) = capture_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "continued"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+    )
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(upstream);
+    let sessions = state.sessions.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [
+                            {
+                                "type": "computer_call_output",
+                                "call_id": "call_screen",
+                                "screenshot": "data:image/png;base64,abc",
+                                "output": [{"type": "output_text", "text": "clicked button"}]
+                            },
+                            {
+                                "type": "mcp_tool_call_output",
+                                "call_id": "call_mcp",
+                                "output": {"files": ["a.rs"], "ok": true}
+                            }
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let response_id = json["id"].as_str().unwrap().to_string();
+
+    let captured = captured.lock().unwrap();
+    let messages = captured[0]["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["role"], "tool");
+    assert_eq!(messages[0]["tool_call_id"], "call_screen");
+    assert!(messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("data:image/png;base64,abc"));
+    assert!(messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("clicked button"));
+    assert_eq!(messages[1]["role"], "tool");
+    assert_eq!(messages[1]["tool_call_id"], "call_mcp");
+    assert_eq!(messages[1]["content"], r#"{"files":["a.rs"],"ok":true}"#);
+    drop(captured);
+
+    let input_items = sessions
+        .get_input_items(&response_id)
+        .expect("input items should be stored");
+    assert_eq!(input_items[0]["type"], "computer_call_output");
+    assert_eq!(input_items[0]["status"], "completed");
+    assert_eq!(input_items[0]["output"][0]["text"], "clicked button");
+    assert_eq!(input_items[1]["type"], "mcp_tool_call_output");
+    assert_eq!(input_items[1]["status"], "completed");
+    assert_eq!(input_items[1]["output"]["files"][0], "a.rs");
+}
+
 // ── Streaming edge case tests ────────────────────────────────────────────
 
 #[tokio::test]

@@ -49,3 +49,11 @@ Status: implemented for local fields. Create/retrieve unsupported include now sh
 - Once implemented, assert output contains a `file_search_call` item and that retrieve/input_items expose the same search evidence.
 
 Status: implemented for the local enhancement layer. Local `file_search_call` output includes query/vector_store_ids/results, metadata records the same query and limits, and input_items adds a separate `file_search_context` evidence item without mutating the original user message.
+
+## P1: computer_call_output / mcp_tool_call_output
+
+- Accept Responses input items for `computer_call_output` and keep their call_id/status visible in input_items.
+- Extract screenshot/image_url/text content into the Chat tool message so the upstream model can continue after a computer action.
+- Accept structured `mcp_tool_call_output` JSON and serialize it predictably into the Chat tool message.
+
+Status: implemented for protocol state. Real desktop/MCP execution remains intentionally out of scope for this layer until allowlists and timeouts are added.

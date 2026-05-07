@@ -1987,10 +1987,30 @@ fn response_input_items(req: &ResponsesRequest) -> Vec<Value> {
                 if item.get("id").is_none() {
                     item["id"] = json!(format!("item_{idx}"));
                 }
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                if is_tool_output_input_item(item_type) {
+                    if item.get("status").is_none() {
+                        item["status"] = json!("completed");
+                    }
+                    if item.get("call_id").is_some() && item.get("output").is_none() {
+                        item["output"] = Value::Null;
+                    }
+                }
                 item
             })
             .collect(),
     }
+}
+
+fn is_tool_output_input_item(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call_output"
+            | "mcp_tool_call_output"
+            | "custom_tool_call_output"
+            | "tool_search_output"
+            | "computer_call_output"
+    )
 }
 
 fn count_input_tokens(req: &ResponsesRequest) -> u32 {
@@ -2284,6 +2304,52 @@ mod tests {
 
         let items = response_input_items(&req);
         assert_eq!(items[0].get("id").and_then(Value::as_str), Some("item_0"));
+    }
+
+    #[test]
+    fn test_response_input_items_marks_tool_outputs_completed() {
+        let req = ResponsesRequest {
+            model: "gpt-5".into(),
+            input: ResponsesInput::Messages(vec![json!({
+                "type": "computer_call_output",
+                "call_id": "call_screen",
+                "screenshot": "data:image/png;base64,abc"
+            })]),
+            previous_response_id: None,
+            tools: vec![],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: None,
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
+            background: None,
+            conversation: None,
+            include: None,
+            include_obfuscation: None,
+            max_tool_calls: None,
+            parallel_tool_calls: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            safety_identifier: None,
+            service_tier: None,
+            stream_options: None,
+            text: None,
+            top_logprobs: None,
+            user: None,
+        };
+
+        let items = response_input_items(&req);
+
+        assert_eq!(items[0]["id"], "item_0");
+        assert_eq!(items[0]["status"], "completed");
+        assert_eq!(items[0]["output"], Value::Null);
     }
 
     #[test]
