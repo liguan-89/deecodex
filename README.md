@@ -144,13 +144,14 @@ deecodex/
 └── tests/                      # 76 个集成测试 + 5 个 compat 测试
 ```
 
-### v0.7.0 新增
+### v1.0.0 新增
 
 - **配置诊断（validate）**：启动前校验 executor 配置，检查 Playwright/node 可用性、browser-use bridge 连通性、MCP server 命令存在性，诊断结果输出为 tracing 日志
 - **executor 桥梁增强**：Playwright persistent context 状态复用（`DEECODEX_PLAYWRIGHT_STATE_DIR`）、browser-use HTTP/命令 bridge、截图超限自动省略
 - **file_search chunk 级索引**：1200 字符滑动窗口分块 + BM25 打分 + 文件名独立加权 + 稳定哈希 item id
 - **TUI/Shell 同步**：3 个新增 executor 字段已纳入 TUI 菜单和 `deecodex.sh`
-- 测试数：360（268 lib + 11 bin + 5 compat + 76 integration）
+- **Codex CLI 兼容性回归**：通过 Codex CLI v0.125.0 smoke test，修复 `reasoning.encrypted_content` include 拒绝问题
+- 测试数：364（270 lib + 9 bin + 5 compat + 80 integration）
 
 ### 完整 Responses 协议覆盖
 

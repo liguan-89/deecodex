@@ -1479,6 +1479,198 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
         status: CheckStatus::Ok,
     });
 
+    // 11. Computer Executor 状态
+    let computer_backend = state.computer_executor.trim().to_ascii_lowercase();
+    if computer_backend.is_empty() || computer_backend == "disabled" {
+        results.push(CheckResult {
+            label: "Computer Executor".into(),
+            detail: "未启用（disabled）".into(),
+            status: CheckStatus::Ok,
+        });
+    } else if computer_backend == "playwright" {
+        let playwright_ok = std::process::Command::new("node")
+            .arg("-e")
+            .arg("require('playwright')")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        results.push(CheckResult {
+            label: "Computer Executor".into(),
+            detail: if playwright_ok {
+                "已启用: playwright (Playwright 检测通过)".to_string()
+            } else {
+                "已启用: playwright (⚠ Playwright 不可用 — 请确认 npm install playwright)".into()
+            },
+            status: if playwright_ok {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::Fail
+            },
+        });
+    } else if computer_backend == "browser-use"
+        || computer_backend == "browser_use"
+        || computer_backend == "browseruse"
+    {
+        let has_url = !state.browser_use_bridge_url.trim().is_empty();
+        let has_cmd = !state.browser_use_bridge_command.trim().is_empty();
+        results.push(CheckResult {
+            label: "Computer Executor".into(),
+            detail: if has_url || has_cmd {
+                format!(
+                    "已启用: browser-use ({}配置)",
+                    if has_url && has_cmd {
+                        "URL + 命令 "
+                    } else if has_url {
+                        "URL "
+                    } else {
+                        "命令 "
+                    }
+                )
+            } else {
+                "已启用: browser-use (⚠ 未配置 bridge URL 或命令 — 操作将返回失败)".into()
+            },
+            status: if has_url || has_cmd {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::Warn
+            },
+        });
+    } else {
+        results.push(CheckResult {
+            label: "Computer Executor".into(),
+            detail: format!(
+                "未知后端: {} — 支持 playwright / browser-use",
+                computer_backend
+            ),
+            status: CheckStatus::Fail,
+        });
+    }
+
+    // 12. MCP Executor 配置
+    let mcp_config = state.mcp_executor_config.trim();
+    if mcp_config.is_empty() {
+        results.push(CheckResult {
+            label: "MCP Executor".into(),
+            detail: "未配置（无 MCP server）".into(),
+            status: CheckStatus::Ok,
+        });
+    } else {
+        let parse_result = serde_json::from_str::<serde_json::Value>(mcp_config);
+        match parse_result {
+            Ok(serde_json::Value::Array(arr)) => {
+                let valid_count = arr
+                    .iter()
+                    .filter(|v| {
+                        !v.get("command")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .is_empty()
+                    })
+                    .count();
+                let fail_count = arr.len() - valid_count;
+                results.push(CheckResult {
+                    label: "MCP Executor".into(),
+                    detail: if fail_count > 0 {
+                        format!(
+                            "{} 个 server ({} 有效，{} 缺少 command 字段)",
+                            arr.len(),
+                            valid_count,
+                            fail_count
+                        )
+                    } else {
+                        format!("{} 个 server 已配置", arr.len())
+                    },
+                    status: if fail_count > 0 {
+                        CheckStatus::Warn
+                    } else {
+                        CheckStatus::Ok
+                    },
+                });
+            }
+            Ok(serde_json::Value::Object(_)) => {
+                let has_cmd = serde_json::from_str::<serde_json::Value>(mcp_config)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|s| !s.is_empty())
+                    })
+                    .unwrap_or(false);
+                results.push(CheckResult {
+                    label: "MCP Executor".into(),
+                    detail: if has_cmd {
+                        "1 个 server 已配置".into()
+                    } else {
+                        "配置格式错误：对象需包含 command 字段".into()
+                    },
+                    status: if has_cmd {
+                        CheckStatus::Ok
+                    } else {
+                        CheckStatus::Fail
+                    },
+                });
+            }
+            Ok(_) => {
+                results.push(CheckResult {
+                    label: "MCP Executor".into(),
+                    detail: "配置必须是 JSON 对象或数组".into(),
+                    status: CheckStatus::Fail,
+                });
+            }
+            Err(e) => {
+                // 可能是文件路径
+                let path = std::path::Path::new(mcp_config);
+                if mcp_config.ends_with(".json") && path.exists() {
+                    results.push(CheckResult {
+                        label: "MCP Executor".into(),
+                        detail: format!("从文件加载: {}", mcp_config),
+                        status: CheckStatus::Ok,
+                    });
+                } else {
+                    results.push(CheckResult {
+                        label: "MCP Executor".into(),
+                        detail: format!("配置解析失败: {}", e),
+                        status: CheckStatus::Fail,
+                    });
+                }
+            }
+        }
+    }
+
+    // 13. File Search 状态
+    let files_dir = std::path::Path::new(&state.data_dir).join("files");
+    if files_dir.exists() && files_dir.is_dir() {
+        let file_count = std::fs::read_dir(&files_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext == "json")
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        results.push(CheckResult {
+            label: "File Search".into(),
+            detail: if file_count > 0 {
+                format!("{} 个文件已索引", file_count)
+            } else {
+                "数据目录存在但无已上传文件".into()
+            },
+            status: CheckStatus::Ok,
+        });
+    } else {
+        results.push(CheckResult {
+            label: "File Search".into(),
+            detail: "未启用（无已上传文件）".into(),
+            status: CheckStatus::Ok,
+        });
+    }
+
     results
 }
 

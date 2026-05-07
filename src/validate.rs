@@ -22,6 +22,7 @@ pub fn validate(args: &Args) -> Vec<Diagnostic> {
     check_data_dir(args, &mut diags);
     check_computer_executor(args, &mut diags);
     check_mcp_executor(args, &mut diags);
+    check_file_search(args, &mut diags);
 
     diags
 }
@@ -367,6 +368,135 @@ fn check_single_mcp_server(label: &str, config: &serde_json::Value, diags: &mut 
     }
 }
 
+fn check_file_search(args: &Args, diags: &mut Vec<Diagnostic>) {
+    let files_dir = Path::new(&args.data_dir).join("files");
+
+    // 目录不存在或不可读 — 首次启动时正常
+    if !files_dir.exists() {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&files_dir) else {
+        diags.push(Diagnostic {
+            severity: Severity::Warn,
+            category: "file_search",
+            message: format!("无法读取 file_search 数据目录 {}", files_dir.display()),
+        });
+        return;
+    };
+
+    let mut json_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut bin_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut parse_errors = 0usize;
+    let mut text_file_count = 0usize;
+    let mut binary_file_count = 0usize;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("json") => {
+                json_ids.insert(stem.to_string());
+                // 尝试解析元数据
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                            let ct = meta
+                                .get("content_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if is_text_content_type(ct) {
+                                text_file_count += 1;
+                            } else {
+                                binary_file_count += 1;
+                            }
+                        } else {
+                            parse_errors += 1;
+                            diags.push(Diagnostic {
+                                severity: Severity::Warn,
+                                category: "file_search",
+                                message: format!(
+                                    "文件元数据 {} 无法解析，索引可能不完整",
+                                    path.display()
+                                ),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        parse_errors += 1;
+                        diags.push(Diagnostic {
+                            severity: Severity::Warn,
+                            category: "file_search",
+                            message: format!("无法读取文件元数据 {}: {}", path.display(), e),
+                        });
+                    }
+                }
+            }
+            Some("bin") => {
+                bin_ids.insert(stem.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let total = json_ids.len();
+
+    // 孤儿文件检测
+    for id in &json_ids {
+        if !bin_ids.contains(id) {
+            diags.push(Diagnostic {
+                severity: Severity::Warn,
+                category: "file_search",
+                message: format!("文件 {} 缺少对应的 .bin 数据（元数据孤立）", id),
+            });
+        }
+    }
+    for id in &bin_ids {
+        if !json_ids.contains(id) {
+            diags.push(Diagnostic {
+                severity: Severity::Warn,
+                category: "file_search",
+                message: format!("文件 {} 缺少对应的 .json 元数据（数据孤立）", id),
+            });
+        }
+    }
+
+    if total > 0 {
+        let indexable = text_file_count;
+        let status = if parse_errors > 0 {
+            format!(
+                "file_search: {} 个文件（{} 可索引，{} 二进制，{} 个元数据异常）",
+                total, indexable, binary_file_count, parse_errors
+            )
+        } else {
+            format!(
+                "file_search: {} 个文件（{} 可索引，{} 二进制）",
+                total, indexable, binary_file_count
+            )
+        };
+        diags.push(Diagnostic {
+            severity: Severity::Warn,
+            category: "file_search",
+            message: status,
+        });
+    }
+}
+
+/// 根据 content_type 判断是否为可索引的文本类型
+fn is_text_content_type(content_type: &str) -> bool {
+    let ct_lower = content_type.to_ascii_lowercase();
+    // 文本类型或空 content_type 默认为文本
+    ct_lower.is_empty()
+        || ct_lower.starts_with("text/")
+        || ct_lower.contains("json")
+        || ct_lower.contains("xml")
+        || ct_lower.contains("javascript")
+        || ct_lower.contains("yaml")
+        || ct_lower == "application/octet-stream"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +626,142 @@ mod tests {
         assert!(diags
             .iter()
             .any(|d| d.category == "mcp_executor" && d.message.contains("只读模式")));
+    }
+
+    #[test]
+    fn file_search_nonexistent_dir_is_noop() {
+        let mut args = base_args();
+        let dir = std::env::temp_dir().join("deecodex-validate-fs-nonexist");
+        let _ = std::fs::remove_dir_all(&dir);
+        args.data_dir = dir.clone();
+
+        let diags = validate(&args);
+        // 目录不存在时不产生任何 file_search 诊断
+        let fs_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.category == "file_search")
+            .collect();
+        assert!(fs_diags.is_empty());
+    }
+
+    #[test]
+    fn file_search_empty_dir_is_noop() {
+        let mut args = base_args();
+        let dir = std::env::temp_dir().join("deecodex-validate-fs-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        args.data_dir = dir.clone();
+
+        let diags = validate(&args);
+        // files 子目录不存在也是 noop
+        let fs_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.category == "file_search")
+            .collect();
+        assert!(fs_diags.is_empty(), "空目录应无诊断，实际: {:?}", fs_diags);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_search_detects_orphaned_metadata() {
+        let mut args = base_args();
+        let dir = std::env::temp_dir().join("deecodex-validate-fs-orphan-meta");
+        let _ = std::fs::remove_dir_all(&dir);
+        let files_dir = dir.join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        // 写一个 .json 元数据但无对应的 .bin
+        std::fs::write(
+            files_dir.join("file_abc.json"),
+            r#"{"id":"file_abc","filename":"test.txt","purpose":"file_search","content_type":"text/plain","created_at":1}"#,
+        )
+        .unwrap();
+        args.data_dir = dir.clone();
+
+        let diags = validate(&args);
+        let fs_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.category == "file_search")
+            .collect();
+        assert!(
+            fs_diags
+                .iter()
+                .any(|d| d.message.contains("缺少对应的 .bin")),
+            "应检测到孤儿元数据，实际诊断: {:?}",
+            fs_diags
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_search_detects_orphaned_data() {
+        let mut args = base_args();
+        let dir = std::env::temp_dir().join("deecodex-validate-fs-orphan-bin");
+        let _ = std::fs::remove_dir_all(&dir);
+        let files_dir = dir.join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        // 写一个 .bin 数据但无对应的 .json 元数据
+        std::fs::write(files_dir.join("file_xyz.bin"), b"hello world").unwrap();
+        args.data_dir = dir.clone();
+
+        let diags = validate(&args);
+        let fs_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.category == "file_search")
+            .collect();
+        assert!(
+            fs_diags
+                .iter()
+                .any(|d| d.message.contains("缺少对应的 .json")),
+            "应检测到孤儿数据文件，实际诊断: {:?}",
+            fs_diags
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_search_reports_valid_file_count() {
+        let mut args = base_args();
+        let dir = std::env::temp_dir().join("deecodex-validate-fs-valid");
+        let _ = std::fs::remove_dir_all(&dir);
+        let files_dir = dir.join("files");
+        std::fs::create_dir_all(&files_dir).unwrap();
+        // 写一对完整的文件（元数据 + 数据）
+        std::fs::write(
+            files_dir.join("file_001.json"),
+            r#"{"id":"file_001","filename":"test.py","purpose":"file_search","content_type":"text/x-python","created_at":1}"#,
+        )
+        .unwrap();
+        std::fs::write(files_dir.join("file_001.bin"), b"print('hello')").unwrap();
+        args.data_dir = dir.clone();
+
+        let diags = validate(&args);
+        let fs_diags: Vec<_> = diags
+            .iter()
+            .filter(|d| d.category == "file_search")
+            .collect();
+        assert!(
+            fs_diags
+                .iter()
+                .any(|d| d.message.contains("1 个文件") && d.message.contains("1 可索引")),
+            "应报告文件数量，实际诊断: {:?}",
+            fs_diags
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_text_content_type_classifies_correctly() {
+        assert!(is_text_content_type(""));
+        assert!(is_text_content_type("text/plain"));
+        assert!(is_text_content_type("text/html; charset=utf-8"));
+        assert!(is_text_content_type("text/x-python"));
+        assert!(is_text_content_type("application/json"));
+        assert!(is_text_content_type("application/xml"));
+        assert!(is_text_content_type("application/javascript"));
+        assert!(is_text_content_type("text/yaml"));
+        assert!(is_text_content_type("application/octet-stream"));
+        assert!(!is_text_content_type("image/png"));
+        assert!(!is_text_content_type("audio/mpeg"));
+        assert!(!is_text_content_type("video/mp4"));
     }
 }

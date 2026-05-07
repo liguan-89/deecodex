@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：post-100 本地增强执行层（收口阶段）
-- 正在做：executor 审计日志、Playwright 状态复用、browser-use bridge、file_search chunk 级索引 + 稳定 id；下一轮补充 validator 和端到端实验
-- 下一步：增加配置 validator 提前诊断 executor/搜索配置问题；端到端实验验证 computer_use 多轮闭环和 file_search chunk 质量
+- 阶段：post-100 本地增强执行层（全部收口 ✅）
+- 正在做：P3 Codex CLI 兼容性回归已收口
+- 下一步：根据 Codex CLI 后续版本变更跟踪协议漂移
 
 ## 已完成
 
@@ -130,9 +130,10 @@
 
 ## 进行中
 
-- Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度估算约 100%。
+- Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度约 100%。
 - 真实外部执行器已进入 post-100 增强收口期：MCP stdio 执行闭环、Playwright 状态复用、browser-use bridge 均已落地，executor 审计日志和 file_search chunk/稳定 id 已收口。
-- `CLAUDE.md` 和 `DEVELOPMENT.md` 已纳入版本控制，后续架构/开发变更同步更新。
+- P3 Codex CLI v0.125.0 兼容性回归已收口：发现并修复 `reasoning.encrypted_content` include 拒绝问题，核心协议事件序列无漂移。
+- `CLAUDE.md`、`DEVELOPMENT.md` 和 `CODEX_COMPAT.md` 已纳入版本控制，后续架构/开发变更同步更新。
 
 ## 本轮开发计划 (post-100 executor)
 
@@ -214,15 +215,16 @@
 
 ## 下步开发计划 (2026-05-07 下次)
 
-- P1：配置 validator：
-  - 启动前校验 executor 配置：Playwright 是否可 `import`、MCP server command 是否可执行、browser-use bridge 是否可连通。
-  - 校验 file_search 数据目录和索引完整性。
-  - 在 TUI 确认界面或 startup log 中输出诊断结果。
-- P2：端到端实验：
-  - computer_use 多轮闭环：open_url → click → type → screenshot → 结果回传 Codex 下一轮。
-  - file_search chunk 质量评估：多文件、大文件的检索结果人工评测。
+- ✅ P1：配置 validator：
+  - ✅ 启动前校验 executor 配置：Playwright 是否可 `import`、MCP server command 是否可执行、browser-use bridge 是否可连通。
+  - ✅ 校验 file_search 数据目录和索引完整性：检测 .json/.bin 孤儿文件、元数据解析错误、可索引文件统计。
+  - ✅ 在 TUI 确认界面有 `Computer Executor`、`MCP Executor`、`File Search` 三项状态检查；startup log 也输出完整诊断。
+- ✅ P2：端到端实验（自动化部分）：
+  - ✅ computer_use 多轮闭环：4 个集成测试覆盖 round1 tool_call → output → round2 previous_response_id 重放、upstream tool 消息验证、session 状态持久化。
+  - ✅ file_search chunk 质量：2 个集成测试覆盖多文件 BM25 排序、chunk_id/start_char/end_char 字段、文件名权重、跨 chunk 边界的大文件检索、retrieve 一致性。
 - P3：Codex 兼容性回归：
   - 在最新 Codex CLI 版本上跑完整 smoke test，确保 Responses 协议事件序列无漂移。
+  - ✅ 已在 Codex CLI v0.125.0 上完成 smoke test，发现并修复 `reasoning.encrypted_content` include 拒绝问题。
 
 ## 验证记录
 
@@ -275,16 +277,32 @@
 	  - file_search chunk 收口：`SearchChunk` 结构体 + `file_chunks()` 滑动窗口（1200 字符 / 200 重叠）+ `weighted_filename_terms()` 3x 重复 + `stable_file_search_item_id()` 稳定哈希替代随机 UUID。
 	  - 新增单测：browser-use 输出归一化（含超限省略）、chunk 级检索窗口、文件名加权排序、file_search_call 稳定 id。
 	  - 通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check`、`git log --oneline -1`。
+	- 2026-05-07：配置 validator 收口：
+	  - `validate.rs` 新增 `check_file_search`：检测 .json/.bin 孤儿文件、元数据解析错误、可索引文件统计，新增 6 个单测 + `is_text_content_type` 分类单测。
+	  - `tui.rs` `run_health_checks` 增加 3 项：Computer Executor、MCP Executor、File Search 状态检查。
+	  - 通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build`。
+	- 2026-05-07：P2 端到端实验收口：
+	  - computer_use 多轮闭环：`test_computer_use_multiturn_roundtrip`（round1 tool_call → round2 previous_response_id + upstream tool 消息验证）、`test_computer_use_multiturn_state_persistence`（session 跨请求状态持久化）。
+	  - file_search chunk 质量：`test_file_search_multifile_chunk_quality`（3 文件 BM25 排序、chunk_id/start_char/end_char、文件名加权、retrieve 一致性）、`test_file_search_chunk_boundary_large_file`（跨 chunk 边界的大文件检索）。
+	  - 集成测试 76→80，全量 634→638。通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build`。
+	- 2026-05-07：P3 Codex CLI 兼容性回归收口：
+	  - Smoke test 环境：Codex CLI v0.125.0，relay `deecodex start` daemon 模式，DeepSeek v4-pro upstream。
+	  - **发现**：Codex CLI v0.125.0 新增 `reasoning.encrypted_content` include 字段，relay 原逻辑视为 `unsupported_feature` 返回 400，导致整个会话失败。
+	  - **修复**：`validate_response_include()` 增加 `is_ignored_response_include()` 安全忽略列表，包含 `reasoning.encrypted_content`、`output[*].reasoning.encrypted_content`、`reasoning.encrypted_content_summary`、`output[*].reasoning.encrypted_content_summary`。这些是 OpenAI 加密专有字段，relay 不可实现但不影响会话正常运行，忽略后继续处理请求。
+	  - 新增 2 个单元测试（ignored include + mixed include accept），全量 638→640。通过 `cargo test`、`cargo clippy --all-targets -- -D warnings`、`cargo build`。
+	  - **验证**：`codex exec` 非交互模式通过（"协议测试通过" + 文件读取/命令执行工具调用），SSE 流式 `sequence_number` 单调递增（1-18），缓存命中率 99%（34K/34K token hit）。
+	  - ⚠️ 已知非阻塞问题：Codex CLI v0.125.0 的 `/v1/models` 期望 `models` 字段但 relay 返回 `data` 字段（OpenAI 标准格式），Codex CLI 仅记录 WARN 日志不影响功能。
+	  - CODEX_COMPAT.md 已更新：include 字段表新增 4 个安全忽略项，测试覆盖数更新。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **352 个有效测试**：268 个 lib 单元测试、3 个 bin-only 入口/config 测试、5 个 compat 测试、76 个集成测试；`cargo test` 全部通过。
+当前 **364 个有效测试**：270 个 lib 单元测试、9 个 bin-only 入口/config 测试、5 个 compat 测试、80 个集成测试；`cargo test` 全部通过。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
 | `translate.rs` | 1200+ | 44 | ✅ 核心翻译 + convert_tool + computer/MCP output + mcp_tool_call |
 | `stream.rs` | 1099 | 22 | ✅ translate_cached 全部场景 + 纯函数 + mcp_tool_call |
-| `handlers.rs` | 2200+ | 17 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
+| `handlers.rs` | 2200+ | 19 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
 | `files.rs` | 900+ | 36 | ✅ list/delete/search/index/score_threshold/snippet/is_text_file/to_object/max_results + chunk + filename_boost |
 	| `executor.rs` | 1000+ | 10 | ✅ 配置解析 + MCP JSON-RPC 帧 + browser-use 输出归一化（含截图省略）+ stdio 往返 |
 | `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
@@ -299,11 +317,12 @@
 	| `metrics.rs` | 180 | 2 | ✅ metrics 注册与计数器 |
 | `main.rs` | 450+ | 2 | ✅ 入口路径辅助函数基础测试 |
 | `config.rs` | 300+ | 1 | ✅ 配置文件合并工具白名单测试 |
-| `validate.rs` | ~350 | 8 | ✅ executor 配置诊断：data_dir/computer/mcp 校验 |
+| `validate.rs` | ~550 | 14 | ✅ executor 配置诊断：data_dir/computer/mcp/file_search/is_text_content_type + TUI 健康检查 |
 
-**集成测试覆盖** (76 个):
+**集成测试覆盖** (80 个):
 - Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
 - File handlers: upload/list/get/delete/content + 边界 + file_search 证据链（含 chunk_id/stable_id）
+- P2 端到端：computer_use 多轮闭环（roundtrip + state_persistence）、file_search chunk 质量（multifile + chunk_boundary）
 - Prompt + Vector store: 全部 CRUD + batch/cancel
 - Blocking response: 文本/工具/推理/background/store+retrieve + 本地 MCP 执行
 - Streaming: translate_stream mock upstream 文本/工具/推理/错误重试/缓存回放

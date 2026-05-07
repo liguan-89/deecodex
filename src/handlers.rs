@@ -1965,12 +1965,13 @@ fn response_with_extra(mut response: Value, extra: &Value) -> Value {
 fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
     let include = include?;
     for field in include {
-        if !is_supported_response_include(field) {
-            return Some(unsupported_param(
-                "include",
-                &format!("include field '{field}' is not supported by this relay"),
-            ));
+        if is_supported_response_include(field) || is_ignored_response_include(field) {
+            continue;
         }
+        return Some(unsupported_param(
+            "include",
+            &format!("include field '{field}' is not supported by this relay"),
+        ));
     }
     None
 }
@@ -2023,6 +2024,16 @@ fn is_supported_response_include(field: &str) -> bool {
     matches!(
         field,
         "file_search_call.results" | "output[*].file_search_call.results" | "usage" | "input_items"
+    )
+}
+
+fn is_ignored_response_include(field: &str) -> bool {
+    matches!(
+        field,
+        "reasoning.encrypted_content"
+            | "output[*].reasoning.encrypted_content"
+            | "reasoning.encrypted_content_summary"
+            | "output[*].reasoning.encrypted_content_summary"
     )
 }
 
@@ -2648,6 +2659,27 @@ mod tests {
             "output[*].file_search_call.results".to_string(),
             "usage".to_string(),
             "input_items".to_string(),
+        ]))
+        .is_none());
+    }
+
+    #[test]
+    fn test_ignored_include_fields_do_not_trigger_error() {
+        assert!(validate_response_include(Some(&[
+            "reasoning.encrypted_content".to_string(),
+            "output[*].reasoning.encrypted_content".to_string(),
+            "reasoning.encrypted_content_summary".to_string(),
+            "output[*].reasoning.encrypted_content_summary".to_string(),
+        ]))
+        .is_none());
+    }
+
+    #[test]
+    fn test_mixed_include_accepted_with_ignore() {
+        assert!(validate_response_include(Some(&[
+            "file_search_call.results".to_string(),
+            "reasoning.encrypted_content".to_string(),
+            "usage".to_string(),
         ]))
         .is_none());
     }

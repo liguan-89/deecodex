@@ -3399,3 +3399,489 @@ async fn test_translate_stream_web_search() {
     );
     assert_eq!(events[4].0, "response.completed");
 }
+
+// ── P2 端到端实验：computer_use 多轮闭环 ──────────────────────────────────
+
+#[tokio::test]
+async fn test_computer_use_multiturn_roundtrip() {
+    // Round 1: 用户发起 computer_use 请求，上游返回 local_computer tool call
+    let (upstream1, captured1) = capture_json_upstream(
+        r#"{
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_open",
+                        "type": "function",
+                        "function": {
+                            "name": "local_computer",
+                            "arguments": "{\"type\":\"open_url\",\"url\":\"https://example.com\",\"display\":\"browser\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#,
+    )
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(upstream1);
+    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state.executors = Arc::new(
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+    );
+    let sessions = state.sessions.clone();
+    let files = state.files.clone();
+    let app = build_router(state);
+
+    let round1_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"open example.com","tools":[{"type":"computer_use","display":"browser"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(round1_resp.status(), StatusCode::OK);
+    let body = round1_resp.into_body().collect().await.unwrap().to_bytes();
+    let round1: Value = serde_json::from_slice(&body).unwrap();
+    let round1_id = round1["id"].as_str().unwrap().to_string();
+
+    // 验证 Round 1 输出含 computer_call + computer_call_output
+    assert_eq!(round1["output"][0]["type"], "computer_call");
+    assert_eq!(round1["output"][0]["action"]["type"], "open_url");
+    assert_eq!(round1["output"][0]["call_id"], "call_open");
+    assert_eq!(round1["output"][1]["type"], "computer_call_output");
+    assert_eq!(round1["output"][1]["call_id"], "call_open");
+
+    // Round 1 的 Chat 请求：只含 user 消息（无 instructions 时不生成 system 消息）
+    {
+        let r1_messages = captured1.lock().unwrap();
+        let r1_msgs = r1_messages[0]["messages"].as_array().unwrap();
+        assert!(!r1_msgs.is_empty(), "Round 1 至少有一条 user 消息");
+        assert_eq!(r1_msgs[0]["role"], "user");
+    }
+
+    // Round 2: 模拟 Codex 使用 previous_response_id 发起后续请求
+    let (upstream2, captured2) = capture_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "Page opened, taking screenshot now."}}
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        }"#,
+    )
+    .await;
+
+    let round2_body = json!({
+        "model": "gpt-5",
+        "previous_response_id": round1_id,
+        "input": [
+            {
+                "type": "computer_call_output",
+                "call_id": "call_open",
+                "output": {
+                    "type": "output_text",
+                    "text": "https://example.com loaded successfully"
+                }
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "take a screenshot"
+            }
+        ]
+    });
+
+    let mut state2 = test_state();
+    state2.upstream = Arc::new(upstream2);
+    state2.sessions = sessions.clone();
+    state2.files = files.clone();
+    let app2 = build_router(state2);
+
+    let round2_resp = app2
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(round2_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(round2_resp.status(), StatusCode::OK);
+    let body = round2_resp.into_body().collect().await.unwrap().to_bytes();
+    let round2: Value = serde_json::from_slice(&body).unwrap();
+    assert!(round2["id"].as_str().unwrap().starts_with("resp_"));
+    assert_eq!(round2["status"], "completed");
+
+    // 验证 Round 2 上游请求包含 tool 消息
+    let r2_messages = captured2.lock().unwrap();
+    let r2_chat_msgs = r2_messages[0]["messages"].as_array().unwrap();
+    let tool_msgs: Vec<_> = r2_chat_msgs
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect();
+    assert!(
+        !tool_msgs.is_empty(),
+        "Round 2 Chat 请求应包含 tool 消息（来自 computer_call_output）"
+    );
+    assert_eq!(tool_msgs[0]["tool_call_id"], "call_open");
+    assert!(tool_msgs[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("loaded successfully"));
+}
+
+#[tokio::test]
+async fn test_computer_use_multiturn_state_persistence() {
+    // 使用 previous_response_id 继续对话，验证 relay 从 session 重放上下文
+    let mut state = test_state();
+    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state.executors = Arc::new(
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+    );
+    let sessions = state.sessions.clone();
+
+    // Round 1
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_nav",
+                            "type": "function",
+                            "function": {
+                                "name": "local_computer",
+                                "arguments": "{\"type\":\"open_url\",\"url\":\"https://example.com\",\"display\":\"browser\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }"#,
+        )
+        .await,
+    );
+    let app = build_router(state);
+
+    let r1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"go to example.com","tools":[{"type":"computer_use","display":"browser"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+    let body = r1.into_body().collect().await.unwrap().to_bytes();
+    let r1_json: Value = serde_json::from_slice(&body).unwrap();
+    let r1_id = r1_json["id"].as_str().unwrap().to_string();
+
+    // 验证 Round 1 输出包含 computer_call_output（在 response.output 中）
+    assert_eq!(r1_json["output"][0]["type"], "computer_call");
+    assert_eq!(r1_json["output"][1]["type"], "computer_call_output");
+    assert_eq!(r1_json["output"][1]["call_id"], "call_nav");
+    drop(app);
+
+    // Round 2: 使用 previous_response_id，Codex 会从 session 重放历史
+    let mut state2 = test_state();
+    state2.sessions = sessions;
+    state2.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state2.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Continuing."}}
+                ],
+                "usage": {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20}
+            }"#,
+        )
+        .await,
+    );
+    let app2 = build_router(state2);
+
+    let r2 = app2
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gpt-5",
+                        "previous_response_id": r1_id,
+                        "input": "now scroll down"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(r2.status(), StatusCode::OK);
+    let body = r2.into_body().collect().await.unwrap().to_bytes();
+    let r2_json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(r2_json["id"].as_str().unwrap().starts_with("resp_"));
+    assert_eq!(r2_json["status"], "completed");
+}
+
+// ── P2 端到端实验：file_search chunk 质量 ─────────────────────────────────
+
+#[tokio::test]
+async fn test_file_search_multifile_chunk_quality() {
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [
+                    {"message": {"role": "assistant", "content": "search results above"}}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }"#,
+        )
+        .await,
+    );
+
+    // 上传 3 个文件：小文件、中等文件含目标词多次、大文件目标词在中间
+    state
+        .files
+        .insert(
+            "config.toml",
+            "assistants",
+            "text/plain",
+            b"[server]\nport = 4444\nhost = \"127.0.0.1\"\n[relay]\ntarget = \"production\""
+                .to_vec(),
+            1,
+        )
+        .unwrap();
+    state
+        .files
+        .insert(
+            "relay-readme.md",
+            "assistants",
+            "text/markdown",
+            b"# relay setup\n\nThis guide covers relay configuration.\n\n## relay config\n\nSet up the relay.\n\n### relay options"
+                .to_vec(),
+            2,
+        )
+        .unwrap();
+    // 大文件：目标词在文件中间偏后
+    let big_text = {
+        let prefix = "padding\n".repeat(100);
+        let middle = "the relay server processes Codex CLI requests efficiently\n";
+        let suffix = "extra\n".repeat(100);
+        format!("{}{}{}", prefix, middle, suffix)
+    };
+    state
+        .files
+        .insert(
+            "server.log",
+            "assistants",
+            "text/plain",
+            big_text.into_bytes(),
+            3,
+        )
+        .unwrap();
+
+    let sessions = state.sessions.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": "relay configuration",
+                        "tools": [{"type": "file_search", "max_num_results": 5}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let response_id = json["id"].as_str().unwrap().to_string();
+
+    let fs_output = &json["output"][0];
+    assert_eq!(fs_output["type"], "file_search_call");
+    assert_eq!(fs_output["status"], "completed");
+    assert!(
+        fs_output["id"].as_str().unwrap().starts_with("fs_"),
+        "file_search_call id 应为稳定哈希，以 fs_ 开头"
+    );
+
+    let results = fs_output["results"].as_array().unwrap();
+    assert!(
+        results.len() >= 2,
+        "应命中至少 2 个文件，实际: {}",
+        results.len()
+    );
+
+    // 文件名含 "relay" 的文件权重更高，应排在前面
+    assert_eq!(
+        results[0]["filename"], "relay-readme.md",
+        "文件名含 relay 的 relay-readme.md 应有最高权重"
+    );
+
+    // 验证所有结果含 chunk 字段
+    for result in results {
+        assert!(
+            result["chunk_id"].as_str().unwrap_or("").contains(':'),
+            "结果应包含 chunk_id (格式 file_id:index)"
+        );
+        let start = result["start_char"]
+            .as_u64()
+            .expect("结果应包含 start_char");
+        let end = result["end_char"].as_u64().expect("结果应包含 end_char");
+        assert!(end > start, "end_char 应大于 start_char");
+    }
+
+    // 验证大文件命中位置（file_search_call output item 用 "text" 字段而非 "snippet"）
+    let big_result = results
+        .iter()
+        .find(|r| r["filename"] == "server.log")
+        .expect("大文件 server.log 应被命中");
+    assert!(
+        big_result["text"]
+            .as_str()
+            .unwrap()
+            .contains("relay server"),
+        "text 字段应包含匹配文本"
+    );
+
+    // metadata
+    assert_eq!(
+        json["metadata"]["local_file_search_query"],
+        "relay configuration"
+    );
+
+    // input_items 含 file_search_context
+    let input_items = sessions.get_input_items(&response_id).unwrap();
+    let fs_ctx: Vec<_> = input_items
+        .iter()
+        .filter(|it| it["type"] == "file_search_context")
+        .collect();
+    assert!(!fs_ctx.is_empty(), "input_items 应包含 file_search_context");
+    assert_eq!(fs_ctx[0]["query"], "relay configuration");
+
+    // retrieve 一致性
+    let retrieved = sessions.get_response(&response_id).unwrap();
+    let ret_results = retrieved["output"][0]["results"].as_array().unwrap();
+    assert_eq!(
+        ret_results.len(),
+        results.len(),
+        "retrieve results 数量应与 create 一致"
+    );
+}
+
+#[tokio::test]
+async fn test_file_search_chunk_boundary_large_file() {
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [
+                    {"message": {"role": "assistant", "content": "found"}}
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+            }"#,
+        )
+        .await,
+    );
+
+    // 跨 chunk 的大文件：目标词放在第 2 个 chunk (1200+ 字符之后)
+    let prefix_len = 1300usize;
+    let prefix = "x".repeat(prefix_len);
+    let target = " TARGET_MARKER_CONFIG_VALUE ";
+    let suffix = "y".repeat(2500);
+    let big_text = format!("{}{}{}", prefix, target, suffix);
+
+    state
+        .files
+        .insert(
+            "big_config.yaml",
+            "assistants",
+            "text/yaml",
+            big_text.into_bytes(),
+            1,
+        )
+        .unwrap();
+
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": "TARGET_MARKER",
+                        "tools": [{"type": "file_search", "max_num_results": 1}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    let results = json["output"][0]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+
+    let result = &results[0];
+    assert_eq!(result["filename"], "big_config.yaml");
+
+    // chunk_id 格式: file_id:chunk_index
+    let chunk_id = result["chunk_id"].as_str().unwrap();
+    let parts: Vec<&str> = chunk_id.split(':').collect();
+    assert_eq!(parts.len(), 2, "chunk_id 格式应为 file_id:chunk_index");
+
+    // 标记词在 1300 字符处，落入第二个 chunk [1000, 2200)，start_char 应为 1000
+    let start = result["start_char"].as_u64().unwrap();
+    assert_eq!(
+        start, 1000,
+        "标记词在 prefix_len=1300，落入 chunk [1000,2200)，start_char 应为 1000"
+    );
+
+    assert!(
+        result["text"]
+            .as_str()
+            .unwrap()
+            .contains("TARGET_MARKER_CONFIG_VALUE"),
+        "text 字段应包含目标标记词"
+    );
+}
