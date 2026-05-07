@@ -2,6 +2,7 @@ use crate::cache::RequestCache;
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
+use crate::token_anomaly::TokenTracker;
 use crate::types::*;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
 use crate::{files, prompts, stream, translate, vector_stores};
@@ -51,6 +52,7 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub metrics: Arc<Metrics>,
     pub tool_policy: ToolPolicy,
+    pub token_tracker: Arc<TokenTracker>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1343,6 +1345,11 @@ async fn handle_responses_inner(
                         })
                         .collect();
                     msg.content = Some(Value::String(text_parts.join("")));
+                } else if let Some(s) = content.as_str() {
+                    if let Some(pos) = s.find("data:image/") {
+                        let stripped = s[..pos].trim().to_string();
+                        msg.content = Some(Value::String(stripped));
+                    }
                 }
             }
         }
@@ -1393,13 +1400,19 @@ async fn handle_responses_inner(
     };
 
     let vision_label = if route_to_vision { " 📷" } else { "" };
+    let tool_names: Vec<&str> = chat_req
+        .tools
+        .iter()
+        .filter_map(|t| t.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+        .collect();
     info!(
-        "→ {} effort={} thinking={} msgs={} tools={}{}",
+        "→ {} effort={} thinking={} msgs={} tools={} names=[{}]{}",
         mapped_model,
         fmt_effort(&reasoning_effort),
         fmt_thinking(&thinking),
         msg_count,
         chat_req.tools.len(),
+        tool_names.join(", "),
         vision_label
     );
 
@@ -1544,6 +1557,8 @@ async fn handle_responses_inner(
             } else {
                 None
             },
+            token_tracker: state.token_tracker.clone(),
+            metrics: state.metrics.clone(),
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -1688,6 +1703,17 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 let usage_str = format_usage(chat_resp.usage.as_ref());
                 info!("↑ done {}", usage_str);
 
+                if let Some(ref usage) = chat_resp.usage {
+                    let anomalies = state.token_tracker.record(usage, &model, &response_id);
+                    for atype in &anomalies {
+                        state
+                            .metrics
+                            .token_anomalies_total
+                            .with_label_values(&[atype])
+                            .inc();
+                    }
+                }
+
                 let assistant_msg = chat_resp
                     .choices
                     .first()
@@ -1800,15 +1826,12 @@ fn response_with_extra(mut response: Value, extra: &Value) -> Value {
 
 fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
     let include = include?;
-    let unsupported = include
-        .iter()
-        .find(|field| !is_supported_response_include(field))?;
-    Some(unsupported_param(
-        "include",
-        &format!(
-            "include field '{unsupported}' is not supported by this relay because it requires hosted Responses resources"
-        ),
-    ))
+    for field in include {
+        if !is_supported_response_include(field) {
+            warn!("ignoring unsupported include field: {field}");
+        }
+    }
+    None
 }
 
 fn validate_tool_policy(tools: &[Value], policy: &ToolPolicy) -> Option<Response> {

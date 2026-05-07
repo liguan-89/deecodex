@@ -359,7 +359,13 @@ fn tool_output_text(item_type: &str, item: &Value) -> String {
 fn collect_tool_output_value(value: &Value, chunks: &mut Vec<String>) {
     match value {
         Value::Null => {}
-        Value::String(text) => chunks.push(text.clone()),
+        Value::String(text) => {
+            if text.starts_with("data:image/") {
+                chunks.push(format_image_url(text));
+            } else {
+                chunks.push(text.clone());
+            }
+        }
         Value::Array(items) => {
             for item in items {
                 collect_tool_output_value(item, chunks);
@@ -371,14 +377,14 @@ fn collect_tool_output_value(value: &Value, chunks: &mut Vec<String>) {
                 chunks.push(text.to_string());
             }
             if let Some(url) = map.get("image_url").and_then(Value::as_str) {
-                chunks.push(format!("[image_url] {url}"));
+                chunks.push(format_image_url(url));
             }
             if let Some(url) = map
                 .get("image_url")
                 .and_then(|v| v.get("url"))
                 .and_then(Value::as_str)
             {
-                chunks.push(format!("[image_url] {url}"));
+                chunks.push(format_image_url(url));
             }
             if let Some(screenshot) = map.get("screenshot") {
                 collect_tool_output_value(screenshot, chunks);
@@ -389,6 +395,21 @@ fn collect_tool_output_value(value: &Value, chunks: &mut Vec<String>) {
         }
         other => chunks.push(other.to_string()),
     }
+}
+
+fn format_image_url(url: &str) -> String {
+    if url.starts_with("data:image/") {
+        if let Some(semi) = url.find(';') {
+            let mime = &url[5..semi];
+            let encoded_start = semi + ";base64,".len();
+            let encoded_len = url.len().saturating_sub(encoded_start);
+            return format!(
+                "[image omitted: {mime} base64 {encoded_len}B]"
+            );
+        }
+        return "[image omitted]".to_string();
+    }
+    format!("[image_url] {url}")
 }
 
 fn response_format_from_text(text: Option<&Value>) -> Option<Value> {
@@ -1084,7 +1105,7 @@ mod tests {
             Some("call_screen")
         );
         let content = chat.messages[0].content.as_ref().unwrap().as_str().unwrap();
-        assert!(content.contains("data:image/png;base64,abc"));
+        assert!(content.contains("[image omitted: image/png base64 3B]"));
         assert!(content.contains("clicked"));
     }
 

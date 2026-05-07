@@ -12,7 +12,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     cache::{usage_to_cached, CachedResponse, CachedToolCall, RequestCache},
+    metrics::Metrics,
     session::SessionStore,
+    token_anomaly::TokenTracker,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
     utils::merge_response_extra,
 };
@@ -37,6 +39,8 @@ pub struct StreamArgs {
     pub cache: Option<RequestCache>,
     /// Precomputed cache key for this request
     pub cache_key: Option<u64>,
+    pub token_tracker: Arc<TokenTracker>,
+    pub metrics: Arc<Metrics>,
 }
 
 /// Arguments for replaying a cached response as SSE.
@@ -143,6 +147,8 @@ pub fn translate_stream(
         model_map: _model_map,
         cache,
         cache_key,
+        token_tracker,
+        metrics,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
@@ -408,6 +414,16 @@ pub fn translate_stream(
         // Log streaming token usage
         let usage_str = format_usage(final_usage.as_ref());
         info!("↑ done {}", usage_str);
+
+        if let Some(ref usage) = final_usage {
+            let anomalies = token_tracker.record(usage, &model, &response_id);
+            for atype in &anomalies {
+                metrics
+                    .token_anomalies_total
+                    .with_label_values(&[atype])
+                    .inc();
+            }
+        }
 
         // Clone for cache before moving into completion_usage
         let cache_usage = final_usage.clone();

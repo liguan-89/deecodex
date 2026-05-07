@@ -43,6 +43,7 @@ fn test_state() -> AppState {
         chinese_thinking: false,
         rate_limiter: None,
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
+        token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         tool_policy: deecodex::handlers::ToolPolicy::default(),
     }
 }
@@ -1501,6 +1502,8 @@ fn make_stream_args(
         model_map: std::collections::HashMap::new(),
         cache,
         cache_key,
+        token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
+        metrics: Arc::new(deecodex::metrics::Metrics::new()),
     }
 }
 
@@ -1536,6 +1539,8 @@ fn make_stream_args_custom(
         model_map: std::collections::HashMap::new(),
         cache,
         cache_key,
+        token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
+        metrics: Arc::new(deecodex::metrics::Metrics::new()),
     }
 }
 
@@ -2079,7 +2084,7 @@ async fn test_tool_call_outputs_are_normalized_for_upstream_and_input_items() {
     assert!(messages[0]["content"]
         .as_str()
         .unwrap()
-        .contains("data:image/png;base64,abc"));
+        .contains("[image omitted: image/png base64 3B]"));
     assert!(messages[0]["content"]
         .as_str()
         .unwrap()

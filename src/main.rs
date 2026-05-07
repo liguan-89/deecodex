@@ -7,6 +7,7 @@ mod ratelimit;
 mod session;
 mod sse;
 mod stream;
+mod token_anomaly;
 mod translate;
 mod types;
 mod utils;
@@ -71,6 +72,38 @@ struct Args {
 
     #[arg(long, env = "CODEX_RELAY_DATA_DIR", default_value = ".deecodex")]
     data_dir: std::path::PathBuf,
+
+    /// Token anomaly: max prompt tokens before warning (0 disables).
+    #[arg(
+        long,
+        env = "CODEX_RELAY_TOKEN_ANOMALY_PROMPT_MAX",
+        default_value = "200000"
+    )]
+    token_anomaly_prompt_max: u32,
+
+    /// Token anomaly: prompt spike ratio vs moving average (0 disables).
+    #[arg(
+        long,
+        env = "CODEX_RELAY_TOKEN_ANOMALY_SPIKE_RATIO",
+        default_value = "5.0"
+    )]
+    token_anomaly_spike_ratio: f64,
+
+    /// Token anomaly: burn rate window in seconds.
+    #[arg(
+        long,
+        env = "CODEX_RELAY_TOKEN_ANOMALY_BURN_WINDOW",
+        default_value = "120"
+    )]
+    token_anomaly_burn_window: u64,
+
+    /// Token anomaly: burn rate warning threshold (tokens/min, 0 disables).
+    #[arg(
+        long,
+        env = "CODEX_RELAY_TOKEN_ANOMALY_BURN_RATE",
+        default_value = "500000"
+    )]
+    token_anomaly_burn_rate: u32,
 
     /// Optional comma-separated allowlist for MCP server_label/server_url/name.
     #[arg(long, env = "CODEX_RELAY_ALLOWED_MCP_SERVERS", default_value = "")]
@@ -159,6 +192,13 @@ async fn main() -> Result<()> {
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: args.chinese_thinking,
         metrics: Arc::new(metrics::Metrics::new()),
+        token_tracker: Arc::new(crate::token_anomaly::TokenTracker::new(
+            32,
+            args.token_anomaly_prompt_max,
+            args.token_anomaly_spike_ratio,
+            args.token_anomaly_burn_window,
+            args.token_anomaly_burn_rate,
+        )),
         tool_policy: handlers::ToolPolicy {
             allowed_mcp_servers: parse_csv_list(&args.allowed_mcp_servers),
             allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
@@ -188,6 +228,17 @@ async fn main() -> Result<()> {
     };
     info!("local prompts registry: {}", args.prompts_dir.display());
     info!("local data directory: {}", args.data_dir.display());
+    if args.token_anomaly_prompt_max > 0 {
+        info!(
+            "token anomaly detection: prompt_max={} spike_ratio={}x burn_window={}s burn_rate={}/min",
+            args.token_anomaly_prompt_max,
+            args.token_anomaly_spike_ratio,
+            args.token_anomaly_burn_window,
+            args.token_anomaly_burn_rate
+        );
+    } else {
+        info!("token anomaly detection: disabled (prompt_max=0)");
+    }
     if args.chinese_thinking {
         info!("chinese thinking mode: enabled (system prompt will include Chinese instruction)");
     }

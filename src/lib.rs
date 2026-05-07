@@ -7,6 +7,7 @@ pub mod ratelimit;
 pub mod session;
 pub mod sse;
 pub mod stream;
+pub mod token_anomaly;
 pub mod translate;
 pub mod types;
 pub mod utils;
