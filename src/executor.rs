@@ -5,10 +5,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
+
+const MAX_SCREENSHOT_BYTES: usize = 1_500_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,14 +67,32 @@ impl ComputerExecutorConfig {
         invocation: ComputerActionInvocation,
     ) -> ComputerActionOutput {
         let deadline = Duration::from_secs(self.timeout_secs.max(1));
-        match timeout(deadline, self.execute_action_inner(invocation)).await {
+        let backend = self.backend.as_str();
+        let action_type = invocation
+            .action
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let display_name = invocation.display.clone();
+        let started = Instant::now();
+        let output = match timeout(deadline, self.execute_action_inner(invocation)).await {
             Ok(Ok(output)) => output,
             Ok(Err(err)) => ComputerActionOutput::failed(err.to_string()),
             Err(_) => ComputerActionOutput::failed(format!(
                 "computer action timed out after {}s",
                 self.timeout_secs.max(1)
             )),
-        }
+        };
+        tracing::info!(
+            backend = backend,
+            display = display_name.as_str(),
+            action_type = action_type.as_str(),
+            status = output.status.as_str(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "computer executor action finished"
+        );
+        output
     }
 
     async fn execute_action_inner(
@@ -83,10 +103,7 @@ impl ComputerExecutorConfig {
             ComputerExecutorBackend::Disabled => Ok(ComputerActionOutput::failed(
                 "computer executor is disabled".into(),
             )),
-            ComputerExecutorBackend::BrowserUse => Ok(ComputerActionOutput::failed(
-                "browser-use computer executor is configured but no local browser-use bridge is available yet"
-                    .into(),
-            )),
+            ComputerExecutorBackend::BrowserUse => execute_browser_use_action(&invocation).await,
             ComputerExecutorBackend::Playwright => execute_playwright_action(&invocation).await,
         }
     }
@@ -192,10 +209,21 @@ impl McpExecutorConfig {
     }
 
     pub async fn execute_tool(&self, invocation: McpToolInvocation) -> McpToolOutput {
-        match self.execute_tool_inner(invocation).await {
+        let server_label = invocation.server_label.clone();
+        let tool_name = invocation.tool_name.clone();
+        let started = Instant::now();
+        let output = match self.execute_tool_inner(invocation).await {
             Ok(output) => output,
             Err(err) => McpToolOutput::failed(err.to_string()),
-        }
+        };
+        tracing::info!(
+            server_label = server_label.as_str(),
+            tool_name = tool_name.as_str(),
+            status = output.status.as_str(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "MCP executor tool finished"
+        );
+        output
     }
 
     async fn execute_tool_inner(&self, invocation: McpToolInvocation) -> Result<McpToolOutput> {
@@ -498,10 +526,28 @@ async fn execute_playwright_action(
     let script = r#"
 (async () => {
   const action = JSON.parse(process.env.DEECODEX_COMPUTER_ACTION || "{}");
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: Number(action.display_width || 1024), height: Number(action.display_height || 768) } });
-  const targetUrl = action.url || "about:blank";
+  const stateRoot = process.env.DEECODEX_PLAYWRIGHT_STATE_DIR || "";
+  const display = String(action.display || action.environment || "default").replace(/[^A-Za-z0-9_.-]/g, "_");
+  const displayStateDir = stateRoot ? path.join(stateRoot, display) : "";
+  let browser = null;
+  let context = null;
+  if (displayStateDir) {
+    await fs.mkdir(displayStateDir, { recursive: true });
+    context = await chromium.launchPersistentContext(displayStateDir, { headless: true, viewport: { width: Number(action.display_width || 1024), height: Number(action.display_height || 768) } });
+  } else {
+    browser = await chromium.launch({ headless: true });
+    context = await browser.newContext({ viewport: { width: Number(action.display_width || 1024), height: Number(action.display_height || 768) } });
+  }
+  const page = context.pages()[0] || await context.newPage();
+  const lastUrlFile = displayStateDir ? path.join(displayStateDir, "deecodex-last-url.txt") : "";
+  let targetUrl = action.url || "";
+  if (!targetUrl && lastUrlFile) {
+    targetUrl = await fs.readFile(lastUrlFile, "utf8").catch(() => "");
+  }
+  if (!targetUrl) targetUrl = "about:blank";
   if (targetUrl) await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
   const typ = action.type || "screenshot";
   if (typ === "click") await page.mouse.click(Number(action.x || 0), Number(action.y || 0), { button: action.button || "left" });
@@ -515,7 +561,9 @@ async fn execute_playwright_action(
   if (typ === "wait") await page.waitForTimeout(Number(action.ms || 1000));
   if (typ === "open_url" && action.url) await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
   const bytes = await page.screenshot({ type: "png", fullPage: false });
-  await browser.close();
+  if (lastUrlFile) await fs.writeFile(lastUrlFile, page.url(), "utf8").catch(() => {});
+  await context.close();
+  if (browser) await browser.close();
   process.stdout.write(JSON.stringify({
     backend: "playwright",
     action_type: typ,
@@ -552,8 +600,124 @@ async fn execute_playwright_action(
             .map(|bytes| bytes.len())
             .unwrap_or(0);
         value["screenshot_bytes"] = json!(approx_bytes);
+        if approx_bytes > MAX_SCREENSHOT_BYTES {
+            value["screenshot"] = json!(format!(
+                "[image omitted: screenshot {}B exceeds local limit {}B]",
+                approx_bytes, MAX_SCREENSHOT_BYTES
+            ));
+            value["screenshot_omitted"] = json!(true);
+            value["screenshot_limit_bytes"] = json!(MAX_SCREENSHOT_BYTES);
+        }
     }
     Ok(ComputerActionOutput::succeeded(value))
+}
+
+async fn execute_browser_use_action(
+    invocation: &ComputerActionInvocation,
+) -> Result<ComputerActionOutput> {
+    if let Ok(url) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return execute_browser_use_http_bridge(url, invocation).await;
+        }
+    }
+    if let Ok(command) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_COMMAND") {
+        let command = command.trim();
+        if !command.is_empty() {
+            return execute_browser_use_command_bridge(command, invocation).await;
+        }
+    }
+    Ok(ComputerActionOutput::failed(
+        "browser-use computer executor is configured but neither DEECODEX_BROWSER_USE_BRIDGE_URL nor DEECODEX_BROWSER_USE_BRIDGE_COMMAND is set".into(),
+    ))
+}
+
+async fn execute_browser_use_http_bridge(
+    url: &str,
+    invocation: &ComputerActionInvocation,
+) -> Result<ComputerActionOutput> {
+    let payload = json!({
+        "call_id": invocation.call_id,
+        "display": invocation.display,
+        "action": invocation.action
+    });
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("failed to call browser-use bridge at {url}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("browser-use bridge returned {}: {}", status.as_u16(), body);
+    }
+    let value: Value =
+        serde_json::from_str(&body).context("browser-use bridge returned non-JSON")?;
+    Ok(normalize_browser_use_output(invocation, value))
+}
+
+async fn execute_browser_use_command_bridge(
+    command: &str,
+    invocation: &ComputerActionInvocation,
+) -> Result<ComputerActionOutput> {
+    let action_json = serde_json::to_string(&json!({
+        "call_id": invocation.call_id,
+        "display": invocation.display,
+        "action": invocation.action
+    }))?;
+    let output = Command::new(command)
+        .env("DEECODEX_COMPUTER_ACTION", action_json)
+        .output()
+        .await
+        .with_context(|| format!("failed to start browser-use bridge command '{command}'"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "browser-use bridge command failed{}",
+            stderr_suffix(&stderr)
+        );
+    }
+    let value: Value =
+        serde_json::from_slice(&output.stdout).context("browser-use bridge returned non-JSON")?;
+    Ok(normalize_browser_use_output(invocation, value))
+}
+
+fn normalize_browser_use_output(
+    invocation: &ComputerActionInvocation,
+    mut value: Value,
+) -> ComputerActionOutput {
+    if !value.is_object() {
+        value = json!({"output": value});
+    }
+    value["backend"] = json!("browser-use");
+    value["call_id"] = json!(invocation.call_id);
+    value["display"] = json!(invocation.display);
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+    if let Some(screenshot) = value.get("screenshot").and_then(Value::as_str) {
+        let approx_bytes = screenshot
+            .split_once(',')
+            .and_then(|(_, raw)| STANDARD.decode(raw).ok())
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        value["screenshot_bytes"] = json!(approx_bytes);
+        if approx_bytes > MAX_SCREENSHOT_BYTES {
+            value["screenshot"] = json!(format!(
+                "[image omitted: screenshot {}B exceeds local limit {}B]",
+                approx_bytes, MAX_SCREENSHOT_BYTES
+            ));
+            value["screenshot_omitted"] = json!(true);
+            value["screenshot_limit_bytes"] = json!(MAX_SCREENSHOT_BYTES);
+        }
+    }
+    ComputerActionOutput {
+        output: value,
+        status,
+    }
 }
 
 async fn send_jsonrpc<W>(writer: &mut W, value: &Value) -> Result<()>
@@ -851,6 +1015,31 @@ mod tests {
             output.output["error"]["type"].as_str(),
             Some("computer_executor_error")
         );
+    }
+
+    #[test]
+    fn browser_use_output_is_normalized_and_large_screenshot_is_omitted() {
+        let raw = format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(vec![1_u8; MAX_SCREENSHOT_BYTES + 1])
+        );
+        let output = normalize_browser_use_output(
+            &ComputerActionInvocation {
+                call_id: "call_screen".into(),
+                action: json!({"type": "screenshot"}),
+                display: "browser".into(),
+            },
+            json!({"status": "completed", "screenshot": raw}),
+        );
+
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.output["backend"], "browser-use");
+        assert_eq!(output.output["call_id"], "call_screen");
+        assert_eq!(output.output["screenshot_omitted"], true);
+        assert!(output.output["screenshot"]
+            .as_str()
+            .unwrap()
+            .starts_with("[image omitted: screenshot"));
     }
 
     #[tokio::test]

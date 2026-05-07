@@ -152,17 +152,17 @@
 ## 下次开发计划
 
 - P0：executor 稳定性/效率：
-  - MCP stdio server 长驻连接池，避免每次 `tools/call` 都重新启动进程。
-  - Playwright browser/context 长驻或复用 state dir，让 open_url 后的 click/type/scroll 能跨 action 保持页面状态。
-  - 为 executor 增加更细的审计事件：backend、server/display、tool/action、耗时、失败类型，避免记录敏感参数全文。
+  - MCP stdio server 长驻连接池，避免每次 `tools/call` 都重新启动进程。⏳ 保留为后续长生命周期重构
+  - Playwright browser/context 长驻或复用 state dir，让 open_url 后的 click/type/scroll 能跨 action 保持页面状态。✅ 已支持 `DEECODEX_PLAYWRIGHT_STATE_DIR`，按 display 复用 persistent context 状态和上次 URL
+  - 为 executor 增加更细的审计事件：backend、server/display、tool/action、耗时、失败类型，避免记录敏感参数全文。✅ computer/MCP executor 已记录脱敏审计字段
 - P1：computer_use 多轮闭环：
-  - 把 `computer_call_output` 自动作为下一轮上游 tool message 的路径做成端到端测试。
-  - 对 screenshot 大图增加尺寸/字节上限和可选压缩策略。
-  - browser-use 若配置本地 bridge URL/命令，则实现真实 adapter，而不是仅返回 unsupported。
+  - 把 `computer_call_output` 自动作为下一轮上游 tool message 的路径做成端到端测试。✅ 已有 input → upstream tool message → input_items 回看覆盖
+  - 对 screenshot 大图增加尺寸/字节上限和可选压缩策略。✅ executor 输出超过本地上限会替换为省略标记并保留字节数/上限 metadata
+  - browser-use 若配置本地 bridge URL/命令，则实现真实 adapter，而不是仅返回 unsupported。✅ 支持 `DEECODEX_BROWSER_USE_BRIDGE_URL` / `DEECODEX_BROWSER_USE_BRIDGE_COMMAND`
 - P1：file_search 质量继续增强：
-  - 增加 query rewrite / 多字段权重：文件名、metadata、正文分开加权。
-  - 支持 chunk 级索引，而不是只按整文件打分。
-  - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。
+  - 增加 query rewrite / 多字段权重：文件名、metadata、正文分开加权。✅ 文件名独立加权已接入；metadata 权重保留给下一阶段
+  - 支持 chunk 级索引，而不是只按整文件打分。✅ 已按文件 chunk 建倒排索引，结果输出 `chunk_id` / `start_char` / `end_char`
+  - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。✅ 当前不保存 response/input_items；文档保留此行为
 - P0：固定 output item id：
   - message/function_call/computer_call/mcp/file_search_call 生成稳定 item id。
   - 同一 output item 在 added、delta、done、最终 body 和 retrieve 中使用同一个 id。
@@ -231,11 +231,12 @@
 ## 后续增强计划 (100% 后)
 
 - P1：executor 连接复用：
-  - MCP stdio 连接池和 Playwright context 复用，降低多工具调用延迟。
-  - 增加 executor 级指标和失败分类。
+  - MCP stdio 长驻连接池和 tools/list metadata TTL 缓存，降低多工具调用延迟。
+  - Playwright 进一步从 state dir 复用推进到长驻 browser/context 复用。
+  - 将 executor 审计事件接入 Prometheus latency/failure 指标。
 - P2：file_search chunk/embedding：
-  - 在 BM25 基础上增加 chunk 索引和可插拔 embedding/rerank 接口。
-  - 支持文件 metadata 权重和更完整的 ranking_options 降级说明。
+  - 在 BM25 chunk 基础上增加可插拔 embedding/rerank 接口。
+  - 支持文件 metadata 权重、query rewrite 和更完整的 ranking_options 降级说明。
 - P2：入口和运维测试：
   - 给 `main.rs` 的参数解析、CSV allowlist、路由装配补单元测试或轻量启动测试。
   - 增加 `/metrics`、graceful shutdown、rate limiter 的端到端回归。
@@ -268,6 +269,13 @@
   - MCP stdio executor 增加 `tools/list` metadata 探测，read-only 优先使用 `readOnlyHint` / `destructiveHint`，无 metadata 时回退名称启发式；失败输出包含有限 stderr 摘要。
   - 本地 `file_search` 从词频计数升级为 BM25 打分，snippet 改为命中窗口，metadata 记录 `local_file_search_ranker=local_bm25`、请求 ranker 和本地降级策略。
   - 已通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check` 全量复验。
+- 2026-05-07：下轮 executor/search 增强继续推进：
+  - Playwright executor 支持 `DEECODEX_PLAYWRIGHT_STATE_DIR`，按 display 复用 persistent context 状态并保存上次 URL，open_url 后的后续 click/type/scroll 可在无 URL 时回到同一页面。
+  - browser-use executor 增加 HTTP bridge 和命令 bridge 两种真实接入方式；未配置 bridge 时仍返回明确失败 output item。
+  - computer/MCP executor 增加脱敏审计事件，记录 backend/server/display/tool/action/status/elapsed_ms，不记录工具参数全文。
+  - computer screenshot 输出增加本地字节上限，超限时替换为省略标记并保留 `screenshot_bytes`、`screenshot_limit_bytes`。
+  - 本地 `file_search` 升级为 chunk 级倒排索引，结果带 `chunk_id`、`start_char`、`end_char`；文件名匹配加入独立加权，`file_search_call` / `file_search_context` id 改为基于 query/vector/results 的稳定 id。
+  - 新增 chunk 检索、文件名权重、browser-use 输出归一化、稳定 file_search id 单元测试；已通过 `cargo test`、`cargo clippy --all-targets -- -D warnings`、`cargo build`、`cargo fmt --check`、`git diff --check`。
   - **修复 3** — 跨类型守卫：`tool_output_text` 中 `screenshot`/`image_url` 提取从 `computer_call_output` 专属改为所有 tool output 类型生效（MCP/custom/tool_search）。
   - **不截断**：Codex 原生在 `tool/truncate.ts` 中已做 2000 行 / 50KB 截断（可配置 `tool_output.max_lines` / `tool_output.max_bytes`），deecodex 作为翻译代理不应重复截断。大型 JSON 由 Codex 侧兜底 + token 异常检测报警。
   - 新增 token 异常检测模块 `token_anomaly.rs`：prompt_explosion (>200k)、prompt_spike (>5x avg)、zero_completion、high_burn_rate (>500k/min)，通过 Prometheus `token_anomalies_total` 指标 + WARN 日志报警。

@@ -2041,6 +2041,9 @@ fn local_file_search_call_output_item(
             json!({
                 "file_id": result.get("file_id").cloned().unwrap_or(Value::Null),
                 "filename": result.get("filename").cloned().unwrap_or(Value::Null),
+                "chunk_id": result.get("chunk_id").cloned().unwrap_or(Value::Null),
+                "start_char": result.get("start_char").cloned().unwrap_or(Value::Null),
+                "end_char": result.get("end_char").cloned().unwrap_or(Value::Null),
                 "score": result.get("score").cloned().unwrap_or_else(|| json!(0)),
                 "text": result.get("snippet").cloned().unwrap_or_else(|| json!("")),
                 "index": idx
@@ -2049,7 +2052,7 @@ fn local_file_search_call_output_item(
         .collect();
     Some(json!({
         "type": "file_search_call",
-        "id": format!("fs_{}", uuid::Uuid::new_v4().simple()),
+        "id": stable_file_search_item_id("fs", query, vector_store_ids, results),
         "status": "completed",
         "queries": [{"query": query}],
         "vector_store_ids": vector_store_ids,
@@ -2066,12 +2069,27 @@ fn local_file_search_input_item(
         return None;
     }
     Some(json!({
-        "id": format!("item_fs_{}", uuid::Uuid::new_v4().simple()),
+        "id": stable_file_search_item_id("item_fs", query, vector_store_ids, results),
         "type": "file_search_context",
         "query": query,
         "vector_store_ids": vector_store_ids,
         "results": results
     }))
+}
+
+fn stable_file_search_item_id(
+    prefix: &str,
+    query: &str,
+    vector_store_ids: &[String],
+    results: &[Value],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    query.hash(&mut hasher);
+    vector_store_ids.hash(&mut hasher);
+    for result in results {
+        result.to_string().hash(&mut hasher);
+    }
+    format!("{prefix}_{:016x}", hasher.finish())
 }
 
 fn local_file_search_query(req: &ResponsesRequest) -> String {
@@ -2654,6 +2672,25 @@ mod tests {
         assert_eq!(item["vector_store_ids"][0].as_str(), Some("vs_1"));
         assert_eq!(item["results"][0]["file_id"].as_str(), Some("file_1"));
         assert_eq!(item["results"][0]["text"].as_str(), Some("relay notes"));
+    }
+
+    #[test]
+    fn test_file_search_call_output_item_uses_stable_id() {
+        let results = vec![json!({
+            "file_id": "file_1",
+            "filename": "notes.md",
+            "chunk_id": "file_1:0",
+            "score": 2,
+            "snippet": "relay notes"
+        })];
+
+        let first =
+            local_file_search_call_output_item(&results, "relay", &["vs_1".to_string()]).unwrap();
+        let second =
+            local_file_search_call_output_item(&results, "relay", &["vs_1".to_string()]).unwrap();
+
+        assert_eq!(first["id"], second["id"]);
+        assert_eq!(first["results"][0]["chunk_id"], "file_1:0");
     }
 
     #[test]

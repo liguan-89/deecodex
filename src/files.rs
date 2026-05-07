@@ -19,9 +19,12 @@ use uuid::Uuid;
 
 const MAX_SEARCH_RESULTS: usize = 5;
 const MAX_SEARCH_CHARS: usize = 12_000;
+const SEARCH_CHUNK_CHARS: usize = 1_200;
+const SEARCH_CHUNK_OVERLAP_CHARS: usize = 200;
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
 const BM25_SCORE_SCALE: f64 = 12.0;
+const FILENAME_MATCH_BOOST: f64 = 2.5;
 
 #[derive(Clone, Debug)]
 pub struct FileStore {
@@ -52,9 +55,20 @@ struct StoredFileMetadata {
 #[derive(Clone, Debug, Default)]
 struct SearchIndex {
     terms: HashMap<String, HashSet<String>>,
+    chunks: HashMap<String, SearchChunk>,
     doc_lengths: HashMap<String, usize>,
     doc_count: usize,
     avg_doc_len: f64,
+}
+
+#[derive(Clone, Debug)]
+struct SearchChunk {
+    id: String,
+    file_id: String,
+    filename: String,
+    text: String,
+    start_char: usize,
+    end_char: usize,
 }
 
 #[derive(Debug)]
@@ -280,6 +294,9 @@ impl FileStore {
                 json!({
                     "file_id": result.file_id,
                     "filename": result.filename,
+                    "chunk_id": result.chunk_id,
+                    "start_char": result.start_char,
+                    "end_char": result.end_char,
                     "score": result.score,
                     "snippet": result.snippet
                 })
@@ -311,20 +328,14 @@ impl FileStore {
         let candidate_ids = self.search_candidate_ids(&terms);
         let mut results = Vec::new();
         let index = self.search_index();
-        for file_id in &candidate_ids {
-            let Some(file) = self.files.get(file_id) else {
+        for chunk_id in &candidate_ids {
+            let Some(chunk) = index.chunks.get(chunk_id) else {
                 continue;
             };
-            if allowed_file_ids.is_some_and(|ids| !ids.contains(&file.id)) {
+            if allowed_file_ids.is_some_and(|ids| !ids.contains(&chunk.file_id)) {
                 continue;
             }
-            if !is_text_file(&file) {
-                continue;
-            }
-            let Ok(text) = String::from_utf8(file.bytes.clone()) else {
-                continue;
-            };
-            let score = bm25_score(&text, &terms, &candidate_ids, &index);
+            let score = bm25_score(chunk, &terms, &candidate_ids, &index);
             if score <= 0.0 && !terms.is_empty() {
                 continue;
             }
@@ -332,10 +343,13 @@ impl FileStore {
                 continue;
             }
             results.push(SearchResult {
-                file_id: file.id.clone(),
-                filename: file.filename.clone(),
+                file_id: chunk.file_id.clone(),
+                filename: chunk.filename.clone(),
+                chunk_id: chunk.id.clone(),
+                start_char: chunk.start_char,
+                end_char: chunk.end_char,
                 score,
-                snippet: snippet(&text, &terms),
+                snippet: snippet(&chunk.text, &terms),
             });
         }
         results.sort_by(|a, b| {
@@ -353,12 +367,7 @@ impl FileStore {
 
     fn search_candidate_ids(&self, terms: &[String]) -> Vec<String> {
         if terms.is_empty() {
-            return self
-                .files
-                .iter()
-                .filter(|file| is_text_file(file))
-                .map(|file| file.id.clone())
-                .collect();
+            return self.search_index().chunks.keys().cloned().collect();
         }
 
         let index = self.search_index();
@@ -389,14 +398,21 @@ impl FileStore {
             let Ok(text) = String::from_utf8(file.bytes.clone()) else {
                 continue;
             };
-            let mut terms = document_terms(&text);
-            terms.extend(document_terms(&file.filename));
-            index
-                .doc_lengths
-                .insert(file.id.clone(), terms.len().max(1));
-            let unique_terms: HashSet<String> = terms.into_iter().collect();
-            for term in unique_terms {
-                index.terms.entry(term).or_default().insert(file.id.clone());
+            for chunk in file_chunks(&file, &text) {
+                let mut terms = document_terms(&chunk.text);
+                terms.extend(weighted_filename_terms(&file.filename));
+                index
+                    .doc_lengths
+                    .insert(chunk.id.clone(), terms.len().max(1));
+                let unique_terms: HashSet<String> = terms.into_iter().collect();
+                for term in unique_terms {
+                    index
+                        .terms
+                        .entry(term)
+                        .or_default()
+                        .insert(chunk.id.clone());
+                }
+                index.chunks.insert(chunk.id.clone(), chunk);
             }
         }
         index.doc_count = index.doc_lengths.len();
@@ -640,6 +656,15 @@ fn document_terms(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn weighted_filename_terms(filename: &str) -> Vec<String> {
+    let terms = document_terms(filename);
+    let mut weighted = Vec::with_capacity(terms.len() * 3);
+    for term in terms {
+        weighted.extend([term.clone(), term.clone(), term]);
+    }
+    weighted
+}
+
 #[cfg(test)]
 fn score_text(text: &str, terms: &[String]) -> usize {
     if terms.is_empty() {
@@ -653,7 +678,7 @@ fn score_text(text: &str, terms: &[String]) -> usize {
 }
 
 fn bm25_score(
-    text: &str,
+    chunk: &SearchChunk,
     query_terms: &[String],
     candidate_ids: &[String],
     index: &SearchIndex,
@@ -661,7 +686,8 @@ fn bm25_score(
     if query_terms.is_empty() {
         return 1.0;
     }
-    let doc_terms = document_terms(text);
+    let mut doc_terms = document_terms(&chunk.text);
+    doc_terms.extend(weighted_filename_terms(&chunk.filename));
     if doc_terms.is_empty() {
         return 0.0;
     }
@@ -694,7 +720,17 @@ fn bm25_score(
             idf * ((tf * (BM25_K1 + 1.0)) / denom)
         })
         .sum::<f64>();
-    (raw_score * BM25_SCORE_SCALE * 1000.0).round() / 1000.0
+    let filename_terms = document_terms(&chunk.filename);
+    let filename_boost = deduped_terms
+        .iter()
+        .filter(|term| {
+            filename_terms
+                .iter()
+                .any(|filename_term| filename_term == *term)
+        })
+        .count() as f64
+        * FILENAME_MATCH_BOOST;
+    ((raw_score * BM25_SCORE_SCALE + filename_boost) * 1000.0).round() / 1000.0
 }
 
 fn snippet(text: &str, terms: &[String]) -> String {
@@ -739,8 +775,44 @@ fn is_text_file(file: &StoredFile) -> bool {
 struct SearchResult {
     file_id: String,
     filename: String,
+    chunk_id: String,
+    start_char: usize,
+    end_char: usize,
     score: f64,
     snippet: String,
+}
+
+fn file_chunks(file: &StoredFile, text: &str) -> Vec<SearchChunk> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![SearchChunk {
+            id: format!("{}:0", file.id),
+            file_id: file.id.clone(),
+            filename: file.filename.clone(),
+            text: String::new(),
+            start_char: 0,
+            end_char: 0,
+        }];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + SEARCH_CHUNK_CHARS).min(chars.len());
+        let text = chars[start..end].iter().collect::<String>();
+        chunks.push(SearchChunk {
+            id: format!("{}:{}", file.id, chunks.len()),
+            file_id: file.id.clone(),
+            filename: file.filename.clone(),
+            text,
+            start_char: start,
+            end_char: end,
+        });
+        if end == chars.len() {
+            break;
+        }
+        start = end.saturating_sub(SEARCH_CHUNK_OVERLAP_CHARS);
+    }
+    chunks
 }
 
 #[cfg(test)]
@@ -984,6 +1056,67 @@ mod tests {
 
         assert_eq!(results[0]["filename"], "dense.md");
         assert!(results[0]["score"].as_f64().unwrap() > results[1]["score"].as_f64().unwrap());
+    }
+
+    #[test]
+    fn file_search_returns_chunk_level_match_window() {
+        let store = FileStore::new();
+        let mut text = "alpha ".repeat(400);
+        text.push_str("needle relay target ");
+        text.push_str(&"omega ".repeat(400));
+        store
+            .insert(
+                "long.md",
+                "assistants",
+                "text/markdown",
+                text.into_bytes(),
+                1,
+            )
+            .unwrap();
+        let mut req = base_req(ResponsesInput::Text("needle relay".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        let results = store.inject_file_search_context(&mut req, None, Some(1), None);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0]["chunk_id"].as_str().unwrap().contains(":"));
+        assert!(results[0]["start_char"].as_u64().unwrap() > 0);
+        assert!(
+            results[0]["end_char"].as_u64().unwrap() > results[0]["start_char"].as_u64().unwrap()
+        );
+        assert!(results[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("needle relay"));
+    }
+
+    #[test]
+    fn file_search_boosts_filename_matches() {
+        let store = FileStore::new();
+        store
+            .insert(
+                "relay-guide.md",
+                "assistants",
+                "text/markdown",
+                b"small reference".to_vec(),
+                1,
+            )
+            .unwrap();
+        store
+            .insert(
+                "notes.md",
+                "assistants",
+                "text/markdown",
+                b"relay appears in body once".to_vec(),
+                1,
+            )
+            .unwrap();
+        let mut req = base_req(ResponsesInput::Text("relay".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        let results = store.inject_file_search_context(&mut req, None, Some(2), None);
+
+        assert_eq!(results[0]["filename"], "relay-guide.md");
     }
 
     #[test]
