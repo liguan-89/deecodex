@@ -44,12 +44,7 @@ impl TokenTracker {
         }
     }
 
-    pub fn record(
-        &self,
-        usage: &ChatUsage,
-        model: &str,
-        response_id: &str,
-    ) -> Vec<String> {
+    pub fn record(&self, usage: &ChatUsage, model: &str, response_id: &str) -> Vec<String> {
         let mut anomalies = Vec::new();
 
         let now = Instant::now();
@@ -84,13 +79,14 @@ impl TokenTracker {
         // 3. Prompt spike vs recent average (if enough history)
         {
             let mut recent = self.recent.lock().unwrap();
-            let same_model: Vec<&TokenSnapshot> = recent
-                .iter()
-                .filter(|s| s.model == model)
-                .collect();
+            let same_model: Vec<&TokenSnapshot> =
+                recent.iter().filter(|s| s.model == model).collect();
 
             if !same_model.is_empty() {
-                let avg_prompt: f64 = same_model.iter().map(|s| s.prompt_tokens as f64).sum::<f64>()
+                let avg_prompt: f64 = same_model
+                    .iter()
+                    .map(|s| s.prompt_tokens as f64)
+                    .sum::<f64>()
                     / same_model.len() as f64;
                 if avg_prompt > 0.0 {
                     let ratio = usage.prompt_tokens as f64 / avg_prompt;
@@ -113,16 +109,15 @@ impl TokenTracker {
                 recent.pop_front();
             }
 
-            let burn_total: u32 = recent
-                .iter()
-                .map(|s| s.total_tokens)
-                .sum::<u32>()
-                + usage.total_tokens;
+            let burn_total: u32 =
+                recent.iter().map(|s| s.total_tokens).sum::<u32>() + usage.total_tokens;
 
             let burn_per_min = if recent.is_empty() {
                 usage.total_tokens
             } else {
-                let elapsed_secs = (now.duration_since(recent.front().unwrap().timestamp)).as_secs().max(1);
+                let elapsed_secs = (now.duration_since(recent.front().unwrap().timestamp))
+                    .as_secs()
+                    .max(1);
                 ((burn_total as f64 / elapsed_secs as f64) * 60.0) as u32
             };
 

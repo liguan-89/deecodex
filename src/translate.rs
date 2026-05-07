@@ -396,9 +396,9 @@ fn collect_tool_output_value(value: &Value, chunks: &mut Vec<String>) {
 }
 
 fn serialize_output_object(value: &Value, map: &serde_json::Map<String, Value>) -> String {
-    let has_image = map.values().any(|v| {
-        v.as_str().is_some_and(|s| s.starts_with("data:image/"))
-    });
+    let has_image = map
+        .values()
+        .any(|v| v.as_str().is_some_and(|s| s.starts_with("data:image/")));
     if has_image {
         let mut cleaned = map.clone();
         for (_, v) in cleaned.iter_mut() {
@@ -418,9 +418,7 @@ fn format_image_url(url: &str) -> String {
             let mime = &url[5..semi];
             let encoded_start = semi + ";base64,".len();
             let encoded_len = url.len().saturating_sub(encoded_start);
-            return format!(
-                "[image omitted: {mime} base64 {encoded_len}B]"
-            );
+            return format!("[image omitted: {mime} base64 {encoded_len}B]");
         }
         return "[image omitted]".to_string();
     }
@@ -762,6 +760,7 @@ pub fn from_chat_response(
             id: Some(item_id),
             call_id: None,
             name: None,
+            server_label: None,
             arguments: None,
             action: None,
             status: Some("completed".into()),
@@ -782,6 +781,7 @@ pub fn from_chat_response(
             id: Some(item_id),
             call_id: None,
             name: None,
+            server_label: None,
             arguments: None,
             action: None,
             status: None,
@@ -805,14 +805,24 @@ pub fn from_chat_response(
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}_{}", id, output.len()));
+        let is_mcp_call = name == "local_mcp_call";
+        let mcp = if is_mcp_call {
+            parse_local_mcp_arguments(arguments.as_deref().unwrap_or("{}"))
+        } else {
+            None
+        };
         let item_id = if is_computer_call {
             format!("cc_{}", call_id)
+        } else if is_mcp_call {
+            format!("mcp_{}", call_id)
         } else {
             format!("fc_{}", call_id)
         };
         output.push(ResponsesOutputItem {
             kind: if is_computer_call {
                 "computer_call".into()
+            } else if is_mcp_call {
+                "mcp_tool_call".into()
             } else {
                 "function_call".into()
             },
@@ -822,11 +832,16 @@ pub fn from_chat_response(
             call_id: Some(call_id),
             name: if is_computer_call {
                 None
+            } else if let Some(mcp) = &mcp {
+                Some(mcp.tool.clone())
             } else {
                 Some(name.to_string())
             },
+            server_label: mcp.as_ref().map(|mcp| mcp.server_label.clone()),
             arguments: if is_computer_call {
                 None
+            } else if let Some(mcp) = &mcp {
+                Some(mcp.arguments.clone())
             } else {
                 arguments.clone()
             },
@@ -856,6 +871,39 @@ pub fn from_chat_response(
     };
 
     (response, vec![choice.message])
+}
+
+struct LocalMcpCall {
+    server_label: String,
+    tool: String,
+    arguments: String,
+}
+
+fn parse_local_mcp_arguments(raw: &str) -> Option<LocalMcpCall> {
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    let server_label = value
+        .get("server_label")
+        .or_else(|| value.get("server_url"))
+        .or_else(|| value.get("server"))
+        .and_then(Value::as_str)
+        .unwrap_or("remote_mcp")
+        .to_string();
+    let tool = value
+        .get("tool")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}))
+        .to_string();
+    Some(LocalMcpCall {
+        server_label,
+        tool,
+        arguments,
+    })
 }
 
 fn response_output_item_id(prefix: &str, response_id: &str, index: usize) -> String {
@@ -1170,6 +1218,43 @@ mod tests {
         assert_eq!(
             resp.output[0].arguments.as_deref(),
             Some("{\"cmd\":\"pwd\"}")
+        );
+    }
+
+    #[test]
+    fn test_blocking_local_mcp_call_is_returned_as_mcp_tool_call() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_mcp",
+                        "type": "function",
+                        "function": {
+                            "name": "local_mcp_call",
+                            "arguments": "{\"server_label\":\"filesystem\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"README.md\"}}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_mcp".into(), "deepseek-v4-pro", chat_resp);
+
+        assert_eq!(resp.output.len(), 1);
+        assert_eq!(resp.output[0].kind, "mcp_tool_call");
+        assert_eq!(resp.output[0].id.as_deref(), Some("mcp_call_mcp"));
+        assert_eq!(resp.output[0].call_id.as_deref(), Some("call_mcp"));
+        assert_eq!(resp.output[0].server_label.as_deref(), Some("filesystem"));
+        assert_eq!(resp.output[0].name.as_deref(), Some("read_file"));
+        assert_eq!(
+            resp.output[0].arguments.as_deref(),
+            Some("{\"path\":\"README.md\"}")
         );
     }
 

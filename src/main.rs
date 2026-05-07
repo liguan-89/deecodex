@@ -136,7 +136,11 @@ fn start_service_daemon(args: &Args) -> Result<()> {
 
     let pid = child.id();
     std::fs::write(pid_path(&args.data_dir), pid.to_string())?;
-    println!("deecodex 已启动 (PID: {}, 日志: {})", pid, log_path(&args.data_dir).display());
+    println!(
+        "deecodex 已启动 (PID: {}, 日志: {})",
+        pid,
+        log_path(&args.data_dir).display()
+    );
     Ok(())
 }
 
@@ -146,12 +150,14 @@ fn start_service_daemon(args: &Args) -> Result<()> {
 async fn main() -> Result<()> {
     // 加载 .env 文件（按优先级搜索：cwd → ~/.deecodex/ → exe目录）
     let env_loaded = dotenvy::dotenv().is_ok()
-        || std::env::var("HOME").ok().as_ref().map_or(false, |h| {
+        || std::env::var("HOME").ok().as_ref().is_some_and(|h| {
             dotenvy::from_path(std::path::Path::new(h).join(".deecodex").join(".env")).is_ok()
         })
-        || std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())).as_ref().map_or(false, |d| {
-            dotenvy::from_path(d.join(".env")).is_ok()
-        });
+        || std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.to_path_buf()))
+            .as_ref()
+            .is_some_and(|d| dotenvy::from_path(d.join(".env")).is_ok());
     let _ = env_loaded;
 
     // 向后兼容: CODEX_RELAY_* → DEECODEX_*
@@ -169,12 +175,30 @@ async fn main() -> Result<()> {
         ("CODEX_RELAY_CHINESE_THINKING", "DEECODEX_CHINESE_THINKING"),
         ("CODEX_RELAY_PROMPTS_DIR", "DEECODEX_PROMPTS_DIR"),
         ("CODEX_RELAY_DATA_DIR", "DEECODEX_DATA_DIR"),
-        ("CODEX_RELAY_TOKEN_ANOMALY_PROMPT_MAX", "DEECODEX_TOKEN_ANOMALY_PROMPT_MAX"),
-        ("CODEX_RELAY_TOKEN_ANOMALY_SPIKE_RATIO", "DEECODEX_TOKEN_ANOMALY_SPIKE_RATIO"),
-        ("CODEX_RELAY_TOKEN_ANOMALY_BURN_WINDOW", "DEECODEX_TOKEN_ANOMALY_BURN_WINDOW"),
-        ("CODEX_RELAY_TOKEN_ANOMALY_BURN_RATE", "DEECODEX_TOKEN_ANOMALY_BURN_RATE"),
-        ("CODEX_RELAY_ALLOWED_MCP_SERVERS", "DEECODEX_ALLOWED_MCP_SERVERS"),
-        ("CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS", "DEECODEX_ALLOWED_COMPUTER_DISPLAYS"),
+        (
+            "CODEX_RELAY_TOKEN_ANOMALY_PROMPT_MAX",
+            "DEECODEX_TOKEN_ANOMALY_PROMPT_MAX",
+        ),
+        (
+            "CODEX_RELAY_TOKEN_ANOMALY_SPIKE_RATIO",
+            "DEECODEX_TOKEN_ANOMALY_SPIKE_RATIO",
+        ),
+        (
+            "CODEX_RELAY_TOKEN_ANOMALY_BURN_WINDOW",
+            "DEECODEX_TOKEN_ANOMALY_BURN_WINDOW",
+        ),
+        (
+            "CODEX_RELAY_TOKEN_ANOMALY_BURN_RATE",
+            "DEECODEX_TOKEN_ANOMALY_BURN_RATE",
+        ),
+        (
+            "CODEX_RELAY_ALLOWED_MCP_SERVERS",
+            "DEECODEX_ALLOWED_MCP_SERVERS",
+        ),
+        (
+            "CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS",
+            "DEECODEX_ALLOWED_COMPUTER_DISPLAYS",
+        ),
     ] {
         if std::env::var(new).is_err() {
             if let Ok(val) = std::env::var(old) {
@@ -209,7 +233,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Restart) => {
             // 尝试停止已运行的服务（忽略错误，可能本来就没在运行）
-            if read_pid(&args.data_dir).map_or(false, |p| is_running(p)) {
+            if read_pid(&args.data_dir).is_some_and(is_running) {
                 let _ = stop_service(&args.data_dir);
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -461,4 +485,25 @@ fn parse_csv_list(value: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_csv_list_trims_and_drops_empty_items() {
+        assert_eq!(
+            parse_csv_list(" filesystem, ,github,, browser "),
+            vec!["filesystem", "github", "browser"]
+        );
+    }
+
+    #[test]
+    fn pid_and_log_paths_live_under_data_dir() {
+        let data_dir = std::path::Path::new("/tmp/deecodex-test");
+
+        assert_eq!(pid_path(data_dir), data_dir.join("deecodex.pid"));
+        assert_eq!(log_path(data_dir), data_dir.join("deecodex.log"));
+    }
 }

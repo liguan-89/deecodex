@@ -159,12 +159,18 @@ impl TuiAppState {
         Ok(Args {
             command: None,
             config: None,
-            port: self.port.parse().map_err(|_| anyhow::anyhow!("端口号无效: {}", self.port))?,
+            port: self
+                .port
+                .parse()
+                .map_err(|_| anyhow::anyhow!("端口号无效: {}", self.port))?,
             upstream: self.upstream,
             api_key: self.api_key,
             client_api_key: self.client_api_key,
             model_map,
-            max_body_mb: self.max_body_mb.parse().map_err(|_| anyhow::anyhow!("最大请求体大小无效"))?,
+            max_body_mb: self
+                .max_body_mb
+                .parse()
+                .map_err(|_| anyhow::anyhow!("最大请求体大小无效"))?,
             vision_upstream: self.vision_upstream,
             vision_api_key: self.vision_api_key,
             vision_model: self.vision_model,
@@ -172,10 +178,22 @@ impl TuiAppState {
             chinese_thinking: self.chinese_thinking,
             prompts_dir: PathBuf::from(self.prompts_dir),
             data_dir: PathBuf::from(self.data_dir),
-            token_anomaly_prompt_max: self.token_anomaly_prompt_max.parse().map_err(|_| anyhow::anyhow!("Token 提示词最大值无效"))?,
-            token_anomaly_spike_ratio: self.token_anomaly_spike_ratio.parse().map_err(|_| anyhow::anyhow!("Token 飙升比率无效"))?,
-            token_anomaly_burn_window: self.token_anomaly_burn_window.parse().map_err(|_| anyhow::anyhow!("Token 燃烧窗口无效"))?,
-            token_anomaly_burn_rate: self.token_anomaly_burn_rate.parse().map_err(|_| anyhow::anyhow!("Token 燃烧速率无效"))?,
+            token_anomaly_prompt_max: self
+                .token_anomaly_prompt_max
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Token 提示词最大值无效"))?,
+            token_anomaly_spike_ratio: self
+                .token_anomaly_spike_ratio
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Token 飙升比率无效"))?,
+            token_anomaly_burn_window: self
+                .token_anomaly_burn_window
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Token 燃烧窗口无效"))?,
+            token_anomaly_burn_rate: self
+                .token_anomaly_burn_rate
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Token 燃烧速率无效"))?,
             allowed_mcp_servers: self.allowed_mcp_servers,
             allowed_computer_displays: self.allowed_computer_displays,
             daemon: false,
@@ -215,12 +233,30 @@ impl TuiAppState {
             "max_body_mb" => self.max_body_mb.clone(),
             "data_dir" => self.data_dir.clone(),
             "prompts_dir" => self.prompts_dir.clone(),
-            "chinese_thinking" => if self.chinese_thinking { "是".into() } else { "否".into() },
+            "chinese_thinking" => {
+                if self.chinese_thinking {
+                    "是".into()
+                } else {
+                    "否".into()
+                }
+            }
             "upstream" => self.upstream.clone(),
             "api_key" => self.api_key.clone(),
             "client_api_key" => self.client_api_key.clone(),
-            "model_map" => if self.model_map.is_empty() { "(无)".into() } else { self.model_map.clone() },
-            "vision_upstream" => if self.vision_upstream.is_empty() { "(未设置)".into() } else { self.vision_upstream.clone() },
+            "model_map" => {
+                if self.model_map.is_empty() {
+                    "(无)".into()
+                } else {
+                    self.model_map.clone()
+                }
+            }
+            "vision_upstream" => {
+                if self.vision_upstream.is_empty() {
+                    "(未设置)".into()
+                } else {
+                    self.vision_upstream.clone()
+                }
+            }
             "vision_api_key" => self.vision_api_key.clone(),
             "vision_model" => self.vision_model.clone(),
             "vision_endpoint" => self.vision_endpoint.clone(),
@@ -228,8 +264,20 @@ impl TuiAppState {
             "token_anomaly_spike_ratio" => self.token_anomaly_spike_ratio.clone(),
             "token_anomaly_burn_window" => self.token_anomaly_burn_window.clone(),
             "token_anomaly_burn_rate" => self.token_anomaly_burn_rate.clone(),
-            "allowed_mcp_servers" => if self.allowed_mcp_servers.is_empty() { "(无)".into() } else { self.allowed_mcp_servers.clone() },
-            "allowed_computer_displays" => if self.allowed_computer_displays.is_empty() { "(无)".into() } else { self.allowed_computer_displays.clone() },
+            "allowed_mcp_servers" => {
+                if self.allowed_mcp_servers.is_empty() {
+                    "(无)".into()
+                } else {
+                    self.allowed_mcp_servers.clone()
+                }
+            }
+            "allowed_computer_displays" => {
+                if self.allowed_computer_displays.is_empty() {
+                    "(无)".into()
+                } else {
+                    self.allowed_computer_displays.clone()
+                }
+            }
             _ => String::new(),
         }
     }
@@ -263,58 +311,209 @@ impl TuiAppState {
 
 fn main_menu_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "快速检测",           key: "", kind: FieldKind::Action { target: Screen::HealthCheck },      help: "检查当前配置是否有效、上游是否可达" },
-        FieldDef { label: "基础设置",           key: "", kind: FieldKind::Action { target: Screen::BasicSettings },    help: "端口、数据目录、中文思考模式等" },
-        FieldDef { label: "上游设置",           key: "", kind: FieldKind::Action { target: Screen::UpstreamSettings }, help: "API 地址、密钥、模型映射" },
-        FieldDef { label: "视觉模型设置",       key: "", kind: FieldKind::Action { target: Screen::VisionSettings },   help: "视觉模型上游、密钥、端点" },
-        FieldDef { label: "Token 异常检测",     key: "", kind: FieldKind::Action { target: Screen::TokenAnomaly },     help: "Token 异常检测阈值配置" },
-        FieldDef { label: "工具安全策略",       key: "", kind: FieldKind::Action { target: Screen::ToolPolicy },       help: "MCP 服务器与计算机显示器白名单" },
-        FieldDef { label: "保存当前配置",       key: "", kind: FieldKind::Action { target: Screen::MainMenu },         help: "将当前设置保存到配置文件" },
-        FieldDef { label: "确认并启动服务",     key: "", kind: FieldKind::Action { target: Screen::ReviewConfirm },    help: "复查所有配置并启动服务" },
+        FieldDef {
+            label: "快速检测",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::HealthCheck,
+            },
+            help: "检查当前配置是否有效、上游是否可达",
+        },
+        FieldDef {
+            label: "基础设置",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::BasicSettings,
+            },
+            help: "端口、数据目录、中文思考模式等",
+        },
+        FieldDef {
+            label: "上游设置",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::UpstreamSettings,
+            },
+            help: "API 地址、密钥、模型映射",
+        },
+        FieldDef {
+            label: "视觉模型设置",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::VisionSettings,
+            },
+            help: "视觉模型上游、密钥、端点",
+        },
+        FieldDef {
+            label: "Token 异常检测",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::TokenAnomaly,
+            },
+            help: "Token 异常检测阈值配置",
+        },
+        FieldDef {
+            label: "工具安全策略",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::ToolPolicy,
+            },
+            help: "MCP 服务器与计算机显示器白名单",
+        },
+        FieldDef {
+            label: "保存当前配置",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::MainMenu,
+            },
+            help: "将当前设置保存到配置文件",
+        },
+        FieldDef {
+            label: "确认并启动服务",
+            key: "",
+            kind: FieldKind::Action {
+                target: Screen::ReviewConfirm,
+            },
+            help: "复查所有配置并启动服务",
+        },
     ]
 }
 
 fn basic_settings_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "服务端口",       key: "port",             kind: FieldKind::Number,  help: "本地监听端口 (默认: 4444)" },
-        FieldDef { label: "最大请求体(MB)", key: "max_body_mb",     kind: FieldKind::Number,  help: "最大请求体大小/兆字节 (默认: 100)" },
-        FieldDef { label: "数据目录",       key: "data_dir",        kind: FieldKind::Path,    help: "本地文件与数据存储目录 (默认: .deecodex)" },
-        FieldDef { label: "提示词目录",     key: "prompts_dir",     kind: FieldKind::Path,    help: "提示词模板加载目录 (默认: prompts)" },
-        FieldDef { label: "中文思考模式",   key: "chinese_thinking", kind: FieldKind::Bool,    help: "开启后系统提示词将注入中文思考指令" },
+        FieldDef {
+            label: "服务端口",
+            key: "port",
+            kind: FieldKind::Number,
+            help: "本地监听端口 (默认: 4444)",
+        },
+        FieldDef {
+            label: "最大请求体(MB)",
+            key: "max_body_mb",
+            kind: FieldKind::Number,
+            help: "最大请求体大小/兆字节 (默认: 100)",
+        },
+        FieldDef {
+            label: "数据目录",
+            key: "data_dir",
+            kind: FieldKind::Path,
+            help: "本地文件与数据存储目录 (默认: .deecodex)",
+        },
+        FieldDef {
+            label: "提示词目录",
+            key: "prompts_dir",
+            kind: FieldKind::Path,
+            help: "提示词模板加载目录 (默认: prompts)",
+        },
+        FieldDef {
+            label: "中文思考模式",
+            key: "chinese_thinking",
+            kind: FieldKind::Bool,
+            help: "开启后系统提示词将注入中文思考指令",
+        },
     ]
 }
 
 fn upstream_settings_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "上游 API 地址",  key: "upstream",        kind: FieldKind::Text,     help: "Chat Completions API 地址 (默认: https://openrouter.ai/api/v1)" },
-        FieldDef { label: "API 密钥",       key: "api_key",         kind: FieldKind::Password, help: "上游 API 访问密钥" },
-        FieldDef { label: "客户端认证密钥", key: "client_api_key",  kind: FieldKind::Password, help: "本地调用方所需的 Bearer token，为空则不验证" },
-        FieldDef { label: "模型映射(JSON)", key: "model_map",        kind: FieldKind::JsonText, help: r#"例: {"codex-model": "deepseek-model"}"# },
+        FieldDef {
+            label: "上游 API 地址",
+            key: "upstream",
+            kind: FieldKind::Text,
+            help: "Chat Completions API 地址 (默认: https://openrouter.ai/api/v1)",
+        },
+        FieldDef {
+            label: "API 密钥",
+            key: "api_key",
+            kind: FieldKind::Password,
+            help: "上游 API 访问密钥",
+        },
+        FieldDef {
+            label: "客户端认证密钥",
+            key: "client_api_key",
+            kind: FieldKind::Password,
+            help: "本地调用方所需的 Bearer token，为空则不验证",
+        },
+        FieldDef {
+            label: "模型映射(JSON)",
+            key: "model_map",
+            kind: FieldKind::JsonText,
+            help: r#"例: {"codex-model": "deepseek-model"}"#,
+        },
     ]
 }
 
 fn vision_settings_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "视觉上游地址",  key: "vision_upstream",  kind: FieldKind::Text,     help: "视觉/截图处理 API 地址，为空则不启用视觉路由" },
-        FieldDef { label: "视觉 API 密钥", key: "vision_api_key",   kind: FieldKind::Password, help: "视觉 API 访问密钥" },
-        FieldDef { label: "视觉模型名称",  key: "vision_model",     kind: FieldKind::Text,     help: "视觉模型名 (默认: MiniMax-M1)" },
-        FieldDef { label: "视觉接口路径",  key: "vision_endpoint",  kind: FieldKind::Text,     help: "视觉接口端点路径 (默认: v1/coding_plan/vlm)" },
+        FieldDef {
+            label: "视觉上游地址",
+            key: "vision_upstream",
+            kind: FieldKind::Text,
+            help: "视觉/截图处理 API 地址，为空则不启用视觉路由",
+        },
+        FieldDef {
+            label: "视觉 API 密钥",
+            key: "vision_api_key",
+            kind: FieldKind::Password,
+            help: "视觉 API 访问密钥",
+        },
+        FieldDef {
+            label: "视觉模型名称",
+            key: "vision_model",
+            kind: FieldKind::Text,
+            help: "视觉模型名 (默认: MiniMax-M1)",
+        },
+        FieldDef {
+            label: "视觉接口路径",
+            key: "vision_endpoint",
+            kind: FieldKind::Text,
+            help: "视觉接口端点路径 (默认: v1/coding_plan/vlm)",
+        },
     ]
 }
 
 fn token_anomaly_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "提示词 Token 上限",       key: "token_anomaly_prompt_max",   kind: FieldKind::Number, help: "单次请求提示词最大 Token 数，0 禁用 (默认: 200000)" },
-        FieldDef { label: "飙升比率阈值",             key: "token_anomaly_spike_ratio", kind: FieldKind::Number, help: "相对滑动平均的飙升比率，0 禁用 (默认: 5.0)" },
-        FieldDef { label: "燃烧速率窗口(秒)",         key: "token_anomaly_burn_window", kind: FieldKind::Number, help: "燃烧速率统计窗口/秒 (默认: 120)" },
-        FieldDef { label: "燃烧速率阈值(tok/分钟)",   key: "token_anomaly_burn_rate",   kind: FieldKind::Number, help: "燃烧速率告警阈值 token/分钟，0 禁用 (默认: 500000)" },
+        FieldDef {
+            label: "提示词 Token 上限",
+            key: "token_anomaly_prompt_max",
+            kind: FieldKind::Number,
+            help: "单次请求提示词最大 Token 数，0 禁用 (默认: 200000)",
+        },
+        FieldDef {
+            label: "飙升比率阈值",
+            key: "token_anomaly_spike_ratio",
+            kind: FieldKind::Number,
+            help: "相对滑动平均的飙升比率，0 禁用 (默认: 5.0)",
+        },
+        FieldDef {
+            label: "燃烧速率窗口(秒)",
+            key: "token_anomaly_burn_window",
+            kind: FieldKind::Number,
+            help: "燃烧速率统计窗口/秒 (默认: 120)",
+        },
+        FieldDef {
+            label: "燃烧速率阈值(tok/分钟)",
+            key: "token_anomaly_burn_rate",
+            kind: FieldKind::Number,
+            help: "燃烧速率告警阈值 token/分钟，0 禁用 (默认: 500000)",
+        },
     ]
 }
 
 fn tool_policy_fields() -> Vec<FieldDef> {
     vec![
-        FieldDef { label: "MCP 服务器白名单",        key: "allowed_mcp_servers",        kind: FieldKind::CsvList, help: "允许的 MCP server_label/server_url/name，逗号分隔，为空不限制" },
-        FieldDef { label: "计算机显示器白名单",      key: "allowed_computer_displays",  kind: FieldKind::CsvList, help: "允许的 computer_use 显示器/环境，逗号分隔，为空不限制" },
+        FieldDef {
+            label: "MCP 服务器白名单",
+            key: "allowed_mcp_servers",
+            kind: FieldKind::CsvList,
+            help: "允许的 MCP server_label/server_url/name，逗号分隔，为空不限制",
+        },
+        FieldDef {
+            label: "计算机显示器白名单",
+            key: "allowed_computer_displays",
+            kind: FieldKind::CsvList,
+            help: "允许的 computer_use 显示器/环境，逗号分隔，为空不限制",
+        },
     ]
 }
 
@@ -372,10 +571,7 @@ fn load_config_and_merge(cli_args: &Args) -> TuiAppState {
 
 // ── Event Loop ──────────────────────────────────────────────────────────────
 
-async fn run_app(
-    terminal: &mut ratatui::DefaultTerminal,
-    mut state: TuiAppState,
-) -> Option<Args> {
+async fn run_app(terminal: &mut ratatui::DefaultTerminal, mut state: TuiAppState) -> Option<Args> {
     loop {
         terminal
             .draw(|f| render(f, &mut state))
@@ -440,10 +636,8 @@ fn handle_navigation(key: event::KeyEvent, state: &mut TuiAppState) {
         KeyCode::Up | KeyCode::Char('k') => {
             state.selection_index = state.selection_index.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if state.selection_index + 1 < fields.len() {
-                state.selection_index += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if state.selection_index + 1 < fields.len() => {
+            state.selection_index += 1;
         }
         KeyCode::Enter => {
             if let Some(field) = fields.get(state.selection_index) {
@@ -458,10 +652,8 @@ fn handle_navigation(key: event::KeyEvent, state: &mut TuiAppState) {
                 state.selection_index = 0;
             }
         }
-        KeyCode::Char('q') => {
-            if state.current_screen == Screen::MainMenu {
-                state.should_quit = true;
-            }
+        KeyCode::Char('q') if state.current_screen == Screen::MainMenu => {
+            state.should_quit = true;
         }
         _ => {}
     }
@@ -555,14 +747,18 @@ fn render(frame: &mut Frame, state: &mut TuiAppState) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &TuiAppState) {
-    let header = Paragraph::new(
-        Line::from(vec![
-            Span::styled(" deecodex ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("  中文参数配置"),
-            Span::raw("    配置: "),
-            Span::styled(&state.config_path, Style::default().fg(Color::DarkGray)),
-        ]),
-    )
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " deecodex ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  中文参数配置"),
+        Span::raw("    配置: "),
+        Span::styled(&state.config_path, Style::default().fg(Color::DarkGray)),
+    ]))
     .block(
         Block::default()
             .borders(Borders::BOTTOM)
@@ -581,7 +777,10 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiAppState) {
     } else if state.current_screen == Screen::ReviewConfirm {
         ("Y 确认启动  N/Esc 返回", "配置摘要")
     } else {
-        ("↑↓ 导航  Enter 编辑  Esc 返回", state.current_screen.title())
+        (
+            "↑↓ 导航  Enter 编辑  Esc 返回",
+            state.current_screen.title(),
+        )
     };
 
     let footer = Paragraph::new(Line::from(vec![
@@ -627,12 +826,16 @@ fn render_form_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
 
             let line = Line::from(vec![
                 Span::raw(" "),
-                Span::styled(arrow, Style::default().fg(if is_selected { Color::Cyan } else { Color::White })),
-                Span::raw(" "),
                 Span::styled(
-                    padded_label,
-                    Style::default().add_modifier(Modifier::BOLD),
+                    arrow,
+                    Style::default().fg(if is_selected {
+                        Color::Cyan
+                    } else {
+                        Color::White
+                    }),
                 ),
+                Span::raw(" "),
+                Span::styled(padded_label, Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     display_value,
                     if is_selected {
@@ -658,10 +861,7 @@ fn render_form_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
         String::new()
     };
 
-    let inner = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(2),
-    ]);
+    let inner = Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]);
     let [list_area, help_area] = inner.areas(area);
 
     let mut list_state = ListState::default();
@@ -678,8 +878,7 @@ fn render_form_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
 
     frame.render_stateful_widget(list, list_area, &mut list_state);
 
-    let help = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::Gray));
+    let help = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(help, help_area);
 }
 
@@ -687,7 +886,9 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
     let mut lines = vec![
         Line::from(Span::styled(
             "══════════ 配置摘要 ══════════",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
@@ -701,7 +902,14 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
                 ("最大请求体", format!("{} MB", state.max_body_mb)),
                 ("数据目录", state.data_dir.clone()),
                 ("提示词目录", state.prompts_dir.clone()),
-                ("中文思考", if state.chinese_thinking { "开启".into() } else { "关闭".into() }),
+                (
+                    "中文思考",
+                    if state.chinese_thinking {
+                        "开启".into()
+                    } else {
+                        "关闭".into()
+                    },
+                ),
             ],
         ),
         (
@@ -710,13 +918,27 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
                 ("上游地址", state.upstream.clone()),
                 ("API 密钥", mask_value(&state.api_key)),
                 ("客户端密钥", mask_value(&state.client_api_key)),
-                ("模型映射", if state.model_map.is_empty() { "(无)".into() } else { state.model_map.clone() }),
+                (
+                    "模型映射",
+                    if state.model_map.is_empty() {
+                        "(无)".into()
+                    } else {
+                        state.model_map.clone()
+                    },
+                ),
             ],
         ),
         (
             "视觉模型",
             vec![
-                ("视觉上游", if state.vision_upstream.is_empty() { "(未启用)".into() } else { state.vision_upstream.clone() }),
+                (
+                    "视觉上游",
+                    if state.vision_upstream.is_empty() {
+                        "(未启用)".into()
+                    } else {
+                        state.vision_upstream.clone()
+                    },
+                ),
                 ("视觉密钥", mask_value(&state.vision_api_key)),
                 ("视觉模型", state.vision_model.clone()),
                 ("视觉路径", state.vision_endpoint.clone()),
@@ -727,15 +949,35 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
             vec![
                 ("提示词上限", state.token_anomaly_prompt_max.clone()),
                 ("飙升比率", state.token_anomaly_spike_ratio.clone()),
-                ("燃烧窗口", format!("{} 秒", state.token_anomaly_burn_window)),
-                ("燃烧速率", format!("{} tok/分钟", state.token_anomaly_burn_rate)),
+                (
+                    "燃烧窗口",
+                    format!("{} 秒", state.token_anomaly_burn_window),
+                ),
+                (
+                    "燃烧速率",
+                    format!("{} tok/分钟", state.token_anomaly_burn_rate),
+                ),
             ],
         ),
         (
             "工具安全策略",
             vec![
-                ("MCP 白名单", if state.allowed_mcp_servers.is_empty() { "(不限制)".into() } else { state.allowed_mcp_servers.clone() }),
-                ("显示器白名单", if state.allowed_computer_displays.is_empty() { "(不限制)".into() } else { state.allowed_computer_displays.clone() }),
+                (
+                    "MCP 白名单",
+                    if state.allowed_mcp_servers.is_empty() {
+                        "(不限制)".into()
+                    } else {
+                        state.allowed_mcp_servers.clone()
+                    },
+                ),
+                (
+                    "显示器白名单",
+                    if state.allowed_computer_displays.is_empty() {
+                        "(不限制)".into()
+                    } else {
+                        state.allowed_computer_displays.clone()
+                    },
+                ),
             ],
         ),
     ];
@@ -743,7 +985,9 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
     for (group_name, items) in &groups {
         lines.push(Line::from(Span::styled(
             format!("▸ {}", group_name),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )));
         for (label, value) in items {
             lines.push(Line::from(vec![
@@ -762,7 +1006,9 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
     )));
     lines.push(Line::from(Span::styled(
         "  [Y] 确认并启动服务    [N/Esc] 返回主菜单  ",
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
     )));
 
     let paragraph = Paragraph::new(Text::from(lines))
@@ -785,7 +1031,9 @@ fn render_health_check(frame: &mut Frame, area: Rect, state: &TuiAppState) {
     let mut lines = vec![
         Line::from(Span::styled(
             "════════ 配置检测报告 ════════",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
@@ -811,7 +1059,10 @@ fn render_health_check(frame: &mut Frame, area: Rect, state: &TuiAppState) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", icon), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!(" {} ", icon),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(&check.label, Style::default().fg(Color::White)),
         ]));
         lines.push(Line::from(Span::styled(
@@ -850,7 +1101,9 @@ fn render_health_check(frame: &mut Frame, area: Rect, state: &TuiAppState) {
 
     lines.push(Line::from(Span::styled(
         summary,
-        Style::default().fg(summary_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(summary_color)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -894,7 +1147,7 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
         detail: if upstream_empty {
             "未设置上游地址，服务无法启动".into()
         } else {
-            format!("{}", state.upstream)
+            state.upstream.to_string()
         },
         status: if upstream_empty {
             CheckStatus::Fail
@@ -1011,7 +1264,8 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
     let burn_window: Result<u64, _> = state.token_anomaly_burn_window.parse();
     let burn_rate: Result<u32, _> = state.token_anomaly_burn_rate.parse();
 
-    let anomaly_ok = prompt_max.is_ok() && spike.is_ok() && burn_window.is_ok() && burn_rate.is_ok();
+    let anomaly_ok =
+        prompt_max.is_ok() && spike.is_ok() && burn_window.is_ok() && burn_rate.is_ok();
     results.push(CheckResult {
         label: "Token 异常检测参数".into(),
         detail: if anomaly_ok {
@@ -1030,7 +1284,11 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
         } else {
             "参数值格式错误".into()
         },
-        status: if anomaly_ok { CheckStatus::Ok } else { CheckStatus::Fail },
+        status: if anomaly_ok {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Fail
+        },
     });
 
     // 8. 视觉模型
@@ -1066,7 +1324,11 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
             Ok(mb) => format!("{} MB", mb),
             Err(_) => format!("无效值: {}", state.max_body_mb),
         },
-        status: if max_body.is_ok() { CheckStatus::Ok } else { CheckStatus::Fail },
+        status: if max_body.is_ok() {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Fail
+        },
     });
 
     // 10. 中文思考模式
@@ -1110,11 +1372,7 @@ fn render_edit_popup(frame: &mut Frame, state: &mut TuiAppState) {
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
 
-        let chunks = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
+        let chunks = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(inner);
 
         textarea.set_block(Block::default().style(Style::default().bg(Color::Rgb(30, 30, 40))));
         frame.render_widget(&*textarea, chunks[0]);

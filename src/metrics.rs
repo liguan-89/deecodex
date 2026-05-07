@@ -1,8 +1,7 @@
 use prometheus::Encoder;
 use prometheus::{
     register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
-    register_int_gauge_with_registry, HistogramOpts, IntCounterVec, Opts, Registry,
-    TextEncoder,
+    register_int_gauge_with_registry, HistogramOpts, IntCounterVec, Opts, Registry, TextEncoder,
 };
 use std::sync::Mutex;
 
@@ -100,8 +99,16 @@ impl Metrics {
                 "Prompt token usage distribution"
             )
             .buckets(vec![
-                100.0, 500.0, 1000.0, 5000.0, 10_000.0, 50_000.0, 100_000.0, 200_000.0,
-                500_000.0, 1_000_000.0,
+                100.0,
+                500.0,
+                1000.0,
+                5000.0,
+                10_000.0,
+                50_000.0,
+                100_000.0,
+                200_000.0,
+                500_000.0,
+                1_000_000.0,
             ]),
             &["model"],
             registry

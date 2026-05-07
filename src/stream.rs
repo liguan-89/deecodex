@@ -65,6 +65,7 @@ struct ResponseToolCallItem {
     item_type: &'static str,
     item_id: String,
     name: Option<String>,
+    server_label: Option<String>,
     arguments: Option<String>,
     action: Option<Value>,
 }
@@ -87,10 +88,21 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             item_type: "computer_call",
             item_id: format!("cc_{call_id}"),
             name: None,
+            server_label: None,
             arguments: None,
             action: serde_json::from_str::<Value>(arguments)
                 .ok()
                 .or_else(|| Some(json!({"type": "unknown"}))),
+        }
+    } else if name == "local_mcp_call" {
+        let mcp = parse_local_mcp_arguments(arguments);
+        ResponseToolCallItem {
+            item_type: "mcp_tool_call",
+            item_id: format!("mcp_{call_id}"),
+            name: Some(mcp.tool),
+            server_label: Some(mcp.server_label),
+            arguments: Some(mcp.arguments),
+            action: None,
         }
     } else {
         let tool_name = if name == "apply_patch" {
@@ -102,6 +114,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             item_type: "function_call",
             item_id: format!("fc_{call_id}"),
             name: Some(tool_name),
+            server_label: None,
             arguments: Some(arguments.to_string()),
             action: None,
         }
@@ -118,6 +131,9 @@ fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progre
     if let Some(name) = &spec.name {
         item["name"] = json!(name);
     }
+    if let Some(server_label) = &spec.server_label {
+        item["server_label"] = json!(server_label);
+    }
     if let Some(arguments) = &spec.arguments {
         item["arguments"] = json!(if in_progress { "" } else { arguments.as_str() });
     }
@@ -125,6 +141,39 @@ fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progre
         item["action"] = action.clone();
     }
     item
+}
+
+struct LocalMcpCall {
+    server_label: String,
+    tool: String,
+    arguments: String,
+}
+
+fn parse_local_mcp_arguments(raw: &str) -> LocalMcpCall {
+    let value = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({}));
+    let server_label = value
+        .get("server_label")
+        .or_else(|| value.get("server_url"))
+        .or_else(|| value.get("server"))
+        .and_then(Value::as_str)
+        .unwrap_or("remote_mcp")
+        .to_string();
+    let tool = value
+        .get("tool")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let arguments = value
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}))
+        .to_string();
+    LocalMcpCall {
+        server_label,
+        tool,
+        arguments,
+    }
 }
 
 pub fn translate_stream(
@@ -1195,6 +1244,21 @@ mod tests {
     }
 
     #[test]
+    fn test_response_tool_call_item_local_mcp() {
+        let item = response_tool_call_item(
+            "m1",
+            "local_mcp_call",
+            r#"{"server_label":"filesystem","tool":"read_file","arguments":{"path":"README.md"}}"#,
+        );
+
+        assert_eq!(item.item_type, "mcp_tool_call");
+        assert_eq!(item.item_id, "mcp_m1");
+        assert_eq!(item.server_label.as_deref(), Some("filesystem"));
+        assert_eq!(item.name.as_deref(), Some("read_file"));
+        assert_eq!(item.arguments.as_deref(), Some(r#"{"path":"README.md"}"#));
+    }
+
+    #[test]
     fn test_response_tool_call_json_function_in_progress() {
         let spec = response_tool_call_item("c1", "exec_command", r#"{"cmd":"ls"}"#);
         let json = response_tool_call_json("c1", &spec, true);
@@ -1212,6 +1276,24 @@ mod tests {
         let json = response_tool_call_json("c1", &spec, false);
         assert_eq!(json["status"], "completed");
         assert_eq!(json["arguments"], r#"{"cmd":"ls"}"#);
+    }
+
+    #[test]
+    fn test_response_tool_call_json_local_mcp_completed() {
+        let spec = response_tool_call_item(
+            "m1",
+            "local_mcp_call",
+            r#"{"server_label":"filesystem","tool":"read_file","arguments":{"path":"README.md"}}"#,
+        );
+        let json = response_tool_call_json("m1", &spec, false);
+
+        assert_eq!(json["type"], "mcp_tool_call");
+        assert_eq!(json["id"], "mcp_m1");
+        assert_eq!(json["call_id"], "m1");
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["server_label"], "filesystem");
+        assert_eq!(json["name"], "read_file");
+        assert_eq!(json["arguments"], r#"{"path":"README.md"}"#);
     }
 
     #[test]

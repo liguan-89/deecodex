@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：rollout `019dfe49` P2 file_search 索引 + tool policy/schema version 收口
-- 正在做：把 Responses 增强层推进到约 85% 完成度，补齐本地检索索引、工具白名单和持久化迁移基础
-- 下一步：推进真实 computer/MCP executor、file_search 排序质量和 main.rs 入口测试
+- 阶段：rollout `019dfe49` 最后 15% 协议收口
+- 正在做：把 Responses 增强层推进到约 100% 本地可实现范围，清掉已知失败并补齐 MCP 输出、入口/config 测试
+- 下一步：真实外部 computer/browser executor 与远程 MCP 进程执行器进入独立增强项，不再阻塞 Responses 协议层完成度
 
 ## 已完成
 
@@ -100,11 +100,17 @@
   - `ranking_options.score_threshold` 做本地降级支持，并写入 response metadata。
   - vector store registry 快照增加 `schema_version`，为后续迁移保留版本边界。
   - 增加可选工具白名单：`CODEX_RELAY_ALLOWED_MCP_SERVERS` 和 `CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS`。
+- 最后 15% 协议收口已完成：
+  - unsupported include 恢复明确 400 `unsupported_feature`，create/retrieve/单测契约重新一致。
+  - 上游 `local_mcp_call` 不再伪装成普通 `function_call`，非流式和缓存/流式路径都会映射为 Responses `mcp_tool_call`。
+  - `mcp_tool_call` output item 保留稳定 `id`、`call_id`、`server_label`、`name` 和 `arguments`。
+  - `main.rs` 入口辅助函数补测试，`config.json` 合并工具白名单补测试。
+  - 仓库格式化状态恢复为 `cargo fmt --check` 干净。
 
 ## 进行中
 
-- 本轮已把 P2 file_search 索引、score_threshold、本地 tool policy 和 vector store schema version 推进到测试覆盖，整体开发进度估算约 85%。
-- P0 主线契约已从计划推进到测试覆盖：live SSE、缓存回放、retrieve stream replay 都有 sequence 或 echo 断言；P1/P2 file_search 现在覆盖 output/metadata/input_items/retrieve、max_results、score_threshold 和索引失效。
+- Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度估算约 100%。
+- 真实外部执行器仍作为后续增强项：需要具体选择 browser-use/Playwright 运行形态和 MCP server 启动/权限模型，不能在协议层内假执行。
 
 ## 下次开发计划
 
@@ -181,7 +187,7 @@
   - 按 vector store 文件集合做过滤后再打分。✅ 已保留 allowed_file_ids 过滤链路
   - ranking_options 支持 score_threshold 的本地降级。✅
 
-## 下轮开发计划 (85% 后)
+## 后续增强计划 (100% 后)
 
 - P1：真实 computer executor：
   - 在现有 tool policy 基础上接 browser-use / Playwright。
@@ -216,6 +222,7 @@
 - 2026-05-07：P1 include/file_search 证据链增强：retrieve include 统一校验，query include 支持单值解析，file_search output/metadata/input_items/retrieve 证据一致，支持 `max_num_results` / `ranking_options.max_num_results` 本地降级。**308 → 312 测试**，相关集成测试通过，待本轮最终全量复验。
 - 2026-05-07：P1 computer/MCP output 状态机增强：`computer_call_output` 提取 screenshot/image_url/output/content，`mcp_tool_call_output` 支持结构化 JSON output，output 类 input item 补 id/status，并增加 upstream/input_items 端到端集成测试。**312 → 316 测试**，相关测试通过，待本轮最终全量复验。
 - 2026-05-07：P2 file_search/tool policy/schema version 收口：file_search 增加倒排索引缓存与删除失效，支持 `ranking_options.score_threshold`；vector store 快照写入 `schema_version`；新增 MCP server/computer display allowlist 骨架。**316 → 324 测试**，`cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check` 全部通过。
+- 2026-05-07：最后 15% 协议收口：修复 unsupported include 单测失败；`local_mcp_call` 输出映射为 Responses `mcp_tool_call`，非流式和缓存/流式路径均覆盖；`main.rs`/`config.rs` 入口配置补测试；仓库执行 `cargo fmt` 消除格式漂移。当前已通过 `cargo test`。
 - 2026-05-07：修复工具输出 (tool output) 导致 token 爆炸：
   - **根因**：`computer_call_output` 的 base64 截图编码后作为纯文本嵌入 tool message（`tool_output_text` → `collect_tool_output_value`），经过 `handlers.rs` strip 逻辑时因 content 类型是 `Value::String` 而非 `Value::Array` 被跳过，最终 2.97M token 发给 DeepSeek 触发 context limit（1048576 token 上限）。
   - **修复 1** — 图片剥离：`collect_tool_output_value` 遇到 `data:image/` 开头的字符串替换为 `[image omitted: <mime> base64 <N>B]`，Object 分支兜底序列化前扫描所有 value 中的 base64 并替换。
@@ -226,12 +233,12 @@
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **331 测试** (252 单元 + 5 compat + 74 集成)，1 个 pre-existing 失败 (`test_unsupported_include_returns_unsupported_feature`)。
+当前 **334 个有效测试**：252 个 lib 单元测试、3 个 bin-only 入口/config 测试、5 个 compat 测试、74 个集成测试；`cargo test` 全部通过。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
-| `translate.rs` | 1200+ | 43 | ✅ 核心翻译 + convert_tool + computer/MCP output |
-| `stream.rs` | 1099 | 25 | ✅ translate_cached 全部场景 + 纯函数; ⚠️ translate_stream 有集成测试 |
+| `translate.rs` | 1200+ | 44 | ✅ 核心翻译 + convert_tool + computer/MCP output + mcp_tool_call |
+| `stream.rs` | 1099 | 27 | ✅ translate_cached 全部场景 + 纯函数 + mcp_tool_call |
 | `handlers.rs` | 2200+ | 16+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
 | `files.rs` | 900+ | 27 | ✅ list/delete/search/index/score_threshold/snippet/is_text_file/to_object/max_results |
 | `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
@@ -241,7 +248,8 @@
 | `types.rs` | 372 | 15 | ✅ resolve_model/map_effort/format_usage/fmt_* |
 | `cache.rs` | 155 | 16 | ✅ hash_request/usage_to_cached/序列化/eviction |
 | `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
-| `main.rs` | 178 | 0 | ❌ 入口无测试 |
+| `main.rs` | 450+ | 2 | ✅ 入口路径辅助函数基础测试 |
+| `config.rs` | 300+ | 1 | ✅ 配置文件合并工具白名单测试 |
 
 **集成测试覆盖** (74 个):
 - Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
@@ -255,7 +263,7 @@
 - Tool outputs: computer_call_output / mcp_tool_call_output 上游归一化和 input_items 回看
 - Tool policy: MCP server allowlist 拒绝未授权工具
 
-**仍有缺口**: main.rs 入口测试、真实 computer/MCP executor、file_search 排序质量和高级 ranking_options。
+**剩余增强项**: 真实 browser/computer executor、真实 MCP 进程执行器、file_search BM25/embedding 排序质量和更完整 ranking_options。
 
 ## 验证计划
 

@@ -100,11 +100,7 @@ pub struct Args {
     pub allowed_mcp_servers: String,
 
     /// 可选的 computer_use 显示器/环境白名单 (逗号分隔)。
-    #[arg(
-        long,
-        env = "DEECODEX_ALLOWED_COMPUTER_DISPLAYS",
-        default_value = ""
-    )]
+    #[arg(long, env = "DEECODEX_ALLOWED_COMPUTER_DISPLAYS", default_value = "")]
     pub allowed_computer_displays: String,
 
     /// 后台守护模式（内部使用）
@@ -164,7 +160,11 @@ impl Args {
                 command: self.command,
                 config: self.config,
                 port: pick(self.port, 4444, file.port),
-                upstream: pick_str(&self.upstream, "https://openrouter.ai/api/v1", &file.upstream),
+                upstream: pick_str(
+                    &self.upstream,
+                    "https://openrouter.ai/api/v1",
+                    &file.upstream,
+                ),
                 api_key: pick_str(&self.api_key, "", &file.api_key),
                 client_api_key: pick_str(&self.client_api_key, "", &file.client_api_key),
                 model_map: pick_str(&self.model_map, "{}", &file.model_map),
@@ -172,16 +172,52 @@ impl Args {
                 vision_upstream: pick_str(&self.vision_upstream, "", &file.vision_upstream),
                 vision_api_key: pick_str(&self.vision_api_key, "", &file.vision_api_key),
                 vision_model: pick_str(&self.vision_model, "MiniMax-M1", &file.vision_model),
-                vision_endpoint: pick_str(&self.vision_endpoint, "v1/coding_plan/vlm", &file.vision_endpoint),
+                vision_endpoint: pick_str(
+                    &self.vision_endpoint,
+                    "v1/coding_plan/vlm",
+                    &file.vision_endpoint,
+                ),
                 chinese_thinking: self.chinese_thinking || file.chinese_thinking,
-                prompts_dir: if self.prompts_dir == PathBuf::from("prompts") { file.prompts_dir } else { self.prompts_dir },
-                data_dir: if self.data_dir == PathBuf::from(".deecodex") { file.data_dir } else { self.data_dir },
-                token_anomaly_prompt_max: pick(self.token_anomaly_prompt_max, 200000, file.token_anomaly_prompt_max),
-                token_anomaly_spike_ratio: pick_f64(self.token_anomaly_spike_ratio, 5.0, file.token_anomaly_spike_ratio),
-                token_anomaly_burn_window: pick(self.token_anomaly_burn_window, 120, file.token_anomaly_burn_window),
-                token_anomaly_burn_rate: pick(self.token_anomaly_burn_rate, 500000, file.token_anomaly_burn_rate),
-                allowed_mcp_servers: pick_str(&self.allowed_mcp_servers, "", &file.allowed_mcp_servers),
-                allowed_computer_displays: pick_str(&self.allowed_computer_displays, "", &file.allowed_computer_displays),
+                prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
+                    file.prompts_dir
+                } else {
+                    self.prompts_dir
+                },
+                data_dir: if self.data_dir.as_path() == std::path::Path::new(".deecodex") {
+                    file.data_dir
+                } else {
+                    self.data_dir
+                },
+                token_anomaly_prompt_max: pick(
+                    self.token_anomaly_prompt_max,
+                    200000,
+                    file.token_anomaly_prompt_max,
+                ),
+                token_anomaly_spike_ratio: pick_f64(
+                    self.token_anomaly_spike_ratio,
+                    5.0,
+                    file.token_anomaly_spike_ratio,
+                ),
+                token_anomaly_burn_window: pick(
+                    self.token_anomaly_burn_window,
+                    120,
+                    file.token_anomaly_burn_window,
+                ),
+                token_anomaly_burn_rate: pick(
+                    self.token_anomaly_burn_rate,
+                    500000,
+                    file.token_anomaly_burn_rate,
+                ),
+                allowed_mcp_servers: pick_str(
+                    &self.allowed_mcp_servers,
+                    "",
+                    &file.allowed_mcp_servers,
+                ),
+                allowed_computer_displays: pick_str(
+                    &self.allowed_computer_displays,
+                    "",
+                    &file.allowed_computer_displays,
+                ),
                 daemon: self.daemon,
             }
         } else {
@@ -192,13 +228,95 @@ impl Args {
 
 /// cli 值非默认时用 cli（env 优先），否则用文件值
 fn pick<T: PartialEq>(cli_val: T, default: T, file_val: T) -> T {
-    if cli_val == default { file_val } else { cli_val }
+    if cli_val == default {
+        file_val
+    } else {
+        cli_val
+    }
 }
 
 fn pick_f64(cli_val: f64, default: f64, file_val: f64) -> f64 {
-    if (cli_val - default).abs() < f64::EPSILON { file_val } else { cli_val }
+    if (cli_val - default).abs() < f64::EPSILON {
+        file_val
+    } else {
+        cli_val
+    }
 }
 
 fn pick_str(cli_val: &str, default: &str, file_val: &str) -> String {
-    if cli_val == default { file_val.to_string() } else { cli_val.to_string() }
+    if cli_val == default {
+        file_val.to_string()
+    } else {
+        cli_val.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn config_merge_loads_tool_policy_from_file_when_cli_is_default() {
+        let dir = std::env::temp_dir().join(format!("deecodex-config-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.json");
+        let file_args = Args {
+            command: None,
+            config: None,
+            port: 5555,
+            upstream: "https://example.com/api/v1".into(),
+            api_key: "upstream-key".into(),
+            client_api_key: "client-key".into(),
+            model_map: "{}".into(),
+            max_body_mb: 100,
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: "MiniMax-M1".into(),
+            vision_endpoint: "v1/coding_plan/vlm".into(),
+            chinese_thinking: false,
+            prompts_dir: PathBuf::from("prompts"),
+            data_dir: dir.clone(),
+            token_anomaly_prompt_max: 200000,
+            token_anomaly_spike_ratio: 5.0,
+            token_anomaly_burn_window: 120,
+            token_anomaly_burn_rate: 500000,
+            allowed_mcp_servers: "filesystem,github".into(),
+            allowed_computer_displays: "browser".into(),
+            daemon: false,
+        };
+        file_args.save_to_file(&config_path).unwrap();
+
+        let cli_args = Args {
+            command: None,
+            config: Some(config_path.to_string_lossy().to_string()),
+            port: 4444,
+            upstream: "https://openrouter.ai/api/v1".into(),
+            api_key: String::new(),
+            client_api_key: String::new(),
+            model_map: "{}".into(),
+            max_body_mb: 100,
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: "MiniMax-M1".into(),
+            vision_endpoint: "v1/coding_plan/vlm".into(),
+            chinese_thinking: false,
+            prompts_dir: PathBuf::from("prompts"),
+            data_dir: PathBuf::from(".deecodex"),
+            token_anomaly_prompt_max: 200000,
+            token_anomaly_spike_ratio: 5.0,
+            token_anomaly_burn_window: 120,
+            token_anomaly_burn_rate: 500000,
+            allowed_mcp_servers: String::new(),
+            allowed_computer_displays: String::new(),
+            daemon: false,
+        };
+
+        let merged = cli_args.merge_with_file();
+
+        assert_eq!(merged.allowed_mcp_servers, "filesystem,github");
+        assert_eq!(merged.allowed_computer_displays, "browser");
+        assert_eq!(merged.port, 5555);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

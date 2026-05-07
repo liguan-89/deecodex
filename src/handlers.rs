@@ -1403,7 +1403,11 @@ async fn handle_responses_inner(
     let tool_names: Vec<&str> = chat_req
         .tools
         .iter()
-        .filter_map(|t| t.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+        .filter_map(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+        })
         .collect();
     info!(
         "→ {} effort={} thinking={} msgs={} tools={} names=[{}]{}",
@@ -1828,7 +1832,10 @@ fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
     let include = include?;
     for field in include {
         if !is_supported_response_include(field) {
-            warn!("ignoring unsupported include field: {field}");
+            return Some(unsupported_param(
+                "include",
+                &format!("include field '{field}' is not supported by this relay"),
+            ));
         }
     }
     None
