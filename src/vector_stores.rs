@@ -304,7 +304,21 @@ impl VectorStoreRegistry {
     }
 
     pub fn file_ids_for_tools(&self, tools: &[Value]) -> Option<HashSet<String>> {
-        let vector_store_ids: Vec<&str> = tools
+        let vector_store_ids = Self::vector_store_ids_for_tools(tools);
+        if vector_store_ids.is_empty() {
+            return None;
+        }
+        let mut file_ids = HashSet::new();
+        for store_id in &vector_store_ids {
+            if let Some(store) = self.stores.get(store_id) {
+                file_ids.extend(store.file_ids.iter().cloned());
+            }
+        }
+        Some(file_ids)
+    }
+
+    pub fn vector_store_ids_for_tools(tools: &[Value]) -> Vec<String> {
+        tools
             .iter()
             .filter(|tool| {
                 matches!(
@@ -318,18 +332,9 @@ impl VectorStoreRegistry {
                     .into_iter()
                     .flatten()
                     .filter_map(Value::as_str)
+                    .map(str::to_string)
             })
-            .collect();
-        if vector_store_ids.is_empty() {
-            return None;
-        }
-        let mut file_ids = HashSet::new();
-        for store_id in vector_store_ids {
-            if let Some(store) = self.stores.get(store_id) {
-                file_ids.extend(store.file_ids.iter().cloned());
-            }
-        }
-        Some(file_ids)
+            .collect()
     }
 
     fn load_from_disk(&self) -> io::Result<()> {
@@ -512,6 +517,13 @@ mod tests {
         })]);
 
         assert!(filter.as_ref().unwrap().contains("file_a"));
+        assert_eq!(
+            VectorStoreRegistry::vector_store_ids_for_tools(&[json!({
+                "type": "file_search",
+                "vector_store_ids": [store_id]
+            })]),
+            vec![store_id.to_string()]
+        );
     }
 
     #[test]

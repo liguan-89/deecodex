@@ -756,6 +756,162 @@ async fn test_responses_file_search_outputs_local_call() {
 }
 
 #[tokio::test]
+async fn test_responses_file_search_evidence_survives_retrieve_and_input_items() {
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [
+                    {"message": {"role": "assistant", "content": "used local docs"}}
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+            }"#,
+        )
+        .await,
+    );
+    let first_file = state
+        .files
+        .insert(
+            "relay.md",
+            "assistants",
+            "text/markdown",
+            b"relay integration notes".to_vec(),
+            1,
+        )
+        .unwrap();
+    let first_file_id = first_file["id"].as_str().unwrap().to_string();
+    state
+        .files
+        .insert(
+            "other.md",
+            "assistants",
+            "text/markdown",
+            b"relay integration notes outside vector store".to_vec(),
+            1,
+        )
+        .unwrap();
+    let store = state.vector_stores.create(
+        Some("docs".into()),
+        vec![first_file_id.clone()],
+        json!({}),
+        1,
+    );
+    let store_id = store["id"].as_str().unwrap().to_string();
+    let sessions = state.sessions.clone();
+    let app = build_router(state);
+
+    let body = format!(
+        r#"{{
+            "model": "gpt-5",
+            "input": "relay",
+            "include": ["output[*].file_search_call.results"],
+            "tools": [{{
+                "type": "file_search",
+                "vector_store_ids": ["{store_id}"],
+                "max_num_results": 1
+            }}]
+        }}"#
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let response_id = json["id"].as_str().unwrap().to_string();
+
+    assert_eq!(json["output"][0]["type"], "file_search_call");
+    assert_eq!(json["output"][0]["queries"][0]["query"], "relay");
+    assert_eq!(json["output"][0]["vector_store_ids"][0], store_id);
+    assert_eq!(json["output"][0]["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["output"][0]["results"][0]["file_id"], first_file_id);
+    assert_eq!(json["metadata"]["local_file_search_query"], "relay");
+    let metadata_store_ids: Vec<String> = serde_json::from_str(
+        json["metadata"]["local_file_search_vector_store_ids"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata_store_ids, vec![store_id.clone()]);
+    assert_eq!(json["metadata"]["local_file_search_max_num_results"], "1");
+
+    let retrieve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/responses/{response_id}?include=file_search_call.results"
+                ))
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retrieve.status(), StatusCode::OK);
+    let retrieve_body = retrieve.into_body().collect().await.unwrap().to_bytes();
+    let retrieved: Value = serde_json::from_slice(&retrieve_body).unwrap();
+    assert_eq!(retrieved["output"][0]["type"], "file_search_call");
+    assert_eq!(
+        retrieved["output"][0]["results"][0]["file_id"],
+        first_file_id
+    );
+    assert_eq!(retrieved["metadata"], json["metadata"]);
+
+    let input_items = sessions
+        .get_input_items(&response_id)
+        .expect("input items should be stored");
+    assert_eq!(input_items[0]["type"], "message");
+    assert_eq!(input_items[1]["type"], "file_search_context");
+    assert_eq!(input_items[1]["query"], "relay");
+    assert_eq!(input_items[1]["vector_store_ids"][0], store_id);
+    assert_eq!(input_items[1]["results"][0]["file_id"], first_file_id);
+}
+
+#[tokio::test]
+async fn test_get_response_unsupported_include_returns_400() {
+    let state = test_state();
+    state.sessions.save_response(
+        "resp_include_check".into(),
+        json!({
+            "id": "resp_include_check",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5",
+            "output": []
+        }),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses/resp_include_check?include=code_interpreter_call.outputs")
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["param"], "include");
+    assert_eq!(json["error"]["code"], "unsupported_feature");
+}
+
+#[tokio::test]
 async fn test_responses_not_found() {
     let app = build_router(test_state());
 

@@ -38,7 +38,7 @@ Status: partially implemented. Retrieve stream replay validates message item IDs
 - Send unsupported hosted-only include values and assert the behavior is explicit: clear unsupported error or documented predictable ignore.
 - Assert include handling does not change stored response identity or output item IDs.
 
-Status: partially implemented. Create-time unsupported include and local `file_search_call.results` are covered. Retrieve-time include behavior still needs explicit tests.
+Status: implemented for local fields. Create/retrieve unsupported include now share explicit errors, and retrieve accepts single-value include query strings. Local `file_search_call.results` evidence is covered end to end.
 
 ## P1: file_search_call
 
@@ -48,4 +48,4 @@ Status: partially implemented. Create-time unsupported include and local `file_s
 - Assert retrieved metadata contains the query, vector store IDs, file IDs, and matched snippets.
 - Once implemented, assert output contains a `file_search_call` item and that retrieve/input_items expose the same search evidence.
 
-Status: partially implemented. Local `file_search_call` output and metadata are covered for create. Retrieve/input_items evidence-chain tests remain next.
+Status: implemented for the local enhancement layer. Local `file_search_call` output includes query/vector_store_ids/results, metadata records the same query and limits, and input_items adds a separate `file_search_context` evidence item without mutating the original user message.

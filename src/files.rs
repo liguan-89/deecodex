@@ -235,12 +235,13 @@ impl FileStore {
         &self,
         req: &mut ResponsesRequest,
         allowed_file_ids: Option<&HashSet<String>>,
+        max_results: Option<usize>,
     ) -> Vec<Value> {
         if !uses_file_search(&req.tools) && !requests_file_search_include(req) {
             return Vec::new();
         }
         let query = request_text(req);
-        let matches = self.search_text_files(&query, allowed_file_ids);
+        let matches = self.search_text_files(&query, allowed_file_ids, max_results);
         if matches.is_empty() {
             return Vec::new();
         }
@@ -277,6 +278,7 @@ impl FileStore {
             "local_file_search_results".to_string(),
             serde_json::to_string(&result_values).unwrap_or_default(),
         );
+        metadata.insert("local_file_search_query".to_string(), query);
         result_values
     }
 
@@ -284,6 +286,7 @@ impl FileStore {
         &self,
         query: &str,
         allowed_file_ids: Option<&HashSet<String>>,
+        max_results: Option<usize>,
     ) -> Vec<SearchResult> {
         let terms = search_terms(query);
         let mut results = Vec::new();
@@ -313,7 +316,11 @@ impl FileStore {
                 .cmp(&a.score)
                 .then_with(|| a.filename.cmp(&b.filename))
         });
-        results.truncate(MAX_SEARCH_RESULTS);
+        results.truncate(
+            max_results
+                .unwrap_or(MAX_SEARCH_RESULTS)
+                .clamp(1, MAX_SEARCH_RESULTS),
+        );
         results
     }
 }
@@ -665,7 +672,7 @@ mod tests {
         let mut req = base_req(ResponsesInput::Text("relay".into()));
         req.tools = vec![json!({"type":"file_search"})];
 
-        let results = store.inject_file_search_context(&mut req, None);
+        let results = store.inject_file_search_context(&mut req, None, None);
 
         assert!(req
             .instructions
@@ -678,6 +685,11 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains_key("local_file_search_results"));
+        assert!(req
+            .metadata
+            .as_ref()
+            .unwrap()
+            .contains_key("local_file_search_query"));
     }
 
     #[test]
@@ -695,7 +707,7 @@ mod tests {
         let mut req = base_req(ResponsesInput::Text("relay".into()));
         req.include = Some(vec!["file_search_call.results".into()]);
 
-        let results = store.inject_file_search_context(&mut req, None);
+        let results = store.inject_file_search_context(&mut req, None, None);
 
         assert_eq!(results.len(), 1);
         assert!(req
@@ -703,6 +715,35 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains_key("local_file_search_results"));
+    }
+
+    #[test]
+    fn file_search_respects_max_results() {
+        let store = FileStore::new();
+        store
+            .insert(
+                "a.md",
+                "assistants",
+                "text/markdown",
+                b"relay one".to_vec(),
+                1,
+            )
+            .unwrap();
+        store
+            .insert(
+                "b.md",
+                "assistants",
+                "text/markdown",
+                b"relay two".to_vec(),
+                1,
+            )
+            .unwrap();
+        let mut req = base_req(ResponsesInput::Text("relay".into()));
+        req.tools = vec![json!({"type":"file_search", "max_num_results": 1})];
+
+        let results = store.inject_file_search_context(&mut req, None, Some(1));
+
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

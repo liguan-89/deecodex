@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -235,7 +235,7 @@ fn authorization_matches(header_value: &str, expected: &str) -> bool {
 struct RetrieveResponseQuery {
     #[serde(default)]
     stream: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_include")]
     include: Option<Vec<String>>,
     #[serde(default)]
     include_obfuscation: Option<bool>,
@@ -251,8 +251,26 @@ struct InputItemsQuery {
     limit: Option<usize>,
     #[serde(default)]
     order: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_include")]
     include: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum IncludeQueryValue {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_optional_include<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<IncludeQueryValue>::deserialize(deserializer)?;
+    Ok(value.map(|value| match value {
+        IncludeQueryValue::One(item) => vec![item],
+        IncludeQueryValue::Many(items) => items,
+    }))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -281,11 +299,10 @@ async fn handle_get_response(
     Path(response_id): Path<String>,
     Query(query): Query<RetrieveResponseQuery>,
 ) -> Response {
-    let _ = (
-        &query.include,
-        query.include_obfuscation,
-        query.starting_after,
-    );
+    if let Some(response) = validate_response_include(query.include.as_deref()) {
+        return response;
+    }
+    let _ = query.starting_after;
     let Some(response) = state.sessions.get_response(&response_id) else {
         return response_not_found(&response_id);
     };
@@ -1114,20 +1131,55 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         return err.into_response();
     }
     let file_search_filter = state.vector_stores.file_ids_for_tools(&req.tools);
-    let local_file_search_results = state
-        .files
-        .inject_file_search_context(&mut req, file_search_filter.as_ref());
-    let local_file_search_output_items =
-        local_file_search_call_output_item(&local_file_search_results)
-            .into_iter()
-            .collect();
+    let file_search_query = local_file_search_query(&req);
+    let file_search_vector_store_ids =
+        crate::vector_stores::VectorStoreRegistry::vector_store_ids_for_tools(&req.tools);
+    let file_search_max_results = local_file_search_max_results(&req.tools);
+    let local_file_search_results = state.files.inject_file_search_context(
+        &mut req,
+        file_search_filter.as_ref(),
+        file_search_max_results,
+    );
+    if !local_file_search_results.is_empty() {
+        let metadata = req.metadata.get_or_insert_with(Default::default);
+        metadata.insert(
+            "local_file_search_vector_store_ids".to_string(),
+            serde_json::to_string(&file_search_vector_store_ids).unwrap_or_default(),
+        );
+        if let Some(max_results) = file_search_max_results {
+            metadata.insert(
+                "local_file_search_max_num_results".to_string(),
+                max_results.to_string(),
+            );
+        }
+    }
+    let local_file_search_output_items = local_file_search_call_output_item(
+        &local_file_search_results,
+        &file_search_query,
+        &file_search_vector_store_ids,
+    )
+    .into_iter()
+    .collect();
+    let local_file_search_input_items = local_file_search_input_item(
+        &local_file_search_results,
+        &file_search_query,
+        &file_search_vector_store_ids,
+    )
+    .into_iter()
+    .collect();
 
     let original_model = req.model.clone();
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
 
     info!("← {} effort={}", original_model, fmt_codex_effort(effort));
 
-    let response = handle_responses_inner(state.clone(), req, local_file_search_output_items).await;
+    let response = handle_responses_inner(
+        state.clone(),
+        req,
+        local_file_search_output_items,
+        local_file_search_input_items,
+    )
+    .await;
     let status = response.status().as_u16().to_string();
     state
         .metrics
@@ -1141,6 +1193,7 @@ async fn handle_responses_inner(
     state: AppState,
     req: ResponsesRequest,
     local_output_prefix_items: Vec<Value>,
+    local_input_suffix_items: Vec<Value>,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -1161,7 +1214,8 @@ async fn handle_responses_inner(
     let history = Vec::new();
 
     let original_model = req.model.clone();
-    let request_input_items = response_input_items(&req);
+    let mut request_input_items = response_input_items(&req);
+    request_input_items.extend(local_input_suffix_items);
     let mapped_model = resolve_model(&original_model, &state.model_map);
     let store_response = req.store.unwrap_or(true);
     let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
@@ -1742,11 +1796,15 @@ fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
 fn is_supported_response_include(field: &str) -> bool {
     matches!(
         field,
-        "file_search_call.results" | "output[*].file_search_call.results"
+        "file_search_call.results" | "output[*].file_search_call.results" | "usage" | "input_items"
     )
 }
 
-fn local_file_search_call_output_item(results: &[Value]) -> Option<Value> {
+fn local_file_search_call_output_item(
+    results: &[Value],
+    query: &str,
+    vector_store_ids: &[String],
+) -> Option<Value> {
     if results.is_empty() {
         return None;
     }
@@ -1767,9 +1825,89 @@ fn local_file_search_call_output_item(results: &[Value]) -> Option<Value> {
         "type": "file_search_call",
         "id": format!("fs_{}", uuid::Uuid::new_v4().simple()),
         "status": "completed",
-        "queries": [],
+        "queries": [{"query": query}],
+        "vector_store_ids": vector_store_ids,
         "results": normalized_results
     }))
+}
+
+fn local_file_search_input_item(
+    results: &[Value],
+    query: &str,
+    vector_store_ids: &[String],
+) -> Option<Value> {
+    if results.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "id": format!("item_fs_{}", uuid::Uuid::new_v4().simple()),
+        "type": "file_search_context",
+        "query": query,
+        "vector_store_ids": vector_store_ids,
+        "results": results
+    }))
+}
+
+fn local_file_search_query(req: &ResponsesRequest) -> String {
+    let mut chunks = Vec::new();
+    if let Some(instructions) = req.instructions.as_deref().or(req.system.as_deref()) {
+        chunks.push(instructions.to_string());
+    }
+    collect_request_text(&req.input, &mut chunks);
+    chunks.join("\n")
+}
+
+fn collect_request_text(input: &ResponsesInput, chunks: &mut Vec<String>) {
+    match input {
+        ResponsesInput::Text(text) => chunks.push(text.clone()),
+        ResponsesInput::Messages(items) => {
+            for item in items {
+                collect_value_text(item, chunks);
+            }
+        }
+    }
+}
+
+fn collect_value_text(value: &Value, chunks: &mut Vec<String>) {
+    match value {
+        Value::String(text) => chunks.push(text.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_value_text(item, chunks);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(Value::as_str) {
+                chunks.push(text.to_string());
+            }
+            if let Some(content) = map.get("content") {
+                collect_value_text(content, chunks);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn local_file_search_max_results(tools: &[Value]) -> Option<usize> {
+    tools
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tool.get("type").and_then(Value::as_str),
+                Some("file_search" | "file_search_preview")
+            )
+        })
+        .filter_map(|tool| {
+            tool.get("max_num_results")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    tool.get("ranking_options")
+                        .and_then(|opts| opts.get("max_num_results"))
+                        .and_then(Value::as_u64)
+                })
+        })
+        .min()
+        .map(|value| value as usize)
 }
 
 fn enrich_response_object(mut value: Value, req: &ResponsesRequest) -> Value {
@@ -2158,19 +2296,47 @@ mod tests {
     }
 
     #[test]
+    fn test_supported_include_accepts_local_fields() {
+        assert!(validate_response_include(Some(&[
+            "file_search_call.results".to_string(),
+            "output[*].file_search_call.results".to_string(),
+            "usage".to_string(),
+            "input_items".to_string(),
+        ]))
+        .is_none());
+    }
+
+    #[test]
     fn test_file_search_call_output_item_contains_local_results() {
-        let item = local_file_search_call_output_item(&[json!({
-            "file_id": "file_1",
-            "filename": "notes.md",
-            "score": 2,
-            "snippet": "relay notes"
-        })])
+        let item = local_file_search_call_output_item(
+            &[json!({
+                "file_id": "file_1",
+                "filename": "notes.md",
+                "score": 2,
+                "snippet": "relay notes"
+            })],
+            "relay",
+            &["vs_1".to_string()],
+        )
         .unwrap();
 
         assert_eq!(item["type"].as_str(), Some("file_search_call"));
         assert_eq!(item["status"].as_str(), Some("completed"));
+        assert_eq!(item["queries"][0]["query"].as_str(), Some("relay"));
+        assert_eq!(item["vector_store_ids"][0].as_str(), Some("vs_1"));
         assert_eq!(item["results"][0]["file_id"].as_str(), Some("file_1"));
         assert_eq!(item["results"][0]["text"].as_str(), Some("relay notes"));
+    }
+
+    #[test]
+    fn test_local_file_search_max_results_prefers_smallest_tool_limit() {
+        assert_eq!(
+            local_file_search_max_results(&[
+                json!({"type": "file_search", "max_num_results": 4}),
+                json!({"type": "file_search", "ranking_options": {"max_num_results": 2}})
+            ]),
+            Some(2)
+        );
     }
 
     #[test]
