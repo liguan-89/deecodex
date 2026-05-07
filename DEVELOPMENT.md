@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：rollout `019dfe49` P1 computer/MCP output 状态机增强
-- 正在做：把 Codex 真实流量分析出的 Responses 兼容缺口落到实现与集成测试
-- 下一步：继续补齐 computer/MCP 执行器白名单和 file_search 索引能力
+- 阶段：rollout `019dfe49` P2 file_search 索引 + tool policy/schema version 收口
+- 正在做：把 Responses 增强层推进到约 85% 完成度，补齐本地检索索引、工具白名单和持久化迁移基础
+- 下一步：推进真实 computer/MCP executor、file_search 排序质量和 main.rs 入口测试
 
 ## 已完成
 
@@ -94,11 +94,17 @@
   - `mcp_tool_call_output` / `custom_tool_call_output` / `tool_search_output` 支持结构化 JSON output 序列化，不再只接受纯文本。
   - output 类 input item 会补稳定 `id` 和默认 `status: completed`，便于 `/input_items` 回看。
   - `computer_call_output` 截图 data URL 和文字结果会同时进入 Chat 上下文，并保留 `call_id` 关联。
+- P2 file_search / tool policy / 持久化迁移基础已补强：
+  - 本地 file_search 从每次全量线性扫描升级为文本倒排索引缓存。
+  - 上传/删除文件会自动失效索引，下次检索懒加载重建。
+  - `ranking_options.score_threshold` 做本地降级支持，并写入 response metadata。
+  - vector store registry 快照增加 `schema_version`，为后续迁移保留版本边界。
+  - 增加可选工具白名单：`CODEX_RELAY_ALLOWED_MCP_SERVERS` 和 `CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS`。
 
 ## 进行中
 
-- 本轮已把 P1 computer/MCP output 回传状态机推进到端到端集成测试，剩余为真实 computer/MCP 执行器白名单和 file_search 索引质量。
-- P0 主线契约已从计划推进到测试覆盖：live SSE、缓存回放、retrieve stream replay 都有 sequence 或 echo 断言；P1 file_search 现在覆盖 output/metadata/input_items/retrieve 四处证据一致性。
+- 本轮已把 P2 file_search 索引、score_threshold、本地 tool policy 和 vector store schema version 推进到测试覆盖，整体开发进度估算约 85%。
+- P0 主线契约已从计划推进到测试覆盖：live SSE、缓存回放、retrieve stream replay 都有 sequence 或 echo 断言；P1/P2 file_search 现在覆盖 output/metadata/input_items/retrieve、max_results、score_threshold 和索引失效。
 
 ## 下次开发计划
 
@@ -168,12 +174,30 @@
   - 先不自动执行桌面操作，只把状态机和回传协议做稳。
 - P1：`local_mcp_call` / `mcp_tool_call_output`：
   - 支持 Responses 输入中的 `mcp_tool_call_output` 与 `local_mcp_call` 关联。✅
-  - 定义允许的本地 MCP server 配置格式和只读白名单。
+  - 定义允许的本地 MCP server 配置格式和只读白名单。✅ 已有 server allowlist 骨架
   - 对执行失败生成结构化 output item，不直接 500。
 - P2：file_search 索引：
-  - 为已上传文本构建轻量倒排索引缓存。
-  - 按 vector store 文件集合做过滤后再打分。
-  - ranking_options 支持 score_threshold 的本地降级。
+  - 为已上传文本构建轻量倒排索引缓存。✅
+  - 按 vector store 文件集合做过滤后再打分。✅ 已保留 allowed_file_ids 过滤链路
+  - ranking_options 支持 score_threshold 的本地降级。✅
+
+## 下轮开发计划 (85% 后)
+
+- P1：真实 computer executor：
+  - 在现有 tool policy 基础上接 browser-use / Playwright。
+  - 支持 open_url、screenshot、click、type、keypress、scroll 的最小闭环。
+  - executor 必须有 display/environment allowlist、超时和失败 output item。
+- P1：真实 MCP executor：
+  - 读取 allowlist 内 server 配置，先只开放只读工具。
+  - 执行结果统一回填为 `mcp_tool_call_output`，失败不直接 500。
+  - 记录 call_id/server/tool/arguments/result 摘要，保持 retrieve/input_items 可回放。
+- P2：file_search 排序质量：
+  - 从词频重叠升级到 BM25 或轻量 embedding 可插拔接口。
+  - 支持更细的 ranking_options 字段和片段窗口。
+  - vector store schema version 增加迁移测试。
+- P2：入口和运维测试：
+  - 给 `main.rs` 的参数解析、CSV allowlist、路由装配补单元测试或轻量启动测试。
+  - 增加 `/metrics`、graceful shutdown、rate limiter 的端到端回归。
 
 ## 验证记录
 
@@ -191,19 +215,20 @@
 - 2026-05-07：rollout `019dfe49` replay/冷门端点补强：修复 cached reasoning final output 类型、修复 retrieve stream `starting_after` 序号偏移，增加 replay echo/sequence、cancel queued/conflict、compact previous input items 5 个集成测试。**303 → 308 测试**，`cargo test --test integration` 70/70 通过。
 - 2026-05-07：P1 include/file_search 证据链增强：retrieve include 统一校验，query include 支持单值解析，file_search output/metadata/input_items/retrieve 证据一致，支持 `max_num_results` / `ranking_options.max_num_results` 本地降级。**308 → 312 测试**，相关集成测试通过，待本轮最终全量复验。
 - 2026-05-07：P1 computer/MCP output 状态机增强：`computer_call_output` 提取 screenshot/image_url/output/content，`mcp_tool_call_output` 支持结构化 JSON output，output 类 input item 补 id/status，并增加 upstream/input_items 端到端集成测试。**312 → 316 测试**，相关测试通过，待本轮最终全量复验。
+- 2026-05-07：P2 file_search/tool policy/schema version 收口：file_search 增加倒排索引缓存与删除失效，支持 `ranking_options.score_threshold`；vector store 快照写入 `schema_version`；新增 MCP server/computer display allowlist 骨架。**316 → 324 测试**，`cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check` 全部通过。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **316 测试** (239 单元 + 5 compat + 73 集成)，新增相关测试已通过，待本轮最终全量 `cargo test` 复验。
+当前 **324 测试** (245 单元 + 5 compat + 74 集成)，新增相关测试已全量复验通过。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
 | `translate.rs` | 1200+ | 43 | ✅ 核心翻译 + convert_tool + computer/MCP output |
 | `stream.rs` | 1099 | 25 | ✅ translate_cached 全部场景 + 纯函数; ⚠️ translate_stream 有集成测试 |
-| `handlers.rs` | 2200+ | 13+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态等路径 |
-| `files.rs` | 780+ | 25 | ✅ list/delete/search/score/snippet/is_text_file/to_object/max_results |
+| `handlers.rs` | 2200+ | 16+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking/include/file_search/output 状态/tool policy 等路径 |
+| `files.rs` | 900+ | 27 | ✅ list/delete/search/index/score_threshold/snippet/is_text_file/to_object/max_results |
 | `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
-| `vector_stores.rs` | 571 | 14 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch |
+| `vector_stores.rs` | 600+ | 15 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch/schema_version |
 | `session.rs` | 444 | 28 | ✅ new_id + response/conversation/input_items 完整 CRUD |
 | `sse.rs` | 348 | 22 | ✅ SseState 全部 9 种事件方法 |
 | `types.rs` | 372 | 15 | ✅ resolve_model/map_effort/format_usage/fmt_* |
@@ -211,7 +236,7 @@
 | `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
 | `main.rs` | 178 | 0 | ❌ 入口无测试 |
 
-**集成测试覆盖** (73 个):
+**集成测试覆盖** (74 个):
 - Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
 - File handlers: upload/list/get/delete/content + 边界 + file_search 证据链
 - Prompt + Vector store: 全部 CRUD + batch/cancel
@@ -221,8 +246,9 @@
 - 冷门端点: responses cancel、compact、stream replay starting_after
 - Include/file_search: create/retrieve unsupported include、file_search output/metadata/input_items/retrieve 一致性
 - Tool outputs: computer_call_output / mcp_tool_call_output 上游归一化和 input_items 回看
+- Tool policy: MCP server allowlist 拒绝未授权工具
 
-**仍有缺口**: main.rs 入口、真实 computer/MCP executor 白名单、file_search 倒排索引。
+**仍有缺口**: main.rs 入口测试、真实 computer/MCP executor、file_search 排序质量和高级 ranking_options。
 
 ## 验证计划
 

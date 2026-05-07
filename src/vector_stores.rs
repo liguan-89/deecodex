@@ -15,6 +15,8 @@ use std::{
 use tracing::warn;
 use uuid::Uuid;
 
+const REGISTRY_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone, Debug)]
 pub struct VectorStoreRegistry {
     stores: Arc<DashMap<String, StoredVectorStore>>,
@@ -40,10 +42,22 @@ struct StoredFileBatch {
     status: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RegistrySnapshot {
+    #[serde(default = "default_schema_version")]
+    schema_version: u32,
     stores: Vec<StoredVectorStore>,
     batches: Vec<StoredFileBatch>,
+}
+
+impl Default for RegistrySnapshot {
+    fn default() -> Self {
+        Self {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            stores: Vec::new(),
+            batches: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -347,6 +361,12 @@ impl VectorStoreRegistry {
         }
         let snapshot: RegistrySnapshot =
             serde_json::from_slice(&fs::read(&path)?).map_err(invalid_data)?;
+        if snapshot.schema_version != REGISTRY_SCHEMA_VERSION {
+            warn!(
+                "vector store snapshot schema_version={} differs from supported={}",
+                snapshot.schema_version, REGISTRY_SCHEMA_VERSION
+            );
+        }
         for store in snapshot.stores {
             self.stores.insert(store.id.clone(), store);
         }
@@ -368,6 +388,7 @@ impl VectorStoreRegistry {
         };
         fs::create_dir_all(data_dir.as_ref())?;
         let snapshot = RegistrySnapshot {
+            schema_version: REGISTRY_SCHEMA_VERSION,
             stores: self.stores.iter().map(|entry| entry.clone()).collect(),
             batches: self.batches.iter().map(|entry| entry.clone()).collect(),
         };
@@ -492,6 +513,10 @@ fn snapshot_path(data_dir: &Path) -> PathBuf {
     data_dir.join("vector_stores.json")
 }
 
+fn default_schema_version() -> u32 {
+    0
+}
+
 fn invalid_data(error: serde_json::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
@@ -578,6 +603,21 @@ mod tests {
             restored.get_batch(&store_id, &batch_id).unwrap()["file_counts"]["completed"].as_u64(),
             Some(1)
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_registry_writes_schema_version() {
+        let dir = std::env::temp_dir().join(format!("deecodex-vector-{}", Uuid::new_v4().simple()));
+        {
+            let registry = VectorStoreRegistry::with_data_dir(&dir).unwrap();
+            registry.create(Some("docs".into()), vec![], json!({}), 1);
+        }
+
+        let snapshot: RegistrySnapshot =
+            serde_json::from_slice(&fs::read(snapshot_path(&dir)).unwrap()).unwrap();
+
+        assert_eq!(snapshot.schema_version, REGISTRY_SCHEMA_VERSION);
         fs::remove_dir_all(dir).unwrap();
     }
 

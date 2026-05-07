@@ -50,6 +50,13 @@ pub struct AppState {
     pub chinese_thinking: bool,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub metrics: Arc<Metrics>,
+    pub tool_policy: ToolPolicy,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ToolPolicy {
+    pub allowed_mcp_servers: Vec<String>,
+    pub allowed_computer_displays: Vec<String>,
 }
 
 struct BlockingArgs<'a> {
@@ -1102,6 +1109,9 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     if let Err(err) = state.prompts.apply_to_request(&mut req) {
         return err.into_response();
     }
+    if let Some(response) = validate_tool_policy(&req.tools, &state.tool_policy) {
+        return response;
+    }
     if let Some(ref limiter) = state.rate_limiter {
         let key = if !state.client_api_key.is_empty() {
             format!(
@@ -1135,10 +1145,12 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     let file_search_vector_store_ids =
         crate::vector_stores::VectorStoreRegistry::vector_store_ids_for_tools(&req.tools);
     let file_search_max_results = local_file_search_max_results(&req.tools);
+    let file_search_score_threshold = local_file_search_score_threshold(&req.tools);
     let local_file_search_results = state.files.inject_file_search_context(
         &mut req,
         file_search_filter.as_ref(),
         file_search_max_results,
+        file_search_score_threshold,
     );
     if !local_file_search_results.is_empty() {
         let metadata = req.metadata.get_or_insert_with(Default::default);
@@ -1150,6 +1162,12 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
             metadata.insert(
                 "local_file_search_max_num_results".to_string(),
                 max_results.to_string(),
+            );
+        }
+        if let Some(score_threshold) = file_search_score_threshold {
+            metadata.insert(
+                "local_file_search_score_threshold".to_string(),
+                score_threshold.to_string(),
             );
         }
     }
@@ -1793,6 +1811,50 @@ fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
     ))
 }
 
+fn validate_tool_policy(tools: &[Value], policy: &ToolPolicy) -> Option<Response> {
+    for tool in tools {
+        let tool_type = tool.get("type").and_then(Value::as_str).unwrap_or("");
+        if matches!(tool_type, "mcp" | "remote_mcp") && !policy.allowed_mcp_servers.is_empty() {
+            let server = tool
+                .get("server_label")
+                .or_else(|| tool.get("server_url"))
+                .or_else(|| tool.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !policy
+                .allowed_mcp_servers
+                .iter()
+                .any(|allowed| allowed == server)
+            {
+                return Some(unsupported_param(
+                    "tools",
+                    &format!("MCP server '{server}' is not allowed by local tool policy"),
+                ));
+            }
+        }
+        if matches!(tool_type, "computer_use" | "computer_use_preview")
+            && !policy.allowed_computer_displays.is_empty()
+        {
+            let display = tool
+                .get("display")
+                .or_else(|| tool.get("environment"))
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            if !policy
+                .allowed_computer_displays
+                .iter()
+                .any(|allowed| allowed == display)
+            {
+                return Some(unsupported_param(
+                    "tools",
+                    &format!("computer display '{display}' is not allowed by local tool policy"),
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn is_supported_response_include(field: &str) -> bool {
     matches!(
         field,
@@ -1908,6 +1970,23 @@ fn local_file_search_max_results(tools: &[Value]) -> Option<usize> {
         })
         .min()
         .map(|value| value as usize)
+}
+
+fn local_file_search_score_threshold(tools: &[Value]) -> Option<f64> {
+    tools
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tool.get("type").and_then(Value::as_str),
+                Some("file_search" | "file_search_preview")
+            )
+        })
+        .filter_map(|tool| {
+            tool.get("ranking_options")
+                .and_then(|opts| opts.get("score_threshold"))
+                .and_then(Value::as_f64)
+        })
+        .max_by(|a, b| a.total_cmp(b))
 }
 
 fn enrich_response_object(mut value: Value, req: &ResponsesRequest) -> Value {
@@ -2403,6 +2482,44 @@ mod tests {
             ]),
             Some(2)
         );
+    }
+
+    #[test]
+    fn test_local_file_search_score_threshold_prefers_strictest_limit() {
+        assert_eq!(
+            local_file_search_score_threshold(&[
+                json!({"type": "file_search", "ranking_options": {"score_threshold": 1.5}}),
+                json!({"type": "file_search", "ranking_options": {"score_threshold": 3.0}})
+            ]),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn test_tool_policy_rejects_unlisted_mcp_server() {
+        let policy = ToolPolicy {
+            allowed_mcp_servers: vec!["safe".into()],
+            allowed_computer_displays: vec![],
+        };
+        let response =
+            validate_tool_policy(&[json!({"type": "mcp", "server_label": "unsafe"})], &policy)
+                .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_tool_policy_allows_listed_computer_display() {
+        let policy = ToolPolicy {
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec!["browser".into()],
+        };
+
+        assert!(validate_tool_policy(
+            &[json!({"type": "computer_use", "display": "browser"})],
+            &policy,
+        )
+        .is_none());
     }
 
     #[test]

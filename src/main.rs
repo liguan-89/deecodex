@@ -71,6 +71,18 @@ struct Args {
 
     #[arg(long, env = "CODEX_RELAY_DATA_DIR", default_value = ".deecodex")]
     data_dir: std::path::PathBuf,
+
+    /// Optional comma-separated allowlist for MCP server_label/server_url/name.
+    #[arg(long, env = "CODEX_RELAY_ALLOWED_MCP_SERVERS", default_value = "")]
+    allowed_mcp_servers: String,
+
+    /// Optional comma-separated allowlist for computer_use display/environment.
+    #[arg(
+        long,
+        env = "CODEX_RELAY_ALLOWED_COMPUTER_DISPLAYS",
+        default_value = ""
+    )]
+    allowed_computer_displays: String,
 }
 
 struct FlushWriter<W: Write>(W);
@@ -147,6 +159,10 @@ async fn main() -> Result<()> {
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: args.chinese_thinking,
         metrics: Arc::new(metrics::Metrics::new()),
+        tool_policy: handlers::ToolPolicy {
+            allowed_mcp_servers: parse_csv_list(&args.allowed_mcp_servers),
+            allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
+        },
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
@@ -174,6 +190,18 @@ async fn main() -> Result<()> {
     info!("local data directory: {}", args.data_dir.display());
     if args.chinese_thinking {
         info!("chinese thinking mode: enabled (system prompt will include Chinese instruction)");
+    }
+    if !state.tool_policy.allowed_mcp_servers.is_empty() {
+        info!(
+            "MCP tool policy: {} allowed server(s)",
+            state.tool_policy.allowed_mcp_servers.len()
+        );
+    }
+    if !state.tool_policy.allowed_computer_displays.is_empty() {
+        info!(
+            "computer tool policy: {} allowed display(s)",
+            state.tool_policy.allowed_computer_displays.len()
+        );
     }
     if state.client_api_key.is_empty() {
         tracing::warn!(
@@ -214,4 +242,13 @@ async fn main() -> Result<()> {
         .await?;
 
     Ok(())
+}
+
+fn parse_csv_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
 }

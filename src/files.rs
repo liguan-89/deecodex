@@ -9,10 +9,10 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 use tracing::warn;
 use uuid::Uuid;
@@ -24,6 +24,7 @@ const MAX_SEARCH_CHARS: usize = 12_000;
 pub struct FileStore {
     files: Arc<DashMap<String, StoredFile>>,
     data_dir: Option<Arc<PathBuf>>,
+    search_index: Arc<RwLock<Option<SearchIndex>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +46,11 @@ struct StoredFileMetadata {
     created_at: u64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SearchIndex {
+    terms: HashMap<String, HashSet<String>>,
+}
+
 #[derive(Debug)]
 pub struct FileError {
     status: StatusCode,
@@ -58,6 +64,7 @@ impl FileStore {
         Self {
             files: Arc::new(DashMap::new()),
             data_dir: None,
+            search_index: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -67,6 +74,7 @@ impl FileStore {
         let store = Self {
             files: Arc::new(DashMap::new()),
             data_dir: Some(Arc::new(data_dir)),
+            search_index: Arc::new(RwLock::new(None)),
         };
         store.load_from_disk()?;
         Ok(store)
@@ -98,6 +106,7 @@ impl FileStore {
         };
         let object = file.to_object();
         self.persist_file(&file)?;
+        self.invalidate_search_index();
         self.files.insert(id, file);
         Ok(object)
     }
@@ -132,6 +141,7 @@ impl FileStore {
 
     pub fn delete(&self, file_id: &str) -> Result<Value, FileError> {
         if self.files.remove(file_id).is_some() {
+            self.invalidate_search_index();
             self.remove_persisted_file(file_id);
             Ok(json!({
                 "id": file_id,
@@ -236,12 +246,14 @@ impl FileStore {
         req: &mut ResponsesRequest,
         allowed_file_ids: Option<&HashSet<String>>,
         max_results: Option<usize>,
+        score_threshold: Option<f64>,
     ) -> Vec<Value> {
         if !uses_file_search(&req.tools) && !requests_file_search_include(req) {
             return Vec::new();
         }
         let query = request_text(req);
-        let matches = self.search_text_files(&query, allowed_file_ids, max_results);
+        let matches =
+            self.search_text_files(&query, allowed_file_ids, max_results, score_threshold);
         if matches.is_empty() {
             return Vec::new();
         }
@@ -287,10 +299,15 @@ impl FileStore {
         query: &str,
         allowed_file_ids: Option<&HashSet<String>>,
         max_results: Option<usize>,
+        score_threshold: Option<f64>,
     ) -> Vec<SearchResult> {
         let terms = search_terms(query);
+        let candidate_ids = self.search_candidate_ids(&terms);
         let mut results = Vec::new();
-        for file in self.files.iter() {
+        for file_id in candidate_ids {
+            let Some(file) = self.files.get(&file_id) else {
+                continue;
+            };
             if allowed_file_ids.is_some_and(|ids| !ids.contains(&file.id)) {
                 continue;
             }
@@ -302,6 +319,9 @@ impl FileStore {
             };
             let score = score_text(&text, &terms);
             if score == 0 && !terms.is_empty() {
+                continue;
+            }
+            if score_threshold.is_some_and(|threshold| (score as f64) < threshold) {
                 continue;
             }
             results.push(SearchResult {
@@ -322,6 +342,59 @@ impl FileStore {
                 .clamp(1, MAX_SEARCH_RESULTS),
         );
         results
+    }
+
+    fn search_candidate_ids(&self, terms: &[String]) -> Vec<String> {
+        if terms.is_empty() {
+            return self
+                .files
+                .iter()
+                .filter(|file| is_text_file(file))
+                .map(|file| file.id.clone())
+                .collect();
+        }
+
+        let index = self.search_index();
+        let mut candidates = HashSet::new();
+        for term in terms {
+            if let Some(file_ids) = index.terms.get(term) {
+                candidates.extend(file_ids.iter().cloned());
+            }
+        }
+        candidates.into_iter().collect()
+    }
+
+    fn search_index(&self) -> SearchIndex {
+        if let Some(index) = self.search_index.read().unwrap().as_ref() {
+            return index.clone();
+        }
+        let index = self.build_search_index();
+        *self.search_index.write().unwrap() = Some(index.clone());
+        index
+    }
+
+    fn build_search_index(&self) -> SearchIndex {
+        let mut index = SearchIndex::default();
+        for file in self.files.iter() {
+            if !is_text_file(&file) {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(file.bytes.clone()) else {
+                continue;
+            };
+            let mut terms = search_terms(&text);
+            terms.extend(search_terms(&file.filename));
+            terms.sort();
+            terms.dedup();
+            for term in terms {
+                index.terms.entry(term).or_default().insert(file.id.clone());
+            }
+        }
+        index
+    }
+
+    fn invalidate_search_index(&self) {
+        *self.search_index.write().unwrap() = None;
     }
 }
 
@@ -672,7 +745,7 @@ mod tests {
         let mut req = base_req(ResponsesInput::Text("relay".into()));
         req.tools = vec![json!({"type":"file_search"})];
 
-        let results = store.inject_file_search_context(&mut req, None, None);
+        let results = store.inject_file_search_context(&mut req, None, None, None);
 
         assert!(req
             .instructions
@@ -707,7 +780,7 @@ mod tests {
         let mut req = base_req(ResponsesInput::Text("relay".into()));
         req.include = Some(vec!["file_search_call.results".into()]);
 
-        let results = store.inject_file_search_context(&mut req, None, None);
+        let results = store.inject_file_search_context(&mut req, None, None, None);
 
         assert_eq!(results.len(), 1);
         assert!(req
@@ -741,9 +814,67 @@ mod tests {
         let mut req = base_req(ResponsesInput::Text("relay".into()));
         req.tools = vec![json!({"type":"file_search", "max_num_results": 1})];
 
-        let results = store.inject_file_search_context(&mut req, None, Some(1));
+        let results = store.inject_file_search_context(&mut req, None, Some(1), None);
 
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn file_search_uses_index_and_invalidates_on_delete() {
+        let store = FileStore::new();
+        let file = store
+            .insert(
+                "alpha.md",
+                "assistants",
+                "text/markdown",
+                b"unique relay indexed content".to_vec(),
+                1,
+            )
+            .unwrap();
+        let file_id = file["id"].as_str().unwrap().to_string();
+        let mut req = base_req(ResponsesInput::Text("indexed".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        let results = store.inject_file_search_context(&mut req, None, None, None);
+        assert_eq!(results[0]["file_id"], file_id);
+
+        store.delete(&file_id).unwrap();
+        let mut req = base_req(ResponsesInput::Text("indexed".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        assert!(store
+            .inject_file_search_context(&mut req, None, None, None)
+            .is_empty());
+    }
+
+    #[test]
+    fn file_search_respects_score_threshold() {
+        let store = FileStore::new();
+        store
+            .insert(
+                "weak.md",
+                "assistants",
+                "text/markdown",
+                b"relay appears once".to_vec(),
+                1,
+            )
+            .unwrap();
+        store
+            .insert(
+                "strong.md",
+                "assistants",
+                "text/markdown",
+                b"relay relay relay appears often".to_vec(),
+                1,
+            )
+            .unwrap();
+        let mut req = base_req(ResponsesInput::Text("relay".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        let results = store.inject_file_search_context(&mut req, None, None, Some(3.0));
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["filename"], "strong.md");
     }
 
     #[test]

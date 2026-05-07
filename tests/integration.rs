@@ -43,6 +43,7 @@ fn test_state() -> AppState {
         chinese_thinking: false,
         rate_limiter: None,
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
+        tool_policy: deecodex::handlers::ToolPolicy::default(),
     }
 }
 
@@ -808,7 +809,8 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
             "tools": [{{
                 "type": "file_search",
                 "vector_store_ids": ["{store_id}"],
-                "max_num_results": 1
+                "max_num_results": 1,
+                "ranking_options": {{"score_threshold": 1.0}}
             }}]
         }}"#
     );
@@ -844,6 +846,7 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
     .unwrap();
     assert_eq!(metadata_store_ids, vec![store_id.clone()]);
     assert_eq!(json["metadata"]["local_file_search_max_num_results"], "1");
+    assert_eq!(json["metadata"]["local_file_search_score_threshold"], "1");
 
     let retrieve = app
         .clone()
@@ -876,6 +879,37 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
     assert_eq!(input_items[1]["query"], "relay");
     assert_eq!(input_items[1]["vector_store_ids"][0], store_id);
     assert_eq!(input_items[1]["results"][0]["file_id"], first_file_id);
+}
+
+#[tokio::test]
+async fn test_tool_policy_rejects_unlisted_mcp_server() {
+    let mut state = test_state();
+    state.tool_policy.allowed_mcp_servers = vec!["safe_server".into()];
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": "hi",
+                        "tools": [{"type": "mcp", "server_label": "unsafe_server"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["param"], "tools");
+    assert_eq!(json["error"]["code"], "unsupported_feature");
 }
 
 #[tokio::test]
