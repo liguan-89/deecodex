@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     cache::{usage_to_cached, CachedResponse, CachedToolCall, RequestCache},
+    executor::{LocalExecutorConfig, McpToolInvocation, McpToolOutput},
     metrics::Metrics,
     session::SessionStore,
     token_anomaly::TokenTracker,
@@ -41,6 +42,8 @@ pub struct StreamArgs {
     pub cache_key: Option<u64>,
     pub token_tracker: Arc<TokenTracker>,
     pub metrics: Arc<Metrics>,
+    pub executors: Arc<LocalExecutorConfig>,
+    pub allowed_mcp_servers: Vec<String>,
 }
 
 /// Arguments for replaying a cached response as SSE.
@@ -143,6 +146,16 @@ fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progre
     item
 }
 
+fn mcp_tool_output_json(call_id: &str, result: &McpToolOutput, in_progress: bool) -> Value {
+    json!({
+        "type": "mcp_tool_call_output",
+        "id": format!("mcpout_{call_id}"),
+        "call_id": call_id,
+        "status": if in_progress { "in_progress" } else { result.status.as_str() },
+        "output": if in_progress { Value::Null } else { result.output.clone() }
+    })
+}
+
 struct LocalMcpCall {
     server_label: String,
     tool: String,
@@ -198,6 +211,8 @@ pub fn translate_stream(
         cache_key,
         token_tracker,
         metrics,
+        executors,
+        allowed_mcp_servers,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
@@ -526,6 +541,7 @@ pub fn translate_stream(
         let base_index: usize = if emitted_reasoning_item { 1 } else { 0 }
             + if emitted_message_item { 1 } else { 0 };
         let mut fc_items: Vec<Value> = Vec::new();
+        let mut executable_mcp_calls: Vec<(String, McpToolInvocation)> = Vec::new();
 
         for (rel_idx, (_, tc)) in tool_calls.iter().enumerate() {
             let call_id = if tc.id.is_empty() {
@@ -570,7 +586,51 @@ pub fn translate_stream(
                 }),
             );
 
-            fc_items.push(response_tool_call_json(&call_id, &item_spec, false));
+            let final_item = response_tool_call_json(&call_id, &item_spec, false);
+            if item_spec.item_type == "mcp_tool_call" {
+                if let Some(invocation) = McpToolInvocation::from_response_item(&final_item) {
+                    executable_mcp_calls.push((call_id.clone(), invocation));
+                }
+            }
+            fc_items.push(final_item);
+        }
+
+        let mut local_mcp_output_items: Vec<Value> = Vec::new();
+        if executors.mcp.enabled() {
+            for (rel_idx, (call_id, invocation)) in executable_mcp_calls.into_iter().enumerate() {
+                let output_index = base_index + tool_calls.len() + rel_idx;
+                let result = if !allowed_mcp_servers.is_empty()
+                    && !allowed_mcp_servers.iter().any(|server| server == &invocation.server_label)
+                {
+                    McpToolOutput::failed(format!(
+                        "MCP server '{}' is not allowed by local tool policy",
+                        invocation.server_label
+                    ))
+                } else {
+                    executors.mcp.execute_tool(invocation).await
+                };
+                let final_item = mcp_tool_output_json(&call_id, &result, false);
+
+                yield event_with_sequence(
+                    &mut seq,
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": output_index,
+                        "item": mcp_tool_output_json(&call_id, &result, true)
+                    }),
+                );
+                yield event_with_sequence(
+                    &mut seq,
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": output_index,
+                        "item": final_item
+                    }),
+                );
+                local_mcp_output_items.push(final_item);
+            }
         }
 
         // Persist reasoning_content
@@ -648,6 +708,7 @@ pub fn translate_stream(
             }));
         }
         output_items.extend(fc_items);
+        output_items.extend(local_mcp_output_items);
         if let Some(id) = conversation_id {
             let mut conversation_items = sessions.get_conversation_items(&id);
             conversation_items.extend(output_items.iter().cloned());
@@ -1294,6 +1355,20 @@ mod tests {
         assert_eq!(json["server_label"], "filesystem");
         assert_eq!(json["name"], "read_file");
         assert_eq!(json["arguments"], r#"{"path":"README.md"}"#);
+    }
+
+    #[test]
+    fn test_mcp_tool_output_json_completed() {
+        let output = McpToolOutput::succeeded(json!({
+            "content": [{"type": "text", "text": "ok"}]
+        }));
+        let json = mcp_tool_output_json("m1", &output, false);
+
+        assert_eq!(json["type"], "mcp_tool_call_output");
+        assert_eq!(json["id"], "mcpout_m1");
+        assert_eq!(json["call_id"], "m1");
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["output"]["content"][0]["text"], "ok");
     }
 
     #[test]

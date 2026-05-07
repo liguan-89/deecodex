@@ -1505,6 +1505,8 @@ fn make_stream_args(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
+        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        allowed_mcp_servers: vec![],
     }
 }
 
@@ -1542,6 +1544,8 @@ fn make_stream_args_custom(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
+        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        allowed_mcp_servers: vec![],
     }
 }
 
@@ -1938,6 +1942,99 @@ async fn test_responses_blocking_tool_call() {
         .contains("call_abc"));
     assert_eq!(json["output"][0]["arguments"], r#"{"city": "NYC"}"#);
     assert_eq!(json["output"][0]["status"], "completed");
+}
+
+#[tokio::test]
+async fn test_responses_blocking_local_mcp_executor_appends_output() {
+    fn mcp_frame(body: &str) -> String {
+        format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+    }
+
+    let init = r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#;
+    let tool =
+        r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"read ok"}]}}"#;
+    let script_path = std::env::temp_dir().join(format!(
+        "deecodex-fake-mcp-{}.sh",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\ncat >/dev/null &\nprintf '%s' '{}{}'\nsleep 1\n",
+            mcp_frame(init),
+            mcp_frame(tool)
+        ),
+    )
+    .unwrap();
+
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_mcp",
+                            "type": "function",
+                            "function": {
+                                "name": "local_mcp_call",
+                                "arguments": "{\"server_label\":\"filesystem\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"/tmp/a.txt\"}}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }"#,
+        )
+        .await,
+    );
+    state.executors = Arc::new(
+        deecodex::executor::LocalExecutorConfig::from_raw(
+            "disabled",
+            30,
+            &json!({
+                "filesystem": {
+                    "label": "",
+                    "command": "/bin/sh",
+                    "args": [script_path.to_string_lossy()]
+                }
+            })
+            .to_string(),
+            5,
+        )
+        .unwrap(),
+    );
+    state.tool_policy.allowed_mcp_servers = vec!["filesystem".into()];
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"read","tools":[{"type":"mcp","server_label":"filesystem"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["type"], "mcp_tool_call");
+    assert_eq!(json["output"][0]["server_label"], "filesystem");
+    assert_eq!(json["output"][1]["type"], "mcp_tool_call_output");
+    assert_eq!(json["output"][1]["call_id"], "call_mcp");
+    assert_eq!(json["output"][1]["status"], "completed");
+    assert_eq!(json["output"][1]["output"]["content"][0]["text"], "read ok");
+
+    std::fs::remove_file(script_path).unwrap();
 }
 
 #[tokio::test]

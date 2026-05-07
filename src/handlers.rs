@@ -1,5 +1,5 @@
 use crate::cache::RequestCache;
-use crate::executor::LocalExecutorConfig;
+use crate::executor::{LocalExecutorConfig, McpToolInvocation};
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
@@ -1565,6 +1565,8 @@ async fn handle_responses_inner(
             },
             token_tracker: state.token_tracker.clone(),
             metrics: state.metrics.clone(),
+            executors: state.executors.clone(),
+            allowed_mcp_servers: state.tool_policy.allowed_mcp_servers.clone(),
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -1767,6 +1769,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
                 if let Ok(value) = serde_json::to_value(&resp) {
                     let mut value = enrich_response_object(value, req);
+                    append_local_mcp_outputs(&state, &mut value).await;
                     value["status"] = json!("completed");
                     let value = response_with_extra(value, &response_extra);
                     if store_response {
@@ -1798,6 +1801,64 @@ fn save_response_unless_cancelled(sessions: &SessionStore, id: String, response:
         return;
     }
     sessions.save_response(id, response);
+}
+
+async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
+    if !state.executors.mcp.enabled() {
+        return;
+    }
+
+    let calls = response
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let call_id = item.get("call_id").and_then(Value::as_str)?.to_string();
+                    let invocation = McpToolInvocation::from_response_item(item)?;
+                    Some((call_id, invocation))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if calls.is_empty() {
+        return;
+    }
+
+    let mut outputs = Vec::new();
+    for (call_id, invocation) in calls {
+        let result = if !state.tool_policy.allowed_mcp_servers.is_empty()
+            && !state
+                .tool_policy
+                .allowed_mcp_servers
+                .iter()
+                .any(|server| server == &invocation.server_label)
+        {
+            crate::executor::McpToolOutput::failed(format!(
+                "MCP server '{}' is not allowed by local tool policy",
+                invocation.server_label
+            ))
+        } else {
+            state.executors.mcp.execute_tool(invocation).await
+        };
+        outputs.push(local_mcp_tool_output_item(&call_id, result));
+    }
+
+    if let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) {
+        items.extend(outputs);
+    }
+}
+
+fn local_mcp_tool_output_item(call_id: &str, result: crate::executor::McpToolOutput) -> Value {
+    json!({
+        "type": "mcp_tool_call_output",
+        "id": format!("mcpout_{call_id}"),
+        "call_id": call_id,
+        "status": result.status,
+        "output": result.output
+    })
 }
 
 fn conversation_id_from_request(req: &ResponsesRequest) -> Option<String> {
@@ -2503,6 +2564,23 @@ mod tests {
         assert_eq!(item["vector_store_ids"][0].as_str(), Some("vs_1"));
         assert_eq!(item["results"][0]["file_id"].as_str(), Some("file_1"));
         assert_eq!(item["results"][0]["text"].as_str(), Some("relay notes"));
+    }
+
+    #[test]
+    fn test_local_mcp_tool_output_item_preserves_status_and_output() {
+        let item = local_mcp_tool_output_item(
+            "call_mcp",
+            crate::executor::McpToolOutput {
+                status: "completed".into(),
+                output: json!({"content": [{"type": "text", "text": "ok"}]}),
+            },
+        );
+
+        assert_eq!(item["type"], "mcp_tool_call_output");
+        assert_eq!(item["id"], "mcpout_call_mcp");
+        assert_eq!(item["call_id"], "call_mcp");
+        assert_eq!(item["status"], "completed");
+        assert_eq!(item["output"]["content"][0]["text"], "ok");
     }
 
     #[test]

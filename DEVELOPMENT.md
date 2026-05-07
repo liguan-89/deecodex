@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：post-100 本地增强执行层启动
-- 正在做：把已完成的 Responses 协议/桥接能力往真实 executor 推进，先落配置、权限和可测试接口骨架
-- 下一步：在默认关闭的前提下接入真实 MCP 进程执行器，再接 browser-use/Playwright computer executor
+- 阶段：post-100 本地增强执行层
+- 正在做：把已完成的 Responses 协议/桥接能力往真实 executor 推进；MCP stdio 执行闭环已接入，下一步转向 computer/browser executor
+- 下一步：在默认关闭的前提下接入 browser-use/Playwright computer executor，并继续提升 file_search 排序质量
 
 ## 已完成
 
@@ -111,12 +111,19 @@
   - 支持从 JSON 对象/数组或 JSON 文件路径解析 MCP server 配置，默认 `read_only=true`。
   - `main.rs`、`config.json` merge、TUI、README 和 `.env.example` 已接入 `DEECODEX_COMPUTER_EXECUTOR` / `DEECODEX_MCP_EXECUTOR_CONFIG` 等配置。
   - 默认保持 disabled/空配置，不启动外部进程，不改变现有 Responses 桥接行为。
+- post-100 MCP executor 执行闭环已接入：
+  - `executor.rs` 增加最小 MCP stdio JSON-RPC 客户端，按 `initialize` → `notifications/initialized` → `tools/call` 执行。
+  - `DEECODEX_MCP_EXECUTOR_CONFIG` 配置的 server 会在工具调用时按需启动，单次调用受 `DEECODEX_MCP_EXECUTOR_TIMEOUT_SECS` 约束。
+  - 默认 `read_only=true`，会拒绝明显写入/删除/修改类工具；需要写能力时必须在 server 配置中显式设 `read_only:false`。
+  - 非流式 Responses 会在上游 `mcp_tool_call` 后自动追加 `mcp_tool_call_output`；失败也以 output item 返回，不直接 500。
+  - 流式 Responses 会在 `mcp_tool_call` 的 added/done 后继续发送 `mcp_tool_call_output` added/done，再进入 `response.completed`。
+  - MCP server 白名单和 executor server 配置双重约束：白名单拒绝会输出失败的 `mcp_tool_call_output`，未配置 server 也输出失败项。
 
 ## 进行中
 
 - Responses 协议层、本地增强层和安全/运维基础已完成到当前本地可实现范围，整体开发进度估算约 100%。
-- 真实外部执行器进入 post-100 增强期：本轮先完成 executor 配置模型、TUI/CLI/env/config.json 接入、README/.env 示例和测试，再进入真实进程/浏览器执行闭环。
-- `CLAUDE.md` 已确认是 Claude Code 项目说明文件，本轮需要纳入版本控制或显式忽略，避免长期未跟踪状态。
+- 真实外部执行器进入 post-100 增强期：MCP stdio 执行闭环已落地；computer/browser executor 是下一块主要开发。
+- `CLAUDE.md` 已纳入版本控制，后续架构变更同步更新。
 
 ## 本轮开发计划 (post-100 executor)
 
@@ -131,23 +138,30 @@
   - 读取 allowlist 内 server 配置。
   - 启动/连接本地 MCP server，执行只读工具。
   - 结果统一转为 `mcp_tool_call_output`；失败也以 output item 形式返回，不直接 500。
+  - 状态：✅ 已完成 stdio MCP 最小执行闭环，非流式/流式 Responses 均会输出 `mcp_tool_call_output`。
 - P1：computer executor 执行闭环
   - 优先实现 browser-use/Playwright adapter 接口。
   - 支持 open_url、screenshot、click、type、keypress、scroll。
   - 每次动作都保留 call_id、display、timeout、截图摘要和状态。
+  - 状态：下一轮优先。
 - P2：file_search 质量升级
   - 在当前倒排索引上引入 BM25 打分。
   - 增强 snippet 窗口和更多 `ranking_options` 字段。
 
 ## 下次开发计划
 
-- P0：补齐 Responses SSE 序列契约：
-  - live 流事件从 0 或 1 开始按实际输出顺序单调递增。
-  - 缓存回放不得复用冲突序号或漏发终止事件序号。
-  - `response.created`、`response.output_item.added`、delta、`response.output_item.done`、`response.completed`/失败事件的序号在一次流中唯一。
-- P0：固定 response echo 契约：
-  - 创建响应、最终 response body、retrieve、缓存回放的 `id/model/status/output/usage/metadata` 保持一致。
-  - 失败/中断场景不得保存为成功 echo。
+- P0：真实 computer/browser executor：
+  - 在 `executor.rs` 增加 `ComputerActionInvocation` / `ComputerActionOutput`，动作失败仍回填 `computer_call_output`。
+  - 优先接 Playwright 后端：`open_url`、`screenshot`、`click`、`type`、`keypress`、`scroll`。
+  - browser-use 后端保留配置入口，若运行环境不可用要输出明确 unsupported output item。
+  - 每次动作必须受 `DEECODEX_ALLOWED_COMPUTER_DISPLAYS`、backend enabled 和 timeout 三重约束。
+- P1：MCP executor 强化：
+  - 增加 `tools/list` 可选探测，read_only 模式优先按 MCP tool metadata 判断，只在没有 metadata 时使用名称启发式。
+  - 支持长驻 MCP server 连接池，避免每次 `tools/call` 都重新启动进程。
+  - 增加 stderr 摘要到失败 output，仍避免泄漏大段敏感内容。
+- P1：file_search 质量升级：
+  - 在当前倒排索引上加入 BM25 打分和窗口化 snippet。
+  - 支持更多 `ranking_options` 字段，并在 metadata/input_items 中记录实际降级策略。
   - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。
 - P0：固定 output item id：
   - message/function_call/computer_call/mcp/file_search_call 生成稳定 item id。
