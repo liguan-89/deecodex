@@ -4,17 +4,25 @@ use axum::{
     Json,
 };
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct VectorStoreRegistry {
     stores: Arc<DashMap<String, StoredVectorStore>>,
     batches: Arc<DashMap<String, StoredFileBatch>>,
+    data_dir: Option<Arc<PathBuf>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredVectorStore {
     id: String,
     name: String,
@@ -23,13 +31,19 @@ struct StoredVectorStore {
     metadata: Value,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredFileBatch {
     id: String,
     vector_store_id: String,
     created_at: u64,
     file_ids: Vec<String>,
     status: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct RegistrySnapshot {
+    stores: Vec<StoredVectorStore>,
+    batches: Vec<StoredFileBatch>,
 }
 
 #[derive(Debug)]
@@ -45,7 +59,20 @@ impl VectorStoreRegistry {
         Self {
             stores: Arc::new(DashMap::new()),
             batches: Arc::new(DashMap::new()),
+            data_dir: None,
         }
+    }
+
+    pub fn with_data_dir(data_dir: impl Into<PathBuf>) -> io::Result<Self> {
+        let data_dir = data_dir.into();
+        fs::create_dir_all(&data_dir)?;
+        let registry = Self {
+            stores: Arc::new(DashMap::new()),
+            batches: Arc::new(DashMap::new()),
+            data_dir: Some(Arc::new(data_dir)),
+        };
+        registry.load_from_disk()?;
+        Ok(registry)
     }
 
     pub fn create(
@@ -65,6 +92,7 @@ impl VectorStoreRegistry {
         };
         let object = store.to_object();
         self.stores.insert(id, store);
+        self.persist_or_warn();
         object
     }
 
@@ -100,6 +128,7 @@ impl VectorStoreRegistry {
             for batch_id in batch_ids {
                 self.batches.remove(&batch_id);
             }
+            self.persist_or_warn();
             Ok(json!({
                 "id": vector_store_id,
                 "object": "vector_store.deleted",
@@ -121,10 +150,13 @@ impl VectorStoreRegistry {
         if !store.file_ids.contains(&file_id) {
             store.file_ids.push(file_id.clone());
         }
+        let created_at = store.created_at;
+        drop(store);
+        self.persist_or_warn();
         Ok(vector_store_file_object(
             vector_store_id,
             &file_id,
-            store.created_at,
+            created_at,
         ))
     }
 
@@ -175,10 +207,13 @@ impl VectorStoreRegistry {
         };
         let before = store.file_ids.len();
         store.file_ids.retain(|id| id != file_id);
+        let deleted = before != store.file_ids.len();
+        drop(store);
+        self.persist_or_warn();
         Ok(json!({
             "id": file_id,
             "object": "vector_store.file.deleted",
-            "deleted": before != store.file_ids.len(),
+            "deleted": deleted,
             "vector_store_id": vector_store_id
         }))
     }
@@ -206,6 +241,8 @@ impl VectorStoreRegistry {
         };
         let object = batch.to_object();
         self.batches.insert(batch.id.clone(), batch);
+        drop(store);
+        self.persist_or_warn();
         Ok(object)
     }
 
@@ -237,7 +274,10 @@ impl VectorStoreRegistry {
         if batch.status != "completed" {
             batch.status = "cancelled".to_string();
         }
-        Ok(batch.to_object())
+        let object = batch.to_object();
+        drop(batch);
+        self.persist_or_warn();
+        Ok(object)
     }
 
     pub fn list_batch_files(
@@ -290,6 +330,44 @@ impl VectorStoreRegistry {
             }
         }
         Some(file_ids)
+    }
+
+    fn load_from_disk(&self) -> io::Result<()> {
+        let Some(data_dir) = self.data_dir.as_ref() else {
+            return Ok(());
+        };
+        let path = snapshot_path(data_dir.as_ref());
+        if !path.exists() {
+            return Ok(());
+        }
+        let snapshot: RegistrySnapshot =
+            serde_json::from_slice(&fs::read(&path)?).map_err(invalid_data)?;
+        for store in snapshot.stores {
+            self.stores.insert(store.id.clone(), store);
+        }
+        for batch in snapshot.batches {
+            self.batches.insert(batch.id.clone(), batch);
+        }
+        Ok(())
+    }
+
+    fn persist_or_warn(&self) {
+        if let Err(err) = self.persist() {
+            warn!("failed to persist vector stores: {err}");
+        }
+    }
+
+    fn persist(&self) -> io::Result<()> {
+        let Some(data_dir) = self.data_dir.as_ref() else {
+            return Ok(());
+        };
+        fs::create_dir_all(data_dir.as_ref())?;
+        let snapshot = RegistrySnapshot {
+            stores: self.stores.iter().map(|entry| entry.clone()).collect(),
+            batches: self.batches.iter().map(|entry| entry.clone()).collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&snapshot).map_err(invalid_data)?;
+        write_atomic(&snapshot_path(data_dir.as_ref()), &bytes)
     }
 }
 
@@ -405,6 +483,20 @@ fn vector_store_file_object(vector_store_id: &str, file_id: &str, created_at: u6
     })
 }
 
+fn snapshot_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("vector_stores.json")
+}
+
+fn invalid_data(error: serde_json::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp_path = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(tmp_path, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +537,173 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn persistent_registry_restores_stores_and_batches() {
+        let dir = std::env::temp_dir().join(format!("deecodex-vector-{}", Uuid::new_v4().simple()));
+        let (store_id, batch_id) = {
+            let registry = VectorStoreRegistry::with_data_dir(&dir).unwrap();
+            let store = registry.create(Some("docs".into()), vec!["file_a".into()], json!({}), 1);
+            let store_id = store.get("id").and_then(Value::as_str).unwrap().to_string();
+            let batch = registry
+                .create_batch(&store_id, vec!["file_b".into()], 2)
+                .unwrap();
+            let batch_id = batch.get("id").and_then(Value::as_str).unwrap().to_string();
+            (store_id, batch_id)
+        };
+
+        let restored = VectorStoreRegistry::with_data_dir(&dir).unwrap();
+
+        assert!(restored
+            .file_ids_for_tools(&[json!({
+                "type": "file_search",
+                "vector_store_ids": [&store_id]
+            })])
+            .unwrap()
+            .contains("file_b"));
+        assert_eq!(
+            restored.get_batch(&store_id, &batch_id).unwrap()["file_counts"]["completed"].as_u64(),
+            Some(1)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn new_creates_empty_registry() {
+        let registry = VectorStoreRegistry::new();
+        let list = registry.list();
+        assert_eq!(list["object"], "list");
+        assert!(list["data"].as_array().unwrap().is_empty());
+        assert_eq!(list["has_more"], false);
+    }
+
+    #[test]
+    fn list_returns_all_stores() {
+        let registry = VectorStoreRegistry::new();
+        registry.create(Some("a".into()), vec![], json!({}), 1);
+        registry.create(Some("b".into()), vec![], json!({}), 2);
+
+        let data = registry.list()["data"].as_array().unwrap().clone();
+        assert_eq!(data.len(), 2);
+    }
+
+    #[test]
+    fn get_returns_existing_store() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let id = store["id"].as_str().unwrap();
+
+        let result = registry.get(id).unwrap();
+        assert_eq!(result["id"], id);
+        assert_eq!(result["object"], "vector_store");
+    }
+
+    #[test]
+    fn get_returns_error_for_missing_store() {
+        let registry = VectorStoreRegistry::new();
+        let err = registry.get("vs_nonexistent").unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_removes_existing_store() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let id = store["id"].as_str().unwrap().to_string();
+
+        let result = registry.delete(&id).unwrap();
+        assert_eq!(result["id"], id);
+        assert_eq!(result["deleted"], true);
+        assert!(registry.get(&id).is_err());
+    }
+
+    #[test]
+    fn delete_non_existent_returns_error() {
+        let registry = VectorStoreRegistry::new();
+        let err = registry.delete("vs_nonexistent").unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn add_file_adds_to_store() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let id = store["id"].as_str().unwrap();
+
+        let result = registry.add_file(id, "file_x".into()).unwrap();
+        assert_eq!(result["id"], "file_x");
+        assert_eq!(result["object"], "vector_store.file");
+
+        let files = registry.list_files(id).unwrap();
+        assert_eq!(files["data"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_file_errors_for_non_existent_store() {
+        let registry = VectorStoreRegistry::new();
+        let err = registry
+            .add_file("vs_nonexistent", "file_x".into())
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn get_file_returns_file_from_store() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let id = store["id"].as_str().unwrap();
+        registry.add_file(id, "file_y".into()).unwrap();
+
+        let result = registry.get_file(id, "file_y").unwrap();
+        assert_eq!(result["id"], "file_y");
+        assert_eq!(result["vector_store_id"], id);
+    }
+
+    #[test]
+    fn get_file_errors_for_missing_file() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let id = store["id"].as_str().unwrap();
+
+        let err = registry.get_file(id, "file_nonexistent").unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn delete_file_removes_file_from_store() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec!["file_z".into()], json!({}), 1);
+        let id = store["id"].as_str().unwrap();
+
+        let result = registry.delete_file(id, "file_z").unwrap();
+        assert_eq!(result["id"], "file_z");
+        assert_eq!(result["deleted"], true);
+
+        assert!(registry.get_file(id, "file_z").is_err());
+    }
+
+    #[test]
+    fn cancel_batch_returns_batch_object() {
+        let registry = VectorStoreRegistry::new();
+        let store = registry.create(Some("docs".into()), vec![], json!({}), 1);
+        let store_id = store["id"].as_str().unwrap();
+        let batch = registry
+            .create_batch(store_id, vec!["file_a".into()], 2)
+            .unwrap();
+        let batch_id = batch["id"].as_str().unwrap();
+
+        let result = registry.cancel_batch(store_id, batch_id).unwrap();
+        assert_eq!(result["id"], batch_id);
+        assert_eq!(result["object"], "vector_store.file_batch");
+    }
+
+    #[test]
+    fn cancel_batch_errors_for_non_existent_batch() {
+        let registry = VectorStoreRegistry::new();
+        let err = registry
+            .cancel_batch("vs_x", "vsfb_nonexistent")
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
     }
 }

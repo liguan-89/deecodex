@@ -667,6 +667,7 @@ pub fn from_chat_response(
 
     // Reasoning as independent output item (matches Responses API format)
     if !reasoning_content.is_empty() {
+        let item_id = response_output_item_id("rs", &id, output.len());
         output.push(ResponsesOutputItem {
             kind: "reasoning".into(),
             role: None,
@@ -674,7 +675,7 @@ pub fn from_chat_response(
                 kind: "summary_text".into(),
                 text: Some(reasoning_content.clone()),
             }],
-            id: None,
+            id: Some(item_id),
             call_id: None,
             name: None,
             arguments: None,
@@ -686,6 +687,7 @@ pub fn from_chat_response(
 
     let text_out = text.as_str().unwrap_or("").to_string();
     if !text_out.is_empty() || tool_calls.is_empty() {
+        let item_id = response_output_item_id("msg", &id, output.len());
         output.push(ResponsesOutputItem {
             kind: "message".into(),
             role: Some("assistant".into()),
@@ -693,7 +695,7 @@ pub fn from_chat_response(
                 kind: "output_text".into(),
                 text: Some(text_out),
             }],
-            id: None,
+            id: Some(item_id),
             call_id: None,
             name: None,
             arguments: None,
@@ -714,6 +716,16 @@ pub fn from_chat_response(
             .and_then(Value::as_str)
             .map(str::to_string);
         let is_computer_call = name == "local_computer";
+        let call_id = tool_call
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{}_{}", id, output.len()));
+        let item_id = if is_computer_call {
+            format!("cc_{}", call_id)
+        } else {
+            format!("fc_{}", call_id)
+        };
         output.push(ResponsesOutputItem {
             kind: if is_computer_call {
                 "computer_call".into()
@@ -722,14 +734,8 @@ pub fn from_chat_response(
             },
             role: None,
             content: Vec::new(),
-            id: tool_call
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            call_id: tool_call
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            id: Some(item_id),
+            call_id: Some(call_id),
             name: if is_computer_call {
                 None
             } else {
@@ -766,6 +772,10 @@ pub fn from_chat_response(
     };
 
     (response, vec![choice.message])
+}
+
+fn response_output_item_id(prefix: &str, response_id: &str, index: usize) -> String {
+    format!("{}_{}_{}", prefix, response_id, index)
 }
 
 /// Collapse a Responses API content value to plain text + has_images flag.
@@ -1052,12 +1062,70 @@ mod tests {
         let (resp, _) = from_chat_response("resp_1".into(), "deepseek-v4-pro", chat_resp);
         assert_eq!(resp.output.len(), 1);
         assert_eq!(resp.output[0].kind, "function_call");
+        assert_eq!(resp.output[0].id.as_deref(), Some("fc_call_123"));
         assert_eq!(resp.output[0].call_id.as_deref(), Some("call_123"));
         assert_eq!(resp.output[0].name.as_deref(), Some("exec_command"));
         assert_eq!(
             resp.output[0].arguments.as_deref(),
             Some("{\"cmd\":\"pwd\"}")
         );
+    }
+
+    #[test]
+    fn test_blocking_response_output_item_ids() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: Some(Value::String("done".into())),
+                    reasoning_content: Some("thinking".into()),
+                    tool_calls: Some(vec![
+                        json!({
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": {
+                                "name": "exec_command",
+                                "arguments": "{\"cmd\":\"pwd\"}"
+                            }
+                        }),
+                        json!({
+                            "id": "call_screen",
+                            "type": "function",
+                            "function": {
+                                "name": "local_computer",
+                                "arguments": "{\"type\":\"screenshot\"}"
+                            }
+                        }),
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": "missing_id",
+                                "arguments": "{}"
+                            }
+                        }),
+                    ]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_42".into(), "deepseek-v4-pro", chat_resp);
+
+        assert_eq!(resp.output[0].kind, "reasoning");
+        assert_eq!(resp.output[0].id.as_deref(), Some("rs_resp_42_0"));
+        assert_eq!(resp.output[1].kind, "message");
+        assert_eq!(resp.output[1].id.as_deref(), Some("msg_resp_42_1"));
+        assert_eq!(resp.output[2].kind, "function_call");
+        assert_eq!(resp.output[2].id.as_deref(), Some("fc_call_abc"));
+        assert_eq!(resp.output[2].call_id.as_deref(), Some("call_abc"));
+        assert_eq!(resp.output[3].kind, "computer_call");
+        assert_eq!(resp.output[3].id.as_deref(), Some("cc_call_screen"));
+        assert_eq!(resp.output[3].call_id.as_deref(), Some("call_screen"));
+        assert_eq!(resp.output[4].kind, "function_call");
+        assert_eq!(resp.output[4].id.as_deref(), Some("fc_resp_42_4"));
+        assert_eq!(resp.output[4].call_id.as_deref(), Some("resp_42_4"));
     }
 
     #[test]
@@ -1090,5 +1158,321 @@ mod tests {
         };
         let s = format_usage(Some(&usage));
         assert!(s.contains("reason=30"));
+    }
+
+    // ── convert_tool tests ──
+
+    #[test]
+    fn test_convert_tool_non_object() {
+        let result = convert_tool(&json!("string_value"));
+        assert_eq!(result, json!("string_value"));
+
+        let result = convert_tool(&json!(42));
+        assert_eq!(result, json!(42));
+    }
+
+    #[test]
+    fn test_convert_tool_already_function_format() {
+        let tool = json!({
+            "type": "function",
+            "function": {
+                "name": "my_func",
+                "parameters": {"type": "object"}
+            },
+            "extra_field": "preserved"
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result, tool);
+    }
+
+    #[test]
+    fn test_convert_tool_function_type() {
+        let tool = json!({
+            "type": "function",
+            "name": "my_func",
+            "description": "does something",
+            "parameters": {"type": "object", "properties": {}},
+            "strict": true
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "my_func");
+        assert_eq!(result["function"]["description"], "does something");
+        assert_eq!(result["function"]["strict"], true);
+        assert_eq!(result["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn test_convert_tool_function_minimal() {
+        let tool = json!({"type": "function", "name": "minimal"});
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "minimal");
+        assert!(result["function"].get("description").is_none());
+        assert!(result["function"].get("parameters").is_none());
+    }
+
+    #[test]
+    fn test_convert_tool_namespace() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "fs__",
+            "description": "File system tools",
+            "tools": [
+                {"type": "function", "name": "read", "description": "read file"},
+                {"type": "function", "name": "write", "description": "write file"}
+            ]
+        });
+        let result = convert_tool(&tool);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["function"]["name"], "fs__read");
+        assert_eq!(arr[1]["function"]["name"], "fs__write");
+    }
+
+    #[test]
+    fn test_convert_tool_namespace_no_suffix_strip() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "mcp_tools",
+            "tools": [
+                {"type": "function", "name": "list"}
+            ]
+        });
+        let result = convert_tool(&tool);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr[0]["function"]["name"], "mcp_tools__list");
+    }
+
+    #[test]
+    fn test_convert_tool_namespace_empty_tools() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "empty_ns",
+            "description": "no tools available",
+            "tools": []
+        });
+        let result = convert_tool(&tool);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "function");
+        assert_eq!(arr[0]["function"]["name"], "empty_ns");
+        assert_eq!(arr[0]["function"]["description"], "no tools available");
+    }
+
+    #[test]
+    fn test_convert_tool_namespace_no_tools_key() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "bare_ns"
+        });
+        let result = convert_tool(&tool);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["function"]["name"], "bare_ns");
+    }
+
+    #[test]
+    fn test_convert_tool_custom_apply_patch() {
+        let tool = json!({
+            "type": "custom",
+            "name": "apply_patch",
+            "description": "apply a patch"
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "apply_patch");
+        // Should be mapped to exec_command-compatible schema with cmd required
+        let params = &result["function"]["parameters"];
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["cmd"].is_object());
+        assert_eq!(params["required"][0], "cmd");
+        // Has exec_command-style fields
+        assert!(params["properties"].get("workdir").is_some());
+        assert!(params["properties"].get("shell").is_some());
+    }
+
+    #[test]
+    fn test_convert_tool_custom_generic() {
+        let tool = json!({
+            "type": "custom",
+            "name": "my_api",
+            "description": "call my api"
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "my_api");
+        let params = &result["function"]["parameters"];
+        assert_eq!(params["properties"]["input"]["type"], "string");
+        assert_eq!(
+            params["properties"]["input"]["description"],
+            "Input for my_api"
+        );
+    }
+
+    #[test]
+    fn test_convert_tool_custom_no_name() {
+        let tool = json!({"type": "custom"});
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "custom_tool");
+    }
+
+    #[test]
+    fn test_convert_tool_local_shell() {
+        let tool = json!({
+            "type": "local_shell",
+            "name": "my_shell",
+            "description": "run a shell command",
+            "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}}
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "my_shell");
+        assert_eq!(result["function"]["description"], "run a shell command");
+        assert_eq!(
+            result["function"]["parameters"]["properties"]["cmd"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn test_convert_tool_local_shell_default_params() {
+        let tool = json!({"type": "local_shell", "name": "bare_shell"});
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "bare_shell");
+        assert_eq!(result["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn test_convert_tool_computer_use() {
+        let tool = json!({
+            "type": "computer_use",
+            "display_width": 1920,
+            "display_height": 1080
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "local_computer");
+        assert_eq!(result["function"]["parameters"]["required"][0], "type");
+        assert_eq!(
+            result["function"]["parameters"]["properties"]["type"]["enum"][0],
+            "screenshot"
+        );
+        assert_eq!(
+            result["function"]["description"],
+            "Bridge for Responses computer_use. Request one local browser/computer action for a 1920x1080 display and wait for a computer_call_output screenshot before continuing."
+        );
+    }
+
+    #[test]
+    fn test_convert_tool_computer_use_default_dimensions() {
+        let tool = json!({"type": "computer_use"});
+        let result = convert_tool(&tool);
+        assert_eq!(
+            result["function"]["description"],
+            "Bridge for Responses computer_use. Request one local browser/computer action for a 1024x768 display and wait for a computer_call_output screenshot before continuing."
+        );
+    }
+
+    #[test]
+    fn test_convert_tool_computer_use_preview() {
+        let tool =
+            json!({"type": "computer_use_preview", "display_width": 800, "display_height": 600});
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "local_computer");
+        assert!(result["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("800x600"));
+    }
+
+    #[test]
+    fn test_convert_tool_mcp() {
+        let tool = json!({
+            "type": "mcp",
+            "server_label": "my-server"
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "local_mcp_call");
+        assert!(result["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("my-server"));
+        assert_eq!(
+            result["function"]["parameters"]["required"],
+            json!(["tool", "arguments"])
+        );
+    }
+
+    #[test]
+    fn test_convert_tool_remote_mcp() {
+        let tool = json!({
+            "type": "remote_mcp",
+            "server_url": "https://mcp.example.com"
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "local_mcp_call");
+        assert!(result["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("https://mcp.example.com"));
+    }
+
+    #[test]
+    fn test_convert_tool_mcp_no_label() {
+        let tool = json!({"type": "mcp"});
+        let result = convert_tool(&tool);
+        assert!(result["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("remote_mcp"));
+    }
+
+    #[test]
+    fn test_convert_tool_unknown_type() {
+        let tool = json!({
+            "type": "weird_tool",
+            "name": "w",
+            "description": "a weird tool",
+            "parameters": {"type": "object"}
+        });
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        assert_eq!(result["function"]["name"], "w");
+        assert_eq!(result["function"]["description"], "a weird tool");
+        assert_eq!(result["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn test_convert_tool_unknown_type_fallback_name() {
+        let tool = json!({"type": "mystery"});
+        let result = convert_tool(&tool);
+        assert_eq!(result["function"]["name"], "mystery");
+        assert_eq!(result["function"]["description"], "Codex tool: mystery");
+    }
+
+    #[test]
+    fn test_convert_tool_missing_type() {
+        let tool = json!({"name": "orphan"});
+        let result = convert_tool(&tool);
+        assert_eq!(result["type"], "function");
+        // typ is "" so fallback name uses that
+        assert_eq!(result["function"]["name"], "orphan");
+    }
+
+    #[test]
+    fn test_convert_tool_namespace_subtool_no_function_skipped() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "ns",
+            "tools": [
+                42
+            ]
+        });
+        let result = convert_tool(&tool);
+        let arr = result.as_array().unwrap();
+        // 42 is not an object → convert_tool returns it unchanged (no "function" key)
+        // so the if-let check fails and it's skipped → empty → placeholder
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["function"]["name"], "ns");
     }
 }

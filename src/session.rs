@@ -441,4 +441,204 @@ mod tests {
         ]);
         assert_ne!(SessionStore::turn_key(&a), SessionStore::turn_key(&b));
     }
+
+    // ------------------------------------------------------------------
+    //  new_id()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_new_id_not_empty() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        assert!(!id.is_empty());
+        assert!(id.starts_with("resp_"));
+    }
+
+    #[test]
+    fn test_new_id_unique() {
+        let store = SessionStore::new();
+        let id1 = store.new_id();
+        let id2 = store.new_id();
+        assert_ne!(id1, id2);
+    }
+
+    // ------------------------------------------------------------------
+    //  save_with_id()  (stores messages into `inner`; no public getter)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_save_with_id_no_panic() {
+        let store = SessionStore::new();
+        store.save_with_id(store.new_id(), vec![msg("user", Some("hello"))]);
+    }
+
+    #[test]
+    fn test_save_with_id_eviction() {
+        let store = SessionStore::new();
+        for i in 0..MAX_SESSIONS {
+            store.save_with_id(format!("key_{}", i), vec![msg("user", Some("data"))]);
+        }
+        store.save_with_id("overflow".into(), vec![msg("user", Some("data"))]);
+    }
+
+    // ------------------------------------------------------------------
+    //  save_response() / get_response() / response_status()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_save_response_and_get_response() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        let response = serde_json::json!({"choices": [{"text": "hi"}]});
+        store.save_response(id.clone(), response.clone());
+        assert_eq!(store.get_response(&id), Some(response));
+    }
+
+    #[test]
+    fn test_get_response_missing() {
+        let store = SessionStore::new();
+        assert_eq!(store.get_response("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_response_status() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_response(id.clone(), serde_json::json!({"status": "completed"}));
+        assert_eq!(store.response_status(&id), Some("completed".into()));
+    }
+
+    #[test]
+    fn test_response_status_no_status_field() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_response(id.clone(), serde_json::json!({"unrelated": 42}));
+        assert_eq!(store.response_status(&id), None);
+    }
+
+    #[test]
+    fn test_response_status_missing() {
+        let store = SessionStore::new();
+        assert_eq!(store.response_status("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_delete_response_existing() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_response(id.clone(), serde_json::json!({"status": "done"}));
+        assert!(store.delete_response(&id));
+        assert_eq!(store.get_response(&id), None);
+    }
+
+    #[test]
+    fn test_delete_response_nonexistent_is_noop() {
+        let store = SessionStore::new();
+        assert!(!store.delete_response("nonexistent"));
+    }
+
+    // ------------------------------------------------------------------
+    //  save_input_items() / get_input_items()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_save_and_get_input_items() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        let items = vec![serde_json::json!({"role": "user"})];
+        store.save_input_items(id.clone(), items.clone());
+        assert_eq!(store.get_input_items(&id), Some(items));
+    }
+
+    #[test]
+    fn test_get_input_items_missing() {
+        let store = SessionStore::new();
+        assert_eq!(store.get_input_items("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_save_input_items_eviction() {
+        let store = SessionStore::new();
+        for i in 0..MAX_SESSIONS {
+            store.save_input_items(format!("key_{}", i), vec![serde_json::json!({"n": i})]);
+        }
+        store.save_input_items("overflow".into(), vec![serde_json::json!({"n": -1})]);
+        assert_eq!(
+            store.get_input_items("overflow"),
+            Some(vec![serde_json::json!({"n": -1})])
+        );
+    }
+
+    // ------------------------------------------------------------------
+    //  save_conversation() / conversation_exists()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_save_conversation_and_exists() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_conversation(id.clone(), vec![msg("user", Some("hi"))]);
+        assert!(store.conversation_exists(&id));
+    }
+
+    #[test]
+    fn test_conversation_exists_from_items() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_conversation_items(id.clone(), vec![serde_json::json!({"type": "text"})]);
+        assert!(store.conversation_exists(&id));
+    }
+
+    #[test]
+    fn test_conversation_exists_missing() {
+        let store = SessionStore::new();
+        assert!(!store.conversation_exists("nonexistent"));
+    }
+
+    // ------------------------------------------------------------------
+    //  save_conversation_items() / get_conversation_items()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_save_and_get_conversation_items() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        let items = vec![serde_json::json!({"type": "text"})];
+        store.save_conversation_items(id.clone(), items.clone());
+        assert_eq!(store.get_conversation_items(&id), items);
+    }
+
+    #[test]
+    fn test_get_conversation_items_missing_returns_empty() {
+        let store = SessionStore::new();
+        assert!(store.get_conversation_items("nonexistent").is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    //  delete_conversation()
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_delete_conversation_existing() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_conversation(id.clone(), vec![msg("user", Some("bye"))]);
+        assert!(store.delete_conversation(&id));
+        assert!(!store.conversation_exists(&id));
+    }
+
+    #[test]
+    fn test_delete_conversation_with_items_only() {
+        let store = SessionStore::new();
+        let id = store.new_id();
+        store.save_conversation_items(id.clone(), vec![serde_json::json!({"type": "text"})]);
+        assert!(store.delete_conversation(&id));
+        assert!(!store.conversation_exists(&id));
+    }
+
+    #[test]
+    fn test_delete_conversation_nonexistent() {
+        let store = SessionStore::new();
+        assert!(!store.delete_conversation("nonexistent"));
+    }
 }

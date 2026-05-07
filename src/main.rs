@@ -1,7 +1,9 @@
 mod cache;
 mod files;
 mod handlers;
+mod metrics;
 mod prompts;
+mod ratelimit;
 mod session;
 mod sse;
 mod stream;
@@ -66,6 +68,9 @@ struct Args {
 
     #[arg(long, env = "CODEX_RELAY_PROMPTS_DIR", default_value = "prompts")]
     prompts_dir: std::path::PathBuf,
+
+    #[arg(long, env = "CODEX_RELAY_DATA_DIR", default_value = ".deecodex")]
+    data_dir: std::path::PathBuf,
 }
 
 struct FlushWriter<W: Write>(W);
@@ -116,6 +121,9 @@ async fn main() -> Result<()> {
         info!("vision upstream configured: {}", args.vision_upstream);
     }
 
+    let files = crate::files::FileStore::with_data_dir(&args.data_dir)?;
+    let vector_stores = crate::vector_stores::VectorStoreRegistry::with_data_dir(&args.data_dir)?;
+
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
         client: Client::builder()
@@ -134,12 +142,36 @@ async fn main() -> Result<()> {
         start_time: std::time::Instant::now(),
         request_cache: crate::cache::RequestCache::default(),
         prompts: Arc::new(crate::prompts::PromptRegistry::new(&args.prompts_dir)),
-        files: crate::files::FileStore::new(),
-        vector_stores: crate::vector_stores::VectorStoreRegistry::new(),
+        files,
+        vector_stores,
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: args.chinese_thinking,
+        metrics: Arc::new(metrics::Metrics::new()),
+        rate_limiter: {
+            let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
+                .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(120);
+            let rate_window = std::env::var("DEECODEX_RATE_WINDOW")
+                .or_else(|_| std::env::var("CODEX_RELAY_RATE_WINDOW"))
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(60);
+            if rate_limit > 0 {
+                info!("rate limiter: {} req per {}s", rate_limit, rate_window);
+                Some(Arc::new(ratelimit::RateLimiter::new(
+                    rate_limit,
+                    rate_window,
+                )))
+            } else {
+                info!("rate limiter: disabled");
+                None
+            }
+        },
     };
     info!("local prompts registry: {}", args.prompts_dir.display());
+    info!("local data directory: {}", args.data_dir.display());
     if args.chinese_thinking {
         info!("chinese thinking mode: enabled (system prompt will include Chinese instruction)");
     }
@@ -165,7 +197,21 @@ async fn main() -> Result<()> {
     );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+
+    async fn shutdown_signal() {
+        let ctrl_c = tokio::signal::ctrl_c();
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => { info!("SIGINT received, starting graceful shutdown..."); }
+            _ = term.recv() => { info!("SIGTERM received, starting graceful shutdown..."); }
+        }
+    }
+
+    info!("graceful shutdown: draining in-flight requests (timeout: 30s)...");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
 }

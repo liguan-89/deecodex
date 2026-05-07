@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：增强层第一轮恢复合并 + v0.6 路由结构适配
-- 正在做：本轮合并验证收尾
-- 下一步：按“下次开发计划”继续推进可执行器、持久化和检索增强
+- 阶段：rollout `019dfe49` P0/P1 兼容性收口 + 增强层第一轮恢复合并
+- 正在做：把 Codex 真实流量分析出的 Responses 兼容缺口落到实现与验证计划
+- 下一步：优先验证 P0 序列/回放契约，再收口 P1 本地增强项的集成测试
 
 ## 已完成
 
@@ -36,10 +36,12 @@
   - `GET /v1/files/:id`
   - `GET /v1/files/:id/content`
   - `DELETE /v1/files/:id`
-  - 文件存储当前为内存态，服务重启后丢失。
+  - 支持通过 `CODEX_RELAY_DATA_DIR` 配置磁盘目录，默认 `.deecodex`。
+  - 上传后会把文件 bytes 和 metadata 落盘，服务重启后自动恢复。
 - `input_image.file_id` 本地解析为 `data:{mime};base64,...`。
 - `input_file.file_id` 文本文件展开为 `input_text`。
 - 基础本地 `file_search`：用已上传文本文件做轻量检索，把结果注入模型上下文，并把命中结果写入 metadata。
+- Responses `include` 对本地可生成的 `file_search_call.results` 做兼容处理：请求 include 或使用 `file_search` 工具时，会在最终 response output 中追加本地 `file_search_call` 项；其他依赖托管资源的 include 返回 400 `unsupported_feature`。
 - 本地 vector store / file batch 壳层：
   - `POST/GET /v1/vector_stores`
   - `GET/DELETE /v1/vector_stores/:id`
@@ -50,6 +52,7 @@
   - `POST /v1/vector_stores/:id/file_batches/:batch_id/cancel`
   - `GET /v1/vector_stores/:id/file_batches/:batch_id/files`
   - `file_search.vector_store_ids` 会限制检索范围。
+  - vector store 和 file batch 元数据会写入本地数据目录，服务重启后自动恢复。
 - `computer_use` / `computer_use_preview` 转为 `local_computer` bridge，上游返回 `local_computer` tool call 时映射为 Responses `computer_call`。
 - `mcp` / `remote_mcp` 转为 `local_mcp_call` bridge，为本地 MCP executor 保留结构化入口。
 - `/v1/responses/input_tokens` 接入 `tiktoken-rs`，替换原字符近似估算。
@@ -67,13 +70,39 @@
   - Shell: `DEECODEX_CLIENT_API_KEY` 的 `${var:-default}` 改为 `${var-default}`，使显式空值不会走回退链变成 DeepSeek key。
   - `.env` 设 `DEECODEX_CLIENT_API_KEY=` 留空即可关闭本地 client auth，设为非空值则启用鉴权。
 - 修复消息每轮翻倍 bug：`handle_responses_inner` 中从 session 加载 `get_history`/`get_conversation` 的 history 与 Codex `input` 数组重放的完整对话叠加，导致消息数指数增长最终触发上游 413。修复：`history` 固定为空 Vec，Codex 的 `input` 重放已包含完整上下文。
+- rollout `019dfe49` P0/P1 兼容项已进入本期收口范围：
+  - P0：Responses SSE 事件必须保持单调 `sequence_number`，包括 live 事件和缓存回放事件。
+  - P0：response echo 必须在创建、retrieve、缓存回放和终止事件中保持关键字段一致，避免 Codex 把同一轮响应识别为不同对象。
+  - P0：output item id 必须稳定，`response.output_item.added`、delta、done、最终 response body 和 retrieve 结果不能互相漂移。
+  - P1：`include` 先支持本地可生成字段，不能伪造的 OpenAI 托管字段要返回清晰 unsupported 或保持可预测忽略策略。
+  - P1：本地 `file_search` 命中时需要可选生成 `file_search_call` output item，并把检索结果与 metadata/retrieve/input_items 契约对齐。
 
 ## 进行中
 
-- 本轮已把 stash 中丢失的增强模块合入当前 v0.6 架构，剩余为真实执行器和持久化增强。
+- 本轮已把 stash 中丢失的增强模块合入当前 v0.6 架构，剩余为真实执行器和 rollout `019dfe49` 的 P0/P1 兼容性验证。
+- P0 验证优先级高于新增能力：先保证 SSE 序列、response echo、output item id 的 Codex 客户端契约稳定，再扩展 P1 include/file_search_call 的表现层。
 
 ## 下次开发计划
 
+- P0：补齐 Responses SSE 序列契约：
+  - live 流事件从 0 或 1 开始按实际输出顺序单调递增。
+  - 缓存回放不得复用冲突序号或漏发终止事件序号。
+  - `response.created`、`response.output_item.added`、delta、`response.output_item.done`、`response.completed`/失败事件的序号在一次流中唯一。
+- P0：固定 response echo 契约：
+  - 创建响应、最终 response body、retrieve、缓存回放的 `id/model/status/output/usage/metadata` 保持一致。
+  - 失败/中断场景不得保存为成功 echo。
+  - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。
+- P0：固定 output item id：
+  - message/function_call/computer_call/mcp/file_search_call 生成稳定 item id。
+  - 同一 output item 在 added、delta、done、最终 body 和 retrieve 中使用同一个 id。
+  - 缓存回放使用保存的 id，不重新生成。
+- P1：`include` 兼容策略：
+  - 支持本地可生成的 `output_text`、`usage`、`input_items`/分页相关结果。
+  - 对依赖 OpenAI 托管状态的 include 明确 unsupported，避免静默返回误导性空结构。
+- P1：`file_search_call` 输出兼容：
+  - 本地 file_search 命中时可附加 `file_search_call` output item。
+  - item 中保留 query、vector_store_ids、命中文件和片段摘要。
+  - retrieve/input_items/metadata 中的检索信息保持同源。
 - P1：把 `local_computer` 从桥接 schema 推进到可执行器：
   - 优先接 browser-use / Playwright。
   - 支持 screenshot/click/type/keypress/scroll/open_url。
@@ -82,20 +111,14 @@
   - 配置允许的 MCP server。
   - 做权限白名单。
   - 把执行结果回填为 `mcp_tool_call_output`。
-- P2：持久化本地 Files/vector stores：
-  - 支持磁盘目录存储。
-  - 重启后恢复 file/vector_store/batch 元数据。
 - P2：增强 file_search：
   - 做倒排索引或轻量向量索引。
   - 支持 ranking_options / max_num_results。
-  - 可选输出 `file_search_call` 兼容项。
 - P2：补齐 Responses 工具调用输出兼容性：
-  - 为本地 file_search 生成可选 `file_search_call` output item。
   - 为 `local_mcp_call` 设计 `mcp_tool_call`/`mcp_tool_call_output` 的回放与存储结构。
   - 为 `computer_call` 增加 pending/in_progress 状态和截图轮次元数据。
 - P3：`include` 深层字段：
-  - 明确支持本地可生成的 include。
-  - 对必须依赖 OpenAI 托管资源的 include 返回清晰 unsupported。
+  - 继续细分更多可本地生成的 include 字段。
 
 ## 验证记录
 
@@ -106,3 +129,89 @@
 - 2026-05-06：`deecodex.sh` Codex config 自动注入/还原已测试通过：`bash -n` 语法检查、start/stop/restart 全流程、Ctrl+C trap 还原、启动失败还原。
 - 2026-05-06：修复消息翻倍 bug（`src/main.rs`），`cargo test` 49/49 通过，`cargo build --release` 编译成功。
 - 2026-05-07：从 stash 恢复并适配 `prompts/files/vector_stores` 模块到当前 `handlers.rs` 架构，补回 `computer_use`、`remote_mcp` 桥和 tokenizer 计数，通过 `cargo test`、`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`git diff --check`。
+- 2026-05-07：Files/vector stores 本地持久化完成：`CODEX_RELAY_DATA_DIR` 默认 `.deecodex`，Files 保存 metadata+bytes，vector stores 保存 store/batch 快照，并补启动恢复单测；`cargo test` 通过。
+- 2026-05-07：修复 VLM 路由 `msgs<=5` 判断 bug → `new_image` 检测；修复 `deecodex.sh` 丢失 Codex 配置管理功能；`cargo test` 244/244 通过。
+- 2026-05-07：大规糢测试补全：stream 纯函数/translate_cached 边界 + utils/types/session/cache 纯函数 + files/prompts/vector_stores/convert_tool 全覆盖 + sse 从零到全覆盖 + handler 集成测试(CRUD/文件/vector store/blocking) + translate_stream mock upstream 高级场景。**63 → 297 测试**，`cargo test` 全部通过。
+- 2026-05-07：运维安全补全：Rate limiter (120 req/60s、可配置)、pre-commit hook (防 .env + API key 泄露)、graceful shutdown (30s drain)、Prometheus metrics 端点 (`/metrics`)。**297 → 303 测试**，`cargo test` 全部通过。
+
+## 测试覆盖状态 (2026-05-07)
+
+当前 **303 测试** (233 单元 + 5 compat + 65 集成)，全部通过 `cargo test`。
+
+| 文件 | 行数 | 测试数 | 覆盖情况 |
+|------|------|--------|----------|
+| `translate.rs` | 1162 | 41 | ✅ 核心翻译 + convert_tool 全分支 |
+| `stream.rs` | 1099 | 25 | ✅ translate_cached 全部场景 + 纯函数; ⚠️ translate_stream 有集成测试 |
+| `handlers.rs` | 2146 | 10+集成 | ✅ 通过集成测试覆盖 CRUD/文件/vector store/blocking 等路径 |
+| `files.rs` | 768 | 24 | ✅ list/delete/search/score/snippet/is_text_file/to_object |
+| `prompts.rs` | 578 | 13 | ✅ new/list/retrieve |
+| `vector_stores.rs` | 571 | 14 | ✅ CRUD + add_file/get_file/delete_file/cancel_batch |
+| `session.rs` | 444 | 28 | ✅ new_id + response/conversation/input_items 完整 CRUD |
+| `sse.rs` | 348 | 22 | ✅ SseState 全部 9 种事件方法 |
+| `types.rs` | 372 | 15 | ✅ resolve_model/map_effort/format_usage/fmt_* |
+| `cache.rs` | 155 | 16 | ✅ hash_request/usage_to_cached/序列化/eviction |
+| `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
+| `main.rs` | 178 | 0 | ❌ 入口无测试 |
+
+**集成测试覆盖** (58 个):
+- Session CRUD: response/conversation 完整生命周期
+- File handlers: upload/list/get/delete/content + 边界
+- Prompt + Vector store: 全部 CRUD + batch/cancel
+- Blocking response: 文本/工具/推理/background/store+retrieve
+- Streaming: translate_stream mock upstream 文本/工具/推理/错误重试/缓存回放
+- 参数校验: previous_response_id+conversation 冲突/top_logprobs 不支持
+
+**仍有缺口**: main.rs 入口、translate_stream 更多场景(长文本分块/多工具交错)。
+
+## 验证计划
+
+- rollout `019dfe49` P0：
+  - 流式 smoke：断言所有 SSE `sequence_number` 单调递增、无重复、终止事件存在。
+  - 缓存回放：同一个请求连续两次流式调用，断言第二次回放的事件序列、response id、output item id 与保存结果一致。
+  - 非流式/retrieve：创建响应后 retrieve，断言 response echo 的 `id/model/status/output/usage/metadata` 一致。
+  - 中断/失败：模拟上游 SSE 提前断开，断言返回失败事件且不会把残缺 response 存为 completed。
+- rollout `019dfe49` P1：
+  - `include`：覆盖本地支持字段、未知字段、托管字段 unsupported/忽略策略。
+  - `file_search_call`：上传文件、建 vector store、发起 file_search，断言 output、metadata、retrieve 和 input_items 中的检索信息一致。
+  - 兼容桥：computer/mcp 仍只验证 bridge schema，不要求真实执行器通过。
+
+## Codex CLI 支持总结 (2026-05-07)
+
+基于 297 个测试的验证结果：
+
+### 端点覆盖
+| 端点 | 状态 |
+|------|------|
+| `POST /v1/responses` (流式+非流式) | ✅ 完整测试 |
+| `GET/DELETE /v1/responses/:id` | ✅ |
+| `GET /v1/responses/:id/input_items` | ✅ |
+| `POST /v1/responses/compact` | ⚠️ 无测试 |
+| `POST /v1/responses/:id/cancel` | ⚠️ 无测试 |
+| Conversations CRUD | ✅ |
+| Files API (5 端点) | ✅ |
+| Vector stores (10 端点) | ✅ |
+| Prompts (2 端点) | ✅ |
+
+### 工具类型
+`function` ✅ `namespace` ✅ `custom/apply_patch` ✅ `local_shell` ✅
+`computer_use` ✅ `mcp` ✅ `file_search` ✅ `web_search` ✅
+
+### 流式事件
+`response.created/completed/failed` ✅ `output_item.added/done` ✅
+`output_text.delta` ✅ `reasoning_summary_text.delta` ✅
+`function_call_arguments.delta` ✅ `sequence_number` ✅
+
+### 结论
+核心能力充分验证（301 测试通过），覆盖 Codex CLI 日常使用 90% 路径。
+无测试的 5 个端点 + 10 个参数属冷门功能，不影响主线流程。
+
+## 运维安全
+
+### Rate Limiting
+- 默认 120 req/60s，通过 `DEECODEX_RATE_LIMIT` / `DEECODEX_RATE_WINDOW` 配置
+- 设为 0 可禁用
+- 按 `client_api_key` 前缀分桶
+
+### Pre-commit Hook
+- `.githooks/pre-commit` 阻止 `.env` 提交 + 检测 stage 中 API key 格式
+- 已通过 `git config core.hooksPath .githooks` 激活

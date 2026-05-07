@@ -1,4 +1,6 @@
 use crate::cache::RequestCache;
+use crate::metrics::Metrics;
+use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
 use crate::types::*;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
@@ -25,6 +27,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
+const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_items";
+
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: SessionStore,
@@ -44,6 +48,8 @@ pub struct AppState {
     pub vector_stores: vector_stores::VectorStoreRegistry,
     pub background_tasks: Arc<dashmap::DashMap<String, tokio::task::JoinHandle<()>>>,
     pub chinese_thinking: bool,
+    pub rate_limiter: Option<Arc<RateLimiter>>,
+    pub metrics: Arc<Metrics>,
 }
 
 struct BlockingArgs<'a> {
@@ -140,6 +146,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/models", get(handle_models))
         .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
+        .route("/metrics", get(handle_metrics))
         .fallback(handle_fallback)
         .layer(from_fn_with_state(state.clone(), require_client_auth))
         .with_state(state)
@@ -178,6 +185,11 @@ async fn handle_health(State(state): State<AppState>) -> Response {
 
 async fn handle_v1() -> Response {
     Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
+async fn handle_metrics(State(state): State<AppState>) -> Response {
+    let body = state.metrics.gather();
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
 async fn require_client_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
@@ -294,6 +306,7 @@ fn replay_response_stream(
     include_obfuscation: bool,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let mut events = Vec::new();
+    let mut sequence_number = 0_u64;
     let response_id = response
         .get("id")
         .and_then(Value::as_str)
@@ -311,6 +324,7 @@ fn replay_response_stream(
             "response": {"id": response_id, "object": "response", "status": "in_progress", "model": model}
         }),
         include_obfuscation,
+        &mut sequence_number,
     );
 
     if let Some(output) = response.get("output").and_then(Value::as_array) {
@@ -332,6 +346,7 @@ fn replay_response_stream(
                     "item": added_item
                 }),
                 include_obfuscation,
+                &mut sequence_number,
             );
 
             match item_type {
@@ -352,6 +367,7 @@ fn replay_response_stream(
                                             "delta": text
                                         }),
                                         include_obfuscation,
+                                        &mut sequence_number,
                                     );
                                 }
                             }
@@ -379,6 +395,7 @@ fn replay_response_stream(
                                             "delta": text
                                         }),
                                         include_obfuscation,
+                                        &mut sequence_number,
                                     );
                                 }
                             }
@@ -398,6 +415,7 @@ fn replay_response_stream(
                                 "delta": arguments
                             }),
                             include_obfuscation,
+                            &mut sequence_number,
                         );
                     }
                 }
@@ -413,6 +431,7 @@ fn replay_response_stream(
                     "item": item
                 }),
                 include_obfuscation,
+                &mut sequence_number,
             );
         }
     }
@@ -425,6 +444,7 @@ fn replay_response_stream(
             "response": response
         }),
         include_obfuscation,
+        &mut sequence_number,
     );
 
     let events = events
@@ -445,7 +465,10 @@ fn push_replay_event(
     name: &'static str,
     mut payload: Value,
     include_obfuscation: bool,
+    sequence_number: &mut u64,
 ) {
+    *sequence_number += 1;
+    payload["sequence_number"] = json!(*sequence_number);
     if include_obfuscation {
         payload["obfuscation"] = json!("relay_replay");
     }
@@ -1055,26 +1078,69 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
             return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response();
         }
     };
+    if let Some(response) = validate_response_include(req.include.as_deref()) {
+        return response;
+    }
     if let Err(err) = state.prompts.apply_to_request(&mut req) {
         return err.into_response();
     }
+    if let Some(ref limiter) = state.rate_limiter {
+        let key = if !state.client_api_key.is_empty() {
+            format!(
+                "rl_{}",
+                &state.client_api_key[..4.min(state.client_api_key.len())]
+            )
+        } else {
+            "rl_default".into()
+        };
+        if !limiter.check(&key) {
+            state
+                .metrics
+                .rate_limit_hits_total
+                .with_label_values(&[&key])
+                .inc();
+            return (StatusCode::TOO_MANY_REQUESTS, Json(json!({
+                "error": {
+                    "message": format!("rate limit exceeded: {} req per {}s", limiter.max_requests(), limiter.window_secs()),
+                    "type": "rate_limit_error",
+                    "code": "rate_limited"
+                }
+            }))).into_response();
+        }
+    }
+
     if let Err(err) = state.files.resolve_request_files(&mut req) {
         return err.into_response();
     }
     let file_search_filter = state.vector_stores.file_ids_for_tools(&req.tools);
-    state
+    let local_file_search_results = state
         .files
         .inject_file_search_context(&mut req, file_search_filter.as_ref());
+    let local_file_search_output_items =
+        local_file_search_call_output_item(&local_file_search_results)
+            .into_iter()
+            .collect();
 
     let original_model = req.model.clone();
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
 
     info!("← {} effort={}", original_model, fmt_codex_effort(effort));
 
-    handle_responses_inner(state, req).await
+    let response = handle_responses_inner(state.clone(), req, local_file_search_output_items).await;
+    let status = response.status().as_u16().to_string();
+    state
+        .metrics
+        .http_requests_total
+        .with_label_values(&["POST", &status])
+        .inc();
+    response
 }
 
-async fn handle_responses_inner(state: AppState, req: ResponsesRequest) -> Response {
+async fn handle_responses_inner(
+    state: AppState,
+    req: ResponsesRequest,
+    local_output_prefix_items: Vec<Value>,
+) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1097,7 +1163,10 @@ async fn handle_responses_inner(state: AppState, req: ResponsesRequest) -> Respo
     let request_input_items = response_input_items(&req);
     let mapped_model = resolve_model(&original_model, &state.model_map);
     let store_response = req.store.unwrap_or(true);
-    let response_extra = response_extra_fields(&req, conversation_id.as_deref());
+    let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
+    if !local_output_prefix_items.is_empty() {
+        response_extra[LOCAL_OUTPUT_PREFIX_ITEMS_KEY] = json!(local_output_prefix_items);
+    }
     if store_response {
         if let Some(id) = conversation_id.as_deref() {
             let mut items = state.sessions.get_conversation_items(id);
@@ -1592,9 +1661,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
 
                 let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
                 if let Ok(value) = serde_json::to_value(&resp) {
-                    let mut value =
-                        response_with_extra(enrich_response_object(value, req), &response_extra);
+                    let mut value = enrich_response_object(value, req);
                     value["status"] = json!("completed");
+                    let value = response_with_extra(value, &response_extra);
                     if store_response {
                         save_response_unless_cancelled(
                             &state.sessions,
@@ -1654,6 +1723,52 @@ fn response_extra_fields(req: &ResponsesRequest, conversation_id: Option<&str>) 
 fn response_with_extra(mut response: Value, extra: &Value) -> Value {
     merge_response_extra(&mut response, extra);
     response
+}
+
+fn validate_response_include(include: Option<&[String]>) -> Option<Response> {
+    let include = include?;
+    let unsupported = include
+        .iter()
+        .find(|field| !is_supported_response_include(field))?;
+    Some(unsupported_param(
+        "include",
+        &format!(
+            "include field '{unsupported}' is not supported by this relay because it requires hosted Responses resources"
+        ),
+    ))
+}
+
+fn is_supported_response_include(field: &str) -> bool {
+    matches!(
+        field,
+        "file_search_call.results" | "output[*].file_search_call.results"
+    )
+}
+
+fn local_file_search_call_output_item(results: &[Value]) -> Option<Value> {
+    if results.is_empty() {
+        return None;
+    }
+    let normalized_results: Vec<Value> = results
+        .iter()
+        .enumerate()
+        .map(|(idx, result)| {
+            json!({
+                "file_id": result.get("file_id").cloned().unwrap_or(Value::Null),
+                "filename": result.get("filename").cloned().unwrap_or(Value::Null),
+                "score": result.get("score").cloned().unwrap_or_else(|| json!(0)),
+                "text": result.get("snippet").cloned().unwrap_or_else(|| json!("")),
+                "index": idx
+            })
+        })
+        .collect();
+    Some(json!({
+        "type": "file_search_call",
+        "id": format!("fs_{}", uuid::Uuid::new_v4().simple()),
+        "status": "completed",
+        "queries": [],
+        "results": normalized_results
+    }))
 }
 
 fn enrich_response_object(mut value: Value, req: &ResponsesRequest) -> Value {
@@ -2030,6 +2145,31 @@ mod tests {
 
         let items = response_input_items(&req);
         assert_eq!(items[0].get("id").and_then(Value::as_str), Some("item_0"));
+    }
+
+    #[test]
+    fn test_unsupported_include_returns_unsupported_feature() {
+        let response =
+            validate_response_include(Some(&["code_interpreter_call.outputs".to_string()]))
+                .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_file_search_call_output_item_contains_local_results() {
+        let item = local_file_search_call_output_item(&[json!({
+            "file_id": "file_1",
+            "filename": "notes.md",
+            "score": 2,
+            "snippet": "relay notes"
+        })])
+        .unwrap();
+
+        assert_eq!(item["type"].as_str(), Some("file_search_call"));
+        assert_eq!(item["status"].as_str(), Some("completed"));
+        assert_eq!(item["results"][0]["file_id"].as_str(), Some("file_1"));
+        assert_eq!(item["results"][0]["text"].as_str(), Some("relay notes"));
     }
 
     #[test]

@@ -370,3 +370,176 @@ pub fn fmt_codex_effort(e: Option<&str>) -> &str {
         None => "-",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    // ── resolve_model ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_model_found() {
+        let mut map: ModelMap = HashMap::new();
+        map.insert("gpt-4".into(), "deepseek-v4".into());
+        assert_eq!(resolve_model("gpt-4", &map), "deepseek-v4");
+    }
+
+    #[test]
+    fn test_resolve_model_not_found() {
+        let map: ModelMap = HashMap::new();
+        assert_eq!(resolve_model("gpt-4", &map), "gpt-4");
+    }
+
+    #[test]
+    fn test_resolve_model_empty_map() {
+        let map: ModelMap = HashMap::new();
+        assert_eq!(resolve_model("claude-opus", &map), "claude-opus");
+    }
+
+    // ── map_effort (remaining cases) ─────────────────────────────
+
+    #[test]
+    fn test_map_effort_medium_explicit() {
+        let (eff, think) = map_effort(Some("medium"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_high() {
+        let (eff, think) = map_effort(Some("high"));
+        assert_eq!(eff, Some("high".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_unknown() {
+        let (eff, think) = map_effort(Some("bogus"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    // ── format_usage (remaining cases) ──────────────────────────
+
+    #[test]
+    fn test_format_usage_none() {
+        assert_eq!(format_usage(None), "?");
+    }
+
+    #[test]
+    fn test_format_usage_cache_hit() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: Some(40),
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("hit=40"));
+    }
+
+    #[test]
+    fn test_format_usage_cache_miss() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: Some(20),
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("miss=20"));
+    }
+
+    #[test]
+    fn test_format_usage_cache_hit_and_miss() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: Some(40),
+            prompt_cache_miss_tokens: Some(20),
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("hit=40"));
+        assert!(s.contains("miss=20"));
+    }
+
+    #[test]
+    fn test_format_usage_zero_reasoning_not_shown() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: Some(TokenDetails {
+                reasoning_tokens: Some(0),
+            }),
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(!s.contains("reason="));
+    }
+
+    // ── fmt_thinking ──────────────────────────────────────────
+
+    #[test]
+    fn test_fmt_thinking_disabled() {
+        let t = Some(json!({"type": "disabled"}));
+        assert_eq!(fmt_thinking(&t), "off");
+    }
+
+    #[test]
+    fn test_fmt_thinking_enabled() {
+        let t = Some(json!({"type": "enabled"}));
+        assert_eq!(fmt_thinking(&t), "on");
+    }
+
+    #[test]
+    fn test_fmt_thinking_none() {
+        let t: Option<Value> = None;
+        assert_eq!(fmt_thinking(&t), "-");
+    }
+
+    #[test]
+    fn test_fmt_thinking_unknown_type() {
+        let t = Some(json!({"type": "partial"}));
+        assert_eq!(fmt_thinking(&t), "on");
+    }
+
+    // ── fmt_effort ────────────────────────────────────────────
+
+    #[test]
+    fn test_fmt_effort_some() {
+        let e = Some("high".into());
+        assert_eq!(fmt_effort(&e), "high");
+    }
+
+    #[test]
+    fn test_fmt_effort_none() {
+        let e: Option<String> = None;
+        assert_eq!(fmt_effort(&e), "-");
+    }
+
+    // ── fmt_codex_effort ──────────────────────────────────────
+
+    #[test]
+    fn test_fmt_codex_effort_some() {
+        assert_eq!(fmt_codex_effort(Some("xhigh")), "xhigh");
+    }
+
+    #[test]
+    fn test_fmt_codex_effort_none() {
+        assert_eq!(fmt_codex_effort(None), "-");
+    }
+}

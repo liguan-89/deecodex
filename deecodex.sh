@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/deecodex.log"
 MAX_LOG_SIZE_MB=50
 MAX_LOG_FILES=5
 BIN="deecodex"
-GRACEFUL_TIMEOUT=10
+GRACEFUL_TIMEOUT=35
 
 # === Codex 配置管理 ===
 CODEX_CONFIG="$HOME/.codex/config.toml"

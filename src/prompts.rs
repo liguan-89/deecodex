@@ -505,10 +505,14 @@ mod tests {
     }
 
     fn temp_prompt_dir() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         let dir = std::env::temp_dir().join(format!("deecodex-prompts-{suffix}"));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -573,6 +577,131 @@ mod tests {
         let registry = PromptRegistry::new("unused");
         let mut req = base_req(json!({"id": "../secret"}));
         let err = registry.apply_to_request(&mut req).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn registry_new_stores_root_path() {
+        let dir = temp_prompt_dir();
+        let registry = PromptRegistry::new(&dir);
+        assert_eq!(registry.root(), dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn registry_new_handles_non_existent_directory() {
+        let dir = temp_prompt_dir();
+        fs::remove_dir_all(&dir).unwrap();
+        let registry = PromptRegistry::new(&dir);
+        assert_eq!(registry.root(), dir);
+        let result = registry.list_prompts();
+        assert_eq!(result["object"], "list");
+        assert!(result["data"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_prompts_returns_empty_for_empty_dir() {
+        let dir = temp_prompt_dir();
+        let registry = PromptRegistry::new(&dir);
+        let result = registry.list_prompts();
+        assert_eq!(result["object"], "list");
+        assert_eq!(result["data"].as_array().unwrap().len(), 0);
+        assert_eq!(result["root"], dir.display().to_string());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_prompts_includes_json_and_md_files() {
+        let dir = temp_prompt_dir();
+        fs::write(dir.join("agent.json"), "{}").unwrap();
+        fs::write(dir.join("helper.md"), "# Helper prompt").unwrap();
+        fs::write(dir.join("ignore.txt"), "nope").unwrap();
+        let registry = PromptRegistry::new(&dir);
+        let result = registry.list_prompts();
+        let data = result["data"].as_array().unwrap();
+        let ids: Vec<&str> = data.iter().map(|v| v["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["agent", "helper"]);
+        for entry in data {
+            match entry["id"].as_str().unwrap() {
+                "agent" => assert_eq!(entry["format"], "json"),
+                "helper" => assert_eq!(entry["format"], "md"),
+                _ => panic!("unexpected id"),
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_prompts_filters_directories_and_unsupported_extensions() {
+        let dir = temp_prompt_dir();
+        fs::write(dir.join("prompt.json"), "{}").unwrap();
+        fs::write(dir.join("data.csv"), "a,b").unwrap();
+        fs::create_dir(dir.join("subdir")).unwrap();
+        let registry = PromptRegistry::new(&dir);
+        let result = registry.list_prompts();
+        let data = result["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["id"], "prompt");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_prompt_finds_json_prompt_by_id() {
+        let dir = temp_prompt_dir();
+        fs::write(
+            dir.join("agent.json"),
+            r#"{"instructions":"Be helpful","version":"v1"}"#,
+        )
+        .unwrap();
+        let registry = PromptRegistry::new(&dir);
+        let result = registry.retrieve_prompt("agent").unwrap();
+        assert_eq!(result["id"], "agent");
+        assert_eq!(result["instructions"], "Be helpful");
+        assert_eq!(result["version"], "v1");
+        assert_eq!(result["object"], "prompt");
+        assert_eq!(result["format"], "json");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_prompt_finds_md_prompt_by_id() {
+        let dir = temp_prompt_dir();
+        fs::write(dir.join("helper.md"), "You are a helpful assistant.").unwrap();
+        let registry = PromptRegistry::new(&dir);
+        let result = registry.retrieve_prompt("helper").unwrap();
+        assert_eq!(result["id"], "helper");
+        assert_eq!(result["instructions"], "You are a helpful assistant.");
+        assert_eq!(result["object"], "prompt");
+        assert_eq!(result["format"], "md");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_prompt_returns_error_for_missing_id() {
+        let dir = temp_prompt_dir();
+        let registry = PromptRegistry::new(&dir);
+        let err = registry.retrieve_prompt("nonexistent").unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_prompt_returns_error_for_invalid_json() {
+        let dir = temp_prompt_dir();
+        fs::write(dir.join("broken.json"), "not valid json").unwrap();
+        let registry = PromptRegistry::new(&dir);
+        let err = registry.retrieve_prompt("broken").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retrieve_prompt_rejects_invalid_ids() {
+        let registry = PromptRegistry::new("unused");
+        let err = registry.retrieve_prompt("../evil").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        let err = registry.retrieve_prompt("").unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 }

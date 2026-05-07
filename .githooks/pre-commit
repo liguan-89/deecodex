@@ -1,0 +1,17 @@
+#!/bin/bash
+# Pre-commit hook: prevent accidental commit of .env with real secrets
+set -euo pipefail
+
+if git diff --cached --name-only | grep -q '^\.env$'; then
+    echo "ERROR: Attempting to commit .env file!"
+    echo "  The .env file contains real API keys and should never be committed."
+    echo "  If you need to change environment variables, edit .env.example instead."
+    exit 1
+fi
+
+# Also check for API keys in staged files (basic grep)
+if git diff --cached -U0 | grep -q 'sk-[a-zA-Z0-9]\{20,\}'; then
+    echo "ERROR: Staged changes contain what looks like an API key (sk-...)."
+    echo "  Please remove the secret before committing."
+    exit 1
+fi

@@ -1,7 +1,9 @@
 pub mod cache;
 pub mod files;
 pub mod handlers;
+pub mod metrics;
 pub mod prompts;
+pub mod ratelimit;
 pub mod session;
 pub mod sse;
 pub mod stream;
