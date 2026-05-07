@@ -2,7 +2,7 @@
 name = "deecodex"
 version = "0.7.0"
 edition = "2021"
-description = "DeepSeek API → Codex CLI 兼容代理"
+description = "DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层"
 license = "MIT"
 repository = "https://github.com/liguan-89/deecodex"
 keywords = ["codex", "deepseek", "llm", "proxy", "responses-api"]

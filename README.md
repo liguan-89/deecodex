@@ -1,8 +1,8 @@
 # deecodex
 
-**DeepSeek API → Codex CLI 兼容代理**
+**DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层**
 
-将 Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek 等第三方模型，同时保留思考模式、工具调用、Web Search 等完整功能。可选配 MiniMax 视觉路由支持多模态图片理解。
+将 Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek 等第三方模型，同时保留思考模式、工具调用、Web Search 等完整功能。内置本地 Responses 增强层：Files/Vector Store API、file_search（BM25 chunk 级索引）、computer/MCP executor、配置诊断等。可选配 MiniMax 视觉路由支持多模态图片理解。
 
 ```
 Codex CLI 发出 /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
@@ -115,40 +115,51 @@ deecodex 内置内存会话存储，支持响应的生命周期管理：
 
 ```
 deecodex/
-├── Cargo.toml            # Rust 项目配置
+├── Cargo.toml                  # Rust 项目配置
 ├── src/
-│   ├── main.rs           # 服务入口 + HTTP 路由 + 视觉路由
-│   ├── translate.rs      # Responses ↔ Chat 核心翻译（类型转换、工具转发、思考映射）
-│   ├── stream.rs         # SSE 流式响应翻译 + 缓存回放 + 重试
-│   ├── session.rs        # 会话管理 + reasoning_content 三级恢复
-│   ├── types.rs          # 35+ 类型定义（请求/响应/流/用量/缓存）
-│   ├── cache.rs          # LRU 请求缓存（128 条目哈希）
-│   └── lib.rs            # 模块导出
-├── deecodex.sh           # 管理脚本
-├── .env.example          # 环境变量模板
-└── tests/                # 63 个测试
+│   ├── main.rs                 # 服务入口 + 路由 + 配置合并 + 服务管理
+│   ├── handlers.rs             # Axum HTTP handlers + AppState + 中间件
+│   ├── translate.rs            # Responses → Chat 请求翻译
+│   ├── stream.rs               # Chat SSE → Responses SSE 流式翻译
+│   ├── config.rs               # Args 结构体 + 配置持久化/合并
+│   ├── tui.rs                  # 中文 TUI 交互配置菜单
+│   ├── executor.rs             # 本地 computer/MCP executor
+│   ├── validate.rs             # 启动前配置诊断
+│   ├── files.rs                # 本地 Files API + file_search (BM25 chunk)
+│   ├── vector_stores.rs        # 本地 Vector Store API
+│   ├── prompts.rs              # 本地 Hosted Prompts 注册表
+│   ├── session.rs              # 内存会话/对话存储
+│   ├── types.rs                # 请求/响应/流/用量类型定义
+│   ├── cache.rs                # LRU 请求缓存
+│   ├── sse.rs                  # SSE 事件构建辅助
+│   ├── token_anomaly.rs        # Token 用量异常检测
+│   ├── ratelimit.rs            # 滑动窗口限流
+│   ├── metrics.rs              # Prometheus 指标
+│   ├── codex_config.rs         # Codex config.toml 注入/还原
+│   ├── utils.rs                # 工具函数
+│   └── lib.rs                  # 库 crate 模块导出
+├── deecodex.sh                 # 管理脚本（start/stop/restart/status/logs）
+├── .env.example                # 环境变量模板
+├── DEVELOPMENT.md              # 开发记录
+└── tests/                      # 76 个集成测试 + 5 个 compat 测试
 ```
 
-### 新增字段透传（0.4.0）
+### v0.7.0 新增
 
-| Responses API 字段 | 说明 |
+- **配置诊断（validate）**：启动前校验 executor 配置，检查 Playwright/node 可用性、browser-use bridge 连通性、MCP server 命令存在性，诊断结果输出为 tracing 日志
+- **executor 桥梁增强**：Playwright persistent context 状态复用（`DEECODEX_PLAYWRIGHT_STATE_DIR`）、browser-use HTTP/命令 bridge、截图超限自动省略
+- **file_search chunk 级索引**：1200 字符滑动窗口分块 + BM25 打分 + 文件名独立加权 + 稳定哈希 item id
+- **TUI/Shell 同步**：3 个新增 executor 字段已纳入 TUI 菜单和 `deecodex.sh`
+- 测试数：360（268 lib + 11 bin + 5 compat + 76 integration）
+
+### 完整 Responses 协议覆盖
+
+| 分类 | 内容 |
 |---|---|
-| `background` | 后台完成模式（返回 `queued` 状态） |
-| `store` | 存储响应到会话（透传到 upstream 存储） |
-| `conversation` | 关联会话 ID |
-| `text.format` | 输出格式控制 |
-| `include` | 响应包含的字段列表（`output_text`/`usage` 等） |
-| `include[]` (input_items) | 列出存储的输入项 |
-| `parallel_tool_calls` | 并行工具调用 |
-| `max_tool_calls` | 最大工具调用次数 |
-| `top_logprobs` | Top-logprobs 采样 |
-| `user` | 用户标识 |
-| `safety_identifier` | 安全标识 |
-| `prompt_cache_key` | 提示缓存键 |
-| `prompt_cache_retention` | 缓存保留策略 |
-| `service_tier` | 服务层级（`auto`/`default`） |
-| `input_items` 响应 | 列出输入消息项 |
-| `text.response_format` | 结构化输出格式 |
+| 端点 | `POST /v1/responses`（流式+非流式）、`GET/DELETE /v1/responses/:id`、`GET input_items`、`POST compact`、`POST cancel`、`POST input_tokens`、Conversations CRUD、Files API（5 端点）、Vector Stores（10 端点）、Prompts（2 端点） |
+| 工具类型 | `function`、`namespace`、`custom/apply_patch`、`local_shell`、`computer_use`、`mcp`、`file_search`、`web_search` |
+| 流式事件 | `response.created/completed/failed`、`output_item.added/done`、`output_text.delta`、`reasoning_summary_text.delta`、`function_call_arguments.delta`、`mcp_tool_call_output.added/done`、`computer_call_output.added/done` |
+| 协议字段 | `background`、`store`、`conversation`、`include`、`parallel_tool_calls`、`max_tool_calls`、`top_logprobs`、`user`、`safety_identifier`、`service_tier`、`text.format`、`text.response_format`、`reasoning` |
 
 ### 请求方向（Codex → DeepSeek）
 
@@ -400,4 +411,4 @@ cache hit for hash=0xabcd1234                               ← 缓存命中
 
 ## License
 
-MIT License. 初始代码基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT)，后续功能已全面重写（Rust 源码 2,920 行，相对上游增加 58%，每文件 40-70% 重写）。
+MIT License. 初始代码基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT)，后续功能已全面重写（Rust 源码 ~14,000 行，18 个模块，360 个测试，覆盖 Responses 协议全端点 + 本地 Files/Vector Store/Prompts + executor + 配置诊断）。
