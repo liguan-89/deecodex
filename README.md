@@ -2,78 +2,71 @@
 
 **DeepSeek API → Codex CLI 兼容代理**
 
-将 OpenAI Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek 等第三方模型，同时保留思考模式、工具调用等完整功能。
+将 OpenAI Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek，同时保留思考模式、工具调用等完整功能。
 
 ```
-Codex CLI 发出 /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
-        │
-        ▼
-  deecodex (Responses → Chat 翻译 + 模型映射 + 思考等级适配)
-        │
-        ▼
-  api.deepseek.com/v1/chat/completions
+Codex CLI  →  /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
+                │
+                ▼
+          deecodex（协议翻译 + 模型映射 + 思考等级适配）
+                │
+                ▼
+          api.deepseek.com/v1/chat/completions
 ```
 
 ## 安装
 
-### 1. 安装 deecodex 二进制
+### 方式一：下载预编译二进制（推荐）
 
-**pipx 安装（推荐）：**
+从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载对应平台的二进制：
 
 ```bash
-pipx install codex-relay
-ln -sf ~/.local/pipx/venvs/codex-relay/bin/codex-relay ~/.local/bin/deecodex
+# macOS ARM64 示例
+curl -L https://github.com/liguan-89/deecodex/releases/download/v0.3.0/deecodex -o deecodex
+chmod +x deecodex
+mv deecodex ~/.local/bin/
+
+# 下载管理脚本和环境变量模板
+curl -L https://github.com/liguan-89/deecodex/releases/download/v0.3.0/deecodex.sh -o deecodex.sh
+curl -L https://github.com/liguan-89/deecodex/releases/download/v0.3.0/env.example -o .env.example
+chmod +x deecodex.sh
 ```
 
-验证安装：
+### 方式二：源码编译
 
 ```bash
-deecodex --version
-pipx list | grep codex-relay
-```
-
-二进制名为 `deecodex`，底层基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改。
-
-### 2. 克隆配置仓库
-
-```bash
-cd ~
 git clone https://github.com/liguan-89/deecodex.git
 cd deecodex
+cargo build --release
+cp target/release/deecodex ~/.local/bin/
 ```
 
-### 3. 配置环境变量
+## 配置
 
 ```bash
 cp .env.example .env
 vim .env
 ```
 
-填入你的 DeepSeek API Key：
+填入 DeepSeek API Key（[获取地址](https://platform.deepseek.com/)）：
 
-```
+```bash
 DEECODEX_API_KEY=sk-your-real-key-here
 ```
 
-其他配置保持默认即可。获取 Key：登录 [platform.deepseek.com](https://platform.deepseek.com/) → API Keys
+其他配置保持默认即可。
 
-### 4. 启动服务
+## 启动
 
 ```bash
-./deecodex.sh start
+./deecodex.sh start     # 启动服务（后台运行）
 ./deecodex.sh health    # 确认返回 healthy
+./deecodex.sh logs      # 查看实时日志
 ```
 
-首次启动可能等 1-2s，确认日志正常：
+## 配置 Codex 桌面端
 
-```bash
-./deecodex.sh logs
-# 看到 ← codex 和 → upstream 行说明成功
-```
-
-### 5. 配置 Codex 桌面版
-
-编辑 `~/.codex/config.toml`（如文件不存在则新建）：
+编辑 `~/.codex/config.toml`：
 
 ```toml
 model = "deepseek-v4-pro"
@@ -87,76 +80,53 @@ requires_openai_auth = true
 wire_api = "responses"
 ```
 
-保存后重启 Codex 桌面版，在设置中选择 `custom` provider。
+保存后重启 Codex 桌面端，在设置中选择 `custom` provider。
 
-**常见配置错误：**
-- `base_url` 写成了 `http://127.0.0.1:4446/v1/`（末尾多斜杠） → 去掉末尾 `/`
-- `wire_api` 拼写错误或漏写 → 必须为 `"responses"`
-- 端口号写成了 `4444`（默认值） → 改为 `4446`
-- `requires_openai_auth = false` 或漏写 → 必须为 `true`
+> ⚠️ `base_url` 末尾不要加 `/`，端口号必须与 `.env` 中 `DEECODEX_PORT` 一致。
 
+### CC Switch 用户
 
+如果你使用 [CC Switch](https://github.com/YiNNx/cc-switch)，只需添加 provider：
 
-### 6. （可选）CC Switch 用户配置
+| 字段 | 值 |
+|------|-----|
+| API 请求地址 | `http://127.0.0.1:4446/v1` |
+| API Key | 任意字符串（不会被校验） |
 
-如果你使用 [CC Switch](https://github.com/YiNNx/cc-switch) 管理 Codex 配置，
-不需要手动编辑 `config.toml`，直接在 CC Switch 中新增 Codex provider：
+## 验证
 
-| 字段 | 值 | 说明 |
-|------|-----|------|
-| API 请求地址 | `http://127.0.0.1:4446/v1` | deecodex 监听地址 |
-| API Key | 任意字符串（如 `sk-123456`） | 不会被校验，但不能为空 |
+在 Codex 中发一条消息，日志中出现 `← codex:` 和 `→ upstream:` 即表示正常。
 
-只需填这两个字段。`wire_api = "responses"` 和 `requires_openai_auth = true`
-由 deecodex 自动处理，不需要在 CC Switch 中额外配置。
-
-保存后切换到该 provider 即可。
-
-**常见错误：**
-
-- base_url 末尾多写了 `/`（如 `.../v1/`）→ 去掉末尾 `/`
-- API Key 留空 → 填任意字符串
-- 端口号与 deecodex 不一致 → `.env` 中 `DEECODEX_PORT` 和 CC Switch 填的
-  端口必须一致（默认均为 `4446`）
-- 保存后没有切换到该 provider → 手动在 CC Switch 中切换
-
-如果已有手动编辑的 `config.toml`，建议先用 CC Switch 新建 provider
-并切换到它，CC Switch 会自动接管配置管理。
-
-### 7. 验证连通
-
-在 Codex 里随便发一条消息。如果日志里出现 `← codex:` 和 `→ upstream:` 两行，说明一切正常。
-
----
-
-## 项目文件结构
-
+```bash
+./deecodex.sh logs
+# ← codex: model=gpt-5.5 reasoning.effort=Some("medium")
+# → upstream: model=deepseek-v4-pro stream=true msgs=5
 ```
-~/deecodex/
-├── .env               # （已 gitignore）你的 API Key 等配置
-├── .env.example       # 配置模板，直接复制使用
-├── deecodex.sh        # 管理脚本（启动/停止/日志/健康检查）
-├── logs/              # （已 gitignore）日志目录，50MB 自动轮转，保留 5 份
-└── deecodex.pid       # （已 gitignore）运行 PID，自动生成
+
+## 日常管理
+
+```bash
+./deecodex.sh start      # 启动
+./deecodex.sh stop       # 停止（10s 优雅超时）
+./deecodex.sh restart    # 重启
+./deecodex.sh status     # 查看 PID / 端口
+./deecodex.sh logs       # 实时日志（Ctrl+C 退出）
+./deecodex.sh health     # 健康检查
 ```
 
 ## 环境变量
-
-编辑 `.env`（或复制 `.env.example` 修改）：
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `DEECODEX_UPSTREAM` | DeepSeek API 地址 | `https://api.deepseek.com/v1` |
 | `DEECODEX_API_KEY` | DeepSeek API Key | （必填） |
-| `DEECODEX_PORT` | 本地监听端口 | `4446` |
+| `DEECODEX_PORT` | 监听端口 | `4446` |
 | `DEECODEX_MODEL_MAP` | 模型名映射 JSON | 见下方 |
-| `RUST_LOG` | 日志级别 | `codex_relay=info` |
+| `RUST_LOG` | 日志级别 | `deecodex=info` |
 
-兼容旧名 `CODEX_RELAY_*`（二进制原生变量），`DEECODEX_*` 优先级更高。
+兼容旧名 `CODEX_RELAY_*`，`DEECODEX_*` 优先级更高。
 
 ### 模型映射
-
-Codex 硬编码的 OpenAI 模型名 → DeepSeek 实际模型名：
 
 ```json
 {
@@ -168,9 +138,9 @@ Codex 硬编码的 OpenAI 模型名 → DeepSeek 实际模型名：
 }
 ```
 
-如果 DeepSeek 更新了模型名，需要同时更新这个映射。**键名大小写敏感**，大小写都要加。
+如果 DeepSeek 更新模型名，同步更新此映射。键名大小写敏感，大小写都要加。
 
-验证当前可用的 DeepSeek 模型名：
+验证当前可用模型：
 
 ```bash
 curl -s https://api.deepseek.com/v1/models \
@@ -178,126 +148,55 @@ curl -s https://api.deepseek.com/v1/models \
   | jq '.data[].id'
 ```
 
-## 日常管理
-
-```bash
-./deecodex.sh start      # 启动
-./deecodex.sh stop       # 停止（10s 优雅超时后强杀）
-./deecodex.sh restart    # 重启
-./deecodex.sh status     # 查看 PID / 端口
-./deecodex.sh logs       # 实时日志（Ctrl+C 退出）
-./deecodex.sh health     # 健康检查（GET /v1/models）
-```
-
 ## 思考等级映射
 
-deecodex 捕获 Codex Responses API 的 `reasoning.effort` 字段，映射到 DeepSeek 参数：
-
-| Codex `reasoning.effort` | 传递给 DeepSeek |
-|--------------------------|----------------|
-| `low` | `thinking: {"type":"disabled"}`（关闭思考） |
+| Codex `reasoning.effort` | DeepSeek 参数 |
+|--------------------------|---------------|
+| `low` | `thinking: {"type":"disabled"}` |
 | `medium` | `reasoning_effort: "high"` + `thinking: enabled` |
 | `high` | `reasoning_effort: "high"` + `thinking: enabled` |
 | `xhigh` | `reasoning_effort: "max"` + `thinking: enabled` |
-| 无此字段（工具调用等） | `reasoning_effort: "high"` + `thinking: enabled` |
+| 无此字段 | `reasoning_effort: "high"` + `thinking: enabled` |
 
-v4-pro 和 v4-flash 使用统一的思考参数。
+## 功能支持
 
-## 日志解读
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 思考模式 | ✅ | 自动注入 `thinking`，透传 `reasoning_effort` |
+| 模型名映射 | ✅ | GPT-5.5→v4-pro, gpt-5.4→v4-flash |
+| Tool Calls | ✅ | 格式转换 + reasoning_content 回传 |
+| 流式输出 | ✅ | SSE 流透传 |
+| 多模态（图片） | ⚠️ 自动丢弃 | DeepSeek V4 不支持图片输入 |
 
-每请求打印两行关键信息：
+## 故障排查
 
+### connection refused / 404
+
+deecodex 未启动或配置错误：
+```bash
+./deecodex.sh start && ./deecodex.sh health
 ```
-← codex: model=gpt-5.5 reasoning.effort=Some("medium")
-→ upstream: model=deepseek-v4-pro stream=true effort=Some("high") thinking=Some({"type":"enabled"}) msgs=12
+检查 `config.toml` 中 `base_url` 为 `http://127.0.0.1:4446/v1`（末尾无 `/`），端口与 `.env` 一致。
+
+### model not found
+
+DeepSeek 模型名变更，用 `curl` 查最新模型名后更新 `DEECODEX_MODEL_MAP`。
+
+### 一直转圈不返回
+
+检查日志中是否出现 `← codex:` 行。未出现说明 Codex 没连上 deecodex；有 `←` 无 `→` 说明 DeepSeek 不可达或 API Key 无效。
+
+### 413 Payload Too Large
+
+图片过大，在 `.env` 中提高上限：
+```bash
+CODEX_RELAY_MAX_BODY_MB=200
 ```
 
-- `←` 行：Codex 发来的原始请求（模型 + 思考等级）
-- `→` 行：转换后发给 DeepSeek 的实际参数（`msgs`=消息数）
-
-流结束时打印 token 统计：
-
-```
-↑ done in=41067 out=171 hit=40576 miss=491
-```
-
-**日志里常见的 WARN 行（正常现象）：**
+### 日志中的 WARN 行
 
 ```
 dropping 3 unsupported tool(s): ["apply_patch", "web_search", ...]
 ```
 
-这是 deecodex 在过滤 Codex 独有的非标准工具，不影响使用。
-
-## 故障排查
-
-### 1. 服务无法启动
-
-```bash
-# 检查端口是否被占用
-lsof -i :4446
-
-# 检查二进制是否存在
-which deecodex
-
-# 查看启动日志
-./deecodex.sh logs
-```
-
-### 2. Codex 报错 "connection refused" 或 404
-
-- deecodex 没启动 → 执行 `./deecodex.sh start && ./deecodex.sh health`
-- Codex 配置中 `base_url` 写错了 → 必须为 `http://127.0.0.1:4446/v1`（末尾无 `/`）
-- 端口不匹配 → `.env` 里 `DEECODEX_PORT` 和 `config.toml` 里的端口号必须一致
-
-### 3. Codex 报 "model not found" 或 "gpt-5.5 not recognized"
-
-- DeepSeek 的模型名变了 → 用 `curl` 查最新模型名，更新 `DEECODEX_MODEL_MAP`
-- 映射表里缺少 Key 的大小写变体 → 大小写都加一遍
-- Codex 用了映射表里没有的模型名 → 参考日志里 `← codex:` 行显示的模型名，补一条
-
-### 4. Codex 一直在转圈但不返回
-
-- 检查日志，看是 `←` 行都没出现（Codex 没发请求），还是只有 `←` 没 `→`（deecodex 处理失败）
-- DeepSeek API 不可达 → 检查网络，检查 API Key 余额
-- `lsof -i :4446` 确认服务确实在监听
-
-### 5. 413 Payload Too Large
-
-图片太大，已设 100MB 上限。如果还是超限，在 `.env` 加：
-
-```env
-CODEX_RELAY_MAX_BODY_MB=200
-```
-
-### 6. 其他已知问题
-
-- **reasoning_content must be passed back**：思考模式下工具调用链回传不完整，部分场景偶发
-- **image_url unknown variant**：DeepSeek V4 不支持图片，deecodex 已自动丢弃，日志会打印丢弃记录
-- **content null 错误**：空内容用 `""` 代替 `null`，避免 DeepSeek 400
-
----
-
-## 功能支持矩阵
-
-| DeepSeek 功能 | 支持 | 说明 |
-|-------------|------|------|
-| 思考模式 | ✅ | 自动注入 `thinking: {type: enabled}`，透传 `reasoning_effort` |
-| 模型名映射 | ✅ | GPT-5.5→v4-pro, gpt-5.4/gpt-5.4-mini→v4-flash |
-| Tool Calls | ✅ | 格式转换 + reasoning_content 回传 |
-| 流式输出 | ✅ | SSE 流透传 |
-| 多模态（图片） | ⚠️ 自动丢弃 | DeepSeek V4 不支持，保留文字丢弃图片 |
-| JSON Output | — | Codex 用 Tool Calls 实现结构化输出 |
-| FIM 补全 | — | Codex 不走 `/v1/completions` |
-
-## 与上游的关系
-
-基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改：
-
-1. **模型名映射** — `--model-map` 参数 + 环境变量
-2. **思考模式** — 适配 Codex `reasoning.effort` → DeepSeek 参数
-3. **图片自动丢弃** — 过滤 image 内容
-4. **请求体上限** — 2MB → 100MB
-5. **调试日志** — 打印原始/转换后的关键参数
-6. **content null 修复** — 空内容用 `""` 代替 `null`
-7. **安全入口** — 移除 `--thinking` CLI 参数，思考逻辑统一在 translate.rs 处理
+这是 deecodex 过滤 Codex 非标准工具的提示，不影响使用。

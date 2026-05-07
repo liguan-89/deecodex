@@ -22,6 +22,7 @@ usage() {
 load_env() {
     if [ ! -f "$ENV_FILE" ]; then
         echo "错误: 找不到 .env 文件 ($ENV_FILE)"
+        echo "      请先创建: cp .env.example .env && vim .env"
         exit 1
     fi
     set -a
@@ -37,15 +38,10 @@ map_env() {
     DEECODEX_PORT="${DEECODEX_PORT:-${CODEX_RELAY_PORT:-4446}}"
     DEECODEX_MODEL_MAP="${DEECODEX_MODEL_MAP:-${CODEX_RELAY_MODEL_MAP:-}}"
 
-    # 反向导出 CODEX_RELAY_* 供二进制使用（二进制通过 clap env 属性读取 CODEX_RELAY_*）
     export CODEX_RELAY_UPSTREAM="${DEECODEX_UPSTREAM}"
     export CODEX_RELAY_API_KEY="${DEECODEX_API_KEY}"
     export CODEX_RELAY_PORT="${DEECODEX_PORT}"
     export CODEX_RELAY_MODEL_MAP="${DEECODEX_MODEL_MAP}"
-    export CODEX_RELAY_VISION_UPSTREAM="${DEECODEX_VISION_UPSTREAM:-}"
-    export CODEX_RELAY_VISION_API_KEY="${DEECODEX_VISION_API_KEY:-}"
-    export CODEX_RELAY_VISION_MODEL="${DEECODEX_VISION_MODEL:-MiniMax-M1}"
-    export CODEX_RELAY_VISION_ENDPOINT="${DEECODEX_VISION_ENDPOINT:-v1/coding_plan/vlm}"
 }
 
 is_running() {
@@ -66,15 +62,12 @@ get_port() {
 }
 
 rotate_logs() {
-    if [ ! -f "$LOG_FILE" ]; then
-        return
-    fi
+    [ ! -f "$LOG_FILE" ] && return
     local size_bytes
     size_bytes=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
     local max_bytes=$((MAX_LOG_SIZE_MB * 1024 * 1024))
-    if [ "$size_bytes" -lt "$max_bytes" ]; then
-        return
-    fi
+    [ "$size_bytes" -lt "$max_bytes" ] && return
+
     rm -f "$LOG_FILE.$MAX_LOG_FILES"
     for i in $(seq $((MAX_LOG_FILES - 1)) -1 1); do
         [ -f "$LOG_FILE.$i" ] && mv "$LOG_FILE.$i" "$LOG_FILE.$((i + 1))"
@@ -90,16 +83,17 @@ cmd_start() {
         return 1
     fi
     if ! command -v "$BIN" > /dev/null 2>&1; then
-        echo "错误: 找不到二进制 $BIN"
-        echo "      创建符号链接: ln -sf \$(which codex-relay) \$(dirname \$(which $BIN))/deecodex"
-        echo "      或安装: pipx install codex-relay"
+        echo "错误: 找不到二进制 $BIN，请确认已安装到 PATH"
         exit 1
     fi
     load_env
     map_env
+    mkdir -p "$LOG_DIR"
     rotate_logs
+
     local port="${DEECODEX_PORT:-4446}"
-    echo "启动 deecodex (端口: $port, 二进制: $(command -v "$BIN"))..."
+    echo "启动 deecodex (端口: $port)..."
+
     nohup "$BIN" \
         --port "$port" \
         --upstream "${DEECODEX_UPSTREAM}" \
@@ -107,6 +101,8 @@ cmd_start() {
         >> "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
+
+    # 等待启动完成
     local attempts=0
     while [ $attempts -lt 5 ]; do
         sleep 1
@@ -130,18 +126,21 @@ cmd_stop() {
     local pid
     pid=$(cat "$PID_FILE")
     echo "停止 deecodex (PID: $pid)..."
+
     kill "$pid" 2>/dev/null || true
+
     local waited=0
     while [ $waited -lt "$GRACEFUL_TIMEOUT" ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
-            echo "已停止 (优雅退出, 耗时 ${waited}s)"
+            echo "已停止 (${waited}s)"
             rm -f "$PID_FILE"
             return 0
         fi
         sleep 1
         waited=$((waited + 1))
     done
-    echo "优雅退出超时 (${GRACEFUL_TIMEOUT}s), 强制终止..."
+
+    echo "优雅退出超时，强制终止..."
     kill -9 "$pid" 2>/dev/null || true
     sleep 1
     if kill -0 "$pid" 2>/dev/null; then
@@ -162,11 +161,11 @@ cmd_status() {
     if is_running; then
         local pid
         pid=$(cat "$PID_FILE")
-        local port_line
-        port_line=$(lsof -iTCP -sTCP:LISTEN -a -p "$pid" 2>/dev/null | grep LISTEN | awk '{print $9}' | head -1 || echo '未知')
+        local port_info
+        port_info=$(lsof -iTCP -sTCP:LISTEN -a -p "$pid" 2>/dev/null | grep LISTEN | awk '{print $9}' | head -1 || echo '未知')
         echo "deecodex 运行中"
         echo "  PID:    $pid"
-        echo "  端口:   $port_line"
+        echo "  端口:   $port_info"
         echo "  日志:   $LOG_FILE (${MAX_LOG_SIZE_MB}MB 轮转, 保留 ${MAX_LOG_FILES} 份)"
     else
         echo "deecodex 未运行"
@@ -187,13 +186,11 @@ cmd_health() {
     port=$(get_port)
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${port}/v1/models" 2>/dev/null || echo "000")
-    if [ "$code" = "200" ]; then
-        echo "healthy (GET /v1/models -> $code)"
-    elif [ "$code" = "000" ]; then
-        echo "unreachable (端口 $port 无响应)"
-    else
-        echo "degraded (GET /v1/models -> $code)"
-    fi
+    case "$code" in
+        200) echo "healthy (GET /v1/models → $code)" ;;
+        000) echo "unreachable (端口 $port 无响应，请先 ./deecodex.sh start)" ;;
+        *)   echo "degraded (GET /v1/models → $code)" ;;
+    esac
 }
 
 case "${1:-}" in
