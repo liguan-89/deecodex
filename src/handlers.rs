@@ -451,7 +451,8 @@ fn replay_response_stream(
         .into_iter()
         .enumerate()
         .filter_map(move |(idx, event)| {
-            if starting_after.is_some_and(|after| (idx as u64) <= after) {
+            let sequence_number = idx as u64 + 1;
+            if starting_after.is_some_and(|after| sequence_number <= after) {
                 None
             } else {
                 Some(Ok(event))

@@ -467,7 +467,10 @@ fn non_empty(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn base_req(prompt: Value) -> ResponsesRequest {
         ResponsesRequest {
@@ -506,12 +509,13 @@ mod tests {
 
     fn temp_prompt_dir() -> PathBuf {
         let suffix = format!(
-            "{}-{}",
+            "{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let dir = std::env::temp_dir().join(format!("deecodex-prompts-{suffix}"));
         fs::create_dir_all(&dir).unwrap();

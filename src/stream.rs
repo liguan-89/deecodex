@@ -805,7 +805,7 @@ pub fn translate_cached(
         let mut output_items: Vec<Value> = Vec::new();
         if !cached.reasoning.is_empty() {
             output_items.push(json!({
-                "type": "reasoning_summary", "id": &reasoning_item_id, "status": "completed", "summary_index": 0,
+                "type": "reasoning", "id": &reasoning_item_id, "status": "completed",
                 "content": [{"type": "summary_text", "text": &cached.reasoning}]
             }));
         }

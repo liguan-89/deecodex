@@ -11,6 +11,8 @@
 - Assert terminal events such as `response.completed` or failure events also carry the expected sequence position.
 - Repeat the same request to hit cache replay and assert replayed events keep a valid sequence.
 
+Status: partially implemented. Live stream, cached stream, and retrieve stream replay now assert monotonic `sequence_number`; retrieve replay also validates `starting_after` cursor behavior.
+
 ## P0: response echo
 
 - Create a non-streaming response with `store: true`, `metadata`, and a stable model name.
@@ -19,6 +21,8 @@
 - For streaming, compare the final `response.completed.response` payload with the stored retrieve result.
 - For interrupted upstream streams, assert the response is not stored as `completed`.
 
+Status: partially implemented. Retrieve stream replay now checks stored response echo for `id`, `metadata`, `usage`, and output item identity. Non-streaming create/retrieve deep equality is still a next-step test.
+
 ## P0: output item id
 
 - Use a mock upstream message with normal text output and a function call output.
@@ -26,11 +30,15 @@
 - Repeat through cache replay and assert IDs are replayed from stored output, not regenerated.
 - Extend the same shape to `computer_call`, `local_mcp_call`, and future `file_search_call` items when those paths are executable.
 
+Status: partially implemented. Retrieve stream replay validates message item IDs across added/delta/done/completed. Stream tool-call IDs and cached reasoning shape are covered by integration/unit tests.
+
 ## P1: include
 
 - Send supported include values that can be generated locally, such as `output_text`, `usage`, and input item listing behavior.
 - Send unsupported hosted-only include values and assert the behavior is explicit: clear unsupported error or documented predictable ignore.
 - Assert include handling does not change stored response identity or output item IDs.
+
+Status: partially implemented. Create-time unsupported include and local `file_search_call.results` are covered. Retrieve-time include behavior still needs explicit tests.
 
 ## P1: file_search_call
 
@@ -39,3 +47,5 @@
 - Send a Responses request with `file_search` constrained to that vector store.
 - Assert retrieved metadata contains the query, vector store IDs, file IDs, and matched snippets.
 - Once implemented, assert output contains a `file_search_call` item and that retrieve/input_items expose the same search evidence.
+
+Status: partially implemented. Local `file_search_call` output and metadata are covered for create. Retrieve/input_items evidence-chain tests remain next.

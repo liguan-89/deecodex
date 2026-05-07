@@ -1610,6 +1610,43 @@ async fn test_translate_stream_cache_store_and_replay() {
     assert_eq!(replay_events.last().unwrap().0, "response.completed");
 }
 
+#[tokio::test]
+async fn test_translate_cached_reasoning_completed_output_matches_live_shape() {
+    let replay_sse = translate_cached(CachedArgs {
+        response_id: "replay_reasoning".into(),
+        model: "test-model".into(),
+        cached: deecodex::cache::CachedResponse {
+            text: "Final answer".into(),
+            reasoning: "Reasoned locally".into(),
+            tool_calls: vec![],
+            usage: None,
+            created_at: 1,
+        },
+        sessions: SessionStore::new(),
+        request_input_items: vec![],
+        store_response: false,
+        conversation_id: None,
+        response_extra: json!({}),
+    });
+    let replay_bytes = axum::body::to_bytes(replay_sse.into_response().into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let events = parse_sse_events(&replay_bytes);
+    let completed = events
+        .iter()
+        .find(|(name, _)| name == "response.completed")
+        .expect("completed event");
+
+    assert_sequence_numbers(&events);
+    assert_eq!(events[1].1["item"]["type"], "reasoning_summary");
+    assert_eq!(events[3].1["item"]["type"], "reasoning");
+    assert_eq!(completed.1["response"]["output"][0]["type"], "reasoning");
+    assert_eq!(
+        completed.1["response"]["output"][0]["content"][0]["text"],
+        "Reasoned locally"
+    );
+}
+
 // ── Blocking (non-streaming) response tests ──────────────────────────────
 
 #[tokio::test]
@@ -1855,6 +1892,196 @@ async fn test_responses_stream_store_and_retrieve() {
     assert_eq!(saved["id"], response_id);
     assert_eq!(saved["status"], "completed");
     assert_eq!(saved["model"], "gpt-5");
+}
+
+#[tokio::test]
+async fn test_get_response_stream_replay_preserves_echo_ids_and_sequence_cursor() {
+    let state = test_state();
+    let response_id = "resp_replay_contract";
+    let item_id = "msg_replay_contract";
+    state.sessions.save_response(
+        response_id.into(),
+        json!({
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5",
+            "metadata": {"source": "test"},
+            "output": [{
+                "type": "message",
+                "id": item_id,
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Replay me"}]
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        }),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/responses/{response_id}?stream=true"))
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let events = parse_sse_events(&body);
+    assert_sequence_numbers(&events);
+    assert_eq!(events[0].0, "response.created");
+    assert_eq!(events[1].0, "response.output_item.added");
+    assert_eq!(events[1].1["item"]["id"], item_id);
+    assert_eq!(events[2].0, "response.output_text.delta");
+    assert_eq!(events[2].1["item_id"], item_id);
+    assert_eq!(events[3].0, "response.output_item.done");
+    assert_eq!(events[3].1["item"]["id"], item_id);
+    assert_eq!(events[4].0, "response.completed");
+    assert_eq!(events[4].1["response"]["id"], response_id);
+    assert_eq!(events[4].1["response"]["output"][0]["id"], item_id);
+    assert_eq!(events[4].1["response"]["metadata"]["source"], "test");
+    assert_eq!(events[4].1["response"]["usage"]["total_tokens"], 3);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/responses/{response_id}?stream=true&starting_after=1"
+                ))
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let events_after = parse_sse_events(&body);
+    assert_eq!(events_after[0].0, "response.output_item.added");
+    assert_eq!(events_after[0].1["sequence_number"], 2);
+}
+
+#[tokio::test]
+async fn test_response_cancel_queued_response() {
+    let state = test_state();
+    state.sessions.save_response(
+        "resp_cancel_me".into(),
+        json!({
+            "id": "resp_cancel_me",
+            "object": "response",
+            "status": "queued",
+            "model": "gpt-5",
+            "output": []
+        }),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses/resp_cancel_me/cancel")
+                .method(Method::POST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], "resp_cancel_me");
+    assert_eq!(json["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_response_cancel_completed_conflict() {
+    let state = test_state();
+    state.sessions.save_response(
+        "resp_done".into(),
+        json!({
+            "id": "resp_done",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-5",
+            "output": []
+        }),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses/resp_done/cancel")
+                .method(Method::POST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "response_not_cancellable");
+}
+
+#[tokio::test]
+async fn test_response_compact_uses_previous_input_items() {
+    let state = test_state();
+    state.sessions.save_input_items(
+        "resp_prev".into(),
+        vec![json!({
+            "id": "item_prev",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "previous"}]
+        })],
+    );
+    let sessions = state.sessions.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses/compact")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "previous_response_id": "resp_prev",
+                        "input": "current",
+                        "instructions": "compress"
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let response_id = json["id"].as_str().unwrap();
+    assert_eq!(json["object"], "response.compacted");
+    assert_eq!(json["status"], "completed");
+    assert_eq!(json["instructions"], "compress");
+    assert_eq!(json["input"][0]["id"], "item_prev");
+    assert_eq!(json["input"][1]["content"][0]["text"], "current");
+
+    let stored = sessions
+        .get_response(response_id)
+        .expect("compacted response should be stored");
+    assert_eq!(stored["id"], response_id);
+    assert_eq!(stored["input"].as_array().unwrap().len(), 2);
 }
 
 // ── Handler validation edge cases ────────────────────────────────────────

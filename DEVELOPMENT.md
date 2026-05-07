@@ -9,9 +9,9 @@
 ## 当前节点
 
 - 时间：2026-05-07
-- 阶段：rollout `019dfe49` P0/P1 兼容性收口 + 增强层第一轮恢复合并
-- 正在做：把 Codex 真实流量分析出的 Responses 兼容缺口落到实现与验证计划
-- 下一步：优先验证 P0 序列/回放契约，再收口 P1 本地增强项的集成测试
+- 阶段：rollout `019dfe49` P0/P1 兼容性收口 + replay/冷门端点契约验证
+- 正在做：把 Codex 真实流量分析出的 Responses 兼容缺口落到实现与集成测试
+- 下一步：继续补齐 `include` 深层字段、file_search 证据链和 computer/MCP 执行器边界
 
 ## 已完成
 
@@ -76,11 +76,17 @@
   - P0：output item id 必须稳定，`response.output_item.added`、delta、done、最终 response body 和 retrieve 结果不能互相漂移。
   - P1：`include` 先支持本地可生成字段，不能伪造的 OpenAI 托管字段要返回清晰 unsupported 或保持可预测忽略策略。
   - P1：本地 `file_search` 命中时需要可选生成 `file_search_call` output item，并把检索结果与 metadata/retrieve/input_items 契约对齐。
+- rollout `019dfe49` replay/冷门端点契约已补强：
+  - 修复 `GET /v1/responses/:id?stream=true&starting_after=N` 使用事件下标而不是 `sequence_number` 的偏移问题。
+  - 修复缓存回放 `response.completed.response.output` 中 reasoning item 类型与 live 路径不一致的问题。
+  - 增加 replay stream echo 测试，覆盖 `id/model/output item id/metadata/usage/sequence_number`。
+  - 增加 `POST /v1/responses/:id/cancel` queued 成功取消和 completed 冲突测试。
+  - 增加 `POST /v1/responses/compact` 合并 previous input items 并持久化测试。
 
 ## 进行中
 
-- 本轮已把 stash 中丢失的增强模块合入当前 v0.6 架构，剩余为真实执行器和 rollout `019dfe49` 的 P0/P1 兼容性验证。
-- P0 验证优先级高于新增能力：先保证 SSE 序列、response echo、output item id 的 Codex 客户端契约稳定，再扩展 P1 include/file_search_call 的表现层。
+- 本轮已把 rollout `019dfe49` 的 P0 replay/echo/id 序列验证落成集成测试，剩余为真实执行器和 P1 include/file_search_call 证据链细化。
+- P0 主线契约已从计划推进到测试覆盖：live SSE、缓存回放、retrieve stream replay 都有 sequence 或 echo 断言。
 
 ## 下次开发计划
 
@@ -120,6 +126,28 @@
 - P3：`include` 深层字段：
   - 继续细分更多可本地生成的 include 字段。
 
+## 下轮开发计划 (2026-05-07 后续)
+
+- P1：`include` 细化：
+  - 明确 `GET /v1/responses/:id` 的 include 行为，不只在 create 阶段校验。
+  - 对 `output[*].file_search_call.results`、`file_search_call.results`、`usage`、`input_items` 做端到端一致性测试。
+  - 对未知 include 和 hosted-only include 保持统一错误结构。
+- P1：`file_search_call` 证据链：
+  - retrieve/input_items/metadata 三处保持同一份 query/vector_store_ids/file_id/snippet。
+  - 增加 max_num_results / ranking_options 的本地降级实现。
+  - 避免 file_search 注入上下文污染用户原始 input_items。
+- P1：`computer_call` 状态机：
+  - 将 bridge 输出显式标记为 pending/in_progress/completed。
+  - 先定义 `computer_call_output` 输入解析和截图 data URL 回传结构。
+  - Playwright/browser-use 真实执行器单独做白名单和超时，不混进协议层。
+- P1：`local_mcp_call` 状态机：
+  - 定义 MCP server 白名单配置。
+  - 先支持只读工具调用的本地执行结果回填。
+  - 所有执行失败都要转成 Responses output item，而不是内部 500。
+- P2：持久化和索引：
+  - file_search 从线性扫描升级为轻量倒排索引。
+  - vector store 持久化加 schema version，便于后续迁移。
+
 ## 验证记录
 
 - 2026-05-06：hosted prompts registry 完成后通过 `cargo test`、`cargo clippy --all-targets -- -D warnings`。
@@ -133,10 +161,11 @@
 - 2026-05-07：修复 VLM 路由 `msgs<=5` 判断 bug → `new_image` 检测；修复 `deecodex.sh` 丢失 Codex 配置管理功能；`cargo test` 244/244 通过。
 - 2026-05-07：大规糢测试补全：stream 纯函数/translate_cached 边界 + utils/types/session/cache 纯函数 + files/prompts/vector_stores/convert_tool 全覆盖 + sse 从零到全覆盖 + handler 集成测试(CRUD/文件/vector store/blocking) + translate_stream mock upstream 高级场景。**63 → 297 测试**，`cargo test` 全部通过。
 - 2026-05-07：运维安全补全：Rate limiter (120 req/60s、可配置)、pre-commit hook (防 .env + API key 泄露)、graceful shutdown (30s drain)、Prometheus metrics 端点 (`/metrics`)。**297 → 303 测试**，`cargo test` 全部通过。
+- 2026-05-07：rollout `019dfe49` replay/冷门端点补强：修复 cached reasoning final output 类型、修复 retrieve stream `starting_after` 序号偏移，增加 replay echo/sequence、cancel queued/conflict、compact previous input items 5 个集成测试。**303 → 308 测试**，`cargo test --test integration` 70/70 通过。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **303 测试** (233 单元 + 5 compat + 65 集成)，全部通过 `cargo test`。
+当前 **308 测试** (233 单元 + 5 compat + 70 集成)，新增集成测试已通过，待本轮最终全量 `cargo test` 复验。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
@@ -153,15 +182,16 @@
 | `utils.rs` | 59 | 13 | ✅ merge_response_extra/limit_function_call_outputs |
 | `main.rs` | 178 | 0 | ❌ 入口无测试 |
 
-**集成测试覆盖** (58 个):
-- Session CRUD: response/conversation 完整生命周期
+**集成测试覆盖** (70 个):
+- Session CRUD: response/conversation 完整生命周期、retrieve stream replay 序列与 echo
 - File handlers: upload/list/get/delete/content + 边界
 - Prompt + Vector store: 全部 CRUD + batch/cancel
 - Blocking response: 文本/工具/推理/background/store+retrieve
 - Streaming: translate_stream mock upstream 文本/工具/推理/错误重试/缓存回放
 - 参数校验: previous_response_id+conversation 冲突/top_logprobs 不支持
+- 冷门端点: responses cancel、compact、stream replay starting_after
 
-**仍有缺口**: main.rs 入口、translate_stream 更多场景(长文本分块/多工具交错)。
+**仍有缺口**: main.rs 入口、`include` retrieve 阶段细化、真实 computer/MCP executor。
 
 ## 验证计划
 
@@ -169,6 +199,7 @@
   - 流式 smoke：断言所有 SSE `sequence_number` 单调递增、无重复、终止事件存在。
   - 缓存回放：同一个请求连续两次流式调用，断言第二次回放的事件序列、response id、output item id 与保存结果一致。
   - 非流式/retrieve：创建响应后 retrieve，断言 response echo 的 `id/model/status/output/usage/metadata` 一致。
+  - retrieve stream replay：已覆盖 `sequence_number`、`starting_after`、output item id、metadata、usage。
   - 中断/失败：模拟上游 SSE 提前断开，断言返回失败事件且不会把残缺 response 存为 completed。
 - rollout `019dfe49` P1：
   - `include`：覆盖本地支持字段、未知字段、托管字段 unsupported/忽略策略。
