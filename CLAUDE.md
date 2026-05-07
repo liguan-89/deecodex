@@ -46,7 +46,7 @@ Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
 - Caches use `Arc<DashMap<K, V>>` for concurrent access.
 - Sessions/reasoning are in-memory only (lost on restart; Codex replays full conversation).
 - `EvictingMap` pattern: `Arc<Mutex<VecDeque<K>>>` for bounded LRU eviction.
-- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio execution is default-disabled, runs only for configured servers, and returns `mcp_tool_call_output` instead of surfacing executor failures as HTTP 500.
+- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio and computer execution are default-disabled, run only when configured/allowed, and return `mcp_tool_call_output` / `computer_call_output` instead of surfacing executor failures as HTTP 500.
 
 ### Key modules (largest → smallest)
 
@@ -66,7 +66,7 @@ Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
 | `utils` | 224 | Merge/truncation helpers |
 | `token_anomaly` | 205 | Token usage anomaly detection |
 | `config` | 204 | Args struct, config persistence, merge logic |
-| `executor` | ~400 | Local computer/MCP executor config plus stdio MCP JSON-RPC tool execution |
+| `executor` | ~650 | Local computer/MCP executor config, Playwright action adapter, and stdio MCP JSON-RPC tool execution |
 | `metrics` | 180 | Prometheus metrics |
 | `codex_config` | 106 | Codex config.toml injection/removal |
 | `ratelimit` | 90 | Sliding-window rate limiter |

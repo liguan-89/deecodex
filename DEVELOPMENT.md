@@ -143,25 +143,25 @@
   - 优先实现 browser-use/Playwright adapter 接口。
   - 支持 open_url、screenshot、click、type、keypress、scroll。
   - 每次动作都保留 call_id、display、timeout、截图摘要和状态。
-  - 状态：下一轮优先。
+  - 状态：✅ Playwright 后端已接入；browser-use 后端在无本地 bridge 时返回明确失败 output item；非流式/流式都会回填 `computer_call_output`。
 - P2：file_search 质量升级
   - 在当前倒排索引上引入 BM25 打分。
   - 增强 snippet 窗口和更多 `ranking_options` 字段。
+  - 状态：✅ 已升级 BM25 打分、窗口化 snippet、ranker/降级策略 metadata。
 
 ## 下次开发计划
 
-- P0：真实 computer/browser executor：
-  - 在 `executor.rs` 增加 `ComputerActionInvocation` / `ComputerActionOutput`，动作失败仍回填 `computer_call_output`。
-  - 优先接 Playwright 后端：`open_url`、`screenshot`、`click`、`type`、`keypress`、`scroll`。
-  - browser-use 后端保留配置入口，若运行环境不可用要输出明确 unsupported output item。
-  - 每次动作必须受 `DEECODEX_ALLOWED_COMPUTER_DISPLAYS`、backend enabled 和 timeout 三重约束。
-- P1：MCP executor 强化：
-  - 增加 `tools/list` 可选探测，read_only 模式优先按 MCP tool metadata 判断，只在没有 metadata 时使用名称启发式。
-  - 支持长驻 MCP server 连接池，避免每次 `tools/call` 都重新启动进程。
-  - 增加 stderr 摘要到失败 output，仍避免泄漏大段敏感内容。
-- P1：file_search 质量升级：
-  - 在当前倒排索引上加入 BM25 打分和窗口化 snippet。
-  - 支持更多 `ranking_options` 字段，并在 metadata/input_items 中记录实际降级策略。
+- P0：executor 稳定性/效率：
+  - MCP stdio server 长驻连接池，避免每次 `tools/call` 都重新启动进程。
+  - Playwright browser/context 长驻或复用 state dir，让 open_url 后的 click/type/scroll 能跨 action 保持页面状态。
+  - 为 executor 增加更细的审计事件：backend、server/display、tool/action、耗时、失败类型，避免记录敏感参数全文。
+- P1：computer_use 多轮闭环：
+  - 把 `computer_call_output` 自动作为下一轮上游 tool message 的路径做成端到端测试。
+  - 对 screenshot 大图增加尺寸/字节上限和可选压缩策略。
+  - browser-use 若配置本地 bridge URL/命令，则实现真实 adapter，而不是仅返回 unsupported。
+- P1：file_search 质量继续增强：
+  - 增加 query rewrite / 多字段权重：文件名、metadata、正文分开加权。
+  - 支持 chunk 级索引，而不是只按整文件打分。
   - `store=false` 时明确只返回即时响应，不提供 retrieve 假象。
 - P0：固定 output item id：
   - message/function_call/computer_call/mcp/file_search_call 生成稳定 item id。
@@ -230,18 +230,12 @@
 
 ## 后续增强计划 (100% 后)
 
-- P1：真实 computer executor：
-  - 在现有 tool policy 基础上接 browser-use / Playwright。
-  - 支持 open_url、screenshot、click、type、keypress、scroll 的最小闭环。
-  - executor 必须有 display/environment allowlist、超时和失败 output item。
-- P1：真实 MCP executor：
-  - 读取 allowlist 内 server 配置，先只开放只读工具。
-  - 执行结果统一回填为 `mcp_tool_call_output`，失败不直接 500。
-  - 记录 call_id/server/tool/arguments/result 摘要，保持 retrieve/input_items 可回放。
-- P2：file_search 排序质量：
-  - 从词频重叠升级到 BM25 或轻量 embedding 可插拔接口。
-  - 支持更细的 ranking_options 字段和片段窗口。
-  - vector store schema version 增加迁移测试。
+- P1：executor 连接复用：
+  - MCP stdio 连接池和 Playwright context 复用，降低多工具调用延迟。
+  - 增加 executor 级指标和失败分类。
+- P2：file_search chunk/embedding：
+  - 在 BM25 基础上增加 chunk 索引和可插拔 embedding/rerank 接口。
+  - 支持文件 metadata 权重和更完整的 ranking_options 降级说明。
 - P2：入口和运维测试：
   - 给 `main.rs` 的参数解析、CSV allowlist、路由装配补单元测试或轻量启动测试。
   - 增加 `/metrics`、graceful shutdown、rate limiter 的端到端回归。
@@ -268,6 +262,12 @@
   - **根因**：`computer_call_output` 的 base64 截图编码后作为纯文本嵌入 tool message（`tool_output_text` → `collect_tool_output_value`），经过 `handlers.rs` strip 逻辑时因 content 类型是 `Value::String` 而非 `Value::Array` 被跳过，最终 2.97M token 发给 DeepSeek 触发 context limit（1048576 token 上限）。
   - **修复 1** — 图片剥离：`collect_tool_output_value` 遇到 `data:image/` 开头的字符串替换为 `[image omitted: <mime> base64 <N>B]`，Object 分支兜底序列化前扫描所有 value 中的 base64 并替换。
   - **修复 2** — strip 逻辑补强：`handlers.rs` strip 增加 `Value::String` 分支，检测字符串中的 `data:image/` 并截断移除。
+- 2026-05-07：下期 executor/search 工作一次性收口：
+  - `computer_use` 本地执行器新增 `ComputerActionInvocation` / `ComputerActionOutput`；Playwright 后端支持 `open_url`、`screenshot`、`click`、`double_click`、`type`、`keypress`、`scroll`、`wait`，失败统一回填 `computer_call_output`；browser-use 暂无本地 bridge 时返回明确失败 output。
+  - 非流式与流式路径均会执行允许 display 内的 `computer_call`，并把结果追加到最终 response output。
+  - MCP stdio executor 增加 `tools/list` metadata 探测，read-only 优先使用 `readOnlyHint` / `destructiveHint`，无 metadata 时回退名称启发式；失败输出包含有限 stderr 摘要。
+  - 本地 `file_search` 从词频计数升级为 BM25 打分，snippet 改为命中窗口，metadata 记录 `local_file_search_ranker=local_bm25`、请求 ranker 和本地降级策略。
+  - 已通过 `cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check` 全量复验。
   - **修复 3** — 跨类型守卫：`tool_output_text` 中 `screenshot`/`image_url` 提取从 `computer_call_output` 专属改为所有 tool output 类型生效（MCP/custom/tool_search）。
   - **不截断**：Codex 原生在 `tool/truncate.ts` 中已做 2000 行 / 50KB 截断（可配置 `tool_output.max_lines` / `tool_output.max_bytes`），deecodex 作为翻译代理不应重复截断。大型 JSON 由 Codex 侧兜底 + token 异常检测报警。
   - 新增 token 异常检测模块 `token_anomaly.rs`：prompt_explosion (>200k)、prompt_spike (>5x avg)、zero_completion、high_burn_rate (>500k/min)，通过 Prometheus `token_anomalies_total` 指标 + WARN 日志报警。
@@ -309,7 +309,7 @@
 - Tool outputs: computer_call_output / mcp_tool_call_output 上游归一化和 input_items 回看
 - Tool policy: MCP server allowlist 拒绝未授权工具
 
-**剩余增强项**: 真实 browser/computer executor、真实 MCP 进程执行器、file_search BM25/embedding 排序质量和更完整 ranking_options。
+**剩余增强项**: executor 长驻连接池、Playwright/browser-use 状态复用、file_search chunk/embedding 排序质量和更完整 ranking_options。
 
 ## 验证计划
 
@@ -351,7 +351,7 @@
 `function_call_arguments.delta` ✅ `sequence_number` ✅
 
 ### 结论
-核心能力充分验证（301 测试通过），覆盖 Codex CLI 日常使用 90% 路径。
+核心能力充分验证（340+ 测试通过），覆盖 Codex CLI 日常使用 90%+ 路径。
 无测试的 5 个端点 + 10 个参数属冷门功能，不影响主线流程。
 
 ## 运维安全

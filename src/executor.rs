@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -58,6 +59,93 @@ impl ComputerExecutorConfig {
     pub fn enabled(&self) -> bool {
         self.backend != ComputerExecutorBackend::Disabled
     }
+
+    pub async fn execute_action(
+        &self,
+        invocation: ComputerActionInvocation,
+    ) -> ComputerActionOutput {
+        let deadline = Duration::from_secs(self.timeout_secs.max(1));
+        match timeout(deadline, self.execute_action_inner(invocation)).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => ComputerActionOutput::failed(err.to_string()),
+            Err(_) => ComputerActionOutput::failed(format!(
+                "computer action timed out after {}s",
+                self.timeout_secs.max(1)
+            )),
+        }
+    }
+
+    async fn execute_action_inner(
+        &self,
+        invocation: ComputerActionInvocation,
+    ) -> Result<ComputerActionOutput> {
+        match self.backend {
+            ComputerExecutorBackend::Disabled => Ok(ComputerActionOutput::failed(
+                "computer executor is disabled".into(),
+            )),
+            ComputerExecutorBackend::BrowserUse => Ok(ComputerActionOutput::failed(
+                "browser-use computer executor is configured but no local browser-use bridge is available yet"
+                    .into(),
+            )),
+            ComputerExecutorBackend::Playwright => execute_playwright_action(&invocation).await,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComputerActionInvocation {
+    pub call_id: String,
+    pub action: Value,
+    pub display: String,
+}
+
+impl ComputerActionInvocation {
+    pub fn from_response_item(item: &Value) -> Option<Self> {
+        if item.get("type").and_then(Value::as_str) != Some("computer_call") {
+            return None;
+        }
+        let call_id = item.get("call_id").and_then(Value::as_str)?.to_string();
+        let action = item.get("action").cloned().unwrap_or_else(|| json!({}));
+        let display = action
+            .get("display")
+            .or_else(|| action.get("environment"))
+            .and_then(Value::as_str)
+            .or_else(|| item.get("display").and_then(Value::as_str))
+            .unwrap_or("default")
+            .to_string();
+        Some(Self {
+            call_id,
+            action,
+            display,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ComputerActionOutput {
+    pub output: Value,
+    pub status: String,
+}
+
+impl ComputerActionOutput {
+    pub fn succeeded(output: Value) -> Self {
+        Self {
+            output,
+            status: "completed".into(),
+        }
+    }
+
+    pub fn failed(message: String) -> Self {
+        Self {
+            output: json!({
+                "error": {
+                    "message": message,
+                    "type": "computer_executor_error"
+                }
+            }),
+            status: "failed".into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,14 +202,6 @@ impl McpExecutorConfig {
         let server = self
             .get_server(&invocation.server_label)
             .ok_or_else(|| anyhow!("MCP server '{}' is not configured", invocation.server_label))?;
-
-        if server.read_only && !read_only_tool_allowed(&invocation.tool_name) {
-            anyhow::bail!(
-                "MCP server '{}' is read-only and rejected tool '{}'",
-                server.label,
-                invocation.tool_name
-            );
-        }
 
         let deadline = Duration::from_secs(self.timeout_secs.max(1));
         timeout(deadline, execute_stdio_mcp_tool(server, &invocation))
@@ -219,6 +299,10 @@ async fn execute_stdio_mcp_tool(
         .stdout
         .take()
         .ok_or_else(|| anyhow!("failed to open stdout for MCP server '{}'", server.label))?;
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_limited_stderr(stderr, 4096)));
 
     send_jsonrpc(
         &mut stdin,
@@ -234,7 +318,7 @@ async fn execute_stdio_mcp_tool(
         }),
     )
     .await?;
-    read_jsonrpc_response(&mut stdout, 1).await?;
+    let init_response = read_jsonrpc_response(&mut stdout, 1).await?;
 
     send_jsonrpc(
         &mut stdin,
@@ -245,11 +329,48 @@ async fn execute_stdio_mcp_tool(
     )
     .await?;
 
+    let mut next_id = 2_u64;
+    let can_list_tools = init_response
+        .pointer("/result/capabilities/tools")
+        .is_some();
+    let tool_metadata = if can_list_tools {
+        match list_mcp_tools(&mut stdin, &mut stdout, next_id).await {
+            Ok(metadata) => {
+                next_id += 1;
+                metadata
+            }
+            Err(err) => {
+                tracing::debug!(
+                    "MCP server '{}' tools/list probe skipped or failed: {err}",
+                    server.label
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if server.read_only
+        && !mcp_tool_allowed_by_metadata(&invocation.tool_name, tool_metadata.as_ref())
+    {
+        let reason = if tool_metadata.is_some() {
+            "metadata"
+        } else {
+            "name heuristic"
+        };
+        anyhow::bail!(
+            "MCP server '{}' is read-only and rejected tool '{}' by {reason}",
+            server.label,
+            invocation.tool_name
+        );
+    }
+
     send_jsonrpc(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
-            "id": 2,
+            "id": next_id,
             "method": "tools/call",
             "params": {
                 "name": invocation.tool_name,
@@ -258,13 +379,21 @@ async fn execute_stdio_mcp_tool(
         }),
     )
     .await?;
-    let result = read_jsonrpc_response(&mut stdout, 2).await?;
+    let result = read_jsonrpc_response(&mut stdout, next_id).await?;
     let _ = stdin.shutdown().await;
     let _ = child.kill().await;
     let _ = child.wait().await;
+    let stderr_summary = match stderr_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => String::new(),
+    };
 
     if let Some(error) = result.get("error") {
-        anyhow::bail!("MCP tool call failed: {error}");
+        anyhow::bail!(
+            "MCP tool call failed: {}{}",
+            error,
+            stderr_suffix(&stderr_summary)
+        );
     }
     let output = result.get("result").cloned().unwrap_or_else(|| json!({}));
     let is_error = output
@@ -279,6 +408,152 @@ async fn execute_stdio_mcp_tool(
     } else {
         Ok(McpToolOutput::succeeded(output))
     }
+}
+
+async fn list_mcp_tools<W, R>(stdin: &mut W, stdout: &mut R, id: u64) -> Result<Option<Value>>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    send_jsonrpc(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let response = read_jsonrpc_response(stdout, id).await?;
+    if response.get("error").is_some() {
+        return Ok(None);
+    }
+    Ok(response.get("result").cloned())
+}
+
+fn mcp_tool_allowed_by_metadata(tool_name: &str, metadata: Option<&Value>) -> bool {
+    let Some(metadata) = metadata else {
+        return read_only_tool_allowed(tool_name);
+    };
+    let tools = metadata
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let Some(tool) = tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
+    else {
+        return read_only_tool_allowed(tool_name);
+    };
+    let annotations = tool.get("annotations").unwrap_or(&Value::Null);
+    if annotations
+        .get("destructiveHint")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if annotations
+        .get("readOnlyHint")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if annotations.get("readOnlyHint").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    read_only_tool_allowed(tool_name)
+}
+
+async fn read_limited_stderr<R>(mut reader: R, limit: usize) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let _ = reader.read_to_end(&mut buf).await;
+    let mut text = String::from_utf8_lossy(&buf).to_string();
+    if text.len() > limit {
+        text.truncate(limit);
+        text.push_str("...[truncated]");
+    }
+    text
+}
+
+fn stderr_suffix(stderr: &str) -> String {
+    let clean = stderr.trim();
+    if clean.is_empty() {
+        String::new()
+    } else {
+        format!("; stderr: {clean}")
+    }
+}
+
+async fn execute_playwright_action(
+    invocation: &ComputerActionInvocation,
+) -> Result<ComputerActionOutput> {
+    let action_json = serde_json::to_string(&invocation.action)?;
+    let script = r#"
+(async () => {
+  const action = JSON.parse(process.env.DEECODEX_COMPUTER_ACTION || "{}");
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: Number(action.display_width || 1024), height: Number(action.display_height || 768) } });
+  const targetUrl = action.url || "about:blank";
+  if (targetUrl) await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+  const typ = action.type || "screenshot";
+  if (typ === "click") await page.mouse.click(Number(action.x || 0), Number(action.y || 0), { button: action.button || "left" });
+  if (typ === "double_click") await page.mouse.dblclick(Number(action.x || 0), Number(action.y || 0), { button: action.button || "left" });
+  if (typ === "scroll") await page.mouse.wheel(Number(action.scroll_x || 0), Number(action.scroll_y || action.y || 0));
+  if (typ === "type") await page.keyboard.type(String(action.text || ""));
+  if (typ === "keypress") {
+    const keys = Array.isArray(action.keys) ? action.keys : [action.key || action.text || "Enter"];
+    for (const key of keys) await page.keyboard.press(String(key));
+  }
+  if (typ === "wait") await page.waitForTimeout(Number(action.ms || 1000));
+  if (typ === "open_url" && action.url) await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+  const bytes = await page.screenshot({ type: "png", fullPage: false });
+  await browser.close();
+  process.stdout.write(JSON.stringify({
+    backend: "playwright",
+    action_type: typ,
+    url: page.url(),
+    screenshot: "data:image/png;base64," + bytes.toString("base64")
+  }));
+})().catch((err) => {
+  process.stderr.write(String(err && err.stack || err));
+  process.exit(1);
+});
+"#;
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .env("DEECODEX_COMPUTER_ACTION", action_json)
+        .output()
+        .await
+        .context("failed to start node for Playwright computer executor")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Playwright computer action failed{}",
+            stderr_suffix(&stderr)
+        );
+    }
+    let mut value: Value =
+        serde_json::from_slice(&output.stdout).context("Playwright executor returned non-JSON")?;
+    value["call_id"] = json!(invocation.call_id);
+    value["display"] = json!(invocation.display);
+    if let Some(screenshot) = value.get("screenshot").and_then(Value::as_str) {
+        let approx_bytes = screenshot
+            .split_once(',')
+            .and_then(|(_, raw)| STANDARD.decode(raw).ok())
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        value["screenshot_bytes"] = json!(approx_bytes);
+    }
+    Ok(ComputerActionOutput::succeeded(value))
 }
 
 async fn send_jsonrpc<W>(writer: &mut W, value: &Value) -> Result<()>
@@ -518,12 +793,64 @@ mod tests {
     }
 
     #[test]
+    fn parses_computer_invocation_from_response_item() {
+        let invocation = ComputerActionInvocation::from_response_item(&json!({
+            "type": "computer_call",
+            "call_id": "call_screen",
+            "action": {"type": "screenshot", "display": "browser"}
+        }))
+        .unwrap();
+
+        assert_eq!(invocation.call_id, "call_screen");
+        assert_eq!(invocation.display, "browser");
+        assert_eq!(invocation.action["type"], "screenshot");
+    }
+
+    #[test]
     fn read_only_tool_filter_blocks_mutations() {
         assert!(read_only_tool_allowed("read_file"));
         assert!(read_only_tool_allowed("search"));
         assert!(!read_only_tool_allowed("write_file"));
         assert!(!read_only_tool_allowed("delete"));
         assert!(!read_only_tool_allowed("apply_patch"));
+    }
+
+    #[test]
+    fn mcp_read_only_prefers_tool_metadata() {
+        let metadata = json!({
+            "tools": [
+                {"name": "fetch", "annotations": {"readOnlyHint": true}},
+                {"name": "remove_file", "annotations": {"destructiveHint": true}}
+            ]
+        });
+
+        assert!(mcp_tool_allowed_by_metadata("fetch", Some(&metadata)));
+        assert!(!mcp_tool_allowed_by_metadata(
+            "remove_file",
+            Some(&metadata)
+        ));
+        assert!(!mcp_tool_allowed_by_metadata("write_file", None));
+    }
+
+    #[tokio::test]
+    async fn browser_use_executor_returns_explicit_failed_output() {
+        let config = ComputerExecutorConfig {
+            backend: ComputerExecutorBackend::BrowserUse,
+            timeout_secs: 1,
+        };
+        let output = config
+            .execute_action(ComputerActionInvocation {
+                call_id: "call_screen".into(),
+                action: json!({"type": "screenshot"}),
+                display: "browser".into(),
+            })
+            .await;
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.output["error"]["type"].as_str(),
+            Some("computer_executor_error")
+        );
     }
 
     #[tokio::test]

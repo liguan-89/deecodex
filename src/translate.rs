@@ -645,7 +645,9 @@ fn convert_tool(tool: &Value) -> Value {
                             "scroll_y": {"type": "number"},
                             "keys": {"type": "array", "items": {"type": "string"}},
                             "text": {"type": "string"},
-                            "url": {"type": "string"}
+                            "url": {"type": "string"},
+                            "display": {"type": "string"},
+                            "environment": {"type": "string"}
                         },
                         "required": ["type"]
                     }

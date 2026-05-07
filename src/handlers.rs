@@ -1,5 +1,5 @@
 use crate::cache::RequestCache;
-use crate::executor::{LocalExecutorConfig, McpToolInvocation};
+use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
@@ -1150,6 +1150,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         crate::vector_stores::VectorStoreRegistry::vector_store_ids_for_tools(&req.tools);
     let file_search_max_results = local_file_search_max_results(&req.tools);
     let file_search_score_threshold = local_file_search_score_threshold(&req.tools);
+    let file_search_ranker = local_file_search_ranker(&req.tools);
     let local_file_search_results = state.files.inject_file_search_context(
         &mut req,
         file_search_filter.as_ref(),
@@ -1174,6 +1175,14 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
                 score_threshold.to_string(),
             );
         }
+        if let Some(ranker) = file_search_ranker {
+            metadata.insert("local_file_search_requested_ranker".to_string(), ranker);
+        }
+        metadata.insert("local_file_search_ranker".to_string(), "local_bm25".into());
+        metadata.insert(
+            "local_file_search_ranking_options".to_string(),
+            "ranker=local_bm25; embeddings unavailable; reranking unavailable".to_string(),
+        );
     }
     let local_file_search_output_items = local_file_search_call_output_item(
         &local_file_search_results,
@@ -1567,6 +1576,7 @@ async fn handle_responses_inner(
             metrics: state.metrics.clone(),
             executors: state.executors.clone(),
             allowed_mcp_servers: state.tool_policy.allowed_mcp_servers.clone(),
+            allowed_computer_displays: state.tool_policy.allowed_computer_displays.clone(),
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -1770,6 +1780,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 if let Ok(value) = serde_json::to_value(&resp) {
                     let mut value = enrich_response_object(value, req);
                     append_local_mcp_outputs(&state, &mut value).await;
+                    append_local_computer_outputs(&state, &mut value).await;
                     value["status"] = json!("completed");
                     let value = response_with_extra(value, &response_extra);
                     if store_response {
@@ -1801,6 +1812,66 @@ fn save_response_unless_cancelled(sessions: &SessionStore, id: String, response:
         return;
     }
     sessions.save_response(id, response);
+}
+
+async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {
+    if !state.executors.computer.enabled() {
+        return;
+    }
+
+    let calls = response
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let invocation = ComputerActionInvocation::from_response_item(item)?;
+                    Some((invocation.call_id.clone(), invocation))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if calls.is_empty() {
+        return;
+    }
+
+    let mut outputs = Vec::new();
+    for (call_id, invocation) in calls {
+        let result = if !state.tool_policy.allowed_computer_displays.is_empty()
+            && !state
+                .tool_policy
+                .allowed_computer_displays
+                .iter()
+                .any(|display| display == &invocation.display)
+        {
+            crate::executor::ComputerActionOutput::failed(format!(
+                "computer display '{}' is not allowed by local tool policy",
+                invocation.display
+            ))
+        } else {
+            state.executors.computer.execute_action(invocation).await
+        };
+        outputs.push(local_computer_call_output_item(&call_id, result));
+    }
+
+    if let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) {
+        items.extend(outputs);
+    }
+}
+
+fn local_computer_call_output_item(
+    call_id: &str,
+    result: crate::executor::ComputerActionOutput,
+) -> Value {
+    json!({
+        "type": "computer_call_output",
+        "id": format!("ccout_{call_id}"),
+        "call_id": call_id,
+        "status": result.status,
+        "output": result.output
+    })
 }
 
 async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
@@ -2080,6 +2151,25 @@ fn local_file_search_score_threshold(tools: &[Value]) -> Option<f64> {
                 .and_then(Value::as_f64)
         })
         .max_by(|a, b| a.total_cmp(b))
+}
+
+fn local_file_search_ranker(tools: &[Value]) -> Option<String> {
+    tools
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tool.get("type").and_then(Value::as_str),
+                Some("file_search" | "file_search_preview")
+            )
+        })
+        .filter_map(|tool| {
+            tool.get("ranking_options")
+                .and_then(|opts| opts.get("ranker"))
+                .and_then(Value::as_str)
+                .or_else(|| tool.get("ranker").and_then(Value::as_str))
+        })
+        .find(|ranker| !ranker.is_empty())
+        .map(str::to_string)
 }
 
 fn enrich_response_object(mut value: Value, req: &ResponsesRequest) -> Value {

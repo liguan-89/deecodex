@@ -19,6 +19,9 @@ use uuid::Uuid;
 
 const MAX_SEARCH_RESULTS: usize = 5;
 const MAX_SEARCH_CHARS: usize = 12_000;
+const BM25_K1: f64 = 1.2;
+const BM25_B: f64 = 0.75;
+const BM25_SCORE_SCALE: f64 = 12.0;
 
 #[derive(Clone, Debug)]
 pub struct FileStore {
@@ -49,6 +52,9 @@ struct StoredFileMetadata {
 #[derive(Clone, Debug, Default)]
 struct SearchIndex {
     terms: HashMap<String, HashSet<String>>,
+    doc_lengths: HashMap<String, usize>,
+    doc_count: usize,
+    avg_doc_len: f64,
 }
 
 #[derive(Debug)]
@@ -304,8 +310,9 @@ impl FileStore {
         let terms = search_terms(query);
         let candidate_ids = self.search_candidate_ids(&terms);
         let mut results = Vec::new();
-        for file_id in candidate_ids {
-            let Some(file) = self.files.get(&file_id) else {
+        let index = self.search_index();
+        for file_id in &candidate_ids {
+            let Some(file) = self.files.get(file_id) else {
                 continue;
             };
             if allowed_file_ids.is_some_and(|ids| !ids.contains(&file.id)) {
@@ -317,11 +324,11 @@ impl FileStore {
             let Ok(text) = String::from_utf8(file.bytes.clone()) else {
                 continue;
             };
-            let score = score_text(&text, &terms);
-            if score == 0 && !terms.is_empty() {
+            let score = bm25_score(&text, &terms, &candidate_ids, &index);
+            if score <= 0.0 && !terms.is_empty() {
                 continue;
             }
-            if score_threshold.is_some_and(|threshold| (score as f64) < threshold) {
+            if score_threshold.is_some_and(|threshold| score < threshold) {
                 continue;
             }
             results.push(SearchResult {
@@ -333,7 +340,7 @@ impl FileStore {
         }
         results.sort_by(|a, b| {
             b.score
-                .cmp(&a.score)
+                .total_cmp(&a.score)
                 .then_with(|| a.filename.cmp(&b.filename))
         });
         results.truncate(
@@ -382,14 +389,22 @@ impl FileStore {
             let Ok(text) = String::from_utf8(file.bytes.clone()) else {
                 continue;
             };
-            let mut terms = search_terms(&text);
-            terms.extend(search_terms(&file.filename));
-            terms.sort();
-            terms.dedup();
-            for term in terms {
+            let mut terms = document_terms(&text);
+            terms.extend(document_terms(&file.filename));
+            index
+                .doc_lengths
+                .insert(file.id.clone(), terms.len().max(1));
+            let unique_terms: HashSet<String> = terms.into_iter().collect();
+            for term in unique_terms {
                 index.terms.entry(term).or_default().insert(file.id.clone());
             }
         }
+        index.doc_count = index.doc_lengths.len();
+        index.avg_doc_len = if index.doc_count == 0 {
+            1.0
+        } else {
+            index.doc_lengths.values().sum::<usize>() as f64 / index.doc_count as f64
+        };
         index
     }
 
@@ -617,6 +632,15 @@ fn search_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn document_terms(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .map(str::trim)
+        .filter(|term| term.len() >= 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+#[cfg(test)]
 fn score_text(text: &str, terms: &[String]) -> usize {
     if terms.is_empty() {
         return 1;
@@ -628,19 +652,74 @@ fn score_text(text: &str, terms: &[String]) -> usize {
         .sum()
 }
 
+fn bm25_score(
+    text: &str,
+    query_terms: &[String],
+    candidate_ids: &[String],
+    index: &SearchIndex,
+) -> f64 {
+    if query_terms.is_empty() {
+        return 1.0;
+    }
+    let doc_terms = document_terms(text);
+    if doc_terms.is_empty() {
+        return 0.0;
+    }
+    let mut frequencies: HashMap<&str, usize> = HashMap::new();
+    for term in &doc_terms {
+        *frequencies.entry(term.as_str()).or_default() += 1;
+    }
+    let doc_len = doc_terms.len() as f64;
+    let avg_doc_len = index.avg_doc_len.max(1.0);
+    let total_docs = index.doc_count.max(candidate_ids.len()).max(1) as f64;
+    let mut deduped_terms = query_terms.to_vec();
+    deduped_terms.sort();
+    deduped_terms.dedup();
+
+    let raw_score = deduped_terms
+        .iter()
+        .map(|term| {
+            let tf = *frequencies.get(term.as_str()).unwrap_or(&0) as f64;
+            if tf <= 0.0 {
+                return 0.0;
+            }
+            let df = index
+                .terms
+                .get(term)
+                .map(|ids| ids.len())
+                .unwrap_or(0)
+                .max(1) as f64;
+            let idf = (1.0 + (total_docs - df + 0.5) / (df + 0.5)).ln();
+            let denom = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * (doc_len / avg_doc_len));
+            idf * ((tf * (BM25_K1 + 1.0)) / denom)
+        })
+        .sum::<f64>();
+    (raw_score * BM25_SCORE_SCALE * 1000.0).round() / 1000.0
+}
+
 fn snippet(text: &str, terms: &[String]) -> String {
     let lower = text.to_lowercase();
-    let start = terms
+    let first_match_byte = terms
         .iter()
         .filter_map(|term| lower.find(term))
         .min()
-        .unwrap_or(0)
-        .saturating_sub(300);
-    text.chars()
-        .skip(start)
-        .take(MAX_SEARCH_CHARS.min(1200))
+        .unwrap_or(0);
+    let first_match_char = text[..first_match_byte.min(text.len())].chars().count();
+    let window_start = first_match_char.saturating_sub(240);
+    let window_len = MAX_SEARCH_CHARS.min(960);
+    let mut snippet = text
+        .chars()
+        .skip(window_start)
+        .take(window_len)
         .collect::<String>()
-        .replace('\0', "")
+        .replace('\0', "");
+    if window_start > 0 {
+        snippet = format!("...{snippet}");
+    }
+    if text.chars().count() > window_start + window_len {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 fn is_text_file(file: &StoredFile) -> bool {
@@ -660,7 +739,7 @@ fn is_text_file(file: &StoredFile) -> bool {
 struct SearchResult {
     file_id: String,
     filename: String,
-    score: usize,
+    score: f64,
     snippet: String,
 }
 
@@ -878,6 +957,36 @@ mod tests {
     }
 
     #[test]
+    fn file_search_bm25_prefers_dense_matches() {
+        let store = FileStore::new();
+        store
+            .insert(
+                "wide.md",
+                "assistants",
+                "text/markdown",
+                b"relay alpha beta gamma delta epsilon zeta eta theta iota".to_vec(),
+                1,
+            )
+            .unwrap();
+        store
+            .insert(
+                "dense.md",
+                "assistants",
+                "text/markdown",
+                b"relay relay relay alpha".to_vec(),
+                1,
+            )
+            .unwrap();
+        let mut req = base_req(ResponsesInput::Text("relay alpha".into()));
+        req.tools = vec![json!({"type":"file_search"})];
+
+        let results = store.inject_file_search_context(&mut req, None, Some(2), None);
+
+        assert_eq!(results[0]["filename"], "dense.md");
+        assert!(results[0]["score"].as_f64().unwrap() > results[1]["score"].as_f64().unwrap());
+    }
+
+    #[test]
     fn resolves_input_file_to_text_content() {
         let store = FileStore::new();
         let file = store
@@ -1079,7 +1188,8 @@ mod tests {
         let terms = vec!["target_word".to_string()];
         let result = snippet(&long_text, &terms);
         assert!(result.contains("target_word"));
-        assert!(result.len() <= 1200);
+        assert!(result.starts_with("..."));
+        assert!(result.len() <= 970);
     }
 
     #[test]

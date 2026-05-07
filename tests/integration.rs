@@ -812,7 +812,7 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
                 "type": "file_search",
                 "vector_store_ids": ["{store_id}"],
                 "max_num_results": 1,
-                "ranking_options": {{"score_threshold": 1.0}}
+                "ranking_options": {{"score_threshold": 1.0, "ranker": "auto"}}
             }}]
         }}"#
     );
@@ -849,6 +849,11 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
     assert_eq!(metadata_store_ids, vec![store_id.clone()]);
     assert_eq!(json["metadata"]["local_file_search_max_num_results"], "1");
     assert_eq!(json["metadata"]["local_file_search_score_threshold"], "1");
+    assert_eq!(json["metadata"]["local_file_search_ranker"], "local_bm25");
+    assert_eq!(
+        json["metadata"]["local_file_search_requested_ranker"],
+        "auto"
+    );
 
     let retrieve = app
         .clone()
@@ -1507,6 +1512,7 @@ fn make_stream_args(
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
         allowed_mcp_servers: vec![],
+        allowed_computer_displays: vec![],
     }
 }
 
@@ -1546,6 +1552,7 @@ fn make_stream_args_custom(
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
         allowed_mcp_servers: vec![],
+        allowed_computer_displays: vec![],
     }
 }
 
@@ -1950,9 +1957,10 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
         format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
     }
 
-    let init = r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#;
+    let init = r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}"#;
+    let list = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file","annotations":{"readOnlyHint":true}}]}}"#;
     let tool =
-        r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"read ok"}]}}"#;
+        r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"read ok"}]}}"#;
     let script_path = std::env::temp_dir().join(format!(
         "deecodex-fake-mcp-{}.sh",
         uuid::Uuid::new_v4().simple()
@@ -1960,8 +1968,9 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
     std::fs::write(
         &script_path,
         format!(
-            "#!/bin/sh\ncat >/dev/null &\nprintf '%s' '{}{}'\nsleep 1\n",
+            "#!/bin/sh\ncat >/dev/null &\nprintf '%s' '{}{}{}'\nsleep 1\n",
             mcp_frame(init),
+            mcp_frame(list),
             mcp_frame(tool)
         ),
     )
@@ -2035,6 +2044,65 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
     assert_eq!(json["output"][1]["output"]["content"][0]["text"], "read ok");
 
     std::fs::remove_file(script_path).unwrap();
+}
+
+#[tokio::test]
+async fn test_responses_blocking_local_computer_executor_appends_failed_output() {
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_screen",
+                            "type": "function",
+                            "function": {
+                                "name": "local_computer",
+                                "arguments": "{\"type\":\"screenshot\",\"display\":\"browser\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }"#,
+        )
+        .await,
+    );
+    state.executors = Arc::new(
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+    );
+    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"screen","tools":[{"type":"computer_use","display":"browser"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["type"], "computer_call");
+    assert_eq!(json["output"][1]["type"], "computer_call_output");
+    assert_eq!(json["output"][1]["call_id"], "call_screen");
+    assert_eq!(json["output"][1]["status"], "failed");
+    assert_eq!(
+        json["output"][1]["output"]["error"]["type"],
+        "computer_executor_error"
+    );
 }
 
 #[tokio::test]
