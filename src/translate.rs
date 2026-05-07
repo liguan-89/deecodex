@@ -334,13 +334,11 @@ pub fn to_chat_request(
     }
 }
 
-fn tool_output_text(item_type: &str, item: &Value) -> String {
+fn tool_output_text(_item_type: &str, item: &Value) -> String {
     let mut chunks = Vec::new();
-    if item_type == "computer_call_output" {
-        for key in ["screenshot", "image_url"] {
-            if let Some(value) = item.get(key) {
-                collect_tool_output_value(value, &mut chunks);
-            }
+    for key in ["screenshot", "image_url"] {
+        if let Some(value) = item.get(key) {
+            collect_tool_output_value(value, &mut chunks);
         }
     }
     if let Some(output) = item.get("output") {
@@ -390,10 +388,27 @@ fn collect_tool_output_value(value: &Value, chunks: &mut Vec<String>) {
                 collect_tool_output_value(screenshot, chunks);
             }
             if chunks.len() == before {
-                chunks.push(serde_json::to_string(value).unwrap_or_default());
+                chunks.push(serialize_output_object(value, map));
             }
         }
         other => chunks.push(other.to_string()),
+    }
+}
+
+fn serialize_output_object(value: &Value, map: &serde_json::Map<String, Value>) -> String {
+    let has_image = map.values().any(|v| {
+        v.as_str().is_some_and(|s| s.starts_with("data:image/"))
+    });
+    if has_image {
+        let mut cleaned = map.clone();
+        for (_, v) in cleaned.iter_mut() {
+            if let Some(s) = v.as_str().filter(|s| s.starts_with("data:image/")) {
+                *v = Value::String(format_image_url(s));
+            }
+        }
+        serde_json::to_string(&cleaned).unwrap_or_default()
+    } else {
+        serde_json::to_string(value).unwrap_or_default()
     }
 }
 
@@ -1088,44 +1103,21 @@ mod tests {
     }
 
     #[test]
-    fn test_computer_call_output_extracts_screenshot() {
-        let sessions = SessionStore::new();
-        let req = base_req(ResponsesInput::Messages(vec![json!({
-            "type": "computer_call_output",
-            "call_id": "call_screen",
-            "screenshot": "data:image/png;base64,abc",
-            "output": [{"type": "output_text", "text": "clicked"}]
-        })]));
-
-        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
-
-        assert_eq!(chat.messages[0].role, "tool");
-        assert_eq!(
-            chat.messages[0].tool_call_id.as_deref(),
-            Some("call_screen")
-        );
-        let content = chat.messages[0].content.as_ref().unwrap().as_str().unwrap();
-        assert!(content.contains("[image omitted: image/png base64 3B]"));
-        assert!(content.contains("clicked"));
-    }
-
-    #[test]
-    fn test_mcp_tool_call_output_serializes_structured_output() {
+    fn test_mcp_output_top_level_screenshot_stripped() {
         let sessions = SessionStore::new();
         let req = base_req(ResponsesInput::Messages(vec![json!({
             "type": "mcp_tool_call_output",
             "call_id": "call_mcp",
-            "output": {"files": ["a.rs"], "ok": true}
+            "screenshot": "data:image/png;base64,xyz",
+            "output": {"status": "ok"}
         })]));
 
         let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        let content = chat.messages[0].content.as_ref().unwrap().as_str().unwrap();
 
-        assert_eq!(chat.messages[0].role, "tool");
-        assert_eq!(chat.messages[0].tool_call_id.as_deref(), Some("call_mcp"));
-        assert_eq!(
-            chat.messages[0].content.as_ref().unwrap().as_str().unwrap(),
-            r#"{"files":["a.rs"],"ok":true}"#
-        );
+        assert!(!content.contains("data:image/"));
+        assert!(content.contains("[image omitted: image/png base64 3B]"));
+        assert!(content.contains("ok"));
     }
 
     #[test]

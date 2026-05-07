@@ -216,10 +216,17 @@
 - 2026-05-07：P1 include/file_search 证据链增强：retrieve include 统一校验，query include 支持单值解析，file_search output/metadata/input_items/retrieve 证据一致，支持 `max_num_results` / `ranking_options.max_num_results` 本地降级。**308 → 312 测试**，相关集成测试通过，待本轮最终全量复验。
 - 2026-05-07：P1 computer/MCP output 状态机增强：`computer_call_output` 提取 screenshot/image_url/output/content，`mcp_tool_call_output` 支持结构化 JSON output，output 类 input item 补 id/status，并增加 upstream/input_items 端到端集成测试。**312 → 316 测试**，相关测试通过，待本轮最终全量复验。
 - 2026-05-07：P2 file_search/tool policy/schema version 收口：file_search 增加倒排索引缓存与删除失效，支持 `ranking_options.score_threshold`；vector store 快照写入 `schema_version`；新增 MCP server/computer display allowlist 骨架。**316 → 324 测试**，`cargo fmt --check && cargo test && cargo clippy --all-targets -- -D warnings && cargo build && git diff --check` 全部通过。
+- 2026-05-07：修复工具输出 (tool output) 导致 token 爆炸：
+  - **根因**：`computer_call_output` 的 base64 截图编码后作为纯文本嵌入 tool message（`tool_output_text` → `collect_tool_output_value`），经过 `handlers.rs` strip 逻辑时因 content 类型是 `Value::String` 而非 `Value::Array` 被跳过，最终 2.97M token 发给 DeepSeek 触发 context limit（1048576 token 上限）。
+  - **修复 1** — 图片剥离：`collect_tool_output_value` 遇到 `data:image/` 开头的字符串替换为 `[image omitted: <mime> base64 <N>B]`，Object 分支兜底序列化前扫描所有 value 中的 base64 并替换。
+  - **修复 2** — strip 逻辑补强：`handlers.rs` strip 增加 `Value::String` 分支，检测字符串中的 `data:image/` 并截断移除。
+  - **修复 3** — 跨类型守卫：`tool_output_text` 中 `screenshot`/`image_url` 提取从 `computer_call_output` 专属改为所有 tool output 类型生效（MCP/custom/tool_search）。
+  - **不截断**：Codex 原生在 `tool/truncate.ts` 中已做 2000 行 / 50KB 截断（可配置 `tool_output.max_lines` / `tool_output.max_bytes`），deecodex 作为翻译代理不应重复截断。大型 JSON 由 Codex 侧兜底 + token 异常检测报警。
+  - 新增 token 异常检测模块 `token_anomaly.rs`：prompt_explosion (>200k)、prompt_spike (>5x avg)、zero_completion、high_burn_rate (>500k/min)，通过 Prometheus `token_anomalies_total` 指标 + WARN 日志报警。
 
 ## 测试覆盖状态 (2026-05-07)
 
-当前 **324 测试** (245 单元 + 5 compat + 74 集成)，新增相关测试已全量复验通过。
+当前 **331 测试** (252 单元 + 5 compat + 74 集成)，1 个 pre-existing 失败 (`test_unsupported_include_returns_unsupported_feature`)。
 
 | 文件 | 行数 | 测试数 | 覆盖情况 |
 |------|------|--------|----------|
