@@ -57,6 +57,22 @@ pub struct Args {
     #[arg(long, env = "DEECODEX_CHINESE_THINKING", default_value = "false")]
     pub chinese_thinking: bool,
 
+    /// 启动/关闭时自动注入/移除 codex 配置（默认开启）
+    #[arg(
+        long,
+        env = "DEECODEX_CODEX_AUTO_INJECT",
+        default_value = "true"
+    )]
+    pub codex_auto_inject: bool,
+
+    /// 持久注入 codex 配置，开启后不再自动注入/移除（默认关闭）
+    #[arg(
+        long,
+        env = "DEECODEX_CODEX_PERSISTENT_INJECT",
+        default_value = "false"
+    )]
+    pub codex_persistent_inject: bool,
+
     #[arg(long, env = "DEECODEX_PROMPTS_DIR", default_value = "prompts")]
     pub prompts_dir: PathBuf,
 
@@ -233,6 +249,9 @@ impl Args {
                     &file.vision_endpoint,
                 ),
                 chinese_thinking: self.chinese_thinking || file.chinese_thinking,
+                codex_auto_inject: self.codex_auto_inject && file.codex_auto_inject,
+                codex_persistent_inject: self.codex_persistent_inject
+                    || file.codex_persistent_inject,
                 prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
                     file.prompts_dir
                 } else {
@@ -365,6 +384,8 @@ mod tests {
             vision_model: "MiniMax-M1".into(),
             vision_endpoint: "v1/coding_plan/vlm".into(),
             chinese_thinking: false,
+            codex_auto_inject: true,
+            codex_persistent_inject: false,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: dir.clone(),
             token_anomaly_prompt_max: 200000,
@@ -399,6 +420,8 @@ mod tests {
             vision_model: "MiniMax-M1".into(),
             vision_endpoint: "v1/coding_plan/vlm".into(),
             chinese_thinking: false,
+            codex_auto_inject: true,
+            codex_persistent_inject: false,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: PathBuf::from(".deecodex"),
             token_anomaly_prompt_max: 200000,

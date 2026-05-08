@@ -38,7 +38,7 @@ fn fallback_args(state: &AppState) -> Args {
     Args {
         command: None,
         config: None,
-        port: 4448,
+        port: 4446,
         upstream: state.upstream.as_ref().to_string(),
         api_key: state.api_key.as_ref().to_string(),
         client_api_key: state.client_api_key.as_ref().to_string(),
@@ -57,6 +57,8 @@ fn fallback_args(state: &AppState) -> Args {
         vision_model: state.vision_model.as_ref().to_string(),
         vision_endpoint: state.vision_endpoint.as_ref().to_string(),
         chinese_thinking: state.chinese_thinking,
+        codex_auto_inject: state.codex_auto_inject,
+        codex_persistent_inject: state.codex_persistent_inject,
         data_dir: state.data_dir.as_ref().clone(),
         prompts_dir: state.data_dir.join("prompts"),
         token_anomaly_prompt_max: 200000,
@@ -273,7 +275,7 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime,
-        "port": load_args(&state.data_dir).map(|a| a.port).unwrap_or(4448),
+        "port": load_args(&state.data_dir).map(|a| a.port).unwrap_or(4446),
         "upstream": state.upstream.as_str(),
         "vision_enabled": state.vision_upstream.is_some(),
         "mcp_enabled": state.executors.mcp.enabled(),

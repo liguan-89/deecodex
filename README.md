@@ -114,7 +114,7 @@ cp .env.example .env
 vim .env                                # 填入 DEECODEX_API_KEY
 ./deecodex.sh start                     # 启动服务
 ./deecodex.sh health                    # 确认 healthy
-# 浏览器打开 http://127.0.0.1:4448/   # Web 配置面板
+# 浏览器打开 http://127.0.0.1:4446/   # Web 配置面板
 ```
 
 **Windows：**
@@ -124,10 +124,10 @@ copy env.example .env
 notepad .env                            # 填入 DEECODEX_API_KEY
 deecodex.bat start                      # 启动服务
 deecodex.bat health                     # 确认 healthy
-# 浏览器打开 http://127.0.0.1:4448/   # Web 配置面板
+# 浏览器打开 http://127.0.0.1:4446/   # Web 配置面板
 ```
 
-服务启动后，浏览器访问 `http://127.0.0.1:4448/` 即可使用 **Web 配置面板**，零命令行完成所有配置。
+服务启动后，浏览器访问 `http://127.0.0.1:4446/` 即可使用 **Web 配置面板**，零命令行完成所有配置。
 
 Codex 桌面端 `~/.codex/config.toml`：
 
@@ -137,7 +137,7 @@ model_provider = "custom"
 model_reasoning_effort = "medium"
 
 [model_providers.custom]
-base_url = "http://127.0.0.1:4448/v1"
+base_url = "http://127.0.0.1:4446/v1"
 name = "custom"
 requires_openai_auth = true
 wire_api = "responses"
@@ -145,7 +145,7 @@ wire_api = "responses"
 
 > ⚠️ `base_url` 末尾不要加 `/`，端口须与 `.env` 中 `DEECODEX_PORT` 一致。
 
-CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4448/v1` 和任意 API Key。
+CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 API Key。
 
 ## 日常管理
 
@@ -218,7 +218,7 @@ CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4448/v1` 和任意 
 |------|------|--------|
 | `DEECODEX_UPSTREAM` | DeepSeek API 地址 | `https://api.deepseek.com/v1` |
 | `DEECODEX_API_KEY` | DeepSeek API Key | **必填** |
-| `DEECODEX_PORT` | 监听端口 | `4448` |
+| `DEECODEX_PORT` | 监听端口 | `4446` |
 | `DEECODEX_MODEL_MAP` | 模型映射 JSON | 见 .env.example |
 | `DEECODEX_CLIENT_API_KEY` | 本地 Bearer Token | 留空关闭鉴权 |
 | `CODEX_RELAY_VISION_UPSTREAM` | MiniMax VLM 地址 | 留空关闭视觉路由 |

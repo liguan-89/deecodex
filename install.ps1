@@ -8,7 +8,7 @@ $Host.UI.RawUI.WindowTitle = "deecodex 安装向导"
 $Repo = "liguan-89/deecodex"
 $InstallDir = "$env:LOCALAPPDATA\Programs\deecodex"
 $FallbackVersion = "v1.0.0"
-$Port = "4448"
+$Port = "4446"
 
 # ===== 辅助函数 =====
 function Write-Step {
@@ -173,7 +173,7 @@ DEECODEX_API_KEY=sk-your-deepseek-api-key-here
 DEECODEX_CLIENT_API_KEY=
 
 # 监听端口
-DEECODEX_PORT=4448
+DEECODEX_PORT=4446
 
 # 模型名映射（JSON 格式）
 DEECODEX_MODEL_MAP={"GPT-5.5":"deepseek-v4-pro","gpt-5.5":"deepseek-v4-pro","gpt-5.4":"deepseek-v4-flash","gpt-5.4-mini":"deepseek-v4-flash","codex-auto-review":"deepseek-v4-flash"}

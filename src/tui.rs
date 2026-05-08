@@ -75,6 +75,8 @@ struct TuiAppState {
     data_dir: String,
     prompts_dir: String,
     chinese_thinking: bool,
+    codex_auto_inject: bool,
+    codex_persistent_inject: bool,
 
     // Upstream
     upstream: String,
@@ -123,6 +125,8 @@ impl TuiAppState {
             data_dir: args.data_dir.display().to_string(),
             prompts_dir: args.prompts_dir.display().to_string(),
             chinese_thinking: args.chinese_thinking,
+            codex_auto_inject: args.codex_auto_inject,
+            codex_persistent_inject: args.codex_persistent_inject,
 
             upstream: args.upstream.clone(),
             api_key: args.api_key.clone(),
@@ -190,6 +194,8 @@ impl TuiAppState {
             vision_model: self.vision_model,
             vision_endpoint: self.vision_endpoint,
             chinese_thinking: self.chinese_thinking,
+            codex_auto_inject: self.codex_auto_inject,
+            codex_persistent_inject: self.codex_persistent_inject,
             prompts_dir: PathBuf::from(self.prompts_dir),
             data_dir: PathBuf::from(self.data_dir),
             token_anomaly_prompt_max: self
@@ -235,6 +241,8 @@ impl TuiAppState {
             "data_dir" => self.data_dir.clone(),
             "prompts_dir" => self.prompts_dir.clone(),
             "chinese_thinking" => self.chinese_thinking.to_string(),
+            "codex_auto_inject" => self.codex_auto_inject.to_string(),
+            "codex_persistent_inject" => self.codex_persistent_inject.to_string(),
             "upstream" => self.upstream.clone(),
             "api_key" => self.api_key.clone(),
             "client_api_key" => self.client_api_key.clone(),
@@ -269,6 +277,20 @@ impl TuiAppState {
             "prompts_dir" => self.prompts_dir.clone(),
             "chinese_thinking" => {
                 if self.chinese_thinking {
+                    "是".into()
+                } else {
+                    "否".into()
+                }
+            }
+            "codex_auto_inject" => {
+                if self.codex_auto_inject {
+                    "是".into()
+                } else {
+                    "否".into()
+                }
+            }
+            "codex_persistent_inject" => {
+                if self.codex_persistent_inject {
                     "是".into()
                 } else {
                     "否".into()

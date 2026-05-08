@@ -392,6 +392,9 @@ async fn main() -> Result<()> {
         vector_stores,
         background_tasks: Arc::new(dashmap::DashMap::new()),
         chinese_thinking: args.chinese_thinking,
+        codex_auto_inject: args.codex_auto_inject,
+        codex_persistent_inject: args.codex_persistent_inject,
+        port: args.port,
         metrics: Arc::new(metrics::Metrics::new()),
         token_tracker: Arc::new(crate::token_anomaly::TokenTracker::new(
             32,

@@ -516,6 +516,8 @@ mod tests {
             vision_model: "MiniMax-M1".into(),
             vision_endpoint: "v1/coding_plan/vlm".into(),
             chinese_thinking: false,
+            codex_auto_inject: true,
+            codex_persistent_inject: false,
             prompts_dir: std::path::PathBuf::from("prompts"),
             data_dir: std::path::PathBuf::from(".deecodex"),
             token_anomaly_prompt_max: 200000,

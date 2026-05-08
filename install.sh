@@ -15,7 +15,7 @@ NC='\033[0m'
 GH_REPO="liguan-89/deecodex"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.deecodex"
-PORT="4448"
+PORT="4446"
 FALLBACK_VERSION="v1.0.0"
 
 # ===== 工具函数 =====
@@ -204,7 +204,7 @@ DEECODEX_API_KEY=sk-your-deepseek-api-key-here
 DEECODEX_CLIENT_API_KEY=
 
 # 监听端口
-DEECODEX_PORT=4448
+DEECODEX_PORT=4446
 
 # 模型名映射（JSON 格式）
 DEECODEX_MODEL_MAP='{"GPT-5.5":"deepseek-v4-pro","gpt-5.5":"deepseek-v4-pro","gpt-5.4":"deepseek-v4-flash","gpt-5.4-mini":"deepseek-v4-flash","codex-auto-review":"deepseek-v4-flash"}'
