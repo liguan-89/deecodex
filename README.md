@@ -48,14 +48,13 @@ curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/env.examp
 chmod +x deecodex.sh
 ```
 
-**Windows：**
+**Windows（PowerShell 一键安装）：**
 
-在 [Releases](https://github.com/liguan-89/deecodex/releases) 页面下载：
-- `deecodex.exe` → 放到 `C:\Users\<用户名>\AppData\Local\Programs\deecodex\`
-- `deecodex.bat` → 同上目录
-- `env.example` → 同上目录，重命名为 `.env`
+```powershell
+irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
+```
 
-然后将 `C:\Users\<用户名>\AppData\Local\Programs\deecodex` 添加到系统 PATH。
+脚本自动完成：下载文件 → 添加 PATH → 生成配置模板。安装后编辑 `.env` 填入 API Key 即可使用。
 
 ### 方式二：源码编译
 
