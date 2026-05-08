@@ -30,6 +30,12 @@ Codex CLI  →  /v1/responses (gpt-5.5 / gpt-5.4)
 | Node.js（可 `import("playwright")`） | Playwright computer executor |
 | `mcp-filesystem` 等 MCP server | 本地 MCP tool 执行 |
 
+## 交流群
+
+欢迎加入 deecodex 交流群，一起讨论、反馈、共建。
+
+<img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.0515.jpg" width="200" alt="deecodex 交流群1" /> <img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/_20260508195435_79_22.jpg" width="200" alt="deecodex 交流群2" />
+
 ## 安装
 
 ### 方式一：下载预编译二进制（推荐）
@@ -267,12 +273,6 @@ src/
 ```
 
 测试：364 个（270 lib + 9 bin + 5 compat + 80 integration）
-
-## 交流群
-
-欢迎加入 deecodex 交流群，一起讨论、反馈、共建。
-
-<img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.0515.jpg" width="200" alt="deecodex 交流群1" /> <img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/_20260508195435_79_22.jpg" width="200" alt="deecodex 交流群2" />
 
 ## License
 
