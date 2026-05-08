@@ -12,20 +12,48 @@ set "LOG_FILE=%LOG_DIR%deecodex.log"
 set "BIN=deecodex.exe"
 set "GRACEFUL_TIMEOUT=35"
 
-if "%~1"=="" goto usage
-goto case_%~1
-
-:usage
 set "GH_REPO=liguan-89/deecodex"
 
+if "%~1"=="" goto menu
+goto case_%~1
+
+:menu
+cls
+echo ================================
+echo   deecodex 管理菜单
+echo ================================
+echo.
+echo   [1] 启动服务
+echo   [2] 停止服务
+echo   [3] 重启服务
+echo   [4] 查看状态
+echo   [5] 健康检查
+echo   [6] 查看日志
+echo   [7] 升级最新版
+echo   [0] 退出
+echo.
+set /p CHOICE="请选择 (0-7): "
+if "%CHOICE%"=="1" goto case_start
+if "%CHOICE%"=="2" goto case_stop
+if "%CHOICE%"=="3" goto case_restart
+if "%CHOICE%"=="4" goto case_status
+if "%CHOICE%"=="5" goto case_health
+if "%CHOICE%"=="6" goto case_logs
+if "%CHOICE%"=="7" goto case_update
+if "%CHOICE%"=="0" exit /b 0
+goto menu
+
+:usage
 echo 用法: %~nx0 {start^|stop^|restart^|status^|logs^|health^|update}
+echo       直接双击运行可进入交互菜单
 exit /b 1
 
 rem === 加载 .env ===
 :load_env
 if not exist "%ENV_FILE%" (
     echo 错误: 找不到 .env 文件 (%ENV_FILE%)
-    echo       请先创建: copy .env.example .env && notepad .env
+    echo       请将 .env.example 重命名为 .env 并用记事本填入 API Key
+    pause
     exit /b 1
 )
 for /f "usebackq delims=" %%a in ("%ENV_FILE%") do (
@@ -130,8 +158,9 @@ if exist "%PROJECT_DIR%%BIN%" (
     if not errorlevel 1 set "BIN_PATH=%BIN%"
 )
 if "%BIN_PATH%"=="" (
-    echo 错误: 找不到 %BIN%，请将 %BIN% 放在脚本同目录或 PATH 中
+    echo 错误: 找不到 %BIN%，请将 %BIN% 放在脚本同目录
     echo       下载: https://github.com/liguan-89/deecodex/releases
+    pause
     exit /b 1
 )
 
@@ -141,6 +170,8 @@ call :map_env
 
 if "%DEECODEX_API_KEY%"=="" (
     echo 错误: 请在 .env 中填入 DEECODEX_API_KEY
+    echo       用记事本打开 %ENV_FILE% 修改
+    pause
     exit /b 1
 )
 
