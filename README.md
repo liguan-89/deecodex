@@ -2,21 +2,53 @@
 
 **DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层**
 
-将 Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek 等第三方模型，同时保留思考模式、工具调用、Web Search 等完整功能。内置本地 Responses 增强层：Files/Vector Store API、file_search（BM25 chunk 级索引）、computer/MCP executor、配置诊断等。可选配 MiniMax 视觉路由支持多模态图片理解。
+将 Codex CLI 发出的 **Responses API** 请求实时翻译为 **Chat Completions API**，使 Codex 可以原生对接 DeepSeek，同时保留思考模式、工具调用等完整功能。
+
+内置本地增强层：Files/Vector Store API、file_search（BM25 chunk 级索引）、computer/MCP executor、配置诊断、视觉路由等。
 
 ```
-Codex CLI 发出 /v1/responses (gpt-5.5 / gpt-5.4 等模型名)
-        │
-        ▼
-  deecodex (Responses ↔ Chat 协议翻译 + 模型映射 + 缓存 + 重试 + 视觉路由)
-        │
-        ▼
-  api.deepseek.com/v1/chat/completions
+Codex CLI  →  /v1/responses (gpt-5.5 / gpt-5.4)
+                │
+                ▼
+          deecodex（协议翻译 + 模型映射 + 增强层 + 视觉路由）
+                │
+                ▼
+          api.deepseek.com/v1/chat/completions
 ```
+
+## 依赖要求
+
+| 依赖 | 用途 | 必需 |
+|------|------|------|
+| Rust 1.80+ | 源码编译 | 仅源码安装 |
+| `~/.local/bin` 在 PATH | 二进制存放 | 是 |
+
+以下为可选依赖，仅在使用对应功能时需要：
+
+| 依赖 | 用途 |
+|------|------|
+| Node.js（可 `import("playwright")`） | Playwright computer executor |
+| `mcp-filesystem` 等 MCP server | 本地 MCP tool 执行 |
 
 ## 安装
 
-### 从源码编译
+### 方式一：下载预编译二进制（推荐）
+
+从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载：
+
+```bash
+# macOS ARM64
+curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex -o deecodex
+chmod +x deecodex
+mv deecodex ~/.local/bin/
+
+# 下载管理脚本和环境变量模板
+curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.sh -o deecodex.sh
+curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/env.example -o .env.example
+chmod +x deecodex.sh
+```
+
+### 方式二：源码编译
 
 ```bash
 git clone https://github.com/liguan-89/deecodex.git
@@ -25,16 +57,7 @@ cargo build --release
 cp target/release/deecodex ~/.local/bin/
 ```
 
-### 从 Release 下载
-
-从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载 `deecodex` 二进制：
-
-```bash
-chmod +x deecodex
-mv deecodex ~/.local/bin/
-```
-
-### 验证
+验证安装：
 
 ```bash
 deecodex --help
@@ -63,289 +86,90 @@ requires_openai_auth = true
 wire_api = "responses"
 ```
 
+> ⚠️ `base_url` 末尾不要加 `/`，端口须与 `.env` 中 `DEECODEX_PORT` 一致。
+
 CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 API Key。
 
-## 项目结构
+## 日常管理
 
-## API 端点
-
-deecodex 实现了完整的 Responses API 端点集合，远超出简单的请求翻译：
-
-| 端点 | 方法 | 说明 |
-|---|---|---|
-| `/v1/responses` | POST | 创建响应（主入口，流式/非流式） |
-| `/v1/responses/:id` | GET | 获取已存储的响应详情 |
-| `/v1/responses/:id` | DELETE | 删除已存储的响应 |
-| `/v1/responses/:id/cancel` | POST | 取消正在进行的流式响应 |
-| `/v1/responses/:id/input_items` | GET | 获取响应的输入项列表 |
-| `/v1/responses/compact` | POST | 压缩存储中的响应 |
-| `/v1/responses/input_tokens` | POST | 计算输入 token 数 |
-| `/v1/conversations` | POST | 创建会话 |
-| `/v1/conversations/:id` | GET | 获取会话详情 |
-| `/v1/conversations/:id` | DELETE | 删除会话 |
-| `/v1/conversations/:id/items` | GET | 获取会话消息列表 |
-| `/v1/models` | GET | 模型列表（透传上游） |
-| `/v1/health` | GET | 健康检查 |
-
-### 本地增强层能力
-
-deecodex 在 Responses ↔ Chat 翻译之外，内置了一层面向 Codex 的本地 Responses 增强能力。目标是尽量补齐 Codex 客户端依赖、且不伪造无法可靠实现的 OpenAI 托管状态。
-
-| 能力 | 支持情况 |
-|---|---|
-| Hosted prompts | 支持 `prompt: "id"` 和 `prompt: {id, version, variables}`；从本地 `prompts/` 读取 JSON/Markdown 模板并注入 `instructions` / `input_prefix` |
-| Files API | 支持上传、列表、读取 metadata、读取内容、删除；默认持久化到 `CODEX_RELAY_DATA_DIR` |
-| Vector stores | 支持本地 vector store、文件关联和 file batch 壳层；持久化快照带 schema version，用于约束本地 file_search 范围 |
-| file_search | 对已上传文本文件维护 chunk 级倒排索引和 BM25 排序，文件名会单独加权；命中窗口注入模型上下文，并输出 `file_search_call` / metadata / input_items 证据链 |
-| Computer executor | `computer_use` / `computer_use_preview` 转换为 `local_computer`；启用 `DEECODEX_COMPUTER_EXECUTOR=playwright` 后可执行 `open_url`、`screenshot`、`click`、`type`、`keypress`、`scroll` 并回填 `computer_call_output`；可用 `DEECODEX_PLAYWRIGHT_STATE_DIR` 复用浏览器状态；`browser-use` 可通过本地 HTTP/命令 bridge 接入 |
-| MCP executor | `mcp` / `remote_mcp` 转换为 `local_mcp_call`；启用 `DEECODEX_MCP_EXECUTOR_CONFIG` 后通过本地 stdio MCP server 执行并回填 `mcp_tool_call_output`；read-only 会优先使用 `tools/list` metadata 判断 |
-| input_tokens | `/v1/responses/input_tokens` 使用 `tiktoken-rs` 做本地 token 计数 |
-| Client auth | `/v1/*` 可用独立 `DEECODEX_CLIENT_API_KEY` 校验；`/health` 和 `/v1` 探活豁免，显式留空可关闭本地鉴权 |
-
-### 会话存储
-
-deecodex 内置内存会话存储，支持响应的生命周期管理：
-
-- 响应创建后自动存储到 `SessionStore`
-- `background: true` 时放入后台任务队列，返回 `queued` 状态
-- 支持通过 `conversation` 字段关联响应到会话
-- 存储包含完整响应体和用量数据
-- 服务重启后数据丢失（Codex 会重放历史）
-
-
-```
-deecodex/
-├── Cargo.toml                  # Rust 项目配置
-├── src/
-│   ├── main.rs                 # 服务入口 + 路由 + 配置合并 + 服务管理
-│   ├── handlers.rs             # Axum HTTP handlers + AppState + 中间件
-│   ├── translate.rs            # Responses → Chat 请求翻译
-│   ├── stream.rs               # Chat SSE → Responses SSE 流式翻译
-│   ├── config.rs               # Args 结构体 + 配置持久化/合并
-│   ├── tui.rs                  # 中文 TUI 交互配置菜单
-│   ├── executor.rs             # 本地 computer/MCP executor
-│   ├── validate.rs             # 启动前配置诊断
-│   ├── files.rs                # 本地 Files API + file_search (BM25 chunk)
-│   ├── vector_stores.rs        # 本地 Vector Store API
-│   ├── prompts.rs              # 本地 Hosted Prompts 注册表
-│   ├── session.rs              # 内存会话/对话存储
-│   ├── types.rs                # 请求/响应/流/用量类型定义
-│   ├── cache.rs                # LRU 请求缓存
-│   ├── sse.rs                  # SSE 事件构建辅助
-│   ├── token_anomaly.rs        # Token 用量异常检测
-│   ├── ratelimit.rs            # 滑动窗口限流
-│   ├── metrics.rs              # Prometheus 指标
-│   ├── codex_config.rs         # Codex config.toml 注入/还原
-│   ├── utils.rs                # 工具函数
-│   └── lib.rs                  # 库 crate 模块导出
-├── deecodex.sh                 # 管理脚本（start/stop/restart/status/logs）
-├── .env.example                # 环境变量模板
-├── DEVELOPMENT.md              # 开发记录
-└── tests/                      # 76 个集成测试 + 5 个 compat 测试
+```bash
+./deecodex.sh start      # 启动（自动日志轮转 + Codex 配置注入）
+./deecodex.sh stop       # 停止（35s 优雅超时 + 还原配置）
+./deecodex.sh restart    # 重启
+./deecodex.sh status     # PID + 端口
+./deecodex.sh logs       # 实时日志
+./deecodex.sh health     # 健康检查
 ```
 
-### v1.0.0 新增
+## v1.0.0 核心功能
 
-- **配置诊断（validate）**：启动前校验 executor 配置，检查 Playwright/node 可用性、browser-use bridge 连通性、MCP server 命令存在性，诊断结果输出为 tracing 日志
-- **executor 桥梁增强**：Playwright persistent context 状态复用（`DEECODEX_PLAYWRIGHT_STATE_DIR`）、browser-use HTTP/命令 bridge、截图超限自动省略
-- **file_search chunk 级索引**：1200 字符滑动窗口分块 + BM25 打分 + 文件名独立加权 + 稳定哈希 item id
-- **TUI/Shell 同步**：3 个新增 executor 字段已纳入 TUI 菜单和 `deecodex.sh`
-- **Codex CLI 兼容性回归**：通过 Codex CLI v0.125.0 smoke test，修复 `reasoning.encrypted_content` include 拒绝问题
-- 测试数：364（270 lib + 9 bin + 5 compat + 80 integration）
+### 协议翻译
 
-### 完整 Responses 协议覆盖
+完整的 Responses API ↔ Chat Completions API 双向翻译，覆盖 13 个端点、9 种工具类型、11 种流式事件。
 
-| 分类 | 内容 |
-|---|---|
-| 端点 | `POST /v1/responses`（流式+非流式）、`GET/DELETE /v1/responses/:id`、`GET input_items`、`POST compact`、`POST cancel`、`POST input_tokens`、Conversations CRUD、Files API（5 端点）、Vector Stores（10 端点）、Prompts（2 端点） |
-| 工具类型 | `function`、`namespace`、`custom/apply_patch`、`local_shell`、`computer_use`、`mcp`、`file_search`、`web_search` |
-| 流式事件 | `response.created/completed/failed`、`output_item.added/done`、`output_text.delta`、`reasoning_summary_text.delta`、`function_call_arguments.delta`、`mcp_tool_call_output.added/done`、`computer_call_output.added/done` |
-| 协议字段 | `background`、`store`、`conversation`、`include`、`parallel_tool_calls`、`max_tool_calls`、`top_logprobs`、`user`、`safety_identifier`、`service_tier`、`text.format`、`text.response_format`、`reasoning` |
+| 端点 | 说明 |
+|------|------|
+| `POST /v1/responses` | 创建响应（流式/非流式） |
+| `GET /v1/responses/:id` | 获取已存储的响应 |
+| `DELETE /v1/responses/:id` | 删除响应 |
+| `POST /v1/responses/:id/cancel` | 取消进行中的响应 |
+| `GET /v1/responses/:id/input_items` | 获取输入项列表 |
+| `POST /v1/responses/compact` | 压缩响应 |
+| `POST /v1/responses/input_tokens` | token 计数 |
+| Conversations CRUD | 会话管理（4 端点） |
+| Files API | 文件上传/列表/读取/删除（5 端点） |
+| Vector Stores API | 向量存储管理（10 端点） |
+| Hosted Prompts | 本地模板注册表（2 端点） |
+| `/v1/models` | 模型列表透传 |
+| `/v1/health` | 健康检查 |
 
-### 请求方向（Codex → DeepSeek）
+### 本地增强层
 
-## 协议转换全表
+| 能力 | 说明 |
+|------|------|
+| **file_search** | chunk 级倒排索引 + BM25 排序，文件名独立加权 |
+| **Computer executor** | Playwright/browser-use 后端，支持 `open_url`/`screenshot`/`click`/`type`/`keypress`/`scroll` |
+| **MCP executor** | stdio JSON-RPC，read-only 保护 |
+| **Files/Vector Stores** | 本地持久化，约束 file_search 范围 |
+| **配置诊断** | 启动前校验 executor 配置、Playwright/node 可用性、MCP 命令存在性 |
+| **中文思考注入** | `DEECODEX_CHINESE_THINKING=true` 自动注入 |
+| **Token 异常检测** | prompt_explosion/spike/zero_completion/high_burn_rate |
+| **视觉路由** | 多模态图片路由至 MiniMax VLM（可选配置） |
 
-deecodex 在企业级精度下完成了 Responses API ↔ Chat Completions API 的双向翻译：
+### 请求翻译要点
 
-### 请求方向（Codex → DeepSeek）
+- **连续 function_call 自动合并**为单条 assistant 消息
+- **MCP namespace 展开**为独立 function tools，按名称去重
+- **apply_patch** → `exec_command` 名称映射
+- **Web Search** 激活 DeepSeek `web_search_options`
+- **图片检测**（`new_image`）替代启发式判断，精准路由视觉请求
+- 六级思考等级映射（none/minimal/low/medium/high/xhigh）
 
-| Responses API 字段 | 转换为 | 说明 |
-|---|---|---|
-| `model` | `model` | 通过 `DEECODEX_MODEL_MAP` 映射 |
-| `input` (text) | `messages[{role:"user", content}]` | 纯文本输入 |
-| `input` (messages) | `messages[]` | 消息数组，逐项转换 |
-| `input[].type = "message"` | `messages[{role, content}]` | 常规消息，`developer` → `system` |
-| `input[].type = "function_call"` | 单个 `messages[{role:"assistant", tool_calls}]` | **连续 function_call 自动合并为一条 assistant 消息** |
-| `input[].type = "function_call_output"` | `messages[{role:"tool", content, tool_call_id}]` | 失败时前缀 `[FAILED]` |
-| `input[].type = "mcp_tool_call_output"` | `messages[{role:"tool"}]` | MCP 工具输出 |
-| `input[].type = "custom_tool_call_output"` | `messages[{role:"tool"}]` | 自定义工具输出 |
-| `input[].type = "tool_search_output"` | `messages[{role:"tool"}]` | 搜索工具输出 |
-| `content` (String) | `content` (String) | 纯文本 |
-| `content` (Array) | `content` (Array) | 多模态内容数组 |
-| `type = "input_image"` | `type = "image_url"` | 图片格式转换 |
-| Base64 内嵌文本 | 自动切割为 text + image_url | 从文本中提取 `data:image/` |
-| `instructions` | 优先于 `system` 作为 system prompt | `system` 字段兼容 |
-| `previous_response_id` | 会话历史拼接 | 自动从本地 store 恢复历史 |
-| `conversation` | 本地 conversation 历史拼接 | 支持 string id / object id；不能与 `previous_response_id` 同用 |
-| `tools[].type = "function"` | `tools[{type:"function", function:{...}}]` | 标准函数 |
-| `tools[].type = "custom"` | `tools[{type:"function", function:{...}}]` | **自定义工具 → 带参数 schema 的 function** |
-| `tools[].type = "namespace"` | 展开为多个 function tools | **MCP 命名空间工具展开** |
-| `tools[].name = "apply_patch"` | `exec_command` | **维持行为但改名，避免上游拒绝** |
-| 同名 tool 去重 | 保留首个，删除重复 | **DeepSeek 强制要求工具名唯一** |
-| `tools.web_search_preview` | `web_search_options` | **DeepSeek web_search 激活** |
-| `stream: true` | `stream: true` + `stream_options.include_usage` | 流式输出 + 用量统计 |
-| `temperature` | `temperature` | 透传 |
-| `top_p` | `top_p` | 透传 |
-| `max_output_tokens` | `max_tokens` | 字段名适配 |
-| `tool_choice` | `tool_choice` | 透传 |
-| `parallel_tool_calls` | `parallel_tool_calls` | 透传给兼容上游 |
-| `store` | 本地 response/input/history 存储开关 | `false` 时生成结果但不可 retrieve |
-| `metadata` | Responses response metadata | 随 response 保存和返回 |
-| `truncation` | Responses response truncation | 记录到 response 对象 |
-| `background` | 后台非流式任务 | 先返回 `queued`，后台完成后可 retrieve；cancel 会 abort 本地任务 |
-| `text.format` | `response_format` | 支持 `json_object` / `json_schema` |
-| `prompt_cache_key` / `safety_identifier` / `user` | `user` / 本地缓存命名空间 | 优先 `user`，其次 `safety_identifier`，再其次 `prompt_cache_key` |
-| `max_tool_calls` | 本地 output 限制 | 超出后标记 `incomplete` |
-| `top_logprobs` | 400 unsupported | Chat 兼容上游无法提供 Responses logprobs |
-| `reasoning.effort` | `reasoning_effort` + `thinking` | 六级映射（见下文） |
-| `reasoning.summary` | — | 透传 |
-| — | 中文思考指令（可选） | `DEECODEX_CHINESE_THINKING=true` 时注入 |
+### 响应流处理
 
-### 响应方向（DeepSeek → Codex）
-
-| Chat API 字段 | 转换为 Responses API 字段 |
-|---|---|
-| `choices[0].message.content` | `output[0].content[0].text` |
-| `choices[0].message.reasoning_content` | 流式 → `response.reasoning_text.delta` |
-| `choices[0].message.tool_calls` | `output[{type:"function_call", call_id, name, arguments}]` |
-| `choices[0].finish_reason` | `output[0].type: "message"` |
-| `usage.prompt_tokens` | `usage.input_tokens` |
-| `usage.completion_tokens` | `usage.output_tokens` |
-| `usage.completion_tokens_details.reasoning_tokens` | 日志打印 |
-| `usage.prompt_cache_hit_tokens` | 日志打印 |
-| `usage.prompt_cache_miss_tokens` | 日志打印 |
-| `id` (chat cmpl id) | `id` (response id, 格式适配) |
-| `model` | `model` |
-
-### Responses 管理端点
-
-| 端点 | 支持情况 |
-|---|---|
-| `GET /v1/responses/{response_id}` | 读取本地保存的 response；`stream=true` 会回放最小 SSE |
-| `DELETE /v1/responses/{response_id}` | 删除 response、history 和 input_items |
-| `POST /v1/responses/{response_id}/cancel` | 标记 `queued` / `in_progress` response 为 `cancelled`，并 abort 后台任务 |
-| `GET /v1/responses/{response_id}/input_items` | 支持 `after`、`limit`、`order=asc/desc`，非法 cursor/order 返回 400 |
-| `POST /v1/responses/compact` | 返回简化 `response.compacted` |
-| `POST /v1/responses/input_tokens` | 返回本地近似 token 数 |
-| `POST /v1/conversations` | 创建本地内存 conversation |
-| `GET /v1/conversations/{conversation_id}` | 读取本地 conversation |
-| `DELETE /v1/conversations/{conversation_id}` | 删除本地 conversation |
-| `GET /v1/conversations/{conversation_id}/items` | 列出本地 conversation items |
-
-### 思考等级映射（六级）
-
-| Codex `reasoning.effort` | DeepSeek `reasoning_effort` | DeepSeek `thinking` |
-|---|---|---|
-| `none` | `low` | `disabled` |
-| `minimal` | `low` | `disabled` |
-| `low` | — | `disabled` |
-| `medium` | `high` | `enabled` |
-| `high` | `high` | `enabled` |
-| `xhigh` | `max` | `enabled` |
-| 无字段（工具调用等） | `high` | `enabled` |
-
-## 功能详解
-
-### 工具转发引擎
-
-Codex 发送的工具定义（tools）与 OpenAI Chat API 格式不同，deecodex 在 `translate.rs` 中实现了一套完整的工具转换管道：
-
-1. **类型识别** — 按 `type` 字段分类：`function` / `custom` / `namespace`
-2. **namespace 展开** — MCP 命名空间工具（如 `mcp__filesystem__read`）拆分为独立 function tool，子工具名前缀命名空间
-3. **工具名去重** — 展开后按 `function.name` 去重（DeepSeek 要求工具名唯一）
-4. **自定义工具包装** — `apply_patch` → 映射为 `exec_command`（参数 schema 一致），其他自定义工具生成通用参数 schema
-5. **Web Search 检测** — `web_search_preview` 类型 → 开启 `web_search_options`
-
-### 会话与思维链恢复
-
-`session.rs` 实现三级 reasoning_content 恢复机制：
-
-1. **call_id 精确匹配** — `function_call` 的 `call_id` → 上次响应的 `reasoning_content`
-2. **turn 指纹匹配** — 根据 assistant 消息内容 + tool_call_ids 组合指纹查找
-3. **历史扫描** — 扫描整个对话历史中最近匹配的内容
-
-全部为内存存储，服务重启后 Codex 会重放完整历史，deecodex 从重放中重建。
-
-### 请求缓存
-
-`cache.rs` 基于请求体 JSON 哈希值的 LRU 缓存：
-
-- 最大 128 条目，超限时淘汰最早条目
-- 缓存内容包括：完整 SSE 事件序列、tool call 数据、用量统计
-- 命中时直接回放缓存流，不请求上游
-- 日志标注 `cache hit` / `cache miss`
-
-### 流式处理
-
-`stream.rs` 处理 DeepSeek SSE 流，完成以下翻译：
-
-- **Delta 合并** — 将 DeepSeek 的 `choices[0].delta` 聚合为完整消息
-- **reasoning_content 流式输出** — 通过 `response.reasoning_text.delta` SSE 事件发送
-- **Tool call delta 流式重建** — 按 `index` 分组增量参数，补齐 `id` 和 `name`
-- **名称透明替换** — `apply_patch` → `exec_command` 名称映射贯穿流
-- **用量恢复** — 从最终 chunk 的 `usage` 字段和 `include_usage` 流事件中重建
-- **缓存回放** — 从缓存读取完整 SSE 事件序列，按原始顺序重放
-
-### 自动重试
-
-在 `stream.rs` 中内置重试逻辑：
-
-- **触发条件** — HTTP 429/502/503 + `reasoning_content must be passed back` 错误
-- **退避策略** — 固定延迟重试（非指数，简化实现）
-- **最大次数** — 3 次
-- **特殊处理** — `reasoning_content` 丢失时禁用 thinking 重新发送
-
-### 视觉路由
-
-多模态请求路由逻辑：
-
-1. 检测 `has_images` 标志（从 content 数组中识别 `image_url`/`input_image`/base64）
-2. 判断条件：有图片 + 配置了视觉上游 + **首回合**（消息数 ≤ 3） + **非轻量模型**（非 gpt-5.4/auto-review）
-3. 符合条件 → 构建 VLM 请求体并发送到 `CODEX_RELAY_VISION_ENDPOINT`
-4. 不符合条件 → 自动剥离所有图片内容，走 DeepSeek
-
-### 中文思考注入
-
-`DEECODEX_CHINESE_THINKING=true` 时：
-
-- 系统指令前置注入 "【核心指令：你的所有推理、思考和分析过程必须全程使用中文..."
-- 最后一条 user 消息前置注入 "【你的推理过程必须使用中文。】"
-- 不影响正常对话流程
+- Delta 合并 + reasoning_content 流式输出
+- Tool call delta 按 index 增量重建
+- 三级 reasoning_content 恢复（call_id 匹配 / turn 指纹 / 历史扫描）
+- LRU 请求缓存（128 条目）
+- 自动重试（429/502/503 + reasoning_content 丢失，最多 3 次）
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
-|---|---|---|
+|------|------|--------|
 | `DEECODEX_UPSTREAM` | DeepSeek API 地址 | `https://api.deepseek.com/v1` |
-| `DEECODEX_API_KEY` | DeepSeek API Key | **（必填）** |
+| `DEECODEX_API_KEY` | DeepSeek API Key | **必填** |
 | `DEECODEX_PORT` | 监听端口 | `4446` |
-| `DEECODEX_MODEL_MAP` | 模型映射 JSON | 见下 |
+| `DEECODEX_MODEL_MAP` | 模型映射 JSON | 见 .env.example |
+| `DEECODEX_CLIENT_API_KEY` | 本地 Bearer Token | 留空关闭鉴权 |
+| `CODEX_RELAY_VISION_UPSTREAM` | MiniMax VLM 地址 | 留空关闭视觉路由 |
+| `CODEX_RELAY_VISION_API_KEY` | MiniMax API Key | — |
+| `DEECODEX_COMPUTER_EXECUTOR` | computer 后端：`disabled`/`playwright`/`browser-use` | `disabled` |
+| `DEECODEX_MCP_EXECUTOR_CONFIG` | MCP server JSON 配置 | 留空不启用 |
 | `DEECODEX_CHINESE_THINKING` | 中文思考注入 | `false` |
-| `DEECODEX_ALLOWED_MCP_SERVERS` | MCP 工具 server 白名单，逗号分隔 | `""` |
-| `DEECODEX_ALLOWED_COMPUTER_DISPLAYS` | computer_use display/environment 白名单，逗号分隔 | `""` |
-| `DEECODEX_COMPUTER_EXECUTOR` | 本地 computer 执行器后端：`disabled` / `playwright` / `browser-use`；Playwright 需要本机 Node.js 可 `import("playwright")` | `disabled` |
-| `DEECODEX_COMPUTER_EXECUTOR_TIMEOUT_SECS` | 本地 computer 单步超时秒数 | `30` |
-| `DEECODEX_PLAYWRIGHT_STATE_DIR` | Playwright 后端的持久化浏览器状态目录；设置后按 display 复用 cookies/localStorage 和上次 URL | `""` |
-| `DEECODEX_BROWSER_USE_BRIDGE_URL` | browser-use 后端 HTTP bridge 地址；接收 `{call_id, display, action}` 并返回 JSON output | `""` |
-| `DEECODEX_BROWSER_USE_BRIDGE_COMMAND` | browser-use 后端命令 bridge；通过 `DEECODEX_COMPUTER_ACTION` 环境变量接收 JSON 并向 stdout 输出 JSON | `""` |
-| `DEECODEX_MCP_EXECUTOR_CONFIG` | MCP server JSON 对象/数组，或 JSON 文件路径；为空则不执行本地 MCP | `""` |
-| `DEECODEX_MCP_EXECUTOR_TIMEOUT_SECS` | MCP 单次工具调用超时秒数 | `30` |
-| `CODEX_RELAY_MAX_BODY_MB` | 请求体上限 | `100` |
-| `CODEX_RELAY_VISION_UPSTREAM` | MiniMax API 地址 | `""` |
-| `CODEX_RELAY_VISION_API_KEY` | MiniMax API Key | `""` |
-| `CODEX_RELAY_VISION_MODEL` | 视觉模型名 | `MiniMax-M1` |
-| `CODEX_RELAY_VISION_ENDPOINT` | 视觉端点路径 | `v1/coding_plan/vlm` |
+| `RUST_LOG` | 日志级别 | `deecodex=info` |
+
+完整列表见 `.env.example`。
 
 ### 模型映射
 
@@ -359,57 +183,58 @@ Codex 发送的工具定义（tools）与 OpenAI Chat API 格式不同，deecode
 }
 ```
 
-## 日常管理
-
-### 调试端点
-
-```bash
-# 获取已存储的响应
-curl http://127.0.0.1:4446/v1/responses/<response_id>
-
-# 获取响应输入项
-curl http://127.0.0.1:4446/v1/responses/<response_id>/input_items
-
-# 取消正在进行的响应
-curl -X POST http://127.0.0.1:4446/v1/responses/<response_id>/cancel
-
-# 健康检查
-curl http://127.0.0.1:4446/v1/health
-
-# 模型列表
-curl http://127.0.0.1:4446/v1/models
-```
-
-
-```bash
-./deecodex.sh start      # 启动（自动日志轮转）
-./deecodex.sh stop       # 停止（10s 优雅超时）
-./deecodex.sh restart    # 重启
-./deecodex.sh status     # PID + 端口
-./deecodex.sh logs       # 实时日志
-./deecodex.sh health     # 健康检查
-```
+键名大小写敏感。更新模型名后需同步此映射。
 
 ## 日志解读
 
 ```
-← codex: model=gpt-5.5 reasoning.effort=Some("medium")    ← 原始请求
-→ upstream: model=deepseek-v4-pro effort=high thinking=on msgs=12  ← 转换后参数
-↑ done in=41067 out=171 hit=40576 miss=491                  ← 流完成 + 用量
-📷 routing to vision upstream: https://api.minimaxi.com     ← 视觉路由
-cache hit for hash=0xabcd1234                               ← 缓存命中
+← codex: model=gpt-5.5 reasoning.effort=Some("medium")
+→ upstream: model=deepseek-v4-pro effort=high thinking=on msgs=12
+↑ done in=41067 out=171 hit=40576 miss=491
+📷 routing to vision upstream
+cache hit for hash=0xabcd1234
 ```
 
 ## 故障排查
 
 | 问题 | 原因 | 解决 |
-|---|---|---|
+|------|------|------|
 | connection refused | deecodex 未启动 | `./deecodex.sh start` |
-| model not found | 映射表缺失/DeepSeek 模型名变更 | 更新 `DEECODEX_MODEL_MAP` |
-| image_url 错误 | 历史消息含图片 | 已自动剥离，仍出现则重启 |
+| model not found | 映射表缺失/模型名变更 | 更新 `DEECODEX_MODEL_MAP` |
+| 一直转圈 | DeepSeek 不可达或 API Key 无效 | 检查日志 `→ upstream` 行 |
 | reasoning_content 错误 | 思维链恢复失败 | 自动重试，仍出现则减少上下文 |
-| 413 请求体过大 | 图片太大 | `CODEX_RELAY_MAX_BODY_MB=200` |
+| 413 Payload Too Large | 图片过大 | `CODEX_RELAY_MAX_BODY_MB=200` |
+| 日志出现 WARN | 过滤 Codex 非标准工具 | 正常现象，不影响使用 |
+
+## 项目结构
+
+```
+src/
+├── main.rs          # 服务入口 + 服务管理
+├── handlers.rs      # Axum HTTP handlers + AppState
+├── translate.rs     # Responses → Chat 请求翻译
+├── stream.rs        # Chat SSE → Responses SSE 流翻译
+├── executor.rs      # computer/MCP 本地执行器
+├── validate.rs      # 启动前配置诊断
+├── files.rs         # 本地 Files API + file_search
+├── vector_stores.rs # 本地 Vector Store API
+├── session.rs       # 内存会话/对话存储
+├── prompts.rs       # Hosted Prompts 注册表
+├── types.rs         # 请求/响应类型定义
+├── cache.rs         # LRU 请求缓存
+├── sse.rs           # SSE 事件构建
+├── token_anomaly.rs # Token 异常检测
+├── ratelimit.rs     # 滑动窗口限流
+├── metrics.rs       # Prometheus 指标
+├── codex_config.rs  # Codex config.toml 注入/还原
+├── config.rs        # 配置合并
+├── tui.rs           # 中文 TUI 配置菜单
+├── utils.rs         # 工具函数
+└── lib.rs           # 库 crate 模块导出
+```
+
+测试：364 个（270 lib + 9 bin + 5 compat + 80 integration）
 
 ## License
 
-MIT License. 初始代码基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT)，后续功能已全面重写（Rust 源码 ~14,000 行，18 个模块，360 个测试，覆盖 Responses 协议全端点 + 本地 Files/Vector Store/Prompts + executor + 配置诊断）。
+MIT License. 基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改，Rust 源码 ~14,000 行，18 个模块。
