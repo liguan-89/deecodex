@@ -1434,18 +1434,20 @@ function renderHelp() {
     <!-- 管理命令 -->
     <div class="help-section" id="h-commands">
       <h3>管理命令</h3>
+      <p style="font-size:12px; color:var(--text-muted);">先进入数据目录：<code>cd ~/.deecodex</code>（Windows 为 <code>cd %LOCALAPPDATA%\\Programs\\deecodex</code>）</p>
       <table class="cmd-table">
         <thead><tr><th>操作</th><th>macOS / Linux</th><th>Windows</th></tr></thead>
         <tbody>
-          <tr><td>启动</td><td><code>deecodex.sh start</code></td><td><code>deecodex.bat start</code></td></tr>
-          <tr><td>停止</td><td><code>deecodex.sh stop</code></td><td><code>deecodex.bat stop</code></td></tr>
-          <tr><td>重启</td><td><code>deecodex.sh restart</code></td><td><code>deecodex.bat restart</code></td></tr>
-          <tr><td>状态</td><td><code>deecodex.sh status</code></td><td><code>deecodex.bat status</code></td></tr>
-          <tr><td>日志</td><td><code>deecodex.sh logs</code></td><td><code>deecodex.bat logs</code></td></tr>
-          <tr><td>健康检查</td><td><code>deecodex.sh health</code></td><td><code>deecodex.bat health</code></td></tr>
-          <tr><td>升级</td><td><code>deecodex.sh update</code></td><td><code>deecodex.bat update</code></td></tr>
+          <tr><td>启动</td><td><code>./deecodex.sh start</code></td><td><code>deecodex.bat start</code></td></tr>
+          <tr><td>停止</td><td><code>./deecodex.sh stop</code></td><td><code>deecodex.bat stop</code></td></tr>
+          <tr><td>重启</td><td><code>./deecodex.sh restart</code></td><td><code>deecodex.bat restart</code></td></tr>
+          <tr><td>状态</td><td><code>./deecodex.sh status</code></td><td><code>deecodex.bat status</code></td></tr>
+          <tr><td>日志</td><td><code>./deecodex.sh logs</code></td><td><code>deecodex.bat logs</code></td></tr>
+          <tr><td>健康检查</td><td><code>./deecodex.sh health</code></td><td><code>deecodex.bat health</code></td></tr>
+          <tr><td>升级</td><td><code>./deecodex.sh update</code></td><td><code>deecodex.bat update</code></td></tr>
         </tbody>
       </table>
+      <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>
     </div>
 
     <!-- 常见问题 -->
@@ -1454,7 +1456,7 @@ function renderHelp() {
       <div class="faq-list">
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> Codex 连接不上 deecodex (connection refused)</button>
-          <div class="faq-a">deecodex 可能未启动。在终端执行<code>deecodex.sh status</code>（Windows 用<code>deecodex.bat status</code>）确认服务是否运行。如果未运行，执行<code>deecodex.sh start</code>启动。</div>
+          <div class="faq-a">deecodex 可能未启动。在终端执行<code>./deecodex.sh status</code>（Windows 用<code>deecodex.bat status</code>）确认服务是否运行。如果未运行，执行<code>./deecodex.sh start</code>启动。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 提示 model not found</button>
@@ -1462,7 +1464,7 @@ function renderHelp() {
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 对话一直转圈不响应</button>
-          <div class="faq-a">通常是 DeepSeek 上游不可达或 API Key 无效。查看日志（<code>deecodex.sh logs</code>），观察是否有 <code>→ upstream</code> 输出以及对应的 HTTP 状态码。401/403 说明 API Key 问题。</div>
+          <div class="faq-a">通常是 DeepSeek 上游不可达或 API Key 无效。查看日志（<code>./deecodex.sh logs</code>），观察是否有 <code>→ upstream</code> 输出以及对应的 HTTP 状态码。401/403 说明 API Key 问题。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 思维链 (reasoning_content) 输出异常</button>
