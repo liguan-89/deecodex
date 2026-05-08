@@ -12,11 +12,11 @@ fn codex_config_path() -> Option<PathBuf> {
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
 pub fn inject(port: u16, client_api_key: &str) {
     let Some(path) = codex_config_path() else {
-        warn!("无法确定 codex config.toml 路径");
+        info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
         return;
     };
     if !path.exists() {
-        warn!("codex config.toml 未找到: {}", path.display());
+        info!("跳过 Codex 配置注入: 未安装 Codex CLI ({} 不存在)", path.display());
         return;
     }
 
