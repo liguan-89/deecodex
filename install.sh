@@ -57,9 +57,18 @@ check_cmd() {
     fi
 }
 
+is_interactive() {
+    [[ -t 0 ]]
+}
+
 confirm() {
     local prompt="$1"
     local default="${2:-Y}"
+    # 非交互式模式（管道执行）直接返回默认值
+    if ! is_interactive; then
+        [[ "$default" =~ ^[Yy]$ ]]
+        return
+    fi
     local yn
     read -r -p "       ${prompt} [Y/n]: " yn
     yn="${yn:-$default}"
@@ -315,8 +324,21 @@ if confirm "是否现在启动 deecodex？"; then
     if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
         print_warn "端口 $PORT 已被占用"
         if confirm "是否终止占用进程并继续？"; then
-            kill "$(lsof -ti ":$PORT" -sTCP:LISTEN)" 2>/dev/null || true
-            sleep 1
+            old_pid=$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)
+            if [ -n "$old_pid" ]; then
+                kill "$old_pid" 2>/dev/null || true
+                sleep 1
+                # 如果还没死，强制终止
+                if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
+                    kill -9 "$old_pid" 2>/dev/null || true
+                    sleep 1
+                fi
+            fi
+            # 再次检查端口
+            if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
+                print_warn "无法释放端口 $PORT，跳过启动"
+                STARTED=true
+            fi
         else
             print_warn "端口已被占用，跳过启动，请修改 $ENV_FILE 中的 DEECODEX_PORT 后手动启动"
             STARTED=true
