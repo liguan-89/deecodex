@@ -225,36 +225,47 @@ ENVEOF
 fi
 
 # 交互式引导填写 API Key
-echo ""
-echo -e "  ${BOLD}请输入你的 DeepSeek API Key${NC}"
-echo -e "  ${YELLOW}（从 https://platform.deepseek.com → API Keys 获取）${NC}"
-echo -e "  ${YELLOW}不填写将导致服务启动后无法正常工作！${NC}"
-echo ""
-read -r -p "  API Key: " user_api_key
+# 优先使用环境变量（支持管道模式：curl ... | DEECODEX_API_KEY=sk-xxx bash）
+if [ -n "${DEECODEX_API_KEY:-}" ] && [ "$DEECODEX_API_KEY" != "sk-your-deepseek-api-key-here" ]; then
+    user_api_key="$DEECODEX_API_KEY"
+    print_ok "API Key 已从环境变量读取"
+elif is_interactive; then
+    echo ""
+    echo -e "  ${BOLD}请输入你的 DeepSeek API Key${NC}"
+    echo -e "  ${YELLOW}（从 https://platform.deepseek.com → API Keys 获取）${NC}"
+    echo -e "  ${YELLOW}不填写将导致服务启动后无法正常工作！${NC}"
+    echo ""
+    read -r -p "  API Key: " user_api_key
 
-if [ -z "$user_api_key" ] || [ "$user_api_key" = "sk-your-deepseek-api-key-here" ]; then
-    echo ""
-    echo -e "  ${RED}╔══════════════════════════════════════════╗${NC}"
-    echo -e "  ${RED}║  ⚠ 警告：未填写 API Key                  ║${NC}"
-    echo -e "  ${RED}║  服务启动后将无法正常调用 LLM 接口        ║${NC}"
-    echo -e "  ${RED}║  你可以在安装完成后编辑 .env 手动填入     ║${NC}"
-    echo -e "  ${RED}╚══════════════════════════════════════════╝${NC}"
-    echo ""
-    if ! confirm "确认跳过 API Key 配置？（可稍后手动填入）"; then
+    if [ -z "$user_api_key" ] || [ "$user_api_key" = "sk-your-deepseek-api-key-here" ]; then
         echo ""
-        read -r -p "  请重新输入 API Key: " user_api_key
-        if [ -n "$user_api_key" ] && [ "$user_api_key" != "sk-your-deepseek-api-key-here" ]; then
-            print_ok "API Key 已记录"
-        else
-            print_warn "仍然为空，稍后可编辑 $ENV_FILE 手动填入"
+        echo -e "  ${RED}╔══════════════════════════════════════════╗${NC}"
+        echo -e "  ${RED}║  ⚠ 警告：未填写 API Key                  ║${NC}"
+        echo -e "  ${RED}║  服务启动后将无法正常调用 LLM 接口        ║${NC}"
+        echo -e "  ${RED}║  你可以在安装完成后编辑 .env 手动填入     ║${NC}"
+        echo -e "  ${RED}╚══════════════════════════════════════════╝${NC}"
+        echo ""
+        if ! confirm "确认跳过 API Key 配置？（可稍后手动填入）"; then
+            echo ""
+            read -r -p "  请重新输入 API Key: " user_api_key
+            if [ -n "${user_api_key:-}" ] && [ "${user_api_key:-}" != "sk-your-deepseek-api-key-here" ]; then
+                print_ok "API Key 已记录"
+            else
+                print_warn "仍然为空，稍后可编辑 $ENV_FILE 手动填入"
+            fi
         fi
+    else
+        print_ok "API Key 已记录"
     fi
 else
-    print_ok "API Key 已记录"
+    print_warn "管道模式无法交互输入，API Key 保持占位符"
+    echo "       可通过以下方式配置："
+    echo "       1. 编辑 $ENV_FILE 填入真实 Key，然后运行 cd $CONFIG_DIR && ./deecodex.sh start"
+    echo "       2. 或设置环境变量后重新安装：curl -fsSL ... | DEECODEX_API_KEY=sk-xxx bash"
 fi
 
 # 写入 API Key
-if [ -n "$user_api_key" ] && [ "$user_api_key" != "sk-your-deepseek-api-key-here" ]; then
+if [ -n "${user_api_key:-}" ] && [ "${user_api_key:-}" != "sk-your-deepseek-api-key-here" ]; then
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s|DEECODEX_API_KEY=.*|DEECODEX_API_KEY=$user_api_key|" "$ENV_FILE"
     else
@@ -319,7 +330,14 @@ print_step 5 "启动服务"
 
 STARTED=false
 
-if confirm "是否现在启动 deecodex？"; then
+# 检查 API Key 是否仍为占位符
+if grep -q 'DEECODEX_API_KEY=sk-your-deepseek-api-key-here' "$ENV_FILE" 2>/dev/null; then
+    print_warn "API Key 未配置，跳过启动"
+    echo "       编辑 $ENV_FILE 填入 Key 后运行: cd $CONFIG_DIR && ./deecodex.sh start"
+    STARTED=true
+fi
+
+if [ "$STARTED" = false ] && confirm "是否现在启动 deecodex？"; then
     # 检测端口是否被占用
     if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
         print_warn "端口 $PORT 已被占用"
