@@ -36,7 +36,8 @@ if (-not (Test-Path "$InstallDir\.env")) {
 
 # 3. 添加到用户 PATH
 Write-Host "[4/4] 配置 PATH..." -ForegroundColor Yellow
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User") ?? ""
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (-not $UserPath) { $UserPath = "" }
 $Paths = $UserPath -split ";" | Where-Object { $_ }
 if ($Paths -notcontains $InstallDir) {
     [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
