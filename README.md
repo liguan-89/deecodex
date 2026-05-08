@@ -56,6 +56,13 @@ irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
 
 脚本自动完成：下载文件 → 添加 PATH → 生成配置模板。安装后编辑 `.env` 填入 API Key 即可使用。
 
+**Windows 便携版（免安装，推荐）：**
+
+1. 下载 [`deecodex-windows-portable.zip`](https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex-windows-portable.zip)
+2. 解压到任意目录
+3. 将 `.env.example` 重命名为 `.env`，用记事本填入 DeepSeek API Key
+4. 双击 `deecodex.bat` 或在命令行运行 `deecodex.bat start`
+
 ### 方式二：源码编译
 
 ```bash
