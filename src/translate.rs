@@ -234,6 +234,11 @@ pub fn to_chat_request(
         }
     }
 
+    let dropped_tool_messages = sanitize_tool_messages(&mut messages);
+    if dropped_tool_messages > 0 {
+        info!("dropped {} orphan tool message(s) before upstream translation", dropped_tool_messages);
+    }
+
     // Sanitize: replace null content with "" (DeepSeek rejects null)
     for msg in &mut messages {
         if msg.content.is_none() && msg.tool_calls.is_none() {
@@ -308,6 +313,50 @@ pub fn to_chat_request(
         },
         has_images,
     }
+}
+
+fn sanitize_tool_messages(messages: &mut Vec<ChatMessage>) -> usize {
+    use std::collections::HashSet;
+
+    let mut available_tool_calls: HashSet<String> = HashSet::new();
+    let mut sanitized: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    let mut dropped = 0usize;
+
+    for msg in messages.drain(..) {
+        if msg.role == "assistant" {
+            if let Some(ref tool_calls) = msg.tool_calls {
+                for tc in tool_calls {
+                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                        if !id.is_empty() {
+                            available_tool_calls.insert(id.to_string());
+                        }
+                    }
+                }
+            }
+            sanitized.push(msg);
+            continue;
+        }
+
+        if msg.role == "tool" {
+            let keep = msg
+                .tool_call_id
+                .as_ref()
+                .map(|id| available_tool_calls.contains(id))
+                .unwrap_or(false);
+
+            if keep {
+                sanitized.push(msg);
+            } else {
+                dropped += 1;
+            }
+            continue;
+        }
+
+        sanitized.push(msg);
+    }
+
+    *messages = sanitized;
+    dropped
 }
 
 /// Responses API flat tool → Chat Completions nested format.
@@ -723,6 +772,32 @@ mod tests {
         let fc_msg = chat.messages.iter().find(|m| m.role == "assistant" && m.tool_calls.is_some());
         assert!(fc_msg.is_some());
         assert_eq!(fc_msg.unwrap().reasoning_content.as_deref(), Some("prior_reason"));
+    }
+
+    #[test]
+    fn test_orphan_tool_outputs_are_dropped() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call_output", "call_id": "missing", "output": "result"}),
+            json!({"type": "message", "role": "user", "content": "next"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].role, "user");
+    }
+
+    #[test]
+    fn test_tool_outputs_with_matching_tool_calls_are_kept() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
+            json!({"type": "function_call_output", "call_id": "c1", "output": "result"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].role, "assistant");
+        assert_eq!(chat.messages[1].role, "tool");
+        assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("c1"));
     }
 
 
