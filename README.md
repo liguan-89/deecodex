@@ -34,19 +34,28 @@ Codex CLI  →  /v1/responses (gpt-5.5 / gpt-5.4)
 
 ### 方式一：下载预编译二进制（推荐）
 
-从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载：
+从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载对应平台版本：
+
+**macOS / Linux：**
 
 ```bash
-# macOS ARM64
 curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex -o deecodex
-chmod +x deecodex
-mv deecodex ~/.local/bin/
+chmod +x deecodex && mv deecodex ~/.local/bin/
 
-# 下载管理脚本和环境变量模板
+# 管理脚本和配置模板
 curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.sh -o deecodex.sh
 curl -L https://github.com/liguan-89/deecodex/releases/download/v1.0.0/env.example -o .env.example
 chmod +x deecodex.sh
 ```
+
+**Windows：**
+
+在 [Releases](https://github.com/liguan-89/deecodex/releases) 页面下载：
+- `deecodex.exe` → 放到 `C:\Users\<用户名>\AppData\Local\Programs\deecodex\`
+- `deecodex.bat` → 同上目录
+- `env.example` → 同上目录，重命名为 `.env`
+
+然后将 `C:\Users\<用户名>\AppData\Local\Programs\deecodex` 添加到系统 PATH。
 
 ### 方式二：源码编译
 
@@ -54,7 +63,10 @@ chmod +x deecodex.sh
 git clone https://github.com/liguan-89/deecodex.git
 cd deecodex
 cargo build --release
+# macOS/Linux
 cp target/release/deecodex ~/.local/bin/
+# Windows
+copy target\release\deecodex.exe C:\Users\%USERNAME%\AppData\Local\Programs\deecodex\
 ```
 
 验证安装：
@@ -65,11 +77,22 @@ deecodex --help
 
 ## 快速开始
 
+**macOS / Linux：**
+
 ```bash
 cp .env.example .env
 vim .env                                # 填入 DEECODEX_API_KEY
 ./deecodex.sh start                     # 启动服务
 ./deecodex.sh health                    # 确认 healthy
+```
+
+**Windows：**
+
+```cmd
+copy env.example .env
+notepad .env                            # 填入 DEECODEX_API_KEY
+deecodex.bat start                      # 启动服务
+deecodex.bat health                     # 确认 healthy
 ```
 
 Codex 桌面端 `~/.codex/config.toml`：
@@ -92,14 +115,16 @@ CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 
 
 ## 日常管理
 
-```bash
-./deecodex.sh start      # 启动（自动日志轮转 + Codex 配置注入）
-./deecodex.sh stop       # 停止（35s 优雅超时 + 还原配置）
-./deecodex.sh restart    # 重启
-./deecodex.sh status     # PID + 端口
-./deecodex.sh logs       # 实时日志
-./deecodex.sh health     # 健康检查
-```
+| 命令 | macOS / Linux | Windows |
+|------|--------------|---------|
+| 启动 | `./deecodex.sh start` | `deecodex.bat start` |
+| 停止 | `./deecodex.sh stop` | `deecodex.bat stop` |
+| 重启 | `./deecodex.sh restart` | `deecodex.bat restart` |
+| 状态 | `./deecodex.sh status` | `deecodex.bat status` |
+| 日志 | `./deecodex.sh logs` | `deecodex.bat logs` |
+| 健康检查 | `./deecodex.sh health` | `deecodex.bat health` |
+
+启动时自动注入 Codex 配置，停止时自动还原。
 
 ## v1.0.0 核心功能
 

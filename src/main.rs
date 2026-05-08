@@ -507,6 +507,7 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     codex_config::inject(args.port, &state.client_api_key);
 
+    #[cfg(unix)]
     async fn shutdown_signal() {
         let ctrl_c = tokio::signal::ctrl_c();
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -515,6 +516,13 @@ async fn main() -> Result<()> {
             _ = ctrl_c => { info!("SIGINT received, starting graceful shutdown..."); }
             _ = term.recv() => { info!("SIGTERM received, starting graceful shutdown..."); }
         }
+    }
+
+    #[cfg(windows)]
+    async fn shutdown_signal() {
+        let ctrl_c = tokio::signal::ctrl_c();
+        let _ = ctrl_c.await;
+        info!("Ctrl+C received, starting graceful shutdown...");
     }
 
     info!("graceful shutdown: draining in-flight requests (timeout: 30s)...");
