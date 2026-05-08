@@ -38,7 +38,23 @@ Codex CLI  →  /v1/responses (gpt-5.5 / gpt-5.4)
 
 ## 安装
 
-### 方式一：下载预编译二进制（推荐）
+### 方式一：一键安装（推荐 · 零门槛）
+
+**macOS：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liguan-89/deecodex/main/install.sh | bash
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
+```
+
+安装向导自动完成：环境检测 → Codex 检测 → .env 引导配置 → 下载安装 → 启动服务 → 打开 Web 配置面板。
+
+### 方式二：下载预编译二进制
 
 从 [Releases](https://github.com/liguan-89/deecodex/releases) 下载对应平台版本：
 
@@ -71,7 +87,7 @@ irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
 
 > 非必要请优先使用上方的一键安装版。便携版需要手动管理 PATH、依赖和环境，适合有一定动手能力的用户。
 
-### 方式二：源码编译
+### 方式三：源码编译
 
 ```bash
 git clone https://github.com/liguan-89/deecodex.git
@@ -98,6 +114,7 @@ cp .env.example .env
 vim .env                                # 填入 DEECODEX_API_KEY
 ./deecodex.sh start                     # 启动服务
 ./deecodex.sh health                    # 确认 healthy
+# 浏览器打开 http://127.0.0.1:4448/   # Web 配置面板
 ```
 
 **Windows：**
@@ -107,7 +124,10 @@ copy env.example .env
 notepad .env                            # 填入 DEECODEX_API_KEY
 deecodex.bat start                      # 启动服务
 deecodex.bat health                     # 确认 healthy
+# 浏览器打开 http://127.0.0.1:4448/   # Web 配置面板
 ```
+
+服务启动后，浏览器访问 `http://127.0.0.1:4448/` 即可使用 **Web 配置面板**，零命令行完成所有配置。
 
 Codex 桌面端 `~/.codex/config.toml`：
 
@@ -117,7 +137,7 @@ model_provider = "custom"
 model_reasoning_effort = "medium"
 
 [model_providers.custom]
-base_url = "http://127.0.0.1:4446/v1"
+base_url = "http://127.0.0.1:4448/v1"
 name = "custom"
 requires_openai_auth = true
 wire_api = "responses"
@@ -125,7 +145,7 @@ wire_api = "responses"
 
 > ⚠️ `base_url` 末尾不要加 `/`，端口须与 `.env` 中 `DEECODEX_PORT` 一致。
 
-CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 API Key。
+CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4448/v1` 和任意 API Key。
 
 ## 日常管理
 
@@ -198,7 +218,7 @@ CC Switch 用户只需填 API 请求地址 `http://127.0.0.1:4446/v1` 和任意 
 |------|------|--------|
 | `DEECODEX_UPSTREAM` | DeepSeek API 地址 | `https://api.deepseek.com/v1` |
 | `DEECODEX_API_KEY` | DeepSeek API Key | **必填** |
-| `DEECODEX_PORT` | 监听端口 | `4446` |
+| `DEECODEX_PORT` | 监听端口 | `4448` |
 | `DEECODEX_MODEL_MAP` | 模型映射 JSON | 见 .env.example |
 | `DEECODEX_CLIENT_API_KEY` | 本地 Bearer Token | 留空关闭鉴权 |
 | `CODEX_RELAY_VISION_UPSTREAM` | MiniMax VLM 地址 | 留空关闭视觉路由 |
@@ -253,6 +273,7 @@ src/
 ├── handlers.rs      # Axum HTTP handlers + AppState
 ├── translate.rs     # Responses → Chat 请求翻译
 ├── stream.rs        # Chat SSE → Responses SSE 流翻译
+├── web.rs           # Web 配置面板 API
 ├── executor.rs      # computer/MCP 本地执行器
 ├── validate.rs      # 启动前配置诊断
 ├── files.rs         # 本地 Files API + file_search
@@ -270,10 +291,14 @@ src/
 ├── tui.rs           # 中文 TUI 配置菜单
 ├── utils.rs         # 工具函数
 └── lib.rs           # 库 crate 模块导出
+static/
+└── config.html      # Web 配置面板前端
+install.sh           # macOS 一键安装向导
+install.ps1          # Windows 一键安装向导
 ```
 
 测试：364 个（270 lib + 9 bin + 5 compat + 80 integration）
 
 ## License
 
-MIT License. 基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改，Rust 源码 ~14,000 行，18 个模块。
+MIT License. 基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改，Rust 源码 ~14,000 行，19 个模块。
