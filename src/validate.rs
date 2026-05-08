@@ -505,7 +505,7 @@ mod tests {
         Args {
             command: None,
             config: None,
-            port: 4444,
+            port: 4446,
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             client_api_key: String::new(),

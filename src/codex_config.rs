@@ -16,7 +16,10 @@ pub fn inject(port: u16, client_api_key: &str) {
         return;
     };
     if !path.exists() {
-        info!("跳过 Codex 配置注入: 未安装 Codex CLI ({} 不存在)", path.display());
+        info!(
+            "跳过 Codex 配置注入: 未安装 Codex CLI ({} 不存在)",
+            path.display()
+        );
         return;
     }
 

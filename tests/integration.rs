@@ -2249,19 +2249,25 @@ async fn test_tool_call_outputs_are_normalized_for_upstream_and_input_items() {
 
     let captured = captured.lock().unwrap();
     let messages = captured[0]["messages"].as_array().unwrap();
-    assert_eq!(messages[0]["role"], "tool");
-    assert_eq!(messages[0]["tool_call_id"], "call_screen");
-    assert!(messages[0]["content"]
+    // 非 function_call_output 类型会合成前置 assistant 消息，
+    // 确保 sanitize_tool_messages 不会将其当作孤儿丢弃。
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[0]["tool_calls"][0]["id"], "call_screen");
+    assert_eq!(messages[1]["role"], "tool");
+    assert_eq!(messages[1]["tool_call_id"], "call_screen");
+    assert!(messages[1]["content"]
         .as_str()
         .unwrap()
         .contains("[image omitted: image/png base64 3B]"));
-    assert!(messages[0]["content"]
+    assert!(messages[1]["content"]
         .as_str()
         .unwrap()
         .contains("clicked button"));
-    assert_eq!(messages[1]["role"], "tool");
-    assert_eq!(messages[1]["tool_call_id"], "call_mcp");
-    assert_eq!(messages[1]["content"], r#"{"files":["a.rs"],"ok":true}"#);
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(messages[2]["tool_calls"][0]["id"], "call_mcp");
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call_mcp");
+    assert_eq!(messages[3]["content"], r#"{"files":["a.rs"],"ok":true}"#);
     drop(captured);
 
     let input_items = sessions

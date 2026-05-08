@@ -93,6 +93,8 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
         "vision_model": args.vision_model,
         "vision_endpoint": args.vision_endpoint,
         "chinese_thinking": args.chinese_thinking,
+        "codex_auto_inject": args.codex_auto_inject,
+        "codex_persistent_inject": args.codex_persistent_inject,
         "data_dir": args.data_dir.to_string_lossy(),
         "prompts_dir": args.prompts_dir.to_string_lossy(),
         "token_anomaly_prompt_max": args.token_anomaly_prompt_max,
@@ -158,6 +160,15 @@ pub async fn put_config(
     }
     if let Some(v) = body.get("chinese_thinking").and_then(|v| v.as_bool()) {
         updated.chinese_thinking = v;
+    }
+    if let Some(v) = body.get("codex_auto_inject").and_then(|v| v.as_bool()) {
+        updated.codex_auto_inject = v;
+    }
+    if let Some(v) = body
+        .get("codex_persistent_inject")
+        .and_then(|v| v.as_bool())
+    {
+        updated.codex_persistent_inject = v;
     }
     if let Some(v) = body.get("data_dir").and_then(|v| v.as_str()) {
         updated.data_dir = std::path::PathBuf::from(v);
@@ -237,6 +248,14 @@ pub async fn put_config(
     })?;
 
     let saved_to = config_path.to_string_lossy().to_string();
+
+    // Codex 配置注入/移除（根据更新后的开关立即执行）
+    if updated.codex_auto_inject || updated.codex_persistent_inject {
+        crate::codex_config::inject(updated.port, &updated.client_api_key);
+    } else {
+        crate::codex_config::remove();
+    }
+
     let diag_msgs: Vec<Value> = diags
         .iter()
         .map(|d| {
@@ -275,12 +294,14 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime,
-        "port": load_args(&state.data_dir).map(|a| a.port).unwrap_or(4446),
+        "port": state.port,
         "upstream": state.upstream.as_str(),
         "vision_enabled": state.vision_upstream.is_some(),
         "mcp_enabled": state.executors.mcp.enabled(),
         "computer_executor": state.executors.computer.backend.as_str(),
         "chinese_thinking": state.chinese_thinking,
+        "codex_auto_inject": state.codex_auto_inject,
+        "codex_persistent_inject": state.codex_persistent_inject,
         "client_auth_enabled": !state.client_api_key.is_empty(),
     }))
 }

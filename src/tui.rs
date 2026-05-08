@@ -480,7 +480,7 @@ fn basic_settings_fields() -> Vec<FieldDef> {
             label: "服务端口",
             key: "port",
             kind: FieldKind::Number,
-            help: "本地监听端口 (默认: 4444)",
+            help: "本地监听端口 (默认: 4446)",
         },
         FieldDef {
             label: "最大请求体(MB)",
@@ -505,6 +505,18 @@ fn basic_settings_fields() -> Vec<FieldDef> {
             key: "chinese_thinking",
             kind: FieldKind::Bool,
             help: "开启后系统提示词将注入中文思考指令",
+        },
+        FieldDef {
+            label: "Codex 自动注入",
+            key: "codex_auto_inject",
+            kind: FieldKind::Bool,
+            help: "启动时自动注入 deecodex 配置到 Codex，关闭时自动移除",
+        },
+        FieldDef {
+            label: "Codex 持久注入",
+            key: "codex_persistent_inject",
+            kind: FieldKind::Bool,
+            help: "开启后配置持久保留，不再自动注入/移除（优先于自动注入）",
         },
     ]
 }
@@ -821,8 +833,27 @@ fn activate_field(field: &FieldDef, state: &mut TuiAppState) {
             state.selection_index = 0;
         }
         FieldKind::Bool => {
-            if field.key == "chinese_thinking" {
-                state.chinese_thinking = !state.chinese_thinking;
+            let (current, key) = match field.key {
+                "chinese_thinking" => (&mut state.chinese_thinking, "chinese_thinking"),
+                "codex_auto_inject" => (&mut state.codex_auto_inject, "codex_auto_inject"),
+                "codex_persistent_inject" => (
+                    &mut state.codex_persistent_inject,
+                    "codex_persistent_inject",
+                ),
+                _ => return,
+            };
+            let new_value = !*current;
+            *current = new_value;
+
+            // Codex 相关开关：切换时立即执行注入/移除
+            if key == "codex_auto_inject" || key == "codex_persistent_inject" {
+                if let Ok(port) = state.port.parse::<u16>() {
+                    if new_value {
+                        crate::codex_config::inject(port, &state.client_api_key);
+                    } else {
+                        crate::codex_config::remove();
+                    }
+                }
             }
         }
         _ => {
@@ -1043,6 +1074,22 @@ fn render_review_screen(frame: &mut Frame, area: Rect, state: &TuiAppState) {
                 (
                     "中文思考",
                     if state.chinese_thinking {
+                        "开启".into()
+                    } else {
+                        "关闭".into()
+                    },
+                ),
+                (
+                    "Codex 自动注入",
+                    if state.codex_auto_inject {
+                        "开启".into()
+                    } else {
+                        "关闭".into()
+                    },
+                ),
+                (
+                    "Codex 持久注入",
+                    if state.codex_persistent_inject {
                         "开启".into()
                     } else {
                         "关闭".into()
@@ -1497,6 +1544,19 @@ fn run_health_checks(state: &TuiAppState) -> Vec<CheckResult> {
             "已开启，系统提示词将注入中文思考指令".into()
         } else {
             "未开启".into()
+        },
+        status: CheckStatus::Ok,
+    });
+
+    // 10b. Codex 配置注入状态
+    results.push(CheckResult {
+        label: "Codex 配置注入".into(),
+        detail: if state.codex_persistent_inject {
+            "持久注入已启用（不自动注入/移除）".into()
+        } else if state.codex_auto_inject {
+            "自动注入已启用".into()
+        } else {
+            "自动注入已关闭".into()
         },
         status: CheckStatus::Ok,
     });

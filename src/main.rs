@@ -71,13 +71,19 @@ fn is_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-fn stop_service(data_dir: &std::path::Path) -> Result<()> {
+fn stop_service(
+    data_dir: &std::path::Path,
+    codex_auto_inject: bool,
+    codex_persistent_inject: bool,
+) -> Result<()> {
     let pid = read_pid(data_dir)
         .ok_or_else(|| anyhow::anyhow!("未找到 PID 文件，deecodex 可能未在运行"))?;
 
     if !is_running(pid) {
         let _ = std::fs::remove_file(pid_path(data_dir));
-        codex_config::remove();
+        if codex_auto_inject && !codex_persistent_inject {
+            codex_config::remove();
+        }
         bail!("PID {} 对应的进程已不存在，已清理 PID 文件", pid);
     }
 
@@ -90,7 +96,9 @@ fn stop_service(data_dir: &std::path::Path) -> Result<()> {
     for _ in 0..50 {
         if !is_running(pid) {
             let _ = std::fs::remove_file(pid_path(data_dir));
-            codex_config::remove();
+            if codex_auto_inject && !codex_persistent_inject {
+                codex_config::remove();
+            }
             println!("deecodex 已停止 (PID: {})", pid);
             return Ok(());
         }
@@ -103,7 +111,9 @@ fn stop_service(data_dir: &std::path::Path) -> Result<()> {
         .arg(pid.to_string())
         .status()?;
     let _ = std::fs::remove_file(pid_path(data_dir));
-    codex_config::remove();
+    if codex_auto_inject && !codex_persistent_inject {
+        codex_config::remove();
+    }
     println!("deecodex 已强制停止 (PID: {})", pid);
     Ok(())
 }
@@ -231,13 +241,21 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::Stop) => {
-            stop_service(&args.data_dir)?;
+            stop_service(
+                &args.data_dir,
+                args.codex_auto_inject,
+                args.codex_persistent_inject,
+            )?;
             return Ok(());
         }
         Some(Commands::Restart) => {
             // 尝试停止已运行的服务（忽略错误，可能本来就没在运行）
             if read_pid(&args.data_dir).is_some_and(is_running) {
-                let _ = stop_service(&args.data_dir);
+                let _ = stop_service(
+                    &args.data_dir,
+                    args.codex_auto_inject,
+                    args.codex_persistent_inject,
+                );
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             start_service_daemon(&args)?;
@@ -512,7 +530,9 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     // 注入 deecodex 配置到 codex 的 config.toml
-    codex_config::inject(args.port, &state.client_api_key);
+    if args.codex_auto_inject && !args.codex_persistent_inject {
+        codex_config::inject(args.port, &state.client_api_key);
+    }
 
     #[cfg(unix)]
     async fn shutdown_signal() {
@@ -538,7 +558,9 @@ async fn main() -> Result<()> {
         .await?;
 
     // 清理 codex config.toml 中的 deecodex 配置
-    codex_config::remove();
+    if args.codex_auto_inject && !args.codex_persistent_inject {
+        codex_config::remove();
+    }
 
     // 清理 PID 文件
     let _ = std::fs::remove_file(pid_path(&args.data_dir));

@@ -58,11 +58,7 @@ pub struct Args {
     pub chinese_thinking: bool,
 
     /// 启动/关闭时自动注入/移除 codex 配置（默认开启）
-    #[arg(
-        long,
-        env = "DEECODEX_CODEX_AUTO_INJECT",
-        default_value = "true"
-    )]
+    #[arg(long, env = "DEECODEX_CODEX_AUTO_INJECT", default_value = "true")]
     pub codex_auto_inject: bool,
 
     /// 持久注入 codex 配置，开启后不再自动注入/移除（默认关闭）
@@ -230,7 +226,7 @@ impl Args {
             Args {
                 command: self.command,
                 config: self.config,
-                port: pick(self.port, 4444, file.port),
+                port: pick(self.port, 4446, file.port),
                 upstream: pick_str(
                     &self.upstream,
                     "https://openrouter.ai/api/v1",
@@ -409,7 +405,7 @@ mod tests {
         let cli_args = Args {
             command: None,
             config: Some(config_path.to_string_lossy().to_string()),
-            port: 4444,
+            port: 4446,
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             client_api_key: String::new(),

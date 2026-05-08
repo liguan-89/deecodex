@@ -136,6 +136,36 @@ pub fn to_chat_request(
                         | "computer_call_output" => {
                             let call_id =
                                 item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                            // 为非 function_call_output 的 tool output 合成 assistant，
+                            // 确保 sanitize_tool_messages 不会将其当作孤儿丢弃。
+                            if item_type != "function_call_output" {
+                                let has_matching = messages.last().is_some_and(|m| {
+                                    m.role == "assistant"
+                                        && m.tool_calls.as_ref().is_some_and(|tc| {
+                                            tc.iter().any(|t| {
+                                                t.get("id").and_then(|v| v.as_str())
+                                                    == Some(call_id)
+                                            })
+                                        })
+                                });
+                                if !has_matching {
+                                    messages.push(ChatMessage {
+                                        role: "assistant".into(),
+                                        content: None,
+                                        reasoning_content: None,
+                                        tool_calls: Some(vec![json!({
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": item_type,
+                                                "arguments": "{}"
+                                            }
+                                        })]),
+                                        tool_call_id: None,
+                                        name: None,
+                                    });
+                                }
+                            }
                             let success = item
                                 .get("success")
                                 .and_then(|v| v.as_bool())
