@@ -263,7 +263,7 @@ src/
 
 欢迎加入 deecodex 交流群，一起讨论、反馈、共建。
 
-<img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.0515.jpg" width="200" alt="deecodex 交流群" />
+<img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.0515.jpg" width="200" alt="deecodex 交流群1" /> <img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/_20260508195435_79_22.jpg" width="200" alt="deecodex 交流群2" />
 
 ## License
 
