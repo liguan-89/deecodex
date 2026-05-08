@@ -173,10 +173,13 @@ impl SessionStore {
             .unwrap_or("")
             .hash(&mut hasher);
         if let Some(tcs) = &assistant.tool_calls {
-            for tc in tcs {
-                if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                    id.hash(&mut hasher);
-                }
+            let mut ids: Vec<&str> = tcs
+                .iter()
+                .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()))
+                .collect();
+            ids.sort_unstable();
+            for id in ids {
+                id.hash(&mut hasher);
             }
         }
         hasher.finish()
@@ -440,6 +443,21 @@ mod tests {
             serde_json::json!({"id": "id_b", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
         ]);
         assert_ne!(SessionStore::turn_key(&a), SessionStore::turn_key(&b));
+    }
+
+    #[test]
+    fn test_turn_key_same_for_same_tool_ids_different_order() {
+        let mut a = msg("assistant", None);
+        a.tool_calls = Some(vec![
+            serde_json::json!({"id": "id_a", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
+            serde_json::json!({"id": "id_b", "type": "function", "function": {"name": "g", "arguments": "{}"}}),
+        ]);
+        let mut b = msg("assistant", None);
+        b.tool_calls = Some(vec![
+            serde_json::json!({"id": "id_b", "type": "function", "function": {"name": "g", "arguments": "{}"}}),
+            serde_json::json!({"id": "id_a", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
+        ]);
+        assert_eq!(SessionStore::turn_key(&a), SessionStore::turn_key(&b));
     }
 
     // ------------------------------------------------------------------
