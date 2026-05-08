@@ -318,41 +318,74 @@ pub fn to_chat_request(
 fn sanitize_tool_messages(messages: &mut Vec<ChatMessage>) -> usize {
     use std::collections::HashSet;
 
-    let mut available_tool_calls: HashSet<String> = HashSet::new();
-    let mut sanitized: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    let original = std::mem::take(messages);
+    let mut sanitized: Vec<ChatMessage> = Vec::with_capacity(original.len());
     let mut dropped = 0usize;
+    let mut i = 0usize;
 
-    for msg in messages.drain(..) {
-        if msg.role == "assistant" {
-            if let Some(ref tool_calls) = msg.tool_calls {
-                for tc in tool_calls {
-                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
-                        if !id.is_empty() {
-                            available_tool_calls.insert(id.to_string());
-                        }
-                    }
+    while i < original.len() {
+        let msg = &original[i];
+
+        if msg.role == "assistant" && msg.tool_calls.is_some() {
+            let expected_ids: Vec<String> = msg
+                .tool_calls
+                .as_ref()
+                .unwrap()
+                .iter()
+                .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
+                .collect();
+
+            let expected_set: HashSet<String> = expected_ids.iter().cloned().collect();
+            let mut found_set: HashSet<String> = HashSet::new();
+            let mut matched_tools: Vec<ChatMessage> = Vec::new();
+            let mut j = i + 1;
+
+            while j < original.len() {
+                let next = &original[j];
+                if next.role != "tool" {
+                    break;
                 }
+
+                let keep = next
+                    .tool_call_id
+                    .as_ref()
+                    .map(|id| expected_set.contains(id))
+                    .unwrap_or(false);
+
+                if keep {
+                    if let Some(id) = &next.tool_call_id {
+                        found_set.insert(id.clone());
+                    }
+                    matched_tools.push(next.clone());
+                } else {
+                    dropped += 1;
+                }
+                j += 1;
             }
-            sanitized.push(msg);
+
+            let ended_at_tail = j == original.len();
+            let complete = !expected_set.is_empty() && found_set == expected_set;
+            let pending_tail = ended_at_tail && matched_tools.is_empty();
+
+            if complete || pending_tail {
+                sanitized.push(msg.clone());
+                sanitized.extend(matched_tools);
+            } else {
+                dropped += 1 + matched_tools.len();
+            }
+
+            i = j;
             continue;
         }
 
         if msg.role == "tool" {
-            let keep = msg
-                .tool_call_id
-                .as_ref()
-                .map(|id| available_tool_calls.contains(id))
-                .unwrap_or(false);
-
-            if keep {
-                sanitized.push(msg);
-            } else {
-                dropped += 1;
-            }
+            dropped += 1;
+            i += 1;
             continue;
         }
 
-        sanitized.push(msg);
+        sanitized.push(msg.clone());
+        i += 1;
     }
 
     *messages = sanitized;
@@ -798,6 +831,47 @@ mod tests {
         assert_eq!(chat.messages[0].role, "assistant");
         assert_eq!(chat.messages[1].role, "tool");
         assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn test_incomplete_tool_call_sequence_is_dropped() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
+            json!({"type": "message", "role": "user", "content": "next"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].role, "user");
+        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("next"));
+    }
+
+    #[test]
+    fn test_partial_tail_tool_outputs_are_dropped() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
+            json!({"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"}),
+            json!({"type": "function_call_output", "call_id": "c1", "output": "result"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert!(chat.messages.is_empty());
+    }
+
+    #[test]
+    fn test_tool_outputs_must_be_contiguous_to_be_kept() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({"type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}"}),
+            json!({"type": "message", "role": "assistant", "content": "intervening"}),
+            json!({"type": "function_call_output", "call_id": "c1", "output": "result"}),
+            json!({"type": "message", "role": "user", "content": "next"}),
+        ]));
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].role, "assistant");
+        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("intervening"));
+        assert_eq!(chat.messages[1].role, "user");
     }
 
 
