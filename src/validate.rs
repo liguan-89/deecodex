@@ -20,6 +20,8 @@ pub fn validate(args: &Args) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
     check_data_dir(args, &mut diags);
+    check_api_key(args, &mut diags);
+    check_model_map(args, &mut diags);
     check_computer_executor(args, &mut diags);
     check_mcp_executor(args, &mut diags);
     check_file_search(args, &mut diags);
@@ -55,6 +57,48 @@ fn check_data_dir(args: &Args, diags: &mut Vec<Diagnostic>) {
                 severity: Severity::Error,
                 category: "data_dir",
                 message: format!("无法创建数据目录 {}: {}", dir.display(), e),
+            });
+        }
+    }
+}
+
+fn check_api_key(args: &Args, diags: &mut Vec<Diagnostic>) {
+    if args.api_key.trim().is_empty() {
+        diags.push(Diagnostic {
+            severity: Severity::Error,
+            category: "api_key",
+            message: "API Key 未配置——所有上游请求将返回 401 认证失败".into(),
+        });
+    }
+}
+
+fn check_model_map(args: &Args, diags: &mut Vec<Diagnostic>) {
+    let raw = args.model_map.trim();
+    if raw.is_empty() || raw == "{}" {
+        diags.push(Diagnostic {
+            severity: Severity::Warn,
+            category: "model_map",
+            message: "模型映射为空——Codex 请求的模型名将无法转换为上游模型".into(),
+        });
+        return;
+    }
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(v) => {
+            if let Some(obj) = v.as_object() {
+                if obj.is_empty() {
+                    diags.push(Diagnostic {
+                        severity: Severity::Warn,
+                        category: "model_map",
+                        message: "模型映射为空对象——Codex 请求的模型名将无法转换".into(),
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            diags.push(Diagnostic {
+                severity: Severity::Error,
+                category: "model_map",
+                message: format!("模型映射 JSON 解析失败: {}", e),
             });
         }
     }
@@ -749,6 +793,58 @@ mod tests {
             fs_diags
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_api_key_is_error() {
+        let args = base_args();
+        let diags = validate(&args);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.category == "api_key" && d.severity == Severity::Error),
+            "空 API Key 应产生错误诊断，实际: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn non_empty_api_key_is_silent() {
+        let mut args = base_args();
+        args.api_key = "sk-test-key".into();
+        let diags = validate(&args);
+        assert!(
+            !diags.iter().any(|d| d.category == "api_key"),
+            "已配置 API Key 不应产生诊断，实际: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn empty_model_map_is_warn() {
+        let args = base_args();
+        let diags = validate(&args);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.category == "model_map" && d.severity == Severity::Warn),
+            "空模型映射应产生警告诊断，实际: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn invalid_model_map_json_is_error() {
+        let mut args = base_args();
+        args.model_map = "not json".into();
+        let diags = validate(&args);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.category == "model_map" && d.severity == Severity::Error),
+            "无效的模型映射 JSON 应产生错误诊断，实际: {:?}",
+            diags
+        );
     }
 
     #[test]
