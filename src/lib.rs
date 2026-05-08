@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod config;
 pub mod executor;
 pub mod files;
 pub mod handlers;
@@ -12,4 +13,6 @@ pub mod token_anomaly;
 pub mod translate;
 pub mod types;
 pub mod utils;
+pub mod validate;
 pub mod vector_stores;
+pub mod web;

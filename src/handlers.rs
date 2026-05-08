@@ -55,6 +55,7 @@ pub struct AppState {
     pub tool_policy: ToolPolicy,
     pub executors: Arc<LocalExecutorConfig>,
     pub token_tracker: Arc<TokenTracker>,
+    pub data_dir: Arc<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]

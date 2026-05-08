@@ -17,6 +17,7 @@ mod types;
 mod utils;
 mod validate;
 mod vector_stores;
+mod web;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -404,6 +405,7 @@ async fn main() -> Result<()> {
             allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
         },
         executors: Arc::new(executors),
+        data_dir: Arc::new(args.data_dir.clone()),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
@@ -492,7 +494,9 @@ async fn main() -> Result<()> {
     let max_bytes = args.max_body_mb * 1024 * 1024;
     let body_limit = axum::extract::DefaultBodyLimit::max(max_bytes);
 
-    let app = handlers::build_router(state.clone()).layer(body_limit);
+    let app = handlers::build_router(state.clone())
+        .merge(web::build_web_router(state.clone()))
+        .layer(body_limit);
 
     let addr = format!("127.0.0.1:{}", args.port);
     info!(

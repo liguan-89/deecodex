@@ -179,6 +179,29 @@ impl Args {
         data_dir.join("config.json")
     }
 
+    /// 遮蔽 API key 等敏感字段：前4字符 + *** + 后4字符。
+    /// 空字符串返回空字符串。
+    pub fn mask_sensitive(value: &str) -> String {
+        if value.is_empty() {
+            return String::new();
+        }
+        if value.len() <= 8 {
+            return "****".to_string();
+        }
+        let prefix = &value[..4];
+        let suffix = &value[value.len() - 4..];
+        format!("{}***{}", prefix, suffix)
+    }
+
+    /// 完全遮蔽敏感字段
+    pub fn mask_full(value: &str) -> String {
+        if value.is_empty() {
+            String::new()
+        } else {
+            "********".to_string()
+        }
+    }
+
     /// 从文件加载配置并与当前 CLI/env 值合并。
     /// 规则：CLI/env 值若非默认值则优先，否则使用文件中的值。
     pub fn merge_with_file(self) -> Self {

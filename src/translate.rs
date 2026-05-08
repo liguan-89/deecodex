@@ -245,7 +245,10 @@ pub fn to_chat_request(
 
     let dropped_tool_messages = sanitize_tool_messages(&mut messages);
     if dropped_tool_messages > 0 {
-        info!("dropped {} orphan tool message(s) before upstream translation", dropped_tool_messages);
+        info!(
+            "dropped {} orphan tool message(s) before upstream translation",
+            dropped_tool_messages
+        );
     }
 
     // Sanitize: replace null content with "" (DeepSeek rejects null)
@@ -350,56 +353,59 @@ fn sanitize_tool_messages(messages: &mut Vec<ChatMessage>) -> usize {
     while i < original.len() {
         let msg = &original[i];
 
-        if msg.role == "assistant" && msg.tool_calls.is_some() {
-            let expected_ids: Vec<String> = msg
-                .tool_calls
-                .as_ref()
-                .unwrap()
-                .iter()
-                .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
-                .collect();
+        if msg.role == "assistant" {
+            if let Some(tool_calls) = &msg.tool_calls {
+                let expected_ids: Vec<String> = tool_calls
+                    .iter()
+                    .filter_map(|tc| {
+                        tc.get("id")
+                            .and_then(|v| v.as_str())
+                            .map(ToString::to_string)
+                    })
+                    .collect();
 
-            let expected_set: HashSet<String> = expected_ids.iter().cloned().collect();
-            let mut found_set: HashSet<String> = HashSet::new();
-            let mut matched_tools: Vec<ChatMessage> = Vec::new();
-            let mut j = i + 1;
+                let expected_set: HashSet<String> = expected_ids.iter().cloned().collect();
+                let mut found_set: HashSet<String> = HashSet::new();
+                let mut matched_tools: Vec<ChatMessage> = Vec::new();
+                let mut j = i + 1;
 
-            while j < original.len() {
-                let next = &original[j];
-                if next.role != "tool" {
-                    break;
-                }
-
-                let keep = next
-                    .tool_call_id
-                    .as_ref()
-                    .map(|id| expected_set.contains(id))
-                    .unwrap_or(false);
-
-                if keep {
-                    if let Some(id) = &next.tool_call_id {
-                        found_set.insert(id.clone());
+                while j < original.len() {
+                    let next = &original[j];
+                    if next.role != "tool" {
+                        break;
                     }
-                    matched_tools.push(next.clone());
-                } else {
-                    dropped += 1;
+
+                    let keep = next
+                        .tool_call_id
+                        .as_ref()
+                        .map(|id| expected_set.contains(id))
+                        .unwrap_or(false);
+
+                    if keep {
+                        if let Some(id) = &next.tool_call_id {
+                            found_set.insert(id.clone());
+                        }
+                        matched_tools.push(next.clone());
+                    } else {
+                        dropped += 1;
+                    }
+                    j += 1;
                 }
-                j += 1;
+
+                let ended_at_tail = j == original.len();
+                let complete = !expected_set.is_empty() && found_set == expected_set;
+                let pending_tail = ended_at_tail && matched_tools.is_empty();
+
+                if complete || pending_tail {
+                    sanitized.push(msg.clone());
+                    sanitized.extend(matched_tools);
+                } else {
+                    dropped += 1 + matched_tools.len();
+                }
+
+                i = j;
+                continue;
             }
-
-            let ended_at_tail = j == original.len();
-            let complete = !expected_set.is_empty() && found_set == expected_set;
-            let pending_tail = ended_at_tail && matched_tools.is_empty();
-
-            if complete || pending_tail {
-                sanitized.push(msg.clone());
-                sanitized.extend(matched_tools);
-            } else {
-                dropped += 1 + matched_tools.len();
-            }
-
-            i = j;
-            continue;
         }
 
         if msg.role == "tool" {
@@ -1294,7 +1300,10 @@ mod tests {
         let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, "user");
-        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("next"));
+        assert_eq!(
+            chat.messages[0].content.as_ref().and_then(|v| v.as_str()),
+            Some("next")
+        );
     }
 
     #[test]
@@ -1321,7 +1330,10 @@ mod tests {
         let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
         assert_eq!(chat.messages.len(), 2);
         assert_eq!(chat.messages[0].role, "assistant");
-        assert_eq!(chat.messages[0].content.as_ref().and_then(|v| v.as_str()), Some("intervening"));
+        assert_eq!(
+            chat.messages[0].content.as_ref().and_then(|v| v.as_str()),
+            Some("intervening")
+        );
         assert_eq!(chat.messages[1].role, "user");
     }
 

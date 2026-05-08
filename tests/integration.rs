@@ -46,6 +46,7 @@ fn test_state() -> AppState {
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         tool_policy: deecodex::handlers::ToolPolicy::default(),
         executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
     }
 }
 
