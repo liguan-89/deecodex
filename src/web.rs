@@ -350,18 +350,109 @@ pub async fn post_stop() -> impl IntoResponse {
     }
 }
 
-/// GET /api/logs — 返回最近日志行
+/// GET /api/logs — 返回结构化日志（最近 200 行）
 pub async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
     let log_path = state.data_dir.join("deecodex.log");
     match std::fs::read_to_string(&log_path) {
         Ok(content) => {
-            // 取最后 100 行
-            let lines: Vec<&str> = content.lines().rev().take(100).collect();
-            let recent: Vec<&str> = lines.into_iter().rev().collect();
-            Json(json!({"ok": true, "lines": recent}))
+            let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+            let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
+            let entries: Vec<Value> = lines[start..].iter().map(|l| parse_log_line(l)).collect();
+            Json(json!({"ok": true, "entries": entries}))
         }
-        Err(e) => Json(json!({"ok": false, "error": format!("无法读取日志: {}", e), "lines": []})),
+        Err(e) => Json(json!({"ok": false, "error": format!("无法读取日志: {}", e), "entries": []})),
     }
+}
+
+/// 解析单行日志：去 ANSI，提取 timestamp / level / target / message / fields
+/// 日志格式: "2026-05-07T17:26:48.845500Z  INFO deecodex::handlers: message key=val..."
+fn parse_log_line(raw: &str) -> Value {
+    let clean = strip_ansi(raw);
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        return json!({"level": "unknown", "time": "", "message": raw});
+    }
+
+    // ISO 8601 时间戳固定 27 字符: "2026-05-07T17:26:48.845500Z "
+    let timestamp = if trimmed.len() >= 27 && trimmed.as_bytes()[4] == b'-' {
+        trimmed[..27].to_string()
+    } else {
+        return json!({"level": "unknown", "time": "", "message": raw});
+    };
+
+    let time_short = timestamp[11..19].to_string();
+    let rest = trimmed[27..].trim();
+
+    // rest: "LEVEL target: message key=val..."
+    let mut parts = rest.splitn(2, |c: char| c.is_whitespace());
+    let level = parts.next().unwrap_or("UNKNOWN").to_uppercase();
+    let after_level = parts.next().unwrap_or("").trim();
+
+    // after_level: "target: message key=val..." 或 "message"
+    let (target, body) = if let Some(pos) = after_level.find(": ") {
+        let t = after_level[..pos].to_string();
+        let b = after_level[pos + 2..].to_string();
+        (t, b)
+    } else if let Some(pos) = after_level.find(':') {
+        let t = after_level[..pos].to_string();
+        let b = after_level[pos + 1..].to_string();
+        (t, b)
+    } else {
+        (String::new(), after_level.to_string())
+    };
+
+    let (message, fields) = extract_fields(&body);
+
+    json!({
+        "time": time_short,
+        "timestamp": timestamp,
+        "level": level.to_lowercase(),
+        "target": target,
+        "message": message.trim().to_string(),
+        "fields": fields,
+    })
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+            while let Some(&c) = chars.peek() {
+                chars.next();
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn extract_fields(body: &str) -> (String, Value) {
+    let mut fields = serde_json::Map::new();
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let mut msg_end = words.len();
+
+    for i in (0..words.len()).rev() {
+        if words[i].contains('=') {
+            let kv: Vec<&str> = words[i].splitn(2, '=').collect();
+            if kv.len() == 2 {
+                let key = kv[0].to_string();
+                let val = kv[1].trim_matches('"').to_string();
+                fields.insert(key, Value::String(val));
+                msg_end = i;
+            }
+        } else {
+            break;
+        }
+    }
+
+    let message = words[..msg_end].join(" ");
+    (message, Value::Object(fields))
 }
 
 /// POST /api/update — 下载最新版本并重启

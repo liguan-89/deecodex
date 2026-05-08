@@ -312,13 +312,14 @@ STARTED=false
 
 if confirm "是否现在启动 deecodex？"; then
     # 检测端口是否被占用
-    if lsof -i ":$PORT" &>/dev/null 2>&1; then
+    if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
         print_warn "端口 $PORT 已被占用"
         if confirm "是否终止占用进程并继续？"; then
-            kill "$(lsof -ti ":$PORT")" 2>/dev/null || true
+            kill "$(lsof -ti ":$PORT" -sTCP:LISTEN)" 2>/dev/null || true
             sleep 1
         else
-            echo "       请修改 $ENV_FILE 中的 DEECODEX_PORT 后手动启动"
+            print_warn "端口已被占用，跳过启动，请修改 $ENV_FILE 中的 DEECODEX_PORT 后手动启动"
+            STARTED=true
         fi
     fi
 
