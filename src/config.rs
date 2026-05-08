@@ -15,7 +15,7 @@ pub struct Args {
     #[serde(skip)]
     pub config: Option<String>,
 
-    #[arg(long, env = "DEECODEX_PORT", default_value = "4444")]
+    #[arg(long, env = "DEECODEX_PORT", default_value = "4446")]
     pub port: u16,
 
     #[arg(
