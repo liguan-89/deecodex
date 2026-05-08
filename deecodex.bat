@@ -121,9 +121,16 @@ if not errorlevel 1 (
     exit /b 1
 )
 
-where %BIN% >nul 2>&1
-if errorlevel 1 (
-    echo 错误: 找不到 %BIN%，请确认已安装到 PATH
+rem 优先检查脚本同目录，其次 PATH（支持便携免安装）
+set "BIN_PATH="
+if exist "%PROJECT_DIR%%BIN%" (
+    set "BIN_PATH=%PROJECT_DIR%%BIN%"
+) else (
+    where %BIN% >nul 2>&1
+    if not errorlevel 1 set "BIN_PATH=%BIN%"
+)
+if "%BIN_PATH%"=="" (
+    echo 错误: 找不到 %BIN%，请将 %BIN% 放在脚本同目录或 PATH 中
     echo       下载: https://github.com/liguan-89/deecodex/releases
     exit /b 1
 )
@@ -143,7 +150,7 @@ call :codex_config_switch_to_deecodex
 call :rotate_logs
 
 echo 启动 deecodex (端口: %DEECODEX_PORT%)...
-start /b "" "%BIN%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% --model-map "%DEECODEX_MODEL_MAP%" >> "%LOG_FILE%" 2>&1
+start /b "" "%BIN_PATH%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% --model-map "%DEECODEX_MODEL_MAP%" >> "%LOG_FILE%" 2>&1
 
 rem 获取启动进程 PID
 set PID=
