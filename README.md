@@ -63,6 +63,8 @@ irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
 3. 将 `.env.example` 重命名为 `.env`，用记事本填入 DeepSeek API Key
 4. 双击 `deecodex.bat` 或在命令行运行 `deecodex.bat start`
 
+> 非必要请优先使用上方的一键安装版。便携版需要手动管理 PATH、依赖和环境，适合有一定动手能力的用户。
+
 ### 方式二：源码编译
 
 ```bash
