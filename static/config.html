@@ -124,23 +124,39 @@ body {
   gap: 10px;
 }
 
-.sidebar-brand .dot {
-  width: 8px; height: 8px;
-  background: var(--accent);
-  border-radius: 50%;
-  box-shadow: 0 0 6px var(--accent), 0 0 14px var(--accent);
-  animation: dot-pulse 2.4s ease-in-out infinite;
+.sidebar-brand .logo {
+  width: 18px; height: 18px;
+  position: relative;
   flex-shrink: 0;
 }
+.sidebar-brand .logo::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform: rotate(45deg);
+  border-radius: 3px;
+  box-shadow: 0 0 10px var(--accent), 0 0 22px var(--accent-glow);
+  animation: logo-pulse 3s ease-in-out infinite;
+}
+.sidebar-brand .logo::after {
+  content: '';
+  position: absolute;
+  width: 6px; height: 6px;
+  background: var(--bg-surface);
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border-radius: 1px;
+}
 
-@keyframes dot-pulse {
-  0%, 100% { box-shadow: 0 0 6px var(--accent), 0 0 14px var(--accent); }
-  50% { box-shadow: 0 0 3px var(--accent), 0 0 7px var(--accent); }
+@keyframes logo-pulse {
+  0%, 100% { box-shadow: 0 0 10px var(--accent), 0 0 22px var(--accent-glow); opacity: 1; }
+  50% { box-shadow: 0 0 4px var(--accent), 0 0 10px var(--accent-glow); opacity: 0.7; }
 }
 
 .sidebar-brand h1 {
   font-family: var(--font-mono);
-  font-size: 17px;
+  font-size: 22px;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: 0.04em;
@@ -877,6 +893,127 @@ body {
 
 .btn:active:not(:disabled) { transform: scale(0.97); }
 
+.btn-danger {
+  background: var(--red-dim);
+  border-color: rgba(255,60,92,0.3);
+  color: var(--red);
+}
+.btn-danger:hover {
+  background: rgba(255,60,92,0.22);
+  box-shadow: 0 0 16px rgba(255,60,92,0.12);
+}
+.btn-danger:disabled {
+  background: rgba(255,60,92,0.05);
+  border-color: var(--border-default);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* --- Management Command Buttons --- */
+.mgmt-section {
+  margin-top: 24px;
+}
+.mgmt-section .mgmt-header {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-heading);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mgmt-section .mgmt-header::before {
+  content: '>';
+  color: var(--accent);
+  font-weight: 700;
+}
+.mgmt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* --- Log Modal --- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in 0.15s ease;
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  width: 90vw;
+  max-width: 820px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.modal-header h3 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+}
+.modal-close {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  width: 28px; height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  font-family: var(--font-mono);
+}
+.modal-close:hover { border-color: var(--accent); color: var(--accent); }
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+.modal-body pre {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+.modal-body .log-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 32px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ============================================================
    TOAST
    ============================================================ */
@@ -1022,7 +1159,7 @@ body {
   <!-- ===== SIDEBAR ===== -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand" onclick="document.getElementById('sidebar').classList.toggle('open')">
-      <span class="dot"></span>
+      <span class="logo"></span>
       <h1>deecodex</h1>
       <span class="version" id="sidebarVersion">—</span>
       <button class="mobile-toggle" onclick="event.stopPropagation(); document.getElementById('sidebar').classList.toggle('open')">≡</button>
@@ -1243,6 +1380,16 @@ function renderStatus() {
         <div class="card-value small">${esc(s.client_auth_enabled ? '需要密钥' : '开放访问')}</div>
         <div class="card-label">客户端认证</div>
         ${badge(s.client_auth_enabled)}
+      </div>
+    </div>
+
+    <div class="mgmt-section">
+      <div class="mgmt-header">服务管理</div>
+      <div class="mgmt-actions">
+        <button class="btn btn-primary" onclick="mgmtRestart()" id="btnRestart">⟳ 重启服务</button>
+        <button class="btn btn-danger" onclick="mgmtStop()" id="btnStop">◼ 停止服务</button>
+        <button class="btn btn-ghost" onclick="mgmtLogs()" id="btnLogs">☰ 查看日志</button>
+        <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
       </div>
     </div>
   `;
@@ -1680,6 +1827,133 @@ async function validateConfig() {
       sidebarMsg.textContent = '';
       sidebarMsg.className = 'sidebar-status';
     }
+  }
+}
+
+// ============================================================
+// MANAGEMENT COMMANDS
+// ============================================================
+
+async function mgmtRestart() {
+  const btn = document.getElementById('btnRestart');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/restart', { method: 'POST' });
+    const r = await res.json();
+    showToast(r.message || r.error || '已发送重启指令', r.ok ? 'success' : 'error');
+    if (r.ok) {
+      // 轮询等待服务恢复
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const s = await fetch('/api/status');
+          if (s.ok) {
+            clearInterval(poll);
+            showToast('服务已恢复', 'success');
+            await loadStatus();
+            if (btn) btn.disabled = false;
+          }
+        } catch (_) {}
+        if (attempts > 30) {
+          clearInterval(poll);
+          showToast('服务未在预期时间内恢复，请手动检查', 'error');
+          if (btn) btn.disabled = false;
+        }
+      }, 2000);
+    } else {
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    showToast('重启请求失败: ' + err.message, 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function mgmtStop() {
+  if (!confirm('确定要停止 deecodex 服务吗？\n\n停止后需要手动在终端执行 ./deecodex.sh start 重新启动。')) return;
+  const btn = document.getElementById('btnStop');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/stop', { method: 'POST' });
+    const r = await res.json();
+    showToast(r.message || r.error || '已发送停止指令', r.ok ? 'info' : 'error');
+  } catch (err) {
+    // stop 成功后服务不可达是正常的
+    showToast('服务正在停止...', 'info');
+  }
+}
+
+async function mgmtLogs() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'logModal';
+
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>☰ 服务日志</h3>
+        <button class="modal-close" onclick="document.getElementById('logModal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <pre id="logContent">加载中...</pre>
+      </div>
+    </div>`;
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  document.body.appendChild(overlay);
+
+  try {
+    const res = await fetch('/api/logs');
+    const r = await res.json();
+    const pre = document.getElementById('logContent');
+    if (r.ok && r.lines && r.lines.length > 0) {
+      pre.textContent = r.lines.join('\n');
+    } else {
+      pre.innerHTML = '<div class="log-empty">暂无日志</div>';
+    }
+  } catch (err) {
+    document.getElementById('logContent').innerHTML = '<div class="log-empty">无法加载日志: ' + err.message + '</div>';
+  }
+}
+
+async function mgmtUpdate() {
+  if (!confirm('确定要升级 deecodex 到最新版本吗？\n\n升级将下载最新 Release 并自动重启服务。')) return;
+  const btn = document.getElementById('btnUpdate');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/update', { method: 'POST' });
+    const r = await res.json();
+    showToast(r.message || r.error || '已发送升级指令', r.ok ? 'success' : 'error');
+    if (r.ok) {
+      // 轮询等待升级完成
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const s = await fetch('/api/status');
+          if (s.ok) {
+            clearInterval(poll);
+            showToast('升级完成，服务已恢复', 'success');
+            await loadStatus();
+            if (btn) btn.disabled = false;
+          }
+        } catch (_) {}
+        if (attempts > 60) {
+          clearInterval(poll);
+          showToast('升级未在预期时间内完成，请手动检查', 'error');
+          if (btn) btn.disabled = false;
+        }
+      }, 3000);
+    } else {
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    showToast('升级请求失败: ' + err.message, 'error');
+    if (btn) btn.disabled = false;
   }
 }
 

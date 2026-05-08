@@ -2,8 +2,8 @@ use crate::config::Args;
 use crate::handlers::AppState;
 use crate::validate;
 use axum::{
-    extract::State, http::header, http::StatusCode, response::IntoResponse, routing::get, Json,
-    Router,
+    extract::State, http::header, http::StatusCode, response::IntoResponse, routing::{get, post},
+    Json, Router,
 };
 use serde_json::{json, Value};
 
@@ -14,6 +14,10 @@ pub fn build_web_router(state: AppState) -> Router {
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/validate", get(validate_config))
         .route("/api/status", get(get_status))
+        .route("/api/restart", post(post_restart))
+        .route("/api/stop", post(post_stop))
+        .route("/api/logs", get(get_logs))
+        .route("/api/update", post(post_update))
         .with_state(state)
 }
 
@@ -304,4 +308,82 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
         "codex_persistent_inject": state.codex_persistent_inject,
         "client_auth_enabled": !state.client_api_key.is_empty(),
     }))
+}
+
+/// POST /api/restart — 后台重启服务（1 秒延迟确保响应先返回）
+pub async fn post_restart() -> impl IntoResponse {
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 1 && exec deecodex restart")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match result {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "message": "正在重启，请稍后刷新页面"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("无法执行重启: {}", e)})),
+        ),
+    }
+}
+
+/// POST /api/stop — 后台停止服务（1 秒延迟确保响应先返回）
+pub async fn post_stop() -> impl IntoResponse {
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 1 && exec deecodex stop")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match result {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "message": "服务正在停止"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("无法执行停止: {}", e)})),
+        ),
+    }
+}
+
+/// GET /api/logs — 返回最近日志行
+pub async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
+    let log_path = state.data_dir.join("deecodex.log");
+    match std::fs::read_to_string(&log_path) {
+        Ok(content) => {
+            // 取最后 100 行
+            let lines: Vec<&str> = content.lines().rev().take(100).collect();
+            let recent: Vec<&str> = lines.into_iter().rev().collect();
+            Json(json!({"ok": true, "lines": recent}))
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("无法读取日志: {}", e), "lines": []})),
+    }
+}
+
+/// POST /api/update — 下载最新版本并重启
+pub async fn post_update(State(state): State<AppState>) -> impl IntoResponse {
+    let dir = state.data_dir.clone();
+    let result = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "sleep 1 && cd {} && exec sh deecodex.sh update",
+            dir.display()
+        ))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match result {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "message": "正在升级，完成后将自动重启"})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("无法执行升级: {}", e)})),
+        ),
+    }
 }
