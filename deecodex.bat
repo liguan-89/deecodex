@@ -16,7 +16,9 @@ if "%~1"=="" goto usage
 goto case_%~1
 
 :usage
-echo 用法: %~nx0 {start^|stop^|restart^|status^|logs^|health}
+set "GH_REPO=liguan-89/deecodex"
+
+echo 用法: %~nx0 {start^|stop^|restart^|status^|logs^|health^|update}
 exit /b 1
 
 rem === 加载 .env ===
@@ -236,6 +238,51 @@ if "%CODE%"=="200" (
 ) else (
     echo degraded (GET /v1/models → %CODE%)
 )
+exit /b 0
+
+rem === update ===
+:case_update
+echo 检查最新版本...
+for /f "delims=" %%a in ('curl -sS "https://api.github.com/repos/%GH_REPO%/releases/latest" 2^>nul ^| findstr /r """tag_name"""') do set TAG_LINE=%%a
+if "%TAG_LINE%"=="" (
+    echo 错误: 无法获取最新版本
+    exit /b 1
+)
+for /f "tokens=2 delims=:" %%a in ("%TAG_LINE%") do set TAG=%%~a
+set TAG=!TAG: =!
+echo 最新版本: !TAG!
+
+set TEMP_DIR=%TEMP%\deecodex_update
+if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
+mkdir "%TEMP_DIR%"
+
+echo 下载 deecodex.exe ^(!TAG!^)...
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex.exe" -o "%TEMP_DIR%\deecodex.exe"
+if not exist "%TEMP_DIR%\deecodex.exe" (
+    echo 错误: 下载失败
+    exit /b 1
+)
+
+set WAS_RUNNING=0
+call :is_running 2>nul
+if not errorlevel 1 set WAS_RUNNING=1
+
+if !WAS_RUNNING! equ 1 (
+    echo 停止旧版本...
+    call :case_stop
+)
+
+echo 替换二进制...
+move /y "%TEMP_DIR%\deecodex.exe" "%PROJECT_DIR%deecodex.exe" >nul
+rmdir /s /q "%TEMP_DIR%" 2>nul
+echo 已更新: %PROJECT_DIR%deecodex.exe
+
+if !WAS_RUNNING! equ 1 (
+    echo 重新启动...
+    call :case_start
+)
+
+echo 更新完成 ^(!TAG!^)
 exit /b 0
 
 endlocal

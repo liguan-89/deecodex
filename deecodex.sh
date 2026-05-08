@@ -92,8 +92,10 @@ cleanup_config() {
 
 trap cleanup_config INT TERM
 
+GH_REPO="liguan-89/deecodex"
+
 usage() {
-    echo "用法: $0 {start|stop|restart|status|logs|health}"
+    echo "用法: $0 {start|stop|restart|status|logs|health|update}"
     exit 1
 }
 
@@ -301,12 +303,51 @@ cmd_health() {
     esac
 }
 
+cmd_update() {
+    local bin_path
+    bin_path="$(command -v "$BIN" 2>/dev/null || echo "$PROJECT_DIR/$BIN")"
+
+    echo "检查最新版本..."
+    local latest_tag
+    latest_tag=$(curl -sS "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$latest_tag" ]; then
+        echo "错误: 无法获取最新版本"
+        return 1
+    fi
+    echo "最新版本: $latest_tag"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf $tmpdir" RETURN
+
+    echo "下载 deecodex (${latest_tag})..."
+    curl -fsSL "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex" -o "$tmpdir/deecodex"
+    chmod +x "$tmpdir/deecodex"
+
+    local was_running=false
+    if is_running; then
+        was_running=true
+        cmd_stop
+    fi
+
+    mv "$tmpdir/deecodex" "$bin_path"
+    echo "已更新: $bin_path"
+
+    if $was_running; then
+        echo "重新启动..."
+        cmd_start
+    fi
+
+    echo "更新完成 (${latest_tag})"
+}
+
 case "${1:-}" in
-    start)   cmd_start ;;
-    stop)    cmd_stop ;;
+    start)  cmd_start ;;
+    stop)   cmd_stop ;;
     restart) cmd_restart ;;
-    status)  cmd_status ;;
-    logs)    cmd_logs ;;
-    health)  cmd_health ;;
-    *)       usage ;;
+    status) cmd_status ;;
+    logs)   cmd_logs ;;
+    health) cmd_health ;;
+    update) cmd_update ;;
+    *)      usage ;;
 esac
