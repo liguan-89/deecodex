@@ -259,6 +259,12 @@ src/
 
 测试：364 个（270 lib + 9 bin + 5 compat + 80 integration）
 
+## 交流群
+
+欢迎加入 deecodex 交流群，一起讨论、反馈、共建。
+
+<img src="https://github.com/liguan-89/deecodex/releases/download/v1.0.0/deecodex.0515.jpg" width="200" alt="deecodex 交流群" />
+
 ## License
 
 MIT License. 基于 [codex-relay](https://github.com/MetaFARS/codex-relay) (MIT) 深度修改，Rust 源码 ~14,000 行，18 个模块。
