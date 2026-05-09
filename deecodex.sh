@@ -152,6 +152,15 @@ is_running() {
         if kill -0 "$pid" 2>/dev/null; then
             return 0
         fi
+        # PID 文件过期，清理
+        rm -f "$PID_FILE"
+    fi
+    # 回退：通过进程名查找（排除当前脚本自身）
+    local actual
+    actual=$(pgrep -f "deecodex.*--port" 2>/dev/null | head -1)
+    if [ -n "$actual" ]; then
+        echo "$actual" > "$PID_FILE"
+        return 0
     fi
     return 1
 }

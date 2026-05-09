@@ -76,13 +76,21 @@ set "CODEX_RELAY_PORT=%DEECODEX_PORT%"
 set "CODEX_RELAY_MODEL_MAP=%DEECODEX_MODEL_MAP%"
 exit /b 0
 
-rem === 检查进程是否运行 ===
+rem === 检测进程是否运行 ===
 :is_running
-if not exist "%PID_FILE%" exit /b 1
+if not exist "%PID_FILE%" goto pid_fallback
 set /p PID=<"%PID_FILE%"
 tasklist /fi "pid eq !PID!" 2>nul | find /i "!PID!" >nul
-if errorlevel 1 exit /b 1
-exit /b 0
+if not errorlevel 1 exit /b 0
+rem PID 文件过期，清理
+del "%PID_FILE%" 2>nul
+:pid_fallback
+rem 回退：通过进程名查找
+for /f "tokens=2" %%a in ('tasklist /fi "imagename eq %BIN%" /fo list 2^>nul ^| find "PID:"') do (
+    echo %%a > "%PID_FILE%"
+    exit /b 0
+)
+exit /b 1
 
 rem === 日志轮转 ===
 :rotate_logs

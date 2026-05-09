@@ -457,12 +457,18 @@ fn extract_fields(body: &str) -> (String, Value) {
 
 /// POST /api/update — 下载最新版本并重启
 pub async fn post_update(State(state): State<AppState>) -> impl IntoResponse {
-    let dir = state.data_dir.clone();
+    let script = state.data_dir.join("deecodex.sh");
+    if !script.exists() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": "管理脚本 deecodex.sh 不存在，请重新运行安装脚本"})),
+        );
+    }
     let result = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "sleep 1 && cd {} && exec sh deecodex.sh update",
-            dir.display()
+            "sleep 1 && exec sh {} update",
+            script.display()
         ))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
