@@ -1842,12 +1842,14 @@ async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {
         return;
     }
 
-    let tool_policy_guard = state.tool_policy.read().await;
+    let allowed_displays = {
+        let guard = state.tool_policy.read().await;
+        guard.allowed_computer_displays.clone()
+    };
     let mut outputs = Vec::new();
     for (call_id, invocation) in calls {
-        let result = if !tool_policy_guard.allowed_computer_displays.is_empty()
-            && !tool_policy_guard
-                .allowed_computer_displays
+        let result = if !allowed_displays.is_empty()
+            && !allowed_displays
                 .iter()
                 .any(|display| display == &invocation.display)
         {
@@ -1903,12 +1905,14 @@ async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
         return;
     }
 
-    let tool_policy_guard = state.tool_policy.read().await;
+    let allowed_servers = {
+        let guard = state.tool_policy.read().await;
+        guard.allowed_mcp_servers.clone()
+    };
     let mut outputs = Vec::new();
     for (call_id, invocation) in calls {
-        let result = if !tool_policy_guard.allowed_mcp_servers.is_empty()
-            && !tool_policy_guard
-                .allowed_mcp_servers
+        let result = if !allowed_servers.is_empty()
+            && !allowed_servers
                 .iter()
                 .any(|server| server == &invocation.server_label)
         {
@@ -2548,26 +2552,22 @@ pub async fn handle_put_tool_policy(
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let mut policy = state.tool_policy.write().await;
-    // 从 JSON 数组中提取字符串列表来更新 allowed_mcp_servers
     if let Some(servers) = body.get("allowed_mcp_servers").and_then(|v| v.as_array()) {
         policy.allowed_mcp_servers = servers
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
     }
-    // 从 JSON 数组中提取字符串列表来更新 allowed_computer_displays
     if let Some(displays) = body.get("allowed_computer_displays").and_then(|v| v.as_array()) {
         policy.allowed_computer_displays = displays
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
     }
-    // 持久化到 config.json
     let allowed_mcp = policy.allowed_mcp_servers.join(",");
     let allowed_displays = policy.allowed_computer_displays.join(",");
-    drop(policy); // 释放写锁
+    drop(policy);
 
-    // 读取并更新 config.json
     let config_path = Args::default_config_path(&state.data_dir);
     if let Some(mut args) = Args::load_from_file(&config_path) {
         args.allowed_mcp_servers = allowed_mcp.clone();
@@ -2580,7 +2580,6 @@ pub async fn handle_put_tool_policy(
         }
     }
 
-    // 重新读取以返回最新值
     let policy = state.tool_policy.read().await;
     Ok(Json(json!({
         "ok": true,

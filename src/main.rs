@@ -592,6 +592,7 @@ async fn main() -> Result<()> {
             tp.allowed_computer_displays.len()
         );
     }
+    drop(tp);
     info!(
         "computer executor: {} (timeout={}s)",
         state.executors.computer.backend.as_str(),
