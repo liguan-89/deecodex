@@ -44,6 +44,66 @@ impl<W: Write> Write for FlushWriter<W> {
     }
 }
 
+// ── .env 加载（覆盖模式） ────────────────────────────────────────────────────
+
+/// 手动解析 .env 并用 `std::env::set_var` 强行覆盖已有环境变量。
+/// 解决 daemon 重启时父进程继承的旧值被 `dotenvy` 跳过的问题。
+fn load_env_override() {
+    let env_path = find_env_file();
+    let path = match env_path {
+        Some(p) => p,
+        None => return,
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(eq) = trimmed.find('=') {
+            let key = trimmed[..eq].trim();
+            let val = trimmed[eq + 1..].trim();
+            // 去掉引号包裹
+            let val = if (val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\''))
+            {
+                &val[1..val.len() - 1]
+            } else {
+                val
+            };
+            std::env::set_var(key, val);
+        }
+    }
+}
+
+fn find_env_file() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    // cwd
+    if std::path::Path::new(".env").exists() {
+        return Some(PathBuf::from(".env"));
+    }
+    // ~/.deecodex/.env
+    if let Ok(home) = std::env::var("HOME") {
+        let home_env = PathBuf::from(&home).join(".deecodex").join(".env");
+        if home_env.exists() {
+            return Some(home_env);
+        }
+    }
+    // exe目录
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let exe_env = dir.join(".env");
+            if exe_env.exists() {
+                return Some(exe_env);
+            }
+        }
+    }
+    None
+}
+
 // ── Service helpers ─────────────────────────────────────────────────────────
 
 fn pid_path(data_dir: &std::path::Path) -> PathBuf {
@@ -161,17 +221,8 @@ fn start_service_daemon(args: &Args) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 加载 .env 文件（按优先级搜索：cwd → ~/.deecodex/ → exe目录）
-    let env_loaded = dotenvy::dotenv().is_ok()
-        || std::env::var("HOME").ok().as_ref().is_some_and(|h| {
-            dotenvy::from_path(std::path::Path::new(h).join(".deecodex").join(".env")).is_ok()
-        })
-        || std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|d| d.to_path_buf()))
-            .as_ref()
-            .is_some_and(|d| dotenvy::from_path(d.join(".env")).is_ok());
-    let _ = env_loaded;
+    // 加载 .env 文件（手动解析以覆盖已有环境变量，解决 daemon 重启继承旧值的问题）
+    load_env_override();
 
     // 向后兼容: CODEX_RELAY_* → DEECODEX_*
     for (old, new) in [
