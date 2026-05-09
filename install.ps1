@@ -7,7 +7,7 @@ $Host.UI.RawUI.WindowTitle = "deecodex 安装向导"
 # ===== 全局配置 =====
 $Repo = "liguan-89/deecodex"
 $InstallDir = "$env:LOCALAPPDATA\Programs\deecodex"
-$FallbackVersion = "v1.3.10"
+$FallbackVersion = "v1.3.19"
 $Port = "4446"
 
 # ===== 辅助函数 =====

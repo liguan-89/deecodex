@@ -17,7 +17,7 @@ GH_REPO="liguan-89/deecodex"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.deecodex"
 PORT="4446"
-FALLBACK_VERSION="v1.3.11"
+FALLBACK_VERSION="v1.3.19"
 
 # ===== 工具函数 =====
 print_header() {
