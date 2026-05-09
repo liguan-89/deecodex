@@ -362,6 +362,10 @@ if exist "%TEMP_DIR%\deecodex.bat" (
     echo �Ѹ���: %PROJECT_DIR%deecodex.bat
 )
 
+rem sync .env.example when missing
+if not exist "%ENV_FILE%" (
+    curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/.env.example" -o "%PROJECT_DIR%\.env.example"
+)
 rmdir /s /q "%TEMP_DIR%" 2>nul
 
 if !WAS_RUNNING! equ 1 (

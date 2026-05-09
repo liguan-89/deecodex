@@ -370,6 +370,14 @@ cmd_update() {
         echo "已更新: $PROJECT_DIR/deecodex.sh"
     fi
 
+    # 同步 .env.example（仅在 .env 不存在时）
+    if [ ! -f "$ENV_FILE" ]; then
+        _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/.env.example" "$PROJECT_DIR/.env.example"
+        if [ -f "$PROJECT_DIR/.env.example" ]; then
+            echo "已下载: $PROJECT_DIR/.env.example（请复制为 .env 并填入 API Key）"
+        fi
+    fi
+
     if $was_running; then
         echo "重新启动..."
         cmd_start
