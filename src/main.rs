@@ -397,10 +397,16 @@ async fn main() -> Result<()> {
     // ── 初始化 tracing（daemon 模式写文件，否则写 stderr） ──
     if args.daemon {
         std::fs::create_dir_all(&args.data_dir)?;
-        let log_file = std::fs::OpenOptions::new()
+        let log_path = log_path(&args.data_dir);
+        let mut log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(log_path(&args.data_dir))?;
+            .open(&log_path)?;
+        // 新日志文件写入 UTF-8 BOM，确保 Windows 工具能正确识别编码
+        if log_file.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+            use std::io::Write;
+            let _ = log_file.write_all(&[0xEF, 0xBB, 0xBF]);
+        }
         tracing_subscriber::fmt()
             .with_writer(move || FlushWriter(log_file.try_clone().expect("failed to clone log fd")))
             .with_env_filter(

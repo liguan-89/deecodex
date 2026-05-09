@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >/dev/null 2>&1
+
 setlocal enabledelayedexpansion
 
 rem deecodex Windows �����ű�
