@@ -62,16 +62,21 @@ is_interactive() {
     [[ -t 0 ]]
 }
 
+# 从终端读取（管道模式下通过 /dev/tty 仍可交互）
+read_tty() {
+    if [[ -e /dev/tty ]]; then
+        read -r "$@" < /dev/tty
+    else
+        read -r "$@"
+    fi
+}
+
 confirm() {
     local prompt="$1"
     local default="${2:-Y}"
-    # 非交互式模式（管道执行）直接返回默认值
-    if ! is_interactive; then
-        [[ "$default" =~ ^[Yy]$ ]]
-        return
-    fi
     local yn
-    read -r -p "       ${prompt} [Y/n]: " yn
+    printf "       %s [Y/n]: " "$prompt"
+    read_tty yn
     yn="${yn:-$default}"
     [[ "$yn" =~ ^[Yy]$ ]]
 }
@@ -233,13 +238,14 @@ fi
 if [ -n "${DEECODEX_API_KEY:-}" ] && [ "$DEECODEX_API_KEY" != "sk-your-deepseek-api-key-here" ]; then
     user_api_key="$DEECODEX_API_KEY"
     print_ok "API Key 已从环境变量读取"
-elif is_interactive; then
+else
     echo ""
     echo -e "  ${BOLD}请输入你的 DeepSeek API Key${NC}"
     echo -e "  ${YELLOW}（从 https://platform.deepseek.com → API Keys 获取）${NC}"
     echo -e "  ${YELLOW}不填写将导致服务启动后无法正常工作！${NC}"
     echo ""
-    read -r -p "  API Key: " user_api_key
+    printf "  API Key: "
+    read_tty user_api_key
 
     if [ -z "$user_api_key" ] || [ "$user_api_key" = "sk-your-deepseek-api-key-here" ]; then
         echo ""
@@ -249,9 +255,13 @@ elif is_interactive; then
         echo -e "  ${RED}║  你可以在安装完成后编辑 .env 手动填入     ║${NC}"
         echo -e "  ${RED}╚══════════════════════════════════════════╝${NC}"
         echo ""
-        if ! confirm "确认跳过 API Key 配置？（可稍后手动填入）"; then
+        printf "       确认跳过 API Key 配置？（可稍后手动填入）[Y/n]: "
+        read_tty skip_confirm
+        skip_confirm="${skip_confirm:-Y}"
+        if [[ ! "$skip_confirm" =~ ^[Yy]$ ]]; then
             echo ""
-            read -r -p "  请重新输入 API Key: " user_api_key
+            printf "  请重新输入 API Key: "
+            read_tty user_api_key
             if [ -n "${user_api_key:-}" ] && [ "${user_api_key:-}" != "sk-your-deepseek-api-key-here" ]; then
                 print_ok "API Key 已记录"
             else
@@ -261,11 +271,6 @@ elif is_interactive; then
     else
         print_ok "API Key 已记录"
     fi
-else
-    print_warn "管道模式无法交互输入，API Key 保持占位符"
-    echo "       可通过以下方式配置："
-    echo "       1. 编辑 $ENV_FILE 填入真实 Key，然后运行 cd $CONFIG_DIR && ./deecodex.sh start"
-    echo "       2. 或设置环境变量后重新安装：curl -fsSL ... | DEECODEX_API_KEY=sk-xxx bash"
 fi
 
 # 写入 API Key
@@ -364,13 +369,21 @@ print_step 5 "启动服务"
 STARTED=false
 
 # 检查 API Key 是否仍为占位符
+API_KEY_PLACEHOLDER=false
 if grep -q 'DEECODEX_API_KEY=sk-your-deepseek-api-key-here' "$ENV_FILE" 2>/dev/null; then
-    print_warn "API Key 未配置，跳过启动"
-    echo "       编辑 $ENV_FILE 填入 Key 后运行: cd $CONFIG_DIR && ./deecodex.sh start"
-    STARTED=true
+    print_warn "API Key 为占位符，LLM 调用将无法工作"
+    echo "       之后编辑 $ENV_FILE 填入 Key 并重启即可"
+    API_KEY_PLACEHOLDER=true
 fi
 
-if [ "$STARTED" = false ] && confirm "是否现在启动 deecodex？"; then
+# 交互模式询问，管道模式自动启动
+if is_interactive; then
+    SHOULD_START=$(confirm "是否现在启动 deecodex？")
+else
+    SHOULD_START=true
+fi
+
+if [ "$STARTED" = false ] && $SHOULD_START; then
     # 检测端口是否被占用
     if lsof -i ":$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
         print_warn "端口 $PORT 已被占用"
