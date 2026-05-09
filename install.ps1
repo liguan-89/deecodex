@@ -126,6 +126,17 @@ foreach ($p in $DesktopPaths) {
         break
     }
 }
+# 检测 Microsoft Store 版本
+if (-not $DesktopFound) {
+    $storeBase = "C:\Program Files\WindowsApps"
+    if (Test-Path $storeBase) {
+        $storeDirs = Get-ChildItem $storeBase -Directory -Filter "OpenAI.Codex*" -ErrorAction SilentlyContinue
+        if ($storeDirs) {
+            Write-Ok "Codex Microsoft Store 版: $($storeDirs[0].FullName)"
+            $DesktopFound = $true
+        }
+    }
+}
 if (-not $DesktopFound) {
     Write-Warn "Codex 桌面版未安装"
     Write-Url "https://github.com/anthropics/codex/releases"
