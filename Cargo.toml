@@ -1,6 +1,6 @@
 [package]
 name = "deecodex"
-version = "1.3.7"
+version = "1.3.8"
 edition = "2021"
 description = "DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层"
 license = "MIT"

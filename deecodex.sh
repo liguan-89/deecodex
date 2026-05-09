@@ -342,6 +342,15 @@ cmd_update() {
     mv "$tmpdir/deecodex" "$bin_path"
     echo "已更新: $bin_path"
 
+    # 同步更新管理脚本
+    echo "更新管理脚本..."
+    curl -fsSL "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex.sh" -o "$tmpdir/deecodex.sh"
+    if [ -f "$tmpdir/deecodex.sh" ]; then
+        mv "$tmpdir/deecodex.sh" "$PROJECT_DIR/deecodex.sh"
+        chmod +x "$PROJECT_DIR/deecodex.sh"
+        echo "已更新: $PROJECT_DIR/deecodex.sh"
+    fi
+
     if $was_running; then
         echo "重新启动..."
         cmd_start

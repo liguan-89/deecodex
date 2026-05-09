@@ -51,7 +51,7 @@ exit /b 1
 rem === 加载 .env ===
 :load_env
 if not exist "%ENV_FILE%" (
-    echo 错误: 找不到 .env 文件 (%ENV_FILE%)
+    echo 错误: 找不到 .env 文件 [%ENV_FILE%]
     echo       请将 .env.example 重命名为 .env 并用记事本填入 API Key
     pause
     exit /b 1
@@ -153,7 +153,7 @@ rem === start ===
 call :is_running 2>nul
 if not errorlevel 1 (
     set /p RPID=<"%PID_FILE%"
-    echo deecodex 已在运行中 (PID: !RPID!)
+    echo deecodex 已在运行中 [PID: !RPID!]
     exit /b 1
 )
 
@@ -262,7 +262,7 @@ if exist "%LOG_FILE%" (
     type "%LOG_FILE%"
     echo 实时日志请用: Get-Content "%LOG_FILE%" -Wait
 ) else (
-    echo 暂无日志 (%LOG_FILE%)
+    echo 暂无日志 [%LOG_FILE%]
 )
 exit /b 0
 
@@ -274,15 +274,15 @@ if "%DEECODEX_PORT%"=="" set "DEECODEX_PORT=4446"
 
 curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%DEECODEX_PORT%/v1/models >nul 2>&1
 if %errorlevel% neq 0 (
-    echo unreachable (端口 %DEECODEX_PORT% 无响应，请先 deecodex.bat start)
+    echo unreachable [端口 %DEECODEX_PORT% 无响应，请先 deecodex.bat start]
     exit /b 0
 )
 
 for /f %%a in ('curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%DEECODEX_PORT%/v1/models 2^>nul') do set CODE=%%a
 if "%CODE%"=="200" (
-    echo healthy (GET /v1/models → %CODE%)
+    echo healthy [GET /v1/models → %CODE%]
 ) else (
-    echo degraded (GET /v1/models → %CODE%)
+    echo degraded [GET /v1/models → %CODE%]
 )
 exit /b 0
 
@@ -320,8 +320,16 @@ if !WAS_RUNNING! equ 1 (
 
 echo 替换二进制...
 move /y "%TEMP_DIR%\deecodex.exe" "%PROJECT_DIR%deecodex.exe" >nul
-rmdir /s /q "%TEMP_DIR%" 2>nul
 echo 已更新: %PROJECT_DIR%deecodex.exe
+
+echo 更新管理脚本...
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex.bat" -o "%TEMP_DIR%\deecodex.bat"
+if exist "%TEMP_DIR%\deecodex.bat" (
+    move /y "%TEMP_DIR%\deecodex.bat" "%PROJECT_DIR%deecodex.bat" >nul
+    echo 已更新: %PROJECT_DIR%deecodex.bat
+)
+
+rmdir /s /q "%TEMP_DIR%" 2>nul
 
 if !WAS_RUNNING! equ 1 (
     echo 重新启动...
