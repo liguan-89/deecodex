@@ -181,7 +181,8 @@ DEECODEX_MODEL_MAP={"GPT-5.5":"deepseek-v4-pro","gpt-5.5":"deepseek-v4-pro","gpt
 # 日志级别
 RUST_LOG=deecodex=info
 '@
-    Set-Content -Path $EnvFile -Value $EnvTemplate -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($EnvFile, $EnvTemplate, $utf8NoBom)
     Write-Ok "配置模板已写入 $EnvFile"
 }
 
@@ -218,7 +219,8 @@ if ([string]::IsNullOrEmpty($ApiKey) -or $ApiKey -eq "sk-your-deepseek-api-key-h
 if (-not [string]::IsNullOrEmpty($ApiKey) -and $ApiKey -ne "sk-your-deepseek-api-key-here") {
     $content = Get-Content $EnvFile -Raw -Encoding UTF8
     $content = $content -replace 'DEECODEX_API_KEY=.*', "DEECODEX_API_KEY=$ApiKey"
-    Set-Content -Path $EnvFile -Value $content -Encoding UTF8 -NoNewline
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($EnvFile, $content, $utf8NoBom)
 }
 
 Write-Host ""
