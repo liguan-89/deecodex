@@ -365,7 +365,10 @@ cmd_update() {
     trap "rm -rf $tmpdir" RETURN
 
     echo "下载 deecodex (${latest_tag} / ${asset})..."
-    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/${asset}" "$tmpdir/deecodex"
+    if ! _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/${asset}" "$tmpdir/deecodex"; then
+        echo "错误: 下载 deecodex 失败，请检查网络或稍后重试"
+        return 1
+    fi
     chmod +x "$tmpdir/deecodex"
 
     local was_running=false
@@ -379,24 +382,27 @@ cmd_update() {
 
     # 同步更新管理脚本
     echo "更新管理脚本..."
-    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex.sh" "$tmpdir/deecodex.sh"
-    if [ -f "$tmpdir/deecodex.sh" ]; then
+    if _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex.sh" "$tmpdir/deecodex.sh"; then
         mv "$tmpdir/deecodex.sh" "$PROJECT_DIR/deecodex.sh"
         chmod +x "$PROJECT_DIR/deecodex.sh"
         echo "已更新: $PROJECT_DIR/deecodex.sh"
     fi
 
-    # 同步 .env.example（仅在 .env 不存在时）
+    # 同步 .env（仅在 .env 不存在时）
     if [ ! -f "$ENV_FILE" ]; then
-        _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/env.example" "$PROJECT_DIR/.env.example"
-        if [ -f "$PROJECT_DIR/.env.example" ]; then
-            echo "已下载: $PROJECT_DIR/.env.example（请复制为 .env 并填入 API Key）"
+        if _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/env.example" "$ENV_FILE"; then
+            echo "已下载: $ENV_FILE（请编辑填入 DEECODEX_API_KEY）"
         fi
     fi
 
     if $was_running; then
         echo "重新启动..."
         cmd_start
+    else
+        echo ""
+        echo "下一步："
+        echo "  1. 编辑 ~/.deecodex/.env 填入 DEECODEX_API_KEY"
+        echo "  2. 运行 $(dirname "$bin_path")/deecodex.sh start 启动服务"
     fi
 
     echo "更新完成 (${latest_tag})"
