@@ -1,7 +1,53 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tracing::{info, warn};
+
+/// 读取配置文件，自动处理 UTF-8 / UTF-16 LE / UTF-16 BE 编码。
+/// Windows 上 Codex 桌面版可能写入 UTF-16 编码的 config.toml。
+fn read_config_file(path: &std::path::Path) -> Result<String> {
+    let bytes = std::fs::read(path)?;
+    if bytes.is_empty() {
+        return Ok(String::new());
+    }
+    // UTF-16 LE BOM
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&u16s).map_err(|e| anyhow!("UTF-16 LE 解码失败: {e}"));
+    }
+    // UTF-16 BE BOM
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&u16s).map_err(|e| anyhow!("UTF-16 BE 解码失败: {e}"));
+    }
+    // UTF-8 BOM
+    if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+        return String::from_utf8(bytes[3..].to_vec())
+            .map_err(|e| anyhow!("UTF-8 (BOM) 解码失败: {e}"));
+    }
+    // 无 BOM — 优先 UTF-8，失败后尝试 UTF-16 LE
+    match String::from_utf8(bytes.clone()) {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            if bytes.len() % 2 == 0 {
+                let u16s: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                if let Ok(s) = String::from_utf16(&u16s) {
+                    return Ok(s);
+                }
+            }
+            Err(anyhow!("无法解码配置文件（不支持的文件编码）"))
+        }
+    }
+}
 
 fn codex_config_path() -> Option<PathBuf> {
     crate::config::home_dir().map(|home| home.join(".codex").join("config.toml"))
@@ -110,7 +156,7 @@ pub fn remove() {
 }
 
 fn do_inject(path: &std::path::Path, port: u16, client_api_key: &str) -> Result<bool> {
-    let content = std::fs::read_to_string(path)?;
+    let content = read_config_file(path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
 
     let already_exists = doc
@@ -131,7 +177,7 @@ fn do_inject(path: &std::path::Path, port: u16, client_api_key: &str) -> Result<
 }
 
 fn do_remove(path: &std::path::Path) -> Result<bool> {
-    let content = std::fs::read_to_string(path)?;
+    let content = read_config_file(path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
 
     let mut removed = false;
@@ -203,7 +249,7 @@ pub fn fix() -> u32 {
 }
 
 fn do_fix(path: &std::path::Path) -> Result<u32> {
-    let content = std::fs::read_to_string(path)?;
+    let content = read_config_file(path)?;
     let lines: Vec<&str> = content.lines().collect();
     let mut fixes = 0u32;
 

@@ -155,6 +155,8 @@ powershell -NoProfile -Command "$skip=$false; $lines=@(); foreach ($line in Get-
 (
 echo.
 echo # === ������ deecodex �Զ����� ===
+echo model_provider = "custom"
+echo.
 echo [model_providers.custom]
 echo base_url = "http://127.0.0.1:%DEECODEX_PORT%/v1"
 echo name = "custom"

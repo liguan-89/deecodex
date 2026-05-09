@@ -326,12 +326,7 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
 
 /// POST /api/restart — 后台重启服务（1 秒延迟确保响应先返回）
 pub async fn post_restart() -> impl IntoResponse {
-    let result = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("sleep 1 && exec deecodex restart")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let result = spawn_mgmt_cmd("restart");
     match result {
         Ok(_) => (
             StatusCode::OK,
@@ -346,12 +341,7 @@ pub async fn post_restart() -> impl IntoResponse {
 
 /// POST /api/stop — 后台停止服务（1 秒延迟确保响应先返回）
 pub async fn post_stop() -> impl IntoResponse {
-    let result = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("sleep 1 && exec deecodex stop")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let result = spawn_mgmt_cmd("stop");
     match result {
         Ok(_) => (
             StatusCode::OK,
@@ -361,6 +351,28 @@ pub async fn post_stop() -> impl IntoResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "error": format!("无法执行停止: {}", e)})),
         ),
+    }
+}
+
+/// 跨平台 spawn 管理命令（restart / stop），延迟 1 秒确保 HTTP 响应先返回
+fn spawn_mgmt_cmd(action: &str) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .arg("/c")
+            .arg(format!("timeout /t 1 /nobreak >nul & deecodex {}", action))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 1 && exec deecodex {}", action))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
     }
 }
 
@@ -471,22 +483,19 @@ fn extract_fields(body: &str) -> (String, Value) {
 
 /// POST /api/update — 下载最新版本并重启
 pub async fn post_update(State(state): State<AppState>) -> impl IntoResponse {
-    let script = state.data_dir.join("deecodex.sh");
+    let script_name = if cfg!(windows) {
+        "deecodex.bat"
+    } else {
+        "deecodex.sh"
+    };
+    let script = state.data_dir.join(script_name);
     if !script.exists() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": "管理脚本 deecodex.sh 不存在，请重新运行安装脚本"})),
+            Json(json!({"ok": false, "error": format!("管理脚本 {} 不存在，请重新运行安装脚本", script_name)})),
         );
     }
-    let result = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "sleep 1 && exec sh {} update",
-            script.display()
-        ))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let result = spawn_update_cmd(&script);
     match result {
         Ok(_) => (
             StatusCode::OK,
@@ -496,5 +505,32 @@ pub async fn post_update(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "error": format!("无法执行升级: {}", e)})),
         ),
+    }
+}
+
+fn spawn_update_cmd(script: &std::path::Path) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .arg("/c")
+            .arg(format!(
+                "timeout /t 1 /nobreak >nul & \"{}\" update",
+                script.display()
+            ))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "sleep 1 && exec sh {} update",
+                script.display()
+            ))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
     }
 }
