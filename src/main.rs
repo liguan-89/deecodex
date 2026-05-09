@@ -216,6 +216,10 @@ fn start_service_daemon(args: &Args) -> Result<()> {
 
     std::fs::create_dir_all(&args.data_dir)?;
 
+    // 保存当前配置，确保 daemon 进程能读取到完整参数
+    let config_path = config::Args::default_config_path(&args.data_dir);
+    let _ = args.save_to_file(&config_path);
+
     let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--daemon");
@@ -227,6 +231,9 @@ fn start_service_daemon(args: &Args) -> Result<()> {
             cmd.arg(arg);
         }
     }
+    // 确保关键参数被传递，即使 CLI 中没有显式指定
+    cmd.arg("--codex-auto-inject")
+        .arg(args.codex_auto_inject.to_string());
 
     let child = cmd
         .stdin(std::process::Stdio::null())
