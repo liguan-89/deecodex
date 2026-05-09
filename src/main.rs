@@ -120,7 +120,6 @@ fn read_pid(data_dir: &std::path::Path) -> Option<u32> {
 }
 
 fn is_running(pid: u32) -> bool {
-    // 发送信号 0 检测进程是否存在
     std::process::Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -131,13 +130,38 @@ fn is_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// 通过进程名查找 deecodex daemon 的 PID（pgrep 回退）
+fn find_daemon_by_name() -> Option<u32> {
+    let output = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg("deecodex.*--daemon")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().next()?.trim().parse().ok()
+    } else {
+        None
+    }
+}
+
 fn stop_service(
     data_dir: &std::path::Path,
     codex_auto_inject: bool,
     codex_persistent_inject: bool,
 ) -> Result<()> {
-    let pid = read_pid(data_dir)
-        .ok_or_else(|| anyhow::anyhow!("未找到 PID 文件，deecodex 可能未在运行"))?;
+    let pid = match read_pid(data_dir) {
+        Some(pid) if is_running(pid) => pid,
+        _ => {
+            // PID 文件丢失或过期，通过进程名查找
+            if let Some(pid) = find_daemon_by_name() {
+                pid
+            } else {
+                let _ = std::fs::remove_file(pid_path(data_dir));
+                bail!("未找到运行中的 deecodex daemon");
+            }
+        }
+    };
 
     if !is_running(pid) {
         let _ = std::fs::remove_file(pid_path(data_dir));
@@ -179,12 +203,15 @@ fn stop_service(
 }
 
 fn start_service_daemon(args: &Args) -> Result<()> {
-    // 检查是否已在运行
+    // 检查是否已在运行（PID 文件 + pgrep 回退）
     if let Some(pid) = read_pid(&args.data_dir) {
         if is_running(pid) {
             bail!("deecodex 已在运行 (PID: {})", pid);
         }
         let _ = std::fs::remove_file(pid_path(&args.data_dir));
+    }
+    if let Some(pid) = find_daemon_by_name() {
+        bail!("deecodex 已在运行 (PID: {}，通过进程名检测)", pid);
     }
 
     std::fs::create_dir_all(&args.data_dir)?;
@@ -300,8 +327,10 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::Restart) => {
-            // 尝试停止已运行的服务（忽略错误，可能本来就没在运行）
-            if read_pid(&args.data_dir).is_some_and(is_running) {
+            // 尝试停止已运行的服务（PID 文件 + pgrep，忽略错误）
+            let running = read_pid(&args.data_dir).is_some_and(is_running)
+                || find_daemon_by_name().is_some();
+            if running {
                 let _ = stop_service(
                     &args.data_dir,
                     args.codex_auto_inject,
@@ -313,13 +342,16 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::Status) => {
-            match read_pid(&args.data_dir) {
-                Some(pid) if is_running(pid) => {
+            // PID 文件 + pgrep 回退
+            let pid = read_pid(&args.data_dir).filter(|&p| is_running(p))
+                .or_else(find_daemon_by_name);
+            match pid {
+                Some(pid) => {
                     println!("deecodex 正在运行 (PID: {})", pid);
                     println!("数据目录: {}", args.data_dir.display());
                     println!("日志文件: {}", log_path(&args.data_dir).display());
                 }
-                _ => {
+                None => {
                     println!("deecodex 未运行");
                 }
             }
