@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 >/dev/null 2>&1
+chcp 65001 >nul 2>&1
 
 setlocal enabledelayedexpansion
 
@@ -119,7 +119,7 @@ rem ���� 0=�Ѱ�װ, 1=δ��װ
 rem 1. ~/.codex Ŀ¼����
 if exist "%USERPROFILE%\.codex" exit /b 0
 rem 2. codex �� PATH ��
-where codex >/dev/null 2>&1
+where codex >nul 2>&1
 if not errorlevel 1 exit /b 0
 rem 3. �����/MSI ��װ
 if exist "%LOCALAPPDATA%\Programs\codex" exit /b 0
@@ -160,13 +160,13 @@ echo # === ������ deecodex �Զ����� ===
 echo model_provider = "custom"
 echo.
 echo [model_providers.custom]
-echo base_url = "http://127.0.0.1:%DEECODEX_PORT%/v1"
+echo base_url = "http://127.0.0.1:!DEECODEX_PORT!/v1"
 echo name = "custom"
 echo requires_openai_auth = false
 echo wire_api = "responses"
 ) >> "%CODEX_CONFIG_DEECODEX%"
 
-echo ������ deecodex ���� (�˿�: %DEECODEX_PORT%)
+echo ������ deecodex ���� (�˿�: !DEECODEX_PORT!)
 exit /b 0
 
 :codex_config_switch_to_deecodex
@@ -221,10 +221,10 @@ call :codex_config_init
 call :codex_config_switch_to_deecodex
 call :rotate_logs
 
-echo ���� deecodex (�˿�: %DEECODEX_PORT%)...
-set "MODEL_FLAG="
-if not "%DEECODEX_MODEL_MAP%"=="" set "MODEL_FLAG=--model-map "%DEECODEX_MODEL_MAP%""
-start /b "" "%BIN_PATH%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% %MODEL_FLAG% >> "%LOG_FILE%" 2>&1
+echo ���� deecodex (�˿�: !DEECODEX_PORT!)...
+rem model-map is read by binary from env DEECODEX_MODEL_MAP
+rem (removed redundant --model-map CLI arg)
+start /b "" "!BIN_PATH!" --port !DEECODEX_PORT! --upstream !DEECODEX_UPSTREAM! >> "%LOG_FILE%" 2>&1
 
 rem ��ȡ�������� PID
 set PID=
@@ -232,7 +232,7 @@ for /f "tokens=2" %%a in ('tasklist /fi "imagename eq %BIN%" /fo list 2^>nul ^| 
 echo !PID! > "%PID_FILE%"
 
 timeout /t 2 /nobreak >nul
-echo deecodex ������ (PID: !PID!, �˿�: %DEECODEX_PORT%)
+echo deecodex ������ (PID: !PID!, �˿�: !DEECODEX_PORT!)
 exit /b 0
 
 rem === stop ===
@@ -278,6 +278,8 @@ exit /b 0
 
 rem === status ===
 :case_status
+call :load_env 2>nul
+call :map_env
 call :is_running 2>nul
 if errorlevel 1 (
     echo deecodex δ����
@@ -286,8 +288,8 @@ if errorlevel 1 (
 )
 set /p PID=<"%PID_FILE%"
 echo deecodex ������
-echo   PID:    %PID%
-echo   �˿�:   %DEECODEX_PORT%
+echo   PID:    !PID!
+echo   �˿�:   !DEECODEX_PORT!
 echo   ��־:   %LOG_FILE%
 exit /b 0
 
@@ -309,7 +311,7 @@ if "%DEECODEX_PORT%"=="" set "DEECODEX_PORT=4446"
 
 curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%DEECODEX_PORT%/v1/models >nul 2>&1
 if %errorlevel% neq 0 (
-    echo unreachable [�˿� %DEECODEX_PORT% ����Ӧ������ deecodex.bat start]
+    echo unreachable [�˿� !DEECODEX_PORT! ����Ӧ������ deecodex.bat start]
     exit /b 0
 )
 
