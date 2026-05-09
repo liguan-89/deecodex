@@ -111,9 +111,34 @@ set "%~2=%~z1"
 exit /b 0
 
 rem === Codex 配置管理 ===
+rem === Codex 检测 ===
+:detect_codex
+rem 返回 0=已安装, 1=未安装
+rem 1. ~/.codex 目录存在
+if exist "%USERPROFILE%\.codex" exit /b 0
+rem 2. codex 在 PATH 中
+where codex >/dev/null 2>&1
+if not errorlevel 1 exit /b 0
+rem 3. 桌面版/MSI 安装
+if exist "%LOCALAPPDATA%\Programs\codex" exit /b 0
+rem 4. Microsoft Store 版本
+if exist "C:\Program Files\WindowsApps" (
+    for /d %%d in ("C:\Program Files\WindowsApps\OpenAI.Codex*") do exit /b 0
+)
+exit /b 1
+
+rem === Codex 配置管理 ===
 :codex_config_init
 set "CODEX_CONFIG=%USERPROFILE%\.codex\config.toml"
-if not exist "%CODEX_CONFIG%" exit /b 0
+set "CODEX_DIR=%USERPROFILE%\.codex"
+
+if not exist "%CODEX_CONFIG%" (
+    call :detect_codex 2>nul
+    if errorlevel 1 exit /b 0
+    rem Codex 已安装但 config.toml 尚未创建（桌面版首次使用）
+    if not exist "%CODEX_DIR%" mkdir "%CODEX_DIR%"
+    type nul > "%CODEX_CONFIG%"
+)
 
 set "CODEX_CONFIG_OPENAI=%CODEX_CONFIG%.openai.txt"
 set "CODEX_CONFIG_DEECODEX=%CODEX_CONFIG%.deecodex.txt"

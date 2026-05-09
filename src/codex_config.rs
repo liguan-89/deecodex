@@ -8,6 +8,60 @@ fn codex_config_path() -> Option<PathBuf> {
         .map(|home| home.join(".codex").join("config.toml"))
 }
 
+fn find_in_path(name: &str) -> bool {
+    if let Ok(paths) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let exe = dir.join(name);
+            if exe.exists() {
+                return true;
+            }
+            // Windows: 也检查 .exe / .cmd / .bat 后缀
+            for ext in [".exe", ".cmd", ".bat"] {
+                if exe.with_extension(ext).exists() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn codex_is_installed() -> bool {
+    // 1. ~/.codex 目录存在（CLI 或桌面版都可能创建）
+    if let Some(home) = crate::config::home_dir() {
+        if home.join(".codex").exists() {
+            return true;
+        }
+    }
+    // 2. codex 在 PATH 中
+    if find_in_path("codex") {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // 3. 桌面版/MSI 安装目录
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            if std::path::Path::new(&local).join("Programs").join("codex").exists() {
+                return true;
+            }
+        }
+        // 4. Microsoft Store 版本
+        let store = std::path::Path::new(r"C:\Program Files\WindowsApps");
+        if store.exists() {
+            if let Ok(entries) = std::fs::read_dir(store) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("OpenAI.Codex") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
 pub fn inject(port: u16, client_api_key: &str) {
     let Some(path) = codex_config_path() else {
@@ -15,11 +69,18 @@ pub fn inject(port: u16, client_api_key: &str) {
         return;
     };
     if !path.exists() {
-        info!(
-            "跳过 Codex 配置注入: 未安装 Codex CLI ({} 不存在)",
-            path.display()
-        );
-        return;
+        if codex_is_installed() {
+            // Codex 已安装但 config.toml 尚未创建（桌面版首次使用场景）
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        } else {
+            info!(
+                "跳过 Codex 配置注入: 未检测到 Codex 安装 ({} 不存在)",
+                path.display()
+            );
+            return;
+        }
     }
 
     match do_inject(&path, port, client_api_key) {
