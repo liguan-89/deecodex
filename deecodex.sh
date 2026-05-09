@@ -372,7 +372,7 @@ cmd_update() {
 
     # 同步 .env.example（仅在 .env 不存在时）
     if [ ! -f "$ENV_FILE" ]; then
-        _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/.env.example" "$PROJECT_DIR/.env.example"
+        _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/env.example" "$PROJECT_DIR/.env.example"
         if [ -f "$PROJECT_DIR/.env.example" ]; then
             echo "已下载: $PROJECT_DIR/.env.example（请复制为 .env 并填入 API Key）"
         fi
