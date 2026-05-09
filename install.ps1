@@ -7,7 +7,7 @@ $Host.UI.RawUI.WindowTitle = "deecodex 安装向导"
 # ===== 全局配置 =====
 $Repo = "liguan-89/deecodex"
 $InstallDir = "$env:LOCALAPPDATA\Programs\deecodex"
-$FallbackVersion = "v1.0.0"
+$FallbackVersion = "v1.3.10"
 $Port = "4446"
 
 # ===== 辅助函数 =====
@@ -63,7 +63,7 @@ function Test-Command {
 
 function Get-ReleaseTag {
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 5
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 15
         return $release.tag_name
     } catch {
         Write-Warn "获取最新版本失败，使用默认版本 $FallbackVersion"

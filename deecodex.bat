@@ -323,6 +323,8 @@ if "%TAG_LINE%"=="" (
 )
 for /f "tokens=2 delims=:" %%a in ("%TAG_LINE%") do set TAG=%%~a
 set TAG=!TAG: =!
+set TAG=!TAG:"=!
+set TAG=!TAG:,=!
 echo ×îÐÂ°æ±¾: !TAG!
 
 set TEMP_DIR=%TEMP%\deecodex_update
