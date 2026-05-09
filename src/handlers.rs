@@ -1780,7 +1780,13 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         .save_conversation(id.to_string(), full_history);
                 }
 
-                let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
+                let mcp_server_labels = mcp_server_labels_from_state(&state);
+                let (resp, _) = translate::from_chat_response_with_mcp_labels(
+                    response_id,
+                    &model,
+                    chat_resp,
+                    &mcp_server_labels,
+                );
                 if let Ok(value) = serde_json::to_value(&resp) {
                     let mut value = enrich_response_object(value, req);
                     append_local_mcp_outputs(&state, &mut value).await;
@@ -1816,6 +1822,16 @@ fn save_response_unless_cancelled(sessions: &SessionStore, id: String, response:
         return;
     }
     sessions.save_response(id, response);
+}
+
+fn mcp_server_labels_from_state(state: &AppState) -> Vec<String> {
+    let mut labels: Vec<String> = state.executors.mcp.servers.keys().cloned().collect();
+    for label in &state.tool_policy.allowed_mcp_servers {
+        if !labels.iter().any(|existing| existing == label) {
+            labels.push(label.clone());
+        }
+    }
+    labels
 }
 
 async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {

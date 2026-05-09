@@ -11,6 +11,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 const MAX_SCREENSHOT_BYTES: usize = 1_500_000;
+const MAX_MCP_STDIO_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -379,9 +380,9 @@ async fn execute_stdio_mcp_tool(
         None
     };
 
-    if server.read_only
-        && !mcp_tool_allowed_by_metadata(&invocation.tool_name, tool_metadata.as_ref())
-    {
+    let tool_name = resolve_mcp_tool_name(&invocation.tool_name, tool_metadata.as_ref());
+
+    if server.read_only && !mcp_tool_allowed_by_metadata(&tool_name, tool_metadata.as_ref()) {
         let reason = if tool_metadata.is_some() {
             "metadata"
         } else {
@@ -390,7 +391,7 @@ async fn execute_stdio_mcp_tool(
         anyhow::bail!(
             "MCP server '{}' is read-only and rejected tool '{}' by {reason}",
             server.label,
-            invocation.tool_name
+            tool_name
         );
     }
 
@@ -401,7 +402,7 @@ async fn execute_stdio_mcp_tool(
             "id": next_id,
             "method": "tools/call",
             "params": {
-                "name": invocation.tool_name,
+                "name": tool_name,
                 "arguments": invocation.arguments
             }
         }),
@@ -458,6 +459,46 @@ where
         return Ok(None);
     }
     Ok(response.get("result").cloned())
+}
+
+fn resolve_mcp_tool_name(requested: &str, metadata: Option<&Value>) -> String {
+    let Some(metadata) = metadata else {
+        return requested.to_string();
+    };
+    let tools = metadata
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if tools
+        .iter()
+        .any(|tool| tool.get("name").and_then(Value::as_str) == Some(requested))
+    {
+        return requested.to_string();
+    }
+    let requested_key = normalize_mcp_tool_name(requested);
+    tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .find(|name| normalize_mcp_tool_name(name) == requested_key)
+        .unwrap_or(requested)
+        .to_string()
+}
+
+fn normalize_mcp_tool_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 fn mcp_tool_allowed_by_metadata(tool_name: &str, metadata: Option<&Value>) -> bool {
@@ -724,9 +765,8 @@ async fn send_jsonrpc<W>(writer: &mut W, value: &Value) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let body = serde_json::to_vec(value)?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).await?;
+    let mut body = serde_json::to_vec(value)?;
+    body.push(b'\n');
     writer.write_all(&body).await?;
     writer.flush().await?;
     Ok(())
@@ -748,18 +788,32 @@ async fn read_framed_json<R>(reader: &mut R) -> Result<Value>
 where
     R: AsyncRead + Unpin,
 {
-    let mut header = Vec::new();
+    let mut prefix = Vec::new();
     let mut byte = [0_u8; 1];
     loop {
         reader.read_exact(&mut byte).await?;
-        header.push(byte[0]);
-        if header.ends_with(b"\r\n\r\n") {
-            break;
+        prefix.push(byte[0]);
+        if prefix.ends_with(b"\r\n\r\n") {
+            return read_content_length_message(reader, prefix).await;
         }
-        if header.len() > 8192 {
-            anyhow::bail!("MCP message header too large");
+        if byte[0] == b'\n' && !starts_with_content_length(&prefix) {
+            let line = trim_line_endings(&prefix);
+            if line.is_empty() {
+                prefix.clear();
+                continue;
+            }
+            return serde_json::from_slice(line).context("failed to parse MCP JSON-RPC line");
+        }
+        if prefix.len() > MAX_MCP_STDIO_MESSAGE_BYTES {
+            anyhow::bail!("MCP stdio message too large");
         }
     }
+}
+
+async fn read_content_length_message<R>(reader: &mut R, header: Vec<u8>) -> Result<Value>
+where
+    R: AsyncRead + Unpin,
+{
     let header = String::from_utf8(header).context("MCP message header is not UTF-8")?;
     let content_length = header
         .lines()
@@ -775,6 +829,24 @@ where
     let mut body = vec![0_u8; content_length];
     reader.read_exact(&mut body).await?;
     serde_json::from_slice(&body).context("failed to parse MCP JSON-RPC message")
+}
+
+fn starts_with_content_length(bytes: &[u8]) -> bool {
+    const PREFIX: &[u8] = b"content-length:";
+    bytes
+        .iter()
+        .copied()
+        .take(PREFIX.len())
+        .map(|b| b.to_ascii_lowercase())
+        .eq(PREFIX.iter().copied())
+}
+
+fn trim_line_endings(bytes: &[u8]) -> &[u8] {
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
+        end -= 1;
+    }
+    &bytes[..end]
 }
 
 fn read_only_tool_allowed(tool_name: &str) -> bool {
@@ -996,6 +1068,36 @@ mod tests {
         assert!(!mcp_tool_allowed_by_metadata("write_file", None));
     }
 
+    #[test]
+    fn mcp_tool_name_resolution_preserves_exact_metadata_match() {
+        let metadata = json!({
+            "tools": [
+                {"name": "get_current_date"},
+                {"name": "get-current-date"}
+            ]
+        });
+
+        assert_eq!(
+            resolve_mcp_tool_name("get_current_date", Some(&metadata)),
+            "get_current_date"
+        );
+    }
+
+    #[test]
+    fn mcp_tool_name_resolution_matches_dash_case_metadata() {
+        let metadata = json!({
+            "tools": [
+                {"name": "get-current-date"},
+                {"name": "get-tickets"}
+            ]
+        });
+
+        assert_eq!(
+            resolve_mcp_tool_name("get_current_date", Some(&metadata)),
+            "get-current-date"
+        );
+    }
+
     #[tokio::test]
     async fn browser_use_executor_returns_explicit_failed_output() {
         let config = ComputerExecutorConfig {
@@ -1056,6 +1158,27 @@ mod tests {
 
         let message = read_task.await.unwrap().unwrap();
         assert_eq!(message["id"], 7);
+        assert_eq!(message["result"]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn stdio_content_length_response_is_still_supported() {
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let read_task = tokio::spawn(async move { read_framed_json(&mut reader).await });
+        let body = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "result": {"ok": true}
+        }))
+        .unwrap();
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
+
+        writer.write_all(header.as_bytes()).await.unwrap();
+        writer.write_all(&body).await.unwrap();
+        writer.flush().await.unwrap();
+
+        let message = read_task.await.unwrap().unwrap();
+        assert_eq!(message["id"], 8);
         assert_eq!(message["result"]["ok"], true);
     }
 }

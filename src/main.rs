@@ -4,6 +4,7 @@ mod config;
 mod executor;
 mod files;
 mod handlers;
+mod mcp_names;
 mod metrics;
 mod prompts;
 mod ratelimit;

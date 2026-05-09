@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use tracing::info;
 
-use crate::{session::SessionStore, types::*};
+use crate::{mcp_names, session::SessionStore, types::*};
 
 /// Result of converting a Responses API request into a Chat Completions request.
 pub struct TranslatedRequest {
@@ -832,10 +832,20 @@ fn convert_tool(tool: &Value) -> Value {
 }
 
 /// Convert Chat Completions response → Responses API response.
+#[allow(dead_code)]
 pub fn from_chat_response(
     id: String,
     model: &str,
     chat: ChatResponse,
+) -> (ResponsesResponse, Vec<ChatMessage>) {
+    from_chat_response_with_mcp_labels(id, model, chat, &[])
+}
+
+pub fn from_chat_response_with_mcp_labels(
+    id: String,
+    model: &str,
+    chat: ChatResponse,
+    mcp_server_labels: &[String],
 ) -> (ResponsesResponse, Vec<ChatMessage>) {
     let choice = chat
         .choices
@@ -925,15 +935,20 @@ pub fn from_chat_response(
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}_{}", id, output.len()));
-        let is_mcp_call = name == "local_mcp_call";
-        let mcp = if is_mcp_call {
+        let is_local_mcp_call = name == "local_mcp_call";
+        let codex_mcp = if is_local_mcp_call {
+            None
+        } else {
+            mcp_names::parse_codex_mcp_name(name, mcp_server_labels)
+        };
+        let mcp = if is_local_mcp_call {
             parse_local_mcp_arguments(arguments.as_deref().unwrap_or("{}"))
         } else {
             None
         };
         let item_id = if is_computer_call {
             format!("cc_{}", call_id)
-        } else if is_mcp_call {
+        } else if is_local_mcp_call || codex_mcp.is_some() {
             format!("mcp_{}", call_id)
         } else {
             format!("fc_{}", call_id)
@@ -941,7 +956,7 @@ pub fn from_chat_response(
         output.push(ResponsesOutputItem {
             kind: if is_computer_call {
                 "computer_call".into()
-            } else if is_mcp_call {
+            } else if is_local_mcp_call || codex_mcp.is_some() {
                 "mcp_tool_call".into()
             } else {
                 "function_call".into()
@@ -954,10 +969,15 @@ pub fn from_chat_response(
                 None
             } else if let Some(mcp) = &mcp {
                 Some(mcp.tool.clone())
+            } else if let Some(codex_mcp) = &codex_mcp {
+                Some(codex_mcp.tool_name.clone())
             } else {
                 Some(name.to_string())
             },
-            server_label: mcp.as_ref().map(|mcp| mcp.server_label.clone()),
+            server_label: mcp
+                .as_ref()
+                .map(|mcp| mcp.server_label.clone())
+                .or_else(|| codex_mcp.as_ref().map(|mcp| mcp.server_label.clone())),
             arguments: if is_computer_call {
                 None
             } else if let Some(mcp) = &mcp {
@@ -1455,6 +1475,86 @@ mod tests {
             resp.output[0].arguments.as_deref(),
             Some("{\"path\":\"README.md\"}")
         );
+    }
+
+    #[test]
+    fn test_blocking_codex_mcp_function_is_returned_as_mcp_tool_call() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_mcp",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__paper_search__health_check",
+                            "arguments": "{\"probe_upstream\":false}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+        let labels = vec!["paper-search".to_string()];
+
+        let (resp, _) = from_chat_response_with_mcp_labels(
+            "resp_mcp".into(),
+            "deepseek-v4-pro",
+            chat_resp,
+            &labels,
+        );
+
+        assert_eq!(resp.output.len(), 1);
+        assert_eq!(resp.output[0].kind, "mcp_tool_call");
+        assert_eq!(resp.output[0].id.as_deref(), Some("mcp_call_mcp"));
+        assert_eq!(resp.output[0].call_id.as_deref(), Some("call_mcp"));
+        assert_eq!(resp.output[0].server_label.as_deref(), Some("paper-search"));
+        assert_eq!(resp.output[0].name.as_deref(), Some("health_check"));
+        assert_eq!(
+            resp.output[0].arguments.as_deref(),
+            Some("{\"probe_upstream\":false}")
+        );
+    }
+
+    #[test]
+    fn test_blocking_malformed_codex_mcp_function_stays_function_call() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__paper_search",
+                            "arguments": "{}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+        let labels = vec!["paper-search".to_string()];
+
+        let (resp, _) = from_chat_response_with_mcp_labels(
+            "resp_bad".into(),
+            "deepseek-v4-pro",
+            chat_resp,
+            &labels,
+        );
+
+        assert_eq!(resp.output.len(), 1);
+        assert_eq!(resp.output[0].kind, "function_call");
+        assert_eq!(resp.output[0].id.as_deref(), Some("fc_call_bad"));
+        assert_eq!(resp.output[0].name.as_deref(), Some("mcp__paper_search"));
     }
 
     #[test]

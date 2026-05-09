@@ -4,6 +4,7 @@ pub mod config;
 pub mod executor;
 pub mod files;
 pub mod handlers;
+pub mod mcp_names;
 pub mod metrics;
 pub mod prompts;
 pub mod ratelimit;

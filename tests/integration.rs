@@ -70,6 +70,60 @@ async fn one_shot_upstream(response_body: &'static str) -> reqwest::Url {
     reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
 }
 
+fn fake_mcp_server_command(
+    prefix: &str,
+    frames: &str,
+) -> (std::path::PathBuf, String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let script_path =
+            std::env::temp_dir().join(format!("{prefix}-{}.ps1", uuid::Uuid::new_v4().simple()));
+        let bytes = frames
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &script_path,
+            format!(
+                "$bytes = [byte[]]({bytes})\n$out = [Console]::OpenStandardOutput()\n$out.Write($bytes, 0, $bytes.Length)\n$out.Flush()\nStart-Sleep -Seconds 1\n"
+            ),
+        )
+        .unwrap();
+        (
+            script_path.clone(),
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                script_path.to_string_lossy().to_string(),
+            ],
+        )
+    }
+
+    #[cfg(not(windows))]
+    {
+        let script_path =
+            std::env::temp_dir().join(format!("{prefix}-{}.sh", uuid::Uuid::new_v4().simple()));
+        std::fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\ncat >/dev/null &\nprintf '%s' '{}'\nsleep 1\n",
+                frames
+            ),
+        )
+        .unwrap();
+        (
+            script_path.clone(),
+            "/bin/sh".to_string(),
+            vec![script_path.to_string_lossy().to_string()],
+        )
+    }
+}
+
 #[tokio::test]
 async fn test_health_returns_ok() {
     let app = build_router(test_state());
@@ -1965,20 +2019,10 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
     let list = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_file","annotations":{"readOnlyHint":true}}]}}"#;
     let tool =
         r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"read ok"}]}}"#;
-    let script_path = std::env::temp_dir().join(format!(
-        "deecodex-fake-mcp-{}.sh",
-        uuid::Uuid::new_v4().simple()
-    ));
-    std::fs::write(
-        &script_path,
-        format!(
-            "#!/bin/sh\ncat >/dev/null &\nprintf '%s' '{}{}{}'\nsleep 1\n",
-            mcp_frame(init),
-            mcp_frame(list),
-            mcp_frame(tool)
-        ),
-    )
-    .unwrap();
+    let (script_path, mcp_command, mcp_args) = fake_mcp_server_command(
+        "deecodex-fake-mcp",
+        &format!("{}{}{}", mcp_frame(init), mcp_frame(list), mcp_frame(tool)),
+    );
 
     let mut state = test_state();
     state.upstream = Arc::new(
@@ -2010,8 +2054,8 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
             &json!({
                 "filesystem": {
                     "label": "",
-                    "command": "/bin/sh",
-                    "args": [script_path.to_string_lossy()]
+                    "command": mcp_command,
+                    "args": mcp_args
                 }
             })
             .to_string(),
@@ -2046,6 +2090,93 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
     assert_eq!(json["output"][1]["call_id"], "call_mcp");
     assert_eq!(json["output"][1]["status"], "completed");
     assert_eq!(json["output"][1]["output"]["content"][0]["text"], "read ok");
+
+    std::fs::remove_file(script_path).unwrap();
+}
+
+#[tokio::test]
+async fn test_responses_blocking_codex_mcp_name_appends_output() {
+    fn mcp_frame(body: &str) -> String {
+        format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+    }
+
+    let init = r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}"#;
+    let list = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"health_check","annotations":{"readOnlyHint":true}}]}}"#;
+    let tool = r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"mcp ok"}]}}"#;
+    let (script_path, mcp_command, mcp_args) = fake_mcp_server_command(
+        "deecodex-fake-codex-mcp",
+        &format!("{}{}{}", mcp_frame(init), mcp_frame(list), mcp_frame(tool)),
+    );
+
+    let mut state = test_state();
+    state.upstream = Arc::new(
+        one_shot_upstream(
+            r#"{
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_mcp",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__paper_search__health_check",
+                                "arguments": "{\"probe_upstream\":false}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }"#,
+        )
+        .await,
+    );
+    state.executors = Arc::new(
+        deecodex::executor::LocalExecutorConfig::from_raw(
+            "disabled",
+            30,
+            &json!({
+                "paper-search": {
+                    "label": "",
+                    "command": mcp_command,
+                    "args": mcp_args
+                }
+            })
+            .to_string(),
+            5,
+        )
+        .unwrap(),
+    );
+    state.tool_policy.allowed_mcp_servers = vec!["paper-search".into()];
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-5","input":"health"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["type"], "mcp_tool_call");
+    assert_eq!(json["output"][0]["server_label"], "paper-search");
+    assert_eq!(json["output"][0]["name"], "health_check");
+    assert_eq!(
+        json["output"][0]["arguments"],
+        r#"{"probe_upstream":false}"#
+    );
+    assert_eq!(json["output"][1]["type"], "mcp_tool_call_output");
+    assert_eq!(json["output"][1]["call_id"], "call_mcp");
+    assert_eq!(json["output"][1]["status"], "completed");
+    assert_eq!(json["output"][1]["output"]["content"][0]["text"], "mcp ok");
 
     std::fs::remove_file(script_path).unwrap();
 }

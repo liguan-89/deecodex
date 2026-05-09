@@ -16,6 +16,7 @@ use crate::{
         ComputerActionInvocation, ComputerActionOutput, LocalExecutorConfig, McpToolInvocation,
         McpToolOutput,
     },
+    mcp_names,
     metrics::Metrics,
     session::SessionStore,
     token_anomaly::TokenTracker,
@@ -89,7 +90,12 @@ fn event_with_sequence(
     Ok(Event::default().event(name).data(payload.to_string()))
 }
 
-fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> ResponseToolCallItem {
+fn response_tool_call_item(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    mcp_server_labels: &[String],
+) -> ResponseToolCallItem {
     if name == "local_computer" {
         ResponseToolCallItem {
             item_type: "computer_call",
@@ -109,6 +115,15 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             name: Some(mcp.tool),
             server_label: Some(mcp.server_label),
             arguments: Some(mcp.arguments),
+            action: None,
+        }
+    } else if let Some(mcp) = mcp_names::parse_codex_mcp_name(name, mcp_server_labels) {
+        ResponseToolCallItem {
+            item_type: "mcp_tool_call",
+            item_id: format!("mcp_{call_id}"),
+            name: Some(mcp.tool_name),
+            server_label: Some(mcp.server_label),
+            arguments: Some(arguments.to_string()),
             action: None,
         }
     } else {
@@ -233,6 +248,12 @@ pub fn translate_stream(
         allowed_mcp_servers,
         allowed_computer_displays,
     } = args;
+    let mut mcp_server_labels: Vec<String> = executors.mcp.servers.keys().cloned().collect();
+    for label in &allowed_mcp_servers {
+        if !mcp_server_labels.iter().any(|existing| existing == label) {
+            mcp_server_labels.push(label.clone());
+        }
+    }
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
 
@@ -571,7 +592,8 @@ pub fn translate_stream(
             };
             let output_index = base_index + rel_idx;
             let arguments = tc.arguments.clone();
-            let item_spec = response_tool_call_item(&call_id, &tc.name, &arguments);
+            let item_spec =
+                response_tool_call_item(&call_id, &tc.name, &arguments, &mcp_server_labels);
 
             yield event_with_sequence(
                 &mut seq,
@@ -951,7 +973,7 @@ pub fn translate_cached(
         // Tool call items
         let mut cached_fc_items: Vec<Value> = Vec::new();
         for tc in &cached.tool_calls {
-            let item_spec = response_tool_call_item(&tc.id, &tc.name, &tc.arguments);
+            let item_spec = response_tool_call_item(&tc.id, &tc.name, &tc.arguments, &[]);
 
             yield event_with_sequence(
                 &mut seq,
@@ -1322,7 +1344,7 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_item_normal() {
-        let item = response_tool_call_item("call_1", "exec_command", r#"{"cmd":"ls"}"#);
+        let item = response_tool_call_item("call_1", "exec_command", r#"{"cmd":"ls"}"#, &[]);
         assert_eq!(item.item_type, "function_call");
         assert_eq!(item.item_id, "fc_call_1");
         assert_eq!(item.name.as_deref(), Some("exec_command"));
@@ -1332,7 +1354,7 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_item_apply_patch() {
-        let item = response_tool_call_item("p1", "apply_patch", r#"{"patch":"diff"}"#);
+        let item = response_tool_call_item("p1", "apply_patch", r#"{"patch":"diff"}"#, &[]);
         assert_eq!(item.item_type, "function_call");
         assert_eq!(item.name.as_deref(), Some("exec_command"));
         assert_eq!(item.arguments.as_deref(), Some(r#"{"patch":"diff"}"#));
@@ -1340,7 +1362,8 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_item_computer() {
-        let item = response_tool_call_item("scr_1", "local_computer", r#"{"type":"screenshot"}"#);
+        let item =
+            response_tool_call_item("scr_1", "local_computer", r#"{"type":"screenshot"}"#, &[]);
         assert_eq!(item.item_type, "computer_call");
         assert_eq!(item.item_id, "cc_scr_1");
         assert!(item.name.is_none());
@@ -1356,7 +1379,7 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_item_computer_invalid_json() {
-        let item = response_tool_call_item("scr_2", "local_computer", "not-json");
+        let item = response_tool_call_item("scr_2", "local_computer", "not-json", &[]);
         assert_eq!(item.item_type, "computer_call");
         assert_eq!(
             item.action
@@ -1373,6 +1396,7 @@ mod tests {
             "m1",
             "local_mcp_call",
             r#"{"server_label":"filesystem","tool":"read_file","arguments":{"path":"README.md"}}"#,
+            &[],
         );
 
         assert_eq!(item.item_type, "mcp_tool_call");
@@ -1383,8 +1407,38 @@ mod tests {
     }
 
     #[test]
+    fn test_response_tool_call_item_codex_mcp_namespace() {
+        let labels = vec!["paper-search".to_string()];
+        let item = response_tool_call_item(
+            "m1",
+            "mcp__paper_search__health_check",
+            r#"{"probe_upstream":false}"#,
+            &labels,
+        );
+
+        assert_eq!(item.item_type, "mcp_tool_call");
+        assert_eq!(item.item_id, "mcp_m1");
+        assert_eq!(item.server_label.as_deref(), Some("paper-search"));
+        assert_eq!(item.name.as_deref(), Some("health_check"));
+        assert_eq!(
+            item.arguments.as_deref(),
+            Some(r#"{"probe_upstream":false}"#)
+        );
+    }
+
+    #[test]
+    fn test_response_tool_call_item_malformed_codex_mcp_is_function() {
+        let labels = vec!["paper-search".to_string()];
+        let item = response_tool_call_item("m1", "mcp__paper_search", "{}", &labels);
+
+        assert_eq!(item.item_type, "function_call");
+        assert_eq!(item.item_id, "fc_m1");
+        assert_eq!(item.name.as_deref(), Some("mcp__paper_search"));
+    }
+
+    #[test]
     fn test_response_tool_call_json_function_in_progress() {
-        let spec = response_tool_call_item("c1", "exec_command", r#"{"cmd":"ls"}"#);
+        let spec = response_tool_call_item("c1", "exec_command", r#"{"cmd":"ls"}"#, &[]);
         let json = response_tool_call_json("c1", &spec, true);
         assert_eq!(json["type"], "function_call");
         assert_eq!(json["id"], "fc_c1");
@@ -1396,7 +1450,7 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_json_function_completed() {
-        let spec = response_tool_call_item("c1", "exec_command", r#"{"cmd":"ls"}"#);
+        let spec = response_tool_call_item("c1", "exec_command", r#"{"cmd":"ls"}"#, &[]);
         let json = response_tool_call_json("c1", &spec, false);
         assert_eq!(json["status"], "completed");
         assert_eq!(json["arguments"], r#"{"cmd":"ls"}"#);
@@ -1408,6 +1462,7 @@ mod tests {
             "m1",
             "local_mcp_call",
             r#"{"server_label":"filesystem","tool":"read_file","arguments":{"path":"README.md"}}"#,
+            &[],
         );
         let json = response_tool_call_json("m1", &spec, false);
 
@@ -1436,7 +1491,7 @@ mod tests {
 
     #[test]
     fn test_response_tool_call_json_computer() {
-        let spec = response_tool_call_item("scr_1", "local_computer", r#"{"type":"click"}"#);
+        let spec = response_tool_call_item("scr_1", "local_computer", r#"{"type":"click"}"#, &[]);
         let json = response_tool_call_json("scr_1", &spec, true);
         assert_eq!(json["type"], "computer_call");
         assert_eq!(json["id"], "cc_scr_1");
