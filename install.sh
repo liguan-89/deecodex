@@ -216,7 +216,7 @@ DEECODEX_CLIENT_API_KEY=
 DEECODEX_PORT=4446
 
 # 模型名映射（JSON 格式）
-DEECODEX_MODEL_MAP='{"GPT-5.5":"deepseek-v4-pro","gpt-5.5":"deepseek-v4-pro","gpt-5.4":"deepseek-v4-flash","gpt-5.4-mini":"deepseek-v4-flash","codex-auto-review":"deepseek-v4-flash"}'
+DEECODEX_MODEL_MAP='{"GPT-5.5":"deepseek-v4-pro","gpt-5.5":"deepseek-v4-pro","gpt-5.4":"deepseek-v4-flash","gpt-5.4-mini":"deepseek-v4-flash","gpt-5.3-codex":"deepseek-v4-pro","codex-auto-review":"deepseek-v4-flash"}'
 
 # 日志级别
 RUST_LOG=deecodex=info
