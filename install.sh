@@ -305,19 +305,33 @@ download_file() {
     return 1
 }
 
+# 平台检测
+case "$(uname -s)" in
+    Darwin)
+        case "$(uname -m)" in
+            arm64)  ASSET="deecodex-darwin-arm64" ;;
+            x86_64) ASSET="deecodex-darwin-x64" ;;
+            *)      print_err "不支持的 macOS 架构 ($(uname -m))"; exit 1 ;;
+        esac
+        ;;
+    *)
+        print_err "不支持的操作系统 ($(uname -s))，仅支持 macOS"
+        exit 1
+        ;;
+esac
+
 # 下载二进制
-echo "       下载 deecodex 二进制..."
-if download_file "$RELEASE_URL/deecodex" "$BIN_DIR/deecodex"; then
+echo "       下载 deecodex 二进制 (${ASSET})..."
+if download_file "$RELEASE_URL/$ASSET" "$BIN_DIR/deecodex"; then
     chmod +x "$BIN_DIR/deecodex"
     print_ok "deecodex → $BIN_DIR/deecodex"
 else
-    print_err "二进制下载失败"
-    if [ "$RUST_OK" = true ]; then
-        echo "       将尝试从源码编译..."
-    else
-        echo "       请确认 Release 中包含 macOS 二进制，或安装 Rust 后从源码编译"
-        exit 1
-    fi
+    print_err "二进制下载失败（已尝试 GitHub + ghfast 镜像）"
+    print_warn "可通过以下方式手动安装："
+    echo "       1. 安装 Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    echo "       2. 从源码编译: cd ~/projects/deecodex && cargo build --release"
+    echo "       3. 复制二进制: cp target/release/deecodex $BIN_DIR/deecodex"
+    exit 1
 fi
 
 # 下载管理脚本
