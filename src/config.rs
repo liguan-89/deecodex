@@ -3,6 +3,20 @@ use std::path::PathBuf;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+/// 跨平台获取用户 HOME 目录
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            return Some(PathBuf::from(home));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home));
+    }
+    None
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 #[command(name = "deecodex", about = "Responses API <-> Chat Completions bridge")]
 pub struct Args {
@@ -198,11 +212,10 @@ impl Args {
             Some(p) => p.clone(),
             None => {
                 // 默认写入 ~/.deecodex/.env
-                let home: PathBuf = std::env::var("HOME")
-                    .ok()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("/tmp"));
-                home.join(".deecodex").join(".env")
+                home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join(".deecodex")
+                    .join(".env")
             }
         };
         if let Some(parent) = path.parent() {
@@ -234,7 +247,7 @@ impl Args {
         if std::path::Path::new(".env").exists() {
             return Some(PathBuf::from(".env"));
         }
-        let home = std::env::var("HOME").ok().map(PathBuf::from)?;
+        let home = home_dir()?;
         let home_env = home.join(".deecodex").join(".env");
         if home_env.exists() {
             return Some(home_env);

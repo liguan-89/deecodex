@@ -4,9 +4,8 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 fn codex_config_path() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".codex").join("config.toml"))
+    crate::config::home_dir()
+        .map(|home| home.join(".codex").join("config.toml"))
 }
 
 /// 将 deecodex 代理配置注入 codex 的 config.toml。

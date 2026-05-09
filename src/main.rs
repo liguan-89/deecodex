@@ -86,8 +86,8 @@ fn find_env_file() -> Option<std::path::PathBuf> {
         return Some(PathBuf::from(".env"));
     }
     // ~/.deecodex/.env
-    if let Ok(home) = std::env::var("HOME") {
-        let home_env = PathBuf::from(&home).join(".deecodex").join(".env");
+    if let Some(home) = crate::config::home_dir() {
+        let home_env = home.join(".deecodex").join(".env");
         if home_env.exists() {
             return Some(home_env);
         }
@@ -300,15 +300,15 @@ async fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
-    // 将相对 data_dir/prompts_dir 解析为绝对路径（相对于 $HOME）
+    // 将相对 data_dir/prompts_dir 解析为绝对路径
     if args.data_dir.is_relative() {
-        if let Ok(home) = std::env::var("HOME") {
-            args.data_dir = std::path::PathBuf::from(home).join(&args.data_dir);
+        if let Some(home) = crate::config::home_dir() {
+            args.data_dir = home.join(&args.data_dir);
         }
     }
     if args.prompts_dir.is_relative() {
-        if let Ok(home) = std::env::var("HOME") {
-            args.prompts_dir = std::path::PathBuf::from(home).join(&args.prompts_dir);
+        if let Some(home) = crate::config::home_dir() {
+            args.prompts_dir = home.join(&args.prompts_dir);
         }
     }
 
@@ -623,8 +623,8 @@ async fn main() -> Result<()> {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler");
         tokio::select! {
-            _ = ctrl_c => { info!("SIGINT received, starting graceful shutdown..."); }
-            _ = term.recv() => { info!("SIGTERM received, starting graceful shutdown..."); }
+            _ = ctrl_c => { info!("SIGINT received, graceful shutdown..."); }
+            _ = term.recv() => { info!("SIGTERM received, graceful shutdown..."); }
         }
     }
 
@@ -632,10 +632,10 @@ async fn main() -> Result<()> {
     async fn shutdown_signal() {
         let ctrl_c = tokio::signal::ctrl_c();
         let _ = ctrl_c.await;
-        info!("Ctrl+C received, starting graceful shutdown...");
+        info!("Ctrl+C received, graceful shutdown...");
     }
 
-    info!("graceful shutdown: draining in-flight requests (timeout: 30s)...");
+    info!("服务已启动");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
