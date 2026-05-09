@@ -293,7 +293,9 @@ async fn main() -> Result<()> {
     ] {
         if std::env::var(new).is_err() {
             if let Ok(val) = std::env::var(old) {
-                std::env::set_var(new, val);
+                if !val.is_empty() {
+                    std::env::set_var(new, val);
+                }
             }
         }
     }
@@ -439,11 +441,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    let model_map: HashMap<String, String> = match serde_json::from_str(&args.model_map) {
-        Ok(m) => m,
-        Err(e) => {
-            error!("Failed to parse DEECODEX_MODEL_MAP: {e}");
-            HashMap::new()
+    let model_map: HashMap<String, String> = if args.model_map.is_empty() {
+        HashMap::new()
+    } else {
+        match serde_json::from_str(&args.model_map) {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to parse DEECODEX_MODEL_MAP: {e}");
+                HashMap::new()
+            }
         }
     };
 

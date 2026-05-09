@@ -210,10 +210,14 @@ cmd_start() {
 
     local port="${DEECODEX_PORT:-4446}"
     echo "启动 deecodex (端口: $port)..."
+    local model_map_arg=()
+    if [ -n "${DEECODEX_MODEL_MAP:-}" ]; then
+        model_map_arg=(--model-map "${DEECODEX_MODEL_MAP}")
+    fi
     nohup "$BIN" \
         --port "$port" \
         --upstream "${DEECODEX_UPSTREAM}" \
-        --model-map "${DEECODEX_MODEL_MAP:-}" \
+        "${model_map_arg[@]}" \
         >> "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"

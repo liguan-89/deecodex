@@ -73,7 +73,7 @@ if "%DEECODEX_PORT%"=="" set "DEECODEX_PORT=4446"
 set "CODEX_RELAY_UPSTREAM=%DEECODEX_UPSTREAM%"
 set "CODEX_RELAY_API_KEY=%DEECODEX_API_KEY%"
 set "CODEX_RELAY_PORT=%DEECODEX_PORT%"
-set "CODEX_RELAY_MODEL_MAP=%DEECODEX_MODEL_MAP%"
+if not "%DEECODEX_MODEL_MAP%"=="" set "CODEX_RELAY_MODEL_MAP=%DEECODEX_MODEL_MAP%"
 exit /b 0
 
 rem === 检测进程是否运行 ===
@@ -189,7 +189,9 @@ call :codex_config_switch_to_deecodex
 call :rotate_logs
 
 echo 启动 deecodex (端口: %DEECODEX_PORT%)...
-start /b "" "%BIN_PATH%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% --model-map "%DEECODEX_MODEL_MAP%" >> "%LOG_FILE%" 2>&1
+set "MODEL_FLAG="
+if not "%DEECODEX_MODEL_MAP%"=="" set "MODEL_FLAG=--model-map "%DEECODEX_MODEL_MAP%""
+start /b "" "%BIN_PATH%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% %MODEL_FLAG% >> "%LOG_FILE%" 2>&1
 
 rem 获取启动进程 PID
 set PID=
