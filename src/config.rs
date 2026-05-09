@@ -191,6 +191,64 @@ impl Args {
         data_dir.join("config.json")
     }
 
+    /// 将指定键值同步写入 .env 文件（按 main.rs 加载顺序查找）
+    pub fn sync_to_env_file(data_dir: &std::path::Path, key: &str, value: &str) {
+        let env_path = Self::find_env_file(data_dir);
+        let path = match &env_path {
+            Some(p) => p.clone(),
+            None => {
+                // 默认写入 ~/.deecodex/.env
+                let home: PathBuf = std::env::var("HOME")
+                    .ok()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/tmp"));
+                home.join(".deecodex").join(".env")
+            }
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let prefix = format!("{}=", key);
+        let new_line = format!("{}={}", key, value);
+        let replaced = if content.lines().any(|l| l.starts_with(&prefix)) {
+            // 替换已有行
+            content
+                .lines()
+                .map(|l| if l.starts_with(&prefix) { new_line.as_str() } else { l })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // 追加新行
+            if content.is_empty() {
+                new_line
+            } else {
+                format!("{}\n{}", content, new_line)
+            }
+        };
+        let _ = std::fs::write(&path, replaced);
+    }
+
+    fn find_env_file(data_dir: &std::path::Path) -> Option<PathBuf> {
+        // 按 main.rs 加载顺序：cwd → ~/.deecodex/ → exe目录
+        if std::path::Path::new(".env").exists() {
+            return Some(PathBuf::from(".env"));
+        }
+        let home = std::env::var("HOME").ok().map(PathBuf::from)?;
+        let home_env = home.join(".deecodex").join(".env");
+        if home_env.exists() {
+            return Some(home_env);
+        }
+        let exe_dir = std::env::current_exe()
+            .ok()?
+            .parent()
+            .map(|d| d.join(".env"))?;
+        if exe_dir.exists() {
+            return Some(exe_dir);
+        }
+        Some(data_dir.join(".env"))
+    }
+
     /// 遮蔽 API key 等敏感字段：前4字符 + *** + 后4字符。
     /// 空字符串返回空字符串。
     pub fn mask_sensitive(value: &str) -> String {

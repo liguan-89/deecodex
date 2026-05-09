@@ -251,6 +251,20 @@ pub async fn put_config(
         )
     })?;
 
+    // 同步关键配置到 .env，避免重启后 .env 占位符覆盖 config.json 的真值
+    Args::sync_to_env_file(&updated.data_dir, "DEECODEX_API_KEY", &updated.api_key);
+    Args::sync_to_env_file(&updated.data_dir, "DEECODEX_UPSTREAM", &updated.upstream);
+    Args::sync_to_env_file(
+        &updated.data_dir,
+        "DEECODEX_PORT",
+        &updated.port.to_string(),
+    );
+    Args::sync_to_env_file(
+        &updated.data_dir,
+        "DEECODEX_MODEL_MAP",
+        &updated.model_map,
+    );
+
     let saved_to = config_path.to_string_lossy().to_string();
 
     // Codex 配置注入/移除（根据更新后的开关立即执行）
