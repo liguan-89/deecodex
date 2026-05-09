@@ -150,6 +150,8 @@ if not exist "%CODEX_CONFIG_OPENAI%" (
 
 rem 生成 deecodex 配置
 copy /y "%CODEX_CONFIG_OPENAI%" "%CODEX_CONFIG_DEECODEX%" >nul
+rem remove existing [model_providers.custom] section
+powershell -NoProfile -Command "$skip=$false; $lines=@(); foreach ($line in Get-Content '%CODEX_CONFIG_DEECODEX%') { if ($line -match '^\[model_providers\.custom\]') { $skip=$true; continue } if ($skip -and $line -match '^\[') { $skip=$false } if (-not $skip) { $lines += $line } }; $lines | Set-Content '%CODEX_CONFIG_DEECODEX%' -Encoding UTF8"
 (
 echo.
 echo # === 以下由 deecodex 自动管理 ===

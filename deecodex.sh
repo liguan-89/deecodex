@@ -40,6 +40,9 @@ codex_config_init() {
     rm -f "$CODEX_CONFIG_DEECODEX"
     cp "$CODEX_CONFIG_OPENAI" "$CODEX_CONFIG_DEECODEX"
 
+    # 移除已有的 [model_providers.custom] 段，避免重复
+    awk 'BEGIN{skip=0} /^\[model_providers\.custom\]$/{skip=1; next} /^\[/{skip=0} !skip' "$CODEX_CONFIG_DEECODEX" > "$CODEX_CONFIG_DEECODEX.tmp" && mv "$CODEX_CONFIG_DEECODEX.tmp" "$CODEX_CONFIG_DEECODEX"
+
     sed -i '' "/^model_reasoning_effort/a\\
 model_provider = \"custom\"
 " "$CODEX_CONFIG_DEECODEX"
