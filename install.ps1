@@ -1,4 +1,4 @@
-﻿# deecodex Windows 一键安装向导
+# deecodex Windows 一键安装向导
 # 用法: irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
