@@ -7,6 +7,18 @@ use uuid::Uuid;
 
 use crate::types::ChatMessage;
 
+/// 响应摘要信息
+pub struct ResponseInfo {
+    pub id: String,
+    pub status: String,
+}
+
+/// 对话摘要信息
+pub struct ConversationInfo {
+    pub id: String,
+    pub message_count: usize,
+}
+
 /// In-memory session store: response_id → messages, call_id → reasoning_content,
 /// and turn-level reasoning fingerprints.
 ///
@@ -349,6 +361,131 @@ impl SessionStore {
         let removed_messages = self.conversations.remove(conversation_id).is_some();
         let removed_items = self.conversation_items.remove(conversation_id).is_some();
         removed_messages || removed_items
+    }
+
+    // ── 列表查询 ──────────────────────────────────────────────
+
+    /// 列出所有响应及其状态
+    pub fn list_responses(&self) -> Vec<ResponseInfo> {
+        self.responses
+            .iter()
+            .map(|entry| {
+                let status = entry
+                    .value()
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                ResponseInfo {
+                    id: entry.key().clone(),
+                    status,
+                }
+            })
+            .collect()
+    }
+
+    /// 列出所有对话及其消息数量
+    pub fn list_conversations(&self) -> Vec<ConversationInfo> {
+        self.conversations
+            .iter()
+            .map(|entry| ConversationInfo {
+                id: entry.key().clone(),
+                message_count: entry.value().len(),
+            })
+            .collect()
+    }
+
+    // ── 带数据提取的删除 ──────────────────────────────────────
+
+    /// 删除响应，同时返回删除前的数据用于备份。
+    /// 返回 (消息列表, 完整响应, 输入项列表)
+    pub fn delete_response_with_data(
+        &self,
+        response_id: &str,
+    ) -> Option<(Vec<ChatMessage>, Value, Vec<Value>)> {
+        let messages = self.inner.get(response_id).map(|v| v.clone());
+        let response = self.responses.get(response_id).map(|v| v.clone());
+        let items = self.input_items.get(response_id).map(|v| v.clone());
+
+        // 提取完毕后执行删除
+        self.inner.remove(response_id);
+        self.responses.remove(response_id);
+        self.input_items.remove(response_id);
+
+        match (messages, response, items) {
+            (Some(m), Some(r), Some(i)) => Some((m, r, i)),
+            _ => None,
+        }
+    }
+
+    /// 删除对话，同时返回删除前的数据用于备份。
+    /// 返回 (消息列表, 对话项列表)
+    pub fn delete_conversation_with_data(
+        &self,
+        conversation_id: &str,
+    ) -> Option<(Vec<ChatMessage>, Vec<Value>)> {
+        let messages = self.conversations.get(conversation_id).map(|v| v.clone());
+        let items = self
+            .conversation_items
+            .get(conversation_id)
+            .map(|v| v.clone());
+
+        self.conversations.remove(conversation_id);
+        self.conversation_items.remove(conversation_id);
+
+        match (messages, items) {
+            (Some(m), Some(i)) => Some((m, i)),
+            _ => None,
+        }
+    }
+
+    // ── 撤销删除 ──────────────────────────────────────────────
+
+    /// 恢复被删除的响应
+    pub fn undo_delete_response(
+        &self,
+        response_id: &str,
+        messages: Vec<ChatMessage>,
+        response: Value,
+        input_items: Vec<Value>,
+    ) {
+        let rid = response_id.to_string();
+        let is_new = self
+            .inner
+            .insert(rid.clone(), messages)
+            .is_none()
+            || self
+                .responses
+                .insert(rid.clone(), response)
+                .is_none()
+            || self
+                .input_items
+                .insert(rid.clone(), input_items)
+                .is_none();
+        if is_new {
+            self.response_order.lock().unwrap().push_back(rid);
+        }
+    }
+
+    /// 恢复被删除的对话
+    pub fn undo_delete_conversation(
+        &self,
+        conversation_id: &str,
+        messages: Vec<ChatMessage>,
+        items: Vec<Value>,
+    ) {
+        let cid = conversation_id.to_string();
+        let is_new = self
+            .conversations
+            .insert(cid.clone(), messages)
+            .is_none()
+            || self
+                .conversation_items
+                .insert(cid.clone(), items)
+                .is_none();
+        if is_new {
+            self.conversation_order.lock().unwrap().push_back(cid);
+        }
     }
 }
 

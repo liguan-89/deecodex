@@ -47,7 +47,7 @@ fn test_state() -> AppState {
         rate_limiter: None,
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
-        tool_policy: deecodex::handlers::ToolPolicy::default(),
+        tool_policy: Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy::default())),
         executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
         data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
     }
@@ -895,7 +895,10 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
 #[tokio::test]
 async fn test_tool_policy_rejects_unlisted_mcp_server() {
     let mut state = test_state();
-    state.tool_policy.allowed_mcp_servers = vec!["safe_server".into()];
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_mcp_servers: vec!["safe_server".into()],
+        ..Default::default()
+    }));
     let app = build_router(state);
 
     let response = app
@@ -2019,7 +2022,10 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
         )
         .unwrap(),
     );
-    state.tool_policy.allowed_mcp_servers = vec!["filesystem".into()];
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_mcp_servers: vec!["filesystem".into()],
+        ..Default::default()
+    }));
     let app = build_router(state);
 
     let response = app
@@ -2078,7 +2084,10 @@ async fn test_responses_blocking_local_computer_executor_appends_failed_output()
     state.executors = Arc::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
     );
-    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_computer_displays: vec!["browser".into()],
+        ..Default::default()
+    }));
     let app = build_router(state);
 
     let response = app
@@ -3437,7 +3446,10 @@ async fn test_computer_use_multiturn_roundtrip() {
     .await;
     let mut state = test_state();
     state.upstream = Arc::new(upstream1);
-    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_computer_displays: vec!["browser".into()],
+        ..Default::default()
+    }));
     state.executors = Arc::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
     );
@@ -3557,7 +3569,10 @@ async fn test_computer_use_multiturn_roundtrip() {
 async fn test_computer_use_multiturn_state_persistence() {
     // 使用 previous_response_id 继续对话，验证 relay 从 session 重放上下文
     let mut state = test_state();
-    state.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_computer_displays: vec!["browser".into()],
+        ..Default::default()
+    }));
     state.executors = Arc::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
     );
@@ -3616,7 +3631,10 @@ async fn test_computer_use_multiturn_state_persistence() {
     // Round 2: 使用 previous_response_id，Codex 会从 session 重放历史
     let mut state2 = test_state();
     state2.sessions = sessions;
-    state2.tool_policy.allowed_computer_displays = vec!["browser".into()];
+    state2.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_computer_displays: vec!["browser".into()],
+        ..Default::default()
+    }));
     state2.upstream = Arc::new(
         one_shot_upstream(
             r#"{

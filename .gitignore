@@ -19,5 +19,6 @@ logs/
 
 # Rust build
 target/
+deecodex-gui/
 pyproject.toml
 douyin-notes.md

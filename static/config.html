@@ -1156,6 +1156,299 @@ body {
 @keyframes toast-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
 
 /* ============================================================
+   UNDO TOAST (bottom-right, with progress bar)
+   ============================================================ */
+
+.undo-toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.undo-toast {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  padding: 14px 20px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  position: relative;
+  overflow: hidden;
+  animation: toast-in 0.2s ease;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.undo-toast .undo-btn {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: color var(--transition);
+  user-select: none;
+}
+
+.undo-toast .undo-btn:hover { color: #fff; }
+
+.undo-toast .undo-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  animation: undo-progress-shrink 5s linear forwards;
+}
+
+@keyframes undo-progress-shrink { from { width: 100%; } to { width: 0%; } }
+
+/* ============================================================
+   CONFIRM MODAL
+   ============================================================ */
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9998;
+  animation: fade-in 0.12s ease;
+}
+
+.confirm-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.confirm-box h4 {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+  letter-spacing: 0.04em;
+}
+
+.confirm-box p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.6;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* ============================================================
+   SESSION LIST
+   ============================================================ */
+
+.session-section {
+  margin-bottom: 28px;
+}
+
+.session-section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.session-section-header .section-icon {
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.session-section-header h3 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.session-section-header .section-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  transition: border-color var(--transition);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.session-item:hover { border-color: var(--border-default); }
+
+.session-item .session-id {
+  color: var(--accent);
+  font-size: 11px;
+  min-width: 110px;
+  letter-spacing: 0.03em;
+}
+
+.session-item .session-meta {
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.session-item .session-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.btn-sm-danger {
+  background: var(--red-dim);
+  border-color: rgba(255,60,92,0.25);
+  color: var(--red);
+}
+
+.btn-sm-danger:hover {
+  background: rgba(255,60,92,0.2);
+  box-shadow: 0 0 10px rgba(255,60,92,0.08);
+}
+
+.btn-sm-danger:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   TOOL POLICY
+   ============================================================ */
+
+.policy-section {
+  margin-bottom: 28px;
+}
+
+.policy-section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.policy-section-header .section-icon {
+  font-size: 15px;
+  color: var(--amber);
+}
+
+.policy-section-header h3 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.policy-field {
+  margin-bottom: 18px;
+}
+
+.policy-field label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: block;
+  margin-bottom: 5px;
+}
+
+.policy-field input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 8px 11px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.policy-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.policy-field .hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
+.policy-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.policy-msg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  align-self: center;
+  margin-left: 8px;
+  transition: color var(--transition);
+}
+.policy-msg.success { color: var(--green); }
+.policy-msg.error { color: var(--red); }
+
+/* ============================================================
    SCROLLBAR
    ============================================================ */
 
@@ -1286,6 +1579,16 @@ body {
 
       <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
         <span class="icon">◇</span> 诊断
+      </button>
+
+      <span class="nav-section-label">管理</span>
+
+      <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
+        <span class="icon">☰</span> 会话管理
+      </button>
+
+      <button class="nav-item" data-panel="tool-policy" onclick="switchPanel('tool-policy')">
+        <span class="icon">◈</span> 工具策略
       </button>
 
       <span class="nav-section-label">帮助</span>
@@ -1420,6 +1723,8 @@ function renderPanel(panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
     case 'config': container.innerHTML = renderConfig(); break;
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
+    case 'sessions': renderSessionsPanel(); break;
+    case 'tool-policy': container.innerHTML = renderToolPolicy(); loadToolPolicy(); break;
     case 'help': container.innerHTML = renderHelp(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
@@ -1752,6 +2057,313 @@ function renderHelp() {
 function toggleFaq(btn) {
   const item = btn.parentElement;
   item.classList.toggle('open');
+}
+
+// ============================================================
+// SESSIONS PANEL
+// ============================================================
+
+let lastUndoToken = null;
+
+async function renderSessionsPanel() {
+  const container = document.getElementById('mainContent');
+  container.innerHTML = `
+    <div class="page-header">
+      <h2>会话管理</h2>
+      <p>查看和管理内存中的活跃响应与对话</p>
+    </div>
+    <div id="sessionsContent"><div class="empty-state">加载中...</div></div>`;
+  await loadSessions();
+}
+
+async function loadSessions() {
+  try {
+    const res = await fetch('/api/sessions');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderSessionList(data);
+  } catch (err) {
+    document.getElementById('sessionsContent').innerHTML = `<div class="empty-state">加载失败: ${he(err.message)}</div>`;
+  }
+}
+
+function renderSessionList(data) {
+  let html = '';
+
+  // 活跃响应
+  html += `<div class="session-section">
+    <div class="session-section-header">
+      <span class="section-icon">◉</span>
+      <h3>活跃响应</h3>
+      <span class="section-count">${data.responses.length} 个</span>
+    </div>`;
+  if (data.responses.length === 0) {
+    html += '<div class="empty-state">暂无活跃响应</div>';
+  } else {
+    for (const r of data.responses) {
+      html += `
+      <div class="session-item" id="resp-${he(r.id)}">
+        <span class="session-id">${he(r.id.substring(0, 12))}…</span>
+        <span class="session-meta">状态: ${he(r.status)}</span>
+        <span class="session-actions">
+          <button class="btn-sm btn-sm-danger" onclick="deleteSession('response', '${escAttr(r.id)}')">删除</button>
+        </span>
+      </div>`;
+    }
+  }
+  html += '</div>';
+
+  // 活跃对话
+  html += `<div class="session-section">
+    <div class="session-section-header">
+      <span class="section-icon">☰</span>
+      <h3>活跃对话</h3>
+      <span class="section-count">${data.conversations.length} 个</span>
+    </div>`;
+  if (data.conversations.length === 0) {
+    html += '<div class="empty-state">暂无活跃对话</div>';
+  } else {
+    for (const c of data.conversations) {
+      html += `
+      <div class="session-item" id="conv-${he(c.id)}">
+        <span class="session-id">${he(c.id.substring(0, 12))}…</span>
+        <span class="session-meta">消息数: ${c.message_count}</span>
+        <span class="session-actions">
+          <button class="btn-sm btn-sm-danger" onclick="deleteSession('conversation', '${escAttr(c.id)}')">删除</button>
+        </span>
+      </div>`;
+    }
+  }
+  html += '</div>';
+
+  document.getElementById('sessionsContent').innerHTML = html;
+}
+
+function deleteSession(type, id) {
+  const label = type === 'response' ? '响应' : '对话';
+  showConfirm(`确认删除`, `确定要删除 ${label} <code>${he(id.substring(0, 12))}…</code> 吗？此操作可撤销。`, async () => {
+    const url = `/api/sessions/${type}s/${encodeURIComponent(id)}`;
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(`删除失败: ${result.error || res.status}`, 'error');
+        return;
+      }
+      // 从 DOM 中移除
+      const el = document.getElementById((type === 'response' ? 'resp-' : 'conv-') + id);
+      if (el) el.remove();
+      // 显示撤销 Toast
+      if (result.undo_token) {
+        showUndoToast(result.undo_token);
+      } else {
+        showToast('已删除', 'info');
+      }
+    } catch (err) {
+      showToast('删除请求失败: ' + err.message, 'error');
+    }
+  });
+}
+
+function showConfirm(title, message, onConfirm) {
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML = `
+    <div class="confirm-box">
+      <h4>${title}</h4>
+      <p>${message}</p>
+      <div class="confirm-actions">
+        <button class="btn btn-ghost" id="confirmCancel">取消</button>
+        <button class="btn btn-danger" id="confirmOk">确认删除</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  overlay.querySelector('#confirmCancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#confirmOk').addEventListener('click', () => {
+    overlay.remove();
+    onConfirm();
+  });
+  document.body.appendChild(overlay);
+}
+
+// ============================================================
+// UNDO TOAST
+// ============================================================
+
+function showUndoToast(token) {
+  lastUndoToken = token;
+
+  const container = document.getElementById('undoToastContainer') || createUndoToastContainer();
+  // 移除现有 toast
+  container.innerHTML = '';
+
+  const toast = document.createElement('div');
+  toast.className = 'undo-toast';
+  toast.innerHTML = `
+    <span>已删除</span>
+    <span class="undo-btn" onclick="undoDelete('${escAttr(token)}')">撤销</span>
+    <div class="undo-progress"></div>`;
+
+  toast.querySelector('.undo-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    undoDelete(token);
+  });
+
+  container.appendChild(toast);
+
+  // 5 秒后自动消失
+  setTimeout(() => {
+    if (toast.parentNode && lastUndoToken === token) {
+      toast.remove();
+      lastUndoToken = null;
+    }
+  }, 5000);
+}
+
+function createUndoToastContainer() {
+  const container = document.createElement('div');
+  container.className = 'undo-toast-container';
+  container.id = 'undoToastContainer';
+  document.body.appendChild(container);
+  return container;
+}
+
+async function undoDelete(token) {
+  // 立即移除 toast
+  const container = document.getElementById('undoToastContainer');
+  if (container) container.innerHTML = '';
+  lastUndoToken = null;
+
+  try {
+    const res = await fetch('/api/sessions/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ undo_token: token }),
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      showToast(`撤销失败: ${result.error || res.status}`, 'error');
+      return;
+    }
+    showToast('已撤销删除', 'success');
+    // 刷新会话列表
+    if (currentPanel === 'sessions') await loadSessions();
+  } catch (err) {
+    showToast('撤销请求失败: ' + err.message, 'error');
+  }
+}
+
+// ============================================================
+// TOOL POLICY PANEL
+// ============================================================
+
+function renderToolPolicy() {
+  return `
+    <div class="page-header">
+      <h2>工具策略</h2>
+      <p>管理 MCP 服务器与计算机显示器的访问白名单，空列表表示允许全部</p>
+    </div>
+
+    <div class="policy-section">
+      <div class="policy-section-header">
+        <span class="section-icon">◈</span>
+        <h3>MCP 服务器白名单</h3>
+      </div>
+      <div class="policy-field">
+        <label for="policyMcp">允许的 MCP 服务器</label>
+        <input type="text" id="policyMcp" placeholder="filesystem,github（逗号分隔，留空允许全部）" spellcheck="false">
+        <span class="hint">逗号分隔的服务器名称列表，为空时允许所有 MCP 服务器</span>
+      </div>
+    </div>
+
+    <div class="policy-section">
+      <div class="policy-section-header">
+        <span class="section-icon">▷</span>
+        <h3>计算机显示器白名单</h3>
+      </div>
+      <div class="policy-field">
+        <label for="policyDisplay">允许的显示器/环境</label>
+        <input type="text" id="policyDisplay" placeholder="display-1,display-2（逗号分隔，留空允许全部）" spellcheck="false">
+        <span class="hint">逗号分隔的显示器标识列表，为空时允许所有显示器</span>
+      </div>
+    </div>
+
+    <div class="policy-actions">
+      <button class="btn btn-primary" id="btnPolicySave" onclick="saveToolPolicy()">保存策略</button>
+      <button class="btn btn-ghost" onclick="unlockAll()">解锁全部</button>
+      <button class="btn btn-ghost" onclick="lockAll()">全部锁定</button>
+      <span class="policy-msg" id="policyMsg"></span>
+    </div>
+  `;
+}
+
+async function loadToolPolicy() {
+  try {
+    const res = await fetch('/api/tool-policy');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const mcpEl = document.getElementById('policyMcp');
+    const displayEl = document.getElementById('policyDisplay');
+    if (mcpEl) mcpEl.value = (data.allowed_mcp_servers || []).join(', ');
+    if (displayEl) displayEl.value = (data.allowed_computer_displays || []).join(', ');
+  } catch (err) {
+    showToast('加载工具策略失败: ' + err.message, 'error');
+  }
+}
+
+async function saveToolPolicy() {
+  const btn = document.getElementById('btnPolicySave');
+  const msg = document.getElementById('policyMsg');
+  if (btn) btn.disabled = true;
+  if (msg) { msg.textContent = '保存中...'; msg.className = 'policy-msg'; }
+
+  const mcpRaw = (document.getElementById('policyMcp')?.value || '').trim();
+  const displayRaw = (document.getElementById('policyDisplay')?.value || '').trim();
+
+  const mcpList = mcpRaw ? mcpRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const displayList = displayRaw ? displayRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  try {
+    const res = await fetch('/api/tool-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        allowed_mcp_servers: mcpList,
+        allowed_computer_displays: displayList,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok || !result.ok) {
+      throw new Error(result.error || '保存失败');
+    }
+    if (msg) { msg.textContent = '策略已保存'; msg.className = 'policy-msg success'; }
+    showToast('工具策略保存成功', 'success');
+    // 刷新显示
+    await loadToolPolicy();
+  } catch (err) {
+    if (msg) { msg.textContent = err.message; msg.className = 'policy-msg error'; }
+    showToast('保存失败: ' + err.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function unlockAll() {
+  const mcpEl = document.getElementById('policyMcp');
+  const displayEl = document.getElementById('policyDisplay');
+  if (mcpEl) mcpEl.value = '';
+  if (displayEl) displayEl.value = '';
+  saveToolPolicy();
+}
+
+function lockAll() {
+  const mcpEl = document.getElementById('policyMcp');
+  const displayEl = document.getElementById('policyDisplay');
+  if (mcpEl) mcpEl.value = '__all_locked__';
+  if (displayEl) displayEl.value = '__all_locked__';
+  saveToolPolicy();
 }
 
 // ============================================================

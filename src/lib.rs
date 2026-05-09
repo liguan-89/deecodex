@@ -1,3 +1,4 @@
+pub mod backup_store;
 pub mod cache;
 pub mod codex_config;
 pub mod config;

@@ -1,3 +1,4 @@
+mod backup_store;
 mod cache;
 mod codex_config;
 mod config;
@@ -533,10 +534,10 @@ async fn main() -> Result<()> {
             args.token_anomaly_burn_window,
             args.token_anomaly_burn_rate,
         )),
-        tool_policy: handlers::ToolPolicy {
+        tool_policy: Arc::new(tokio::sync::RwLock::new(handlers::ToolPolicy {
             allowed_mcp_servers: parse_csv_list(&args.allowed_mcp_servers),
             allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
-        },
+        })),
         executors: Arc::new(executors),
         data_dir: Arc::new(args.data_dir.clone()),
         rate_limiter: {
@@ -578,16 +579,17 @@ async fn main() -> Result<()> {
     if args.chinese_thinking {
         info!("chinese thinking mode: enabled (system prompt will include Chinese instruction)");
     }
-    if !state.tool_policy.allowed_mcp_servers.is_empty() {
+    let tp = state.tool_policy.read().await;
+    if !tp.allowed_mcp_servers.is_empty() {
         info!(
             "MCP tool policy: {} allowed server(s)",
-            state.tool_policy.allowed_mcp_servers.len()
+            tp.allowed_mcp_servers.len()
         );
     }
-    if !state.tool_policy.allowed_computer_displays.is_empty() {
+    if !tp.allowed_computer_displays.is_empty() {
         info!(
             "computer tool policy: {} allowed display(s)",
-            state.tool_policy.allowed_computer_displays.len()
+            tp.allowed_computer_displays.len()
         );
     }
     info!(

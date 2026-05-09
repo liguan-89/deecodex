@@ -5,6 +5,7 @@ use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
+use crate::config::Args;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
 use crate::{files, prompts, stream, translate, vector_stores};
 use anyhow::{bail, Result};
@@ -55,7 +56,7 @@ pub struct AppState {
     pub port: u16,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub metrics: Arc<Metrics>,
-    pub tool_policy: ToolPolicy,
+    pub tool_policy: Arc<tokio::sync::RwLock<ToolPolicy>>,
     pub executors: Arc<LocalExecutorConfig>,
     pub token_tracker: Arc<TokenTracker>,
     pub data_dir: Arc<std::path::PathBuf>,
@@ -1117,7 +1118,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     if let Err(err) = state.prompts.apply_to_request(&mut req) {
         return err.into_response();
     }
-    if let Some(response) = validate_tool_policy(&req.tools, &state.tool_policy) {
+    if let Some(response) = validate_tool_policy(&req.tools, &*state.tool_policy.read().await) {
         return response;
     }
     if let Some(ref limiter) = state.rate_limiter {
@@ -1579,8 +1580,8 @@ async fn handle_responses_inner(
             token_tracker: state.token_tracker.clone(),
             metrics: state.metrics.clone(),
             executors: state.executors.clone(),
-            allowed_mcp_servers: state.tool_policy.allowed_mcp_servers.clone(),
-            allowed_computer_displays: state.tool_policy.allowed_computer_displays.clone(),
+            allowed_mcp_servers: state.tool_policy.read().await.allowed_mcp_servers.clone(),
+            allowed_computer_displays: state.tool_policy.read().await.allowed_computer_displays.clone(),
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -1841,11 +1842,11 @@ async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {
         return;
     }
 
+    let tool_policy_guard = state.tool_policy.read().await;
     let mut outputs = Vec::new();
     for (call_id, invocation) in calls {
-        let result = if !state.tool_policy.allowed_computer_displays.is_empty()
-            && !state
-                .tool_policy
+        let result = if !tool_policy_guard.allowed_computer_displays.is_empty()
+            && !tool_policy_guard
                 .allowed_computer_displays
                 .iter()
                 .any(|display| display == &invocation.display)
@@ -1902,11 +1903,11 @@ async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
         return;
     }
 
+    let tool_policy_guard = state.tool_policy.read().await;
     let mut outputs = Vec::new();
     for (call_id, invocation) in calls {
-        let result = if !state.tool_policy.allowed_mcp_servers.is_empty()
-            && !state
-                .tool_policy
+        let result = if !tool_policy_guard.allowed_mcp_servers.is_empty()
+            && !tool_policy_guard
                 .allowed_mcp_servers
                 .iter()
                 .any(|server| server == &invocation.server_label)
@@ -2528,6 +2529,64 @@ async fn handle_vlm(args: VlmArgs) -> Response {
     Sse::new(futures_util::stream::iter(events))
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// GET /api/tool-policy — 获取当前工具安全策略
+pub async fn handle_get_tool_policy(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let policy = state.tool_policy.read().await;
+    Json(json!({
+        "allowed_mcp_servers": &policy.allowed_mcp_servers,
+        "allowed_computer_displays": &policy.allowed_computer_displays,
+    }))
+}
+
+/// PUT /api/tool-policy — 更新工具安全策略（运行时可变）
+pub async fn handle_put_tool_policy(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let mut policy = state.tool_policy.write().await;
+    // 从 JSON 数组中提取字符串列表来更新 allowed_mcp_servers
+    if let Some(servers) = body.get("allowed_mcp_servers").and_then(|v| v.as_array()) {
+        policy.allowed_mcp_servers = servers
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+    // 从 JSON 数组中提取字符串列表来更新 allowed_computer_displays
+    if let Some(displays) = body.get("allowed_computer_displays").and_then(|v| v.as_array()) {
+        policy.allowed_computer_displays = displays
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+    }
+    // 持久化到 config.json
+    let allowed_mcp = policy.allowed_mcp_servers.join(",");
+    let allowed_displays = policy.allowed_computer_displays.join(",");
+    drop(policy); // 释放写锁
+
+    // 读取并更新 config.json
+    let config_path = Args::default_config_path(&state.data_dir);
+    if let Some(mut args) = Args::load_from_file(&config_path) {
+        args.allowed_mcp_servers = allowed_mcp.clone();
+        args.allowed_computer_displays = allowed_displays.clone();
+        if let Err(e) = args.save_to_file(&config_path) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("保存配置失败: {}", e)})),
+            ));
+        }
+    }
+
+    // 重新读取以返回最新值
+    let policy = state.tool_policy.read().await;
+    Ok(Json(json!({
+        "ok": true,
+        "allowed_mcp_servers": &policy.allowed_mcp_servers,
+        "allowed_computer_displays": &policy.allowed_computer_displays,
+    })))
 }
 
 #[cfg(test)]
