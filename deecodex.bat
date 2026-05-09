@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-rem deecodex Windows ¹ÜÀí½Å±¾
-rem ÓÃ·¨: deecodex.bat {start|stop|restart|status|logs|health|update}
+rem deecodex Windows ï¿½ï¿½ï¿½ï¿½ï¿½Å±ï¿½
+rem ï¿½Ã·ï¿½: deecodex.bat {start|stop|restart|status|logs|health|update}
 
 set "PROJECT_DIR=%~dp0"
 set "ENV_FILE=%PROJECT_DIR%.env"
@@ -20,19 +20,19 @@ goto case_%~1
 :menu
 cls
 echo ================================
-echo   deecodex ¹ÜÀí²Ëµ¥
+echo   deecodex ï¿½ï¿½ï¿½ï¿½ï¿½Ëµï¿½
 echo ================================
 echo.
-echo   [1] Æô¶¯·þÎñ
-echo   [2] Í£Ö¹·þÎñ
-echo   [3] ÖØÆô·þÎñ
-echo   [4] ²é¿´×´Ì¬
-echo   [5] ½¡¿µ¼ì²é
-echo   [6] ²é¿´ÈÕÖ¾
-echo   [7] Éý¼¶×îÐÂ°æ
-echo   [0] ÍË³ö
+echo   [1] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+echo   [2] Í£Ö¹ï¿½ï¿½ï¿½ï¿½
+echo   [3] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+echo   [4] ï¿½é¿´×´Ì¬
+echo   [5] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+echo   [6] ï¿½é¿´ï¿½ï¿½Ö¾
+echo   [7] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â°ï¿½
+echo   [0] ï¿½Ë³ï¿½
 echo.
-set /p CHOICE="ÇëÑ¡Ôñ (0-7): "
+set /p CHOICE="ï¿½ï¿½Ñ¡ï¿½ï¿½ (0-7): "
 if "%CHOICE%"=="1" goto case_start
 if "%CHOICE%"=="2" goto case_stop
 if "%CHOICE%"=="3" goto case_restart
@@ -44,15 +44,15 @@ if "%CHOICE%"=="0" exit /b 0
 goto menu
 
 :usage
-echo ÓÃ·¨: %~nx0 {start^|stop^|restart^|status^|logs^|health^|update}
-echo       Ö±½ÓË«»÷ÔËÐÐ¿É½øÈë½»»¥²Ëµ¥
+echo ï¿½Ã·ï¿½: %~nx0 {start^|stop^|restart^|status^|logs^|health^|update}
+echo       Ö±ï¿½ï¿½Ë«ï¿½ï¿½ï¿½ï¿½ï¿½Ð¿É½ï¿½ï¿½ë½»ï¿½ï¿½ï¿½Ëµï¿½
 exit /b 1
 
-rem === ¼ÓÔØ .env ===
+rem === ï¿½ï¿½ï¿½ï¿½ .env ===
 :load_env
 if not exist "%ENV_FILE%" (
-    echo ´íÎó: ÕÒ²»µ½ .env ÎÄ¼þ [%ENV_FILE%]
-    echo       Çë½« .env.example ÖØÃüÃûÎª .env ²¢ÓÃ¼ÇÊÂ±¾ÌîÈë API Key
+    echo ï¿½ï¿½ï¿½ï¿½: ï¿½Ò²ï¿½ï¿½ï¿½ .env ï¿½Ä¼ï¿½ [%ENV_FILE%]
+    echo       ï¿½ë½« .env.example ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îª .env ï¿½ï¿½ï¿½Ã¼ï¿½ï¿½Â±ï¿½ï¿½ï¿½ï¿½ï¿½ API Key
     pause
     exit /b 1
 )
@@ -66,7 +66,7 @@ for /f "usebackq delims=" %%a in ("%ENV_FILE%") do (
 )
 exit /b 0
 
-rem === »·¾³±äÁ¿Ó³Éä ===
+rem === ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó³ï¿½ï¿½ ===
 :map_env
 if "%DEECODEX_PORT%"=="" set "DEECODEX_PORT=4446"
 
@@ -76,23 +76,23 @@ set "CODEX_RELAY_PORT=%DEECODEX_PORT%"
 if not "%DEECODEX_MODEL_MAP%"=="" set "CODEX_RELAY_MODEL_MAP=%DEECODEX_MODEL_MAP%"
 exit /b 0
 
-rem === ¼ì²â½ø³ÌÊÇ·ñÔËÐÐ ===
+rem === ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ ===
 :is_running
 if not exist "%PID_FILE%" goto pid_fallback
 set /p PID=<"%PID_FILE%"
 tasklist /fi "pid eq !PID!" 2>nul | find /i "!PID!" >nul
 if not errorlevel 1 exit /b 0
-rem PID ÎÄ¼þ¹ýÆÚ£¬ÇåÀí
+rem PID ï¿½Ä¼ï¿½ï¿½ï¿½ï¿½Ú£ï¿½ï¿½ï¿½ï¿½ï¿½
 del "%PID_FILE%" 2>nul
 :pid_fallback
-rem »ØÍË£ºÍ¨¹ý½ø³ÌÃû²éÕÒ
+rem ï¿½ï¿½ï¿½Ë£ï¿½Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 for /f "tokens=2" %%a in ('tasklist /fi "imagename eq %BIN%" /fo list 2^>nul ^| find "PID:"') do (
     echo %%a > "%PID_FILE%"
     exit /b 0
 )
 exit /b 1
 
-rem === ÈÕÖ¾ÂÖ×ª ===
+rem === ï¿½ï¿½Ö¾ï¿½ï¿½×ª ===
 :rotate_logs
 if not exist "%LOG_FILE%" exit /b 0
 set /a MAX_BYTES=50*1024*1024
@@ -110,24 +110,24 @@ exit /b 0
 set "%~2=%~z1"
 exit /b 0
 
-rem === Codex ÅäÖÃ¹ÜÀí ===
-rem === Codex ¼ì²â ===
+rem === Codex ï¿½ï¿½ï¿½Ã¹ï¿½ï¿½ï¿½ ===
+rem === Codex ï¿½ï¿½ï¿½ ===
 :detect_codex
-rem ·µ»Ø 0=ÒÑ°²×°, 1=Î´°²×°
-rem 1. ~/.codex Ä¿Â¼´æÔÚ
+rem ï¿½ï¿½ï¿½ï¿½ 0=ï¿½Ñ°ï¿½×°, 1=Î´ï¿½ï¿½×°
+rem 1. ~/.codex Ä¿Â¼ï¿½ï¿½ï¿½ï¿½
 if exist "%USERPROFILE%\.codex" exit /b 0
-rem 2. codex ÔÚ PATH ÖÐ
+rem 2. codex ï¿½ï¿½ PATH ï¿½ï¿½
 where codex >/dev/null 2>&1
 if not errorlevel 1 exit /b 0
-rem 3. ×ÀÃæ°æ/MSI °²×°
+rem 3. ï¿½ï¿½ï¿½ï¿½ï¿½/MSI ï¿½ï¿½×°
 if exist "%LOCALAPPDATA%\Programs\codex" exit /b 0
-rem 4. Microsoft Store °æ±¾
+rem 4. Microsoft Store ï¿½æ±¾
 if exist "C:\Program Files\WindowsApps" (
     for /d %%d in ("C:\Program Files\WindowsApps\OpenAI.Codex*") do exit /b 0
 )
 exit /b 1
 
-rem === Codex ÅäÖÃ¹ÜÀí ===
+rem === Codex ï¿½ï¿½ï¿½Ã¹ï¿½ï¿½ï¿½ ===
 :codex_config_init
 set "CODEX_CONFIG=%USERPROFILE%\.codex\config.toml"
 set "CODEX_DIR=%USERPROFILE%\.codex"
@@ -135,7 +135,7 @@ set "CODEX_DIR=%USERPROFILE%\.codex"
 if not exist "%CODEX_CONFIG%" (
     call :detect_codex 2>nul
     if errorlevel 1 exit /b 0
-    rem Codex ÒÑ°²×°µ« config.toml ÉÐÎ´´´½¨£¨×ÀÃæ°æÊ×´ÎÊ¹ÓÃ£©
+    rem Codex ï¿½Ñ°ï¿½×°ï¿½ï¿½ config.toml ï¿½ï¿½Î´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×´ï¿½Ê¹ï¿½Ã£ï¿½
     if not exist "%CODEX_DIR%" mkdir "%CODEX_DIR%"
     type nul > "%CODEX_CONFIG%"
 )
@@ -145,16 +145,16 @@ set "CODEX_CONFIG_DEECODEX=%CODEX_CONFIG%.deecodex.txt"
 
 if not exist "%CODEX_CONFIG_OPENAI%" (
     copy /y "%CODEX_CONFIG%" "%CODEX_CONFIG_OPENAI%" >nul
-    echo ÒÑ±¸·Ý Codex ÅäÖÃ
+    echo ï¿½Ñ±ï¿½ï¿½ï¿½ Codex ï¿½ï¿½ï¿½ï¿½
 )
 
-rem Éú³É deecodex ÅäÖÃ
+rem ï¿½ï¿½ï¿½ï¿½ deecodex ï¿½ï¿½ï¿½ï¿½
 copy /y "%CODEX_CONFIG_OPENAI%" "%CODEX_CONFIG_DEECODEX%" >nul
 rem remove existing [model_providers.custom] section
 powershell -NoProfile -Command "$skip=$false; $lines=@(); foreach ($line in Get-Content '%CODEX_CONFIG_DEECODEX%') { if ($line -match '^\[model_providers\.custom\]') { $skip=$true; continue } if ($skip -and $line -match '^\[') { $skip=$false } if (-not $skip) { $lines += $line } }; $lines | Set-Content '%CODEX_CONFIG_DEECODEX%' -Encoding UTF8"
 (
 echo.
-echo # === ÒÔÏÂÓÉ deecodex ×Ô¶¯¹ÜÀí ===
+echo # === ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ deecodex ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½ ===
 echo [model_providers.custom]
 echo base_url = "http://127.0.0.1:%DEECODEX_PORT%/v1"
 echo name = "custom"
@@ -162,7 +162,7 @@ echo requires_openai_auth = false
 echo wire_api = "responses"
 ) >> "%CODEX_CONFIG_DEECODEX%"
 
-echo ÒÑÉú³É deecodex ÅäÖÃ (¶Ë¿Ú: %DEECODEX_PORT%)
+echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ deecodex ï¿½ï¿½ï¿½ï¿½ (ï¿½Ë¿ï¿½: %DEECODEX_PORT%)
 exit /b 0
 
 :codex_config_switch_to_deecodex
@@ -180,11 +180,11 @@ rem === start ===
 call :is_running 2>nul
 if not errorlevel 1 (
     set /p RPID=<"%PID_FILE%"
-    echo deecodex ÒÑÔÚÔËÐÐÖÐ [PID: !RPID!]
+    echo deecodex ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ [PID: !RPID!]
     exit /b 1
 )
 
-rem ÓÅÏÈ¼ì²é½Å±¾Í¬Ä¿Â¼£¬Æä´Î PATH£¨Ö§³Ö±ãÐ¯Ãâ°²×°£©
+rem ï¿½ï¿½ï¿½È¼ï¿½ï¿½Å±ï¿½Í¬Ä¿Â¼ï¿½ï¿½ï¿½ï¿½ï¿½ PATHï¿½ï¿½Ö§ï¿½Ö±ï¿½Ð¯ï¿½â°²×°ï¿½ï¿½
 set "BIN_PATH="
 if exist "%PROJECT_DIR%%BIN%" (
     set "BIN_PATH=%PROJECT_DIR%%BIN%"
@@ -193,8 +193,8 @@ if exist "%PROJECT_DIR%%BIN%" (
     if not errorlevel 1 set "BIN_PATH=%BIN%"
 )
 if "%BIN_PATH%"=="" (
-    echo ´íÎó: ÕÒ²»µ½ %BIN%£¬Çë½« %BIN% ·ÅÔÚ½Å±¾Í¬Ä¿Â¼
-    echo       ÏÂÔØ: https://github.com/liguan-89/deecodex/releases
+    echo ï¿½ï¿½ï¿½ï¿½: ï¿½Ò²ï¿½ï¿½ï¿½ %BIN%ï¿½ï¿½ï¿½ë½« %BIN% ï¿½ï¿½ï¿½Ú½Å±ï¿½Í¬Ä¿Â¼
+    echo       ï¿½ï¿½ï¿½ï¿½: https://github.com/liguan-89/deecodex/releases
     pause
     exit /b 1
 )
@@ -204,36 +204,38 @@ if errorlevel 1 exit /b 1
 call :map_env
 
 if "%DEECODEX_API_KEY%"=="" (
-    echo ´íÎó: ÇëÔÚ .env ÖÐÌîÈë DEECODEX_API_KEY
-    echo       ÓÃ¼ÇÊÂ±¾´ò¿ª %ENV_FILE% ÐÞ¸Ä
+    echo ï¿½ï¿½ï¿½ï¿½: ï¿½ï¿½ï¿½ï¿½ .env ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ DEECODEX_API_KEY
+    echo       ï¿½Ã¼ï¿½ï¿½Â±ï¿½ï¿½ï¿½ %ENV_FILE% ï¿½Þ¸ï¿½
     pause
     exit /b 1
 )
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+rem åœ¨æ³¨å…¥å‰ä¿®å¤å·²çŸ¥çš„ Codex config.toml é”™è¯¯ï¼ˆæ‰“ç ´æ±¡æŸ“å¾ªçŽ¯ï¼‰
+"%BIN_PATH%" fix-config 2>nul
 call :codex_config_init
 call :codex_config_switch_to_deecodex
 call :rotate_logs
 
-echo Æô¶¯ deecodex (¶Ë¿Ú: %DEECODEX_PORT%)...
+echo ï¿½ï¿½ï¿½ï¿½ deecodex (ï¿½Ë¿ï¿½: %DEECODEX_PORT%)...
 set "MODEL_FLAG="
 if not "%DEECODEX_MODEL_MAP%"=="" set "MODEL_FLAG=--model-map "%DEECODEX_MODEL_MAP%""
 start /b "" "%BIN_PATH%" --port %DEECODEX_PORT% --upstream %DEECODEX_UPSTREAM% %MODEL_FLAG% >> "%LOG_FILE%" 2>&1
 
-rem »ñÈ¡Æô¶¯½ø³Ì PID
+rem ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ PID
 set PID=
 for /f "tokens=2" %%a in ('tasklist /fi "imagename eq %BIN%" /fo list 2^>nul ^| find "PID:"') do set PID=%%a
 echo !PID! > "%PID_FILE%"
 
 timeout /t 2 /nobreak >nul
-echo deecodex ÒÑÆô¶¯ (PID: !PID!, ¶Ë¿Ú: %DEECODEX_PORT%)
+echo deecodex ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (PID: !PID!, ï¿½Ë¿ï¿½: %DEECODEX_PORT%)
 exit /b 0
 
 rem === stop ===
 :case_stop
 call :is_running 2>nul
 if errorlevel 1 (
-    echo deecodex Î´ÔËÐÐ
+    echo deecodex Î´ï¿½ï¿½ï¿½ï¿½
     call :codex_config_switch_to_openai
     del "%PID_FILE%" 2>nul
     exit /b 0
@@ -249,18 +251,18 @@ timeout /t 1 /nobreak >nul
 set /a waited+=1
 tasklist /fi "pid eq %PID%" 2>nul | find /i "%PID%" >nul
 if errorlevel 1 (
-    echo ÒÑÍ£Ö¹ (!waited!s)
+    echo ï¿½ï¿½Í£Ö¹ (!waited!s)
     call :codex_config_switch_to_openai
     del "%PID_FILE%" 2>nul
     exit /b 0
 )
 if %waited% lss %GRACEFUL_TIMEOUT% goto wait_loop
 
-echo ÓÅÑÅÍË³ö³¬Ê±£¬Ç¿ÖÆÖÕÖ¹...
+echo ï¿½ï¿½ï¿½ï¿½ï¿½Ë³ï¿½ï¿½ï¿½Ê±ï¿½ï¿½Ç¿ï¿½ï¿½ï¿½ï¿½Ö¹...
 taskkill /f /pid %PID% >nul 2>&1
 call :codex_config_switch_to_openai
 del "%PID_FILE%" 2>nul
-echo ÒÑÇ¿ÖÆÍ£Ö¹
+echo ï¿½ï¿½Ç¿ï¿½ï¿½Í£Ö¹
 exit /b 0
 
 rem === restart ===
@@ -274,24 +276,24 @@ rem === status ===
 :case_status
 call :is_running 2>nul
 if errorlevel 1 (
-    echo deecodex Î´ÔËÐÐ
+    echo deecodex Î´ï¿½ï¿½ï¿½ï¿½
     del "%PID_FILE%" 2>nul
     exit /b 0
 )
 set /p PID=<"%PID_FILE%"
-echo deecodex ÔËÐÐÖÐ
+echo deecodex ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 echo   PID:    %PID%
-echo   ¶Ë¿Ú:   %DEECODEX_PORT%
-echo   ÈÕÖ¾:   %LOG_FILE%
+echo   ï¿½Ë¿ï¿½:   %DEECODEX_PORT%
+echo   ï¿½ï¿½Ö¾:   %LOG_FILE%
 exit /b 0
 
 rem === logs ===
 :case_logs
 if exist "%LOG_FILE%" (
     type "%LOG_FILE%"
-    echo ÊµÊ±ÈÕÖ¾ÇëÓÃ: Get-Content "%LOG_FILE%" -Wait
+    echo ÊµÊ±ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½: Get-Content "%LOG_FILE%" -Wait
 ) else (
-    echo ÔÝÎÞÈÕÖ¾ [%LOG_FILE%]
+    echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ [%LOG_FILE%]
 )
 exit /b 0
 
@@ -303,40 +305,40 @@ if "%DEECODEX_PORT%"=="" set "DEECODEX_PORT=4446"
 
 curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%DEECODEX_PORT%/v1/models >nul 2>&1
 if %errorlevel% neq 0 (
-    echo unreachable [¶Ë¿Ú %DEECODEX_PORT% ÎÞÏìÓ¦£¬ÇëÏÈ deecodex.bat start]
+    echo unreachable [ï¿½Ë¿ï¿½ %DEECODEX_PORT% ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ deecodex.bat start]
     exit /b 0
 )
 
 for /f %%a in ('curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%DEECODEX_PORT%/v1/models 2^>nul') do set CODE=%%a
 if "%CODE%"=="200" (
-    echo healthy [GET /v1/models ¡ú %CODE%]
+    echo healthy [GET /v1/models ï¿½ï¿½ %CODE%]
 ) else (
-    echo degraded [GET /v1/models ¡ú %CODE%]
+    echo degraded [GET /v1/models ï¿½ï¿½ %CODE%]
 )
 exit /b 0
 
 rem === update ===
 :case_update
-echo ¼ì²é×îÐÂ°æ±¾...
+echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â°æ±¾...
 for /f "delims=" %%a in ('curl -sS "https://api.github.com/repos/%GH_REPO%/releases/latest" 2^>nul ^| findstr /r """tag_name"""') do set TAG_LINE=%%a
 if "%TAG_LINE%"=="" (
-    echo ´íÎó: ÎÞ·¨»ñÈ¡×îÐÂ°æ±¾
+    echo ï¿½ï¿½ï¿½ï¿½: ï¿½Þ·ï¿½ï¿½ï¿½È¡ï¿½ï¿½ï¿½Â°æ±¾
     exit /b 1
 )
 for /f "tokens=2 delims=:" %%a in ("%TAG_LINE%") do set TAG=%%~a
 set TAG=!TAG: =!
 set TAG=!TAG:"=!
 set TAG=!TAG:,=!
-echo ×îÐÂ°æ±¾: !TAG!
+echo ï¿½ï¿½ï¿½Â°æ±¾: !TAG!
 
 set TEMP_DIR=%TEMP%\deecodex_update
 if exist "%TEMP_DIR%" rmdir /s /q "%TEMP_DIR%"
 mkdir "%TEMP_DIR%"
 
-echo ÏÂÔØ deecodex.exe (!TAG!)...
+echo ï¿½ï¿½ï¿½ï¿½ deecodex.exe (!TAG!)...
 curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex.exe" -o "%TEMP_DIR%\deecodex.exe"
 if not exist "%TEMP_DIR%\deecodex.exe" (
-    echo ´íÎó: ÏÂÔØÊ§°Ü
+    echo ï¿½ï¿½ï¿½ï¿½: ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½
     exit /b 1
 )
 
@@ -345,29 +347,29 @@ call :is_running 2>nul
 if not errorlevel 1 set WAS_RUNNING=1
 
 if !WAS_RUNNING! equ 1 (
-    echo Í£Ö¹¾É°æ±¾...
+    echo Í£Ö¹ï¿½É°æ±¾...
     call :case_stop
 )
 
-echo Ìæ»»¶þ½øÖÆ...
+echo ï¿½æ»»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
 move /y "%TEMP_DIR%\deecodex.exe" "%PROJECT_DIR%deecodex.exe" >nul
-echo ÒÑ¸üÐÂ: %PROJECT_DIR%deecodex.exe
+echo ï¿½Ñ¸ï¿½ï¿½ï¿½: %PROJECT_DIR%deecodex.exe
 
-echo ¸üÐÂ¹ÜÀí½Å±¾...
+echo ï¿½ï¿½ï¿½Â¹ï¿½ï¿½ï¿½ï¿½Å±ï¿½...
 curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex.bat" -o "%TEMP_DIR%\deecodex.bat"
 if exist "%TEMP_DIR%\deecodex.bat" (
     move /y "%TEMP_DIR%\deecodex.bat" "%PROJECT_DIR%deecodex.bat" >nul
-    echo ÒÑ¸üÐÂ: %PROJECT_DIR%deecodex.bat
+    echo ï¿½Ñ¸ï¿½ï¿½ï¿½: %PROJECT_DIR%deecodex.bat
 )
 
 rmdir /s /q "%TEMP_DIR%" 2>nul
 
 if !WAS_RUNNING! equ 1 (
-    echo ÖØÐÂÆô¶¯...
+    echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...
     call :case_start
 )
 
-echo ¸üÐÂÍê³É (!TAG!)
+echo ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (!TAG!)
 exit /b 0
 
 endlocal

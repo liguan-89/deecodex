@@ -181,6 +181,8 @@ pub enum Commands {
     Status,
     /// 查看服务日志
     Logs,
+    /// 检测并修复 Codex config.toml 中的已知错误值
+    FixConfig,
 }
 
 impl Args {
@@ -228,7 +230,13 @@ impl Args {
             // 替换已有行
             content
                 .lines()
-                .map(|l| if l.starts_with(&prefix) { new_line.as_str() } else { l })
+                .map(|l| {
+                    if l.starts_with(&prefix) {
+                        new_line.as_str()
+                    } else {
+                        l
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {

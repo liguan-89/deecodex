@@ -330,8 +330,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Restart) => {
             // 尝试停止已运行的服务（PID 文件 + pgrep，忽略错误）
-            let running = read_pid(&args.data_dir).is_some_and(is_running)
-                || find_daemon_by_name().is_some();
+            let running =
+                read_pid(&args.data_dir).is_some_and(is_running) || find_daemon_by_name().is_some();
             if running {
                 let _ = stop_service(
                     &args.data_dir,
@@ -345,7 +345,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Status) => {
             // PID 文件 + pgrep 回退
-            let pid = read_pid(&args.data_dir).filter(|&p| is_running(p))
+            let pid = read_pid(&args.data_dir)
+                .filter(|&p| is_running(p))
                 .or_else(find_daemon_by_name);
             match pid {
                 Some(pid) => {
@@ -371,6 +372,15 @@ async fn main() -> Result<()> {
                 .status()?;
             if !status.success() {
                 bail!("tail 命令退出");
+            }
+            return Ok(());
+        }
+        Some(Commands::FixConfig) => {
+            let fixed = codex_config::fix();
+            if fixed > 0 {
+                println!("已修复 Codex config.toml 中的 {} 处已知问题", fixed);
+            } else {
+                println!("Codex config.toml 未发现已知问题");
             }
             return Ok(());
         }
@@ -620,6 +630,7 @@ async fn main() -> Result<()> {
 
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
+        codex_config::fix();
         codex_config::inject(args.port, &state.client_api_key);
     }
 

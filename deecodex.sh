@@ -207,6 +207,8 @@ cmd_start() {
     fi
 
     mkdir -p "$LOG_DIR"
+    # 在注入前修复已知的 Codex config.toml 错误（打破污染循环）
+    "$BIN" fix-config 2>/dev/null || true
     codex_config_init
     codex_config_switch_to_deecodex
     rotate_logs
