@@ -344,12 +344,28 @@ cmd_update() {
     fi
     echo "最新版本: $latest_tag"
 
+    # 平台检测
+    local asset
+    case "$(uname -s)" in
+        Darwin)
+            case "$(uname -m)" in
+                arm64)  asset="deecodex-darwin-arm64" ;;
+                x86_64) asset="deecodex-darwin-x64" ;;
+                *)      echo "错误: 不支持的 macOS 架构 ($(uname -m))"; return 1 ;;
+            esac
+            ;;
+        *)
+            echo "错误: 不支持的操作系统 ($(uname -s))，仅支持 macOS"
+            return 1
+            ;;
+    esac
+
     local tmpdir
     tmpdir=$(mktemp -d)
     trap "rm -rf $tmpdir" RETURN
 
-    echo "下载 deecodex (${latest_tag})..."
-    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex" "$tmpdir/deecodex"
+    echo "下载 deecodex (${latest_tag} / ${asset})..."
+    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/${asset}" "$tmpdir/deecodex"
     chmod +x "$tmpdir/deecodex"
 
     local was_running=false
