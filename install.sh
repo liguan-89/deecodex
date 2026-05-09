@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # deecodex macOS 一键安装向导
 # 用法: curl -fsSL https://raw.githubusercontent.com/liguan-89/deecodex/main/install.sh | bash
+# 国内用户: curl -fsSL https://cdn.jsdelivr.net/gh/liguan-89/deecodex@main/install.sh | bash
 set -euo pipefail
 
 # ===== 颜色常量 =====
@@ -16,7 +17,7 @@ GH_REPO="liguan-89/deecodex"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.deecodex"
 PORT="4446"
-FALLBACK_VERSION="v1.0.0"
+FALLBACK_VERSION="v1.3.11"
 
 # ===== 工具函数 =====
 print_header() {
@@ -77,7 +78,10 @@ confirm() {
 
 get_latest_tag() {
     local tag
-    tag=$(curl -s "https://api.github.com/repos/$GH_REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    tag=$(curl -s --connect-timeout 10 "https://api.github.com/repos/$GH_REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$tag" ]; then
+        tag=$(curl -s --connect-timeout 10 "https://cdn.jsdelivr.net/gh/$GH_REPO@main/VERSION" 2>/dev/null | head -1 | tr -d '[:space:]')
+    fi
     if [ -z "$tag" ]; then
         echo "$FALLBACK_VERSION"
     else
@@ -286,9 +290,24 @@ echo "       版本: $RELEASE_TAG"
 
 RELEASE_URL="https://github.com/$GH_REPO/releases/download/$RELEASE_TAG"
 
+# 下载辅助：主站失败后尝试镜像
+download_file() {
+    local url="$1"
+    local dest="$2"
+    if curl -fSL --connect-timeout 15 --progress-bar -o "$dest" "$url" 2>/dev/null; then
+        return 0
+    fi
+    # GitHub 镜像回落
+    local mirror_url="https://ghfast.cc/$url"
+    if curl -fSL --connect-timeout 15 --progress-bar -o "$dest" "$mirror_url" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # 下载二进制
 echo "       下载 deecodex 二进制..."
-if curl -fSL --progress-bar -o "$BIN_DIR/deecodex" "$RELEASE_URL/deecodex" 2>/dev/null; then
+if download_file "$RELEASE_URL/deecodex" "$BIN_DIR/deecodex"; then
     chmod +x "$BIN_DIR/deecodex"
     print_ok "deecodex → $BIN_DIR/deecodex"
 else
@@ -303,11 +322,11 @@ fi
 
 # 下载管理脚本
 echo "       下载管理脚本..."
-if curl -fSL --progress-bar -o "$CONFIG_DIR/deecodex.sh" "$RELEASE_URL/deecodex.sh" 2>/dev/null; then
+if download_file "$RELEASE_URL/deecodex.sh" "$CONFIG_DIR/deecodex.sh"; then
     chmod +x "$CONFIG_DIR/deecodex.sh"
     print_ok "deecodex.sh → $CONFIG_DIR/deecodex.sh"
 else
-    print_warn "管理脚本下载失败，将使用已内置版本"
+    print_warn "管理脚本下载失败"
 fi
 
 # 添加 ~/.local/bin 到 PATH

@@ -320,11 +320,21 @@ cmd_update() {
     local bin_path
     bin_path="$(command -v "$BIN" 2>/dev/null || echo "$PROJECT_DIR/$BIN")"
 
+    # 下载辅助：主站失败后尝试镜像
+    _download() {
+        curl -fsSL --connect-timeout 15 "$1" -o "$2" 2>/dev/null && return 0
+        curl -fsSL --connect-timeout 15 "https://ghfast.cc/$1" -o "$2" 2>/dev/null && return 0
+        return 1
+    }
+
     echo "检查最新版本..."
     local latest_tag
-    latest_tag=$(curl -sS "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    latest_tag=$(curl -sS --connect-timeout 10 "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     if [ -z "$latest_tag" ]; then
-        echo "错误: 无法获取最新版本"
+        latest_tag=$(curl -s --connect-timeout 10 "https://cdn.jsdelivr.net/gh/${GH_REPO}@main/VERSION" 2>/dev/null | head -1 | tr -d '[:space:]')
+    fi
+    if [ -z "$latest_tag" ]; then
+        echo "错误: 无法获取最新版本（GitHub API 不可达，请检查网络或使用代理）"
         return 1
     fi
     echo "最新版本: $latest_tag"
@@ -334,7 +344,7 @@ cmd_update() {
     trap "rm -rf $tmpdir" RETURN
 
     echo "下载 deecodex (${latest_tag})..."
-    curl -fsSL "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex" -o "$tmpdir/deecodex"
+    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex" "$tmpdir/deecodex"
     chmod +x "$tmpdir/deecodex"
 
     local was_running=false
@@ -348,7 +358,7 @@ cmd_update() {
 
     # 同步更新管理脚本
     echo "更新管理脚本..."
-    curl -fsSL "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex.sh" -o "$tmpdir/deecodex.sh"
+    _download "https://github.com/${GH_REPO}/releases/download/${latest_tag}/deecodex.sh" "$tmpdir/deecodex.sh"
     if [ -f "$tmpdir/deecodex.sh" ]; then
         mv "$tmpdir/deecodex.sh" "$PROJECT_DIR/deecodex.sh"
         chmod +x "$PROJECT_DIR/deecodex.sh"
