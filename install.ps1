@@ -1,5 +1,5 @@
 # deecodex Windows 一键安装向导
-# 用法: irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1 | iex
+# 用法: iex (irm https://raw.githubusercontent.com/liguan-89/deecodex/main/install.ps1)
 
 $ErrorActionPreference = "Stop"
 $Host.UI.RawUI.WindowTitle = "deecodex 安装向导"
