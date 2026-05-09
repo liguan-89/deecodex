@@ -257,7 +257,7 @@ try {
 
 # 添加到用户 PATH
 Write-Host "       配置 PATH..."
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User") ?? ""
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User"); if (-not $userPath) { $userPath = "" }
 $paths = $userPath -split ";" | Where-Object { $_ }
 if ($paths -notcontains $InstallDir) {
     [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
