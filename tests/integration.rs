@@ -49,8 +49,12 @@ fn test_state() -> AppState {
         rate_limiter: None,
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
-        tool_policy: Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy::default())),
-        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
+        tool_policy: Arc::new(tokio::sync::RwLock::new(
+            deecodex::handlers::ToolPolicy::default(),
+        )),
+        executors: Arc::new(tokio::sync::RwLock::new(
+            deecodex::executor::LocalExecutorConfig::default(),
+        )),
         data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
     }
 }
@@ -1519,7 +1523,9 @@ fn make_stream_args(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
-        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
+        executors: Arc::new(tokio::sync::RwLock::new(
+            deecodex::executor::LocalExecutorConfig::default(),
+        )),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
     }
@@ -1559,7 +1565,9 @@ fn make_stream_args_custom(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
-        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
+        executors: Arc::new(tokio::sync::RwLock::new(
+            deecodex::executor::LocalExecutorConfig::default(),
+        )),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
     }

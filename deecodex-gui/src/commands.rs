@@ -110,44 +110,46 @@ pub(crate) fn load_args() -> Args {
     // 从环境变量 + 默认值构建 Args
     let args = match Args::try_parse_from(["deecodex-gui"]) {
         Ok(a) => a,
-        Err(_) => return Args::try_parse_from(["deecodex-gui"]).unwrap_or_else(|_| {
-            // clap 失败时返回纯默认值
-            Args {
-                command: None,
-                config: None,
-                port: 4446,
-                upstream: "https://openrouter.ai/api/v1".into(),
-                api_key: String::new(),
-                client_api_key: String::new(),
-                model_map: "{}".into(),
-                max_body_mb: 100,
-                vision_upstream: String::new(),
-                vision_api_key: String::new(),
-                vision_model: "MiniMax-M1".into(),
-                vision_endpoint: "v1/coding_plan/vlm".into(),
-                chinese_thinking: false,
-                codex_auto_inject: true,
-                codex_persistent_inject: false,
-                prompts_dir: "prompts".into(),
-                data_dir: ".deecodex".into(),
-                token_anomaly_prompt_max: 200000,
-                token_anomaly_spike_ratio: 5.0,
-                token_anomaly_burn_window: 120,
-                token_anomaly_burn_rate: 500000,
-                allowed_mcp_servers: String::new(),
-                allowed_computer_displays: String::new(),
-                computer_executor: "disabled".into(),
-                computer_executor_timeout_secs: 30,
-                mcp_executor_config: String::new(),
-                mcp_executor_timeout_secs: 30,
-                playwright_state_dir: String::new(),
-                browser_use_bridge_url: String::new(),
-                browser_use_bridge_command: String::new(),
-                daemon: false,
-                codex_launch_with_cdp: false,
-                cdp_port: 9222,
-            }
-        }),
+        Err(_) => {
+            return Args::try_parse_from(["deecodex-gui"]).unwrap_or_else(|_| {
+                // clap 失败时返回纯默认值
+                Args {
+                    command: None,
+                    config: None,
+                    port: 4446,
+                    upstream: "https://openrouter.ai/api/v1".into(),
+                    api_key: String::new(),
+                    client_api_key: String::new(),
+                    model_map: "{}".into(),
+                    max_body_mb: 100,
+                    vision_upstream: String::new(),
+                    vision_api_key: String::new(),
+                    vision_model: "MiniMax-M1".into(),
+                    vision_endpoint: "v1/coding_plan/vlm".into(),
+                    chinese_thinking: false,
+                    codex_auto_inject: true,
+                    codex_persistent_inject: false,
+                    prompts_dir: "prompts".into(),
+                    data_dir: ".deecodex".into(),
+                    token_anomaly_prompt_max: 200000,
+                    token_anomaly_spike_ratio: 5.0,
+                    token_anomaly_burn_window: 120,
+                    token_anomaly_burn_rate: 500000,
+                    allowed_mcp_servers: String::new(),
+                    allowed_computer_displays: String::new(),
+                    computer_executor: "disabled".into(),
+                    computer_executor_timeout_secs: 30,
+                    mcp_executor_config: String::new(),
+                    mcp_executor_timeout_secs: 30,
+                    playwright_state_dir: String::new(),
+                    browser_use_bridge_url: String::new(),
+                    browser_use_bridge_command: String::new(),
+                    daemon: false,
+                    codex_launch_with_cdp: false,
+                    cdp_port: 9222,
+                }
+            })
+        }
     };
     args.merge_with_file()
 }
@@ -223,9 +225,7 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         vision_endpoint: Arc::new(args.vision_endpoint.clone()),
         start_time: std::time::Instant::now(),
         request_cache: deecodex::cache::RequestCache::default(),
-        prompts: Arc::new(deecodex::prompts::PromptRegistry::new(
-            &args.prompts_dir,
-        )),
+        prompts: Arc::new(deecodex::prompts::PromptRegistry::new(&args.prompts_dir)),
         files: file_store,
         vector_stores: vs_registry,
         background_tasks: Arc::new(dashmap::DashMap::new()),
@@ -255,9 +255,7 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
 
 // ── 内部函数（托盘和 Tauri 命令共用） ─────────────────────────────────────
 
-pub async fn start_service_inner(
-    manager: &ServerManager,
-) -> Result<ServiceInfo, String> {
+pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo, String> {
     if manager.is_running().await {
         let info = get_status_internal(manager).await;
         return Err(format!("服务已在运行中 (端口: {})", info.port));
@@ -321,9 +319,10 @@ pub async fn start_service_inner(
                 .arg(format!("Codex.exe --remote-debugging-port={cdp_port}"))
                 .spawn();
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            let result: std::io::Result<tokio::process::Child> = Err(
-                std::io::Error::new(std::io::ErrorKind::Unsupported, "CDP 启动不支持当前平台")
-            );
+            let result: std::io::Result<tokio::process::Child> = Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "CDP 启动不支持当前平台",
+            ));
             match result {
                 Ok(_) => tracing::info!("已启动 Codex 桌面版 (CDP 端口 {cdp_port})"),
                 Err(e) => tracing::warn!("启动 Codex 桌面版失败: {e}"),
@@ -342,9 +341,7 @@ pub async fn start_service_inner(
     Ok(get_status_internal(manager).await)
 }
 
-pub async fn stop_service_inner(
-    manager: &ServerManager,
-) -> Result<ServiceInfo, String> {
+pub async fn stop_service_inner(manager: &ServerManager) -> Result<ServiceInfo, String> {
     if !manager.is_running().await {
         return Err("服务未在运行".to_string());
     }
@@ -354,11 +351,7 @@ pub async fn stop_service_inner(
     }
 
     if let Some(handle) = manager.handle.lock().await.take() {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(35),
-            handle,
-        )
-        .await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(35), handle).await;
     }
 
     let args = load_args();
@@ -376,23 +369,17 @@ pub async fn stop_service_inner(
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn start_service(
-    manager: State<'_, ServerManager>,
-) -> Result<ServiceInfo, String> {
+pub async fn start_service(manager: State<'_, ServerManager>) -> Result<ServiceInfo, String> {
     start_service_inner(&manager).await
 }
 
 #[tauri::command]
-pub async fn stop_service(
-    manager: State<'_, ServerManager>,
-) -> Result<ServiceInfo, String> {
+pub async fn stop_service(manager: State<'_, ServerManager>) -> Result<ServiceInfo, String> {
     stop_service_inner(&manager).await
 }
 
 #[tauri::command]
-pub async fn get_service_status(
-    manager: State<'_, ServerManager>,
-) -> Result<ServiceInfo, String> {
+pub async fn get_service_status(manager: State<'_, ServerManager>) -> Result<ServiceInfo, String> {
     Ok(get_status_internal(&manager).await)
 }
 
@@ -475,8 +462,7 @@ pub fn get_config() -> Result<GuiConfig, String> {
 #[tauri::command]
 pub fn save_config(config: GuiConfig) -> Result<(), String> {
     // 先同步关键字段到 .env（在字段被 move 之前）
-    let data_dir: std::path::PathBuf =
-        std::path::PathBuf::from(&config.data_dir);
+    let data_dir: std::path::PathBuf = std::path::PathBuf::from(&config.data_dir);
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
     Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &config.upstream);
     if !config.api_key.is_empty() {
@@ -534,8 +520,7 @@ pub fn get_logs() -> Vec<String> {
     let log_path = args.data_dir.join("deecodex.log");
     match std::fs::read_to_string(&log_path) {
         Ok(content) => {
-            let lines: Vec<&str> =
-                content.lines().filter(|l| !l.is_empty()).collect();
+            let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
             let start = if lines.len() > 200 {
                 lines.len() - 200
             } else {

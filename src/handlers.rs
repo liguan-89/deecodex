@@ -1,11 +1,11 @@
 use crate::cache::RequestCache;
+use crate::config::Args;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
-use crate::config::Args;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
 use crate::{files, prompts, stream, translate, vector_stores};
 use anyhow::{bail, Result};
@@ -1127,10 +1127,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     if let Some(ref limiter) = state.rate_limiter {
         let client_key_snip = state.client_api_key.read().await.clone();
         let key = if !client_key_snip.is_empty() {
-            format!(
-                "rl_{}",
-                &client_key_snip[..4.min(client_key_snip.len())]
-            )
+            format!("rl_{}", &client_key_snip[..4.min(client_key_snip.len())])
         } else {
             "rl_default".into()
         };
@@ -1585,7 +1582,12 @@ async fn handle_responses_inner(
             metrics: state.metrics.clone(),
             executors: state.executors.clone(),
             allowed_mcp_servers: state.tool_policy.read().await.allowed_mcp_servers.clone(),
-            allowed_computer_displays: state.tool_policy.read().await.allowed_computer_displays.clone(),
+            allowed_computer_displays: state
+                .tool_policy
+                .read()
+                .await
+                .allowed_computer_displays
+                .clone(),
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -2542,9 +2544,7 @@ async fn handle_vlm(args: VlmArgs) -> Response {
 }
 
 /// GET /api/tool-policy — 获取当前工具安全策略
-pub async fn handle_get_tool_policy(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn handle_get_tool_policy(State(state): State<AppState>) -> impl IntoResponse {
     let policy = state.tool_policy.read().await;
     Json(json!({
         "allowed_mcp_servers": &policy.allowed_mcp_servers,
@@ -2564,7 +2564,10 @@ pub async fn handle_put_tool_policy(
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
     }
-    if let Some(displays) = body.get("allowed_computer_displays").and_then(|v| v.as_array()) {
+    if let Some(displays) = body
+        .get("allowed_computer_displays")
+        .and_then(|v| v.as_array())
+    {
         policy.allowed_computer_displays = displays
             .iter()
             .filter_map(|v| v.as_str().map(String::from))

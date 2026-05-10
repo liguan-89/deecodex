@@ -1,8 +1,6 @@
 use crate::backup_store::BackupStore;
 use crate::config::Args;
-use crate::handlers::{
-    handle_get_tool_policy, handle_put_tool_policy, AppState,
-};
+use crate::handlers::{handle_get_tool_policy, handle_put_tool_policy, AppState};
 use crate::types::ChatMessage;
 use crate::validate;
 
@@ -29,9 +27,18 @@ pub fn build_web_router(state: AppState) -> Router {
         .route("/api/update", post(post_update))
         .route("/api/sessions", get(handle_list_sessions))
         .route("/api/sessions/undo", post(handle_undo_delete))
-        .route("/api/sessions/responses/:response_id", delete(handle_delete_response_with_backup))
-        .route("/api/sessions/conversations/:conversation_id", delete(handle_delete_conversation_with_backup))
-        .route("/api/tool-policy", get(handle_get_tool_policy).put(handle_put_tool_policy))
+        .route(
+            "/api/sessions/responses/:response_id",
+            delete(handle_delete_response_with_backup),
+        )
+        .route(
+            "/api/sessions/conversations/:conversation_id",
+            delete(handle_delete_conversation_with_backup),
+        )
+        .route(
+            "/api/tool-policy",
+            get(handle_get_tool_policy).put(handle_put_tool_policy),
+        )
         .with_state(state)
 }
 
@@ -59,7 +66,11 @@ fn fallback_args(state: &AppState) -> Args {
         port: 4446,
         upstream: state.upstream.as_ref().to_string(),
         api_key: state.api_key.as_ref().to_string(),
-        client_api_key: state.client_api_key.try_read().map(|g| g.clone()).unwrap_or_default(),
+        client_api_key: state
+            .client_api_key
+            .try_read()
+            .map(|g| g.clone())
+            .unwrap_or_default(),
         model_map: if state.model_map.is_empty() {
             "{}".into()
         } else {
@@ -275,11 +286,7 @@ pub async fn put_config(
         "DEECODEX_PORT",
         &updated.port.to_string(),
     );
-    Args::sync_to_env_file(
-        &updated.data_dir,
-        "DEECODEX_MODEL_MAP",
-        &updated.model_map,
-    );
+    Args::sync_to_env_file(&updated.data_dir, "DEECODEX_MODEL_MAP", &updated.model_map);
 
     let saved_to = config_path.to_string_lossy().to_string();
 
@@ -414,11 +421,17 @@ pub async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
     match std::fs::read_to_string(&log_path) {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
-            let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
+            let start = if lines.len() > 200 {
+                lines.len() - 200
+            } else {
+                0
+            };
             let entries: Vec<Value> = lines[start..].iter().map(|l| parse_log_line(l)).collect();
             Json(json!({"ok": true, "entries": entries}))
         }
-        Err(e) => Json(json!({"ok": false, "error": format!("无法读取日志: {}", e), "entries": []})),
+        Err(e) => {
+            Json(json!({"ok": false, "error": format!("无法读取日志: {}", e), "entries": []}))
+        }
     }
 }
 
@@ -524,7 +537,9 @@ pub async fn post_update(State(state): State<AppState>) -> impl IntoResponse {
     if !script.exists() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": format!("管理脚本 {} 不存在，请重新运行安装脚本", script_name)})),
+            Json(
+                json!({"ok": false, "error": format!("管理脚本 {} 不存在，请重新运行安装脚本", script_name)}),
+            ),
         );
     }
     let result = spawn_update_cmd(&script);
@@ -557,10 +572,7 @@ fn spawn_update_cmd(script: &std::path::Path) -> std::io::Result<std::process::C
     {
         std::process::Command::new("sh")
             .arg("-c")
-            .arg(format!(
-                "sleep 1 && exec sh {} update",
-                script.display()
-            ))
+            .arg(format!("sleep 1 && exec sh {} update", script.display()))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -584,40 +596,72 @@ async fn handle_undo_delete(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let token = body.get("undo_token").and_then(|v| v.as_str()).ok_or_else(|| {
-        (StatusCode::BAD_REQUEST, Json(json!({"error": "缺少 undo_token"})))
-    })?;
+    let token = body
+        .get("undo_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "缺少 undo_token"})),
+            )
+        })?;
 
     let backup_store = BackupStore::new(state.data_dir.join("backups")).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("备份存储初始化失败: {}", e)})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("备份存储初始化失败: {}", e)})),
+        )
     })?;
     let backup = backup_store.read_backup(token).map_err(|e| {
-        (StatusCode::NOT_FOUND, Json(json!({"error": format!("备份未找到: {}", e)})))
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("备份未找到: {}", e)})),
+        )
     })?;
 
-    let session_type = backup.get("session_type").and_then(|v| v.as_str()).unwrap_or("");
+    let session_type = backup
+        .get("session_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let data = &backup["data"];
 
     match session_type {
         "response" => {
             let response_id = backup["session_id"].as_str().unwrap_or("");
-            let messages: Vec<ChatMessage> = serde_json::from_value(data["messages"].clone()).map_err(|e| {
-                (StatusCode::BAD_REQUEST, Json(json!({"error": format!("备份数据损坏: {}", e)})))
-            })?;
+            let messages: Vec<ChatMessage> = serde_json::from_value(data["messages"].clone())
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!("备份数据损坏: {}", e)})),
+                    )
+                })?;
             let response = data["response"].clone();
-            let input_items: Vec<Value> = serde_json::from_value(data["input_items"].clone()).unwrap_or_default();
-            state.sessions.undo_delete_response(response_id, messages, response, input_items);
+            let input_items: Vec<Value> =
+                serde_json::from_value(data["input_items"].clone()).unwrap_or_default();
+            state
+                .sessions
+                .undo_delete_response(response_id, messages, response, input_items);
         }
         "conversation" => {
             let conversation_id = backup["session_id"].as_str().unwrap_or("");
-            let messages: Vec<ChatMessage> = serde_json::from_value(data["messages"].clone()).map_err(|e| {
-                (StatusCode::BAD_REQUEST, Json(json!({"error": format!("备份数据损坏: {}", e)})))
-            })?;
-            let items: Vec<Value> = serde_json::from_value(data["items"].clone()).unwrap_or_default();
-            state.sessions.undo_delete_conversation(conversation_id, messages, items);
+            let messages: Vec<ChatMessage> = serde_json::from_value(data["messages"].clone())
+                .map_err(|e| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": format!("备份数据损坏: {}", e)})),
+                    )
+                })?;
+            let items: Vec<Value> =
+                serde_json::from_value(data["items"].clone()).unwrap_or_default();
+            state
+                .sessions
+                .undo_delete_conversation(conversation_id, messages, items);
         }
         _ => {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "未知的会话类型"}))));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "未知的会话类型"})),
+            ));
         }
     }
 
@@ -630,17 +674,27 @@ async fn handle_delete_response_with_backup(
     State(state): State<AppState>,
     Path(response_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some((messages, response, input_items)) = state.sessions.delete_response_with_data(&response_id) {
+    if let Some((messages, response, input_items)) =
+        state.sessions.delete_response_with_data(&response_id)
+    {
         let backup_store = match BackupStore::new(state.data_dir.join("backups")) {
             Ok(store) => store,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "备份存储初始化失败"}))).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "备份存储初始化失败"})),
+                )
+                    .into_response()
+            }
         };
         let data = json!({
             "messages": messages,
             "response": response,
             "input_items": input_items,
         });
-        let token = backup_store.write_backup(&response_id, "response", &data).unwrap_or_default();
+        let token = backup_store
+            .write_backup(&response_id, "response", &data)
+            .unwrap_or_default();
         Json(json!({
             "id": response_id,
             "object": "response.deleted",
@@ -649,7 +703,11 @@ async fn handle_delete_response_with_backup(
         }))
         .into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(json!({"error": format!("No response found with id {}", response_id)}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("No response found with id {}", response_id)})),
+        )
+            .into_response()
     }
 }
 
@@ -658,16 +716,27 @@ async fn handle_delete_conversation_with_backup(
     State(state): State<AppState>,
     Path(conversation_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some((messages, items)) = state.sessions.delete_conversation_with_data(&conversation_id) {
+    if let Some((messages, items)) = state
+        .sessions
+        .delete_conversation_with_data(&conversation_id)
+    {
         let backup_store = match BackupStore::new(state.data_dir.join("backups")) {
             Ok(store) => store,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "备份存储初始化失败"}))).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "备份存储初始化失败"})),
+                )
+                    .into_response()
+            }
         };
         let data = json!({
             "messages": messages,
             "items": items,
         });
-        let token = backup_store.write_backup(&conversation_id, "conversation", &data).unwrap_or_default();
+        let token = backup_store
+            .write_backup(&conversation_id, "conversation", &data)
+            .unwrap_or_default();
         Json(json!({
             "id": conversation_id,
             "object": "conversation.deleted",
@@ -676,7 +745,11 @@ async fn handle_delete_conversation_with_backup(
         }))
         .into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(json!({"error": format!("No conversation found with id {}", conversation_id)}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("No conversation found with id {}", conversation_id)})),
+        )
+            .into_response()
     }
 }
 

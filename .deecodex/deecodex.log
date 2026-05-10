@@ -1,0 +1,28 @@
+﻿[2m2026-05-10T07:18:08.367771Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:18:08.670305Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:18:37.677220Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:18:37.677305Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:19:09.343926Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:19:09.645722Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:20:05.260979Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:20:05.261050Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:20:08.393481Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:20:08.694727Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:21:32.143134Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:21:32.143209Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:24:10.675996Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 配置已保存 → .deecodex/config.json
+[2m2026-05-10T07:24:15.027890Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:24:39.593472Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 配置已保存 → .deecodex/config.json
+[2m2026-05-10T07:25:07.356206Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:25:11.557594Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:25:11.858972Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:25:21.474277Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:25:21.474352Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:29:10.095742Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:29:10.398080Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:30:11.754802Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:30:11.754981Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-10T07:30:12.560079Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-10T07:30:12.862474Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-10T07:40:16.750881Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
+[2m2026-05-10T07:40:16.751002Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止

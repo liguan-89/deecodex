@@ -68,7 +68,11 @@ pub async fn try_inject_with_port(state: Arc<AppState>, priority_port: u16) {
         }
     }
 
-    let port_hint = if priority_port > 0 { format!("优先端口 {priority_port}，") } else { String::new() };
+    let port_hint = if priority_port > 0 {
+        format!("优先端口 {priority_port}，")
+    } else {
+        String::new()
+    };
     info!("未检测到 Codex CDP 调试端口 ({port_hint}扫描范围 9222–9230，已重试 30 次)，跳过注入。");
     info!("如需使用插件解锁和会话删除 UI，请以 --remote-debugging-port=9222 启动 Codex 桌面版，或在控制面板点击“启动 Codex CDP”。");
 }
@@ -202,10 +206,7 @@ async fn handle_delete(state: &AppState, data: &serde_json::Value) -> serde_json
         .get("session_id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let title = data
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
     if session_id.is_empty() {
         return serde_json::json!({"status": "failed", "message": "缺少 session_id"});
@@ -245,8 +246,7 @@ async fn handle_delete(state: &AppState, data: &serde_json::Value) -> serde_json
         }
     }
     // 尝试作为 conversation 删除
-    else if let Some((messages, items)) =
-        state.sessions.delete_conversation_with_data(session_id)
+    else if let Some((messages, items)) = state.sessions.delete_conversation_with_data(session_id)
     {
         match create_backup(
             &state.data_dir,

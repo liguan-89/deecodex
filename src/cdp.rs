@@ -31,9 +31,7 @@ impl CdpClient {
     }
 
     fn ws_mut(&mut self) -> Result<&mut CdpWsStream> {
-        self.ws
-            .as_mut()
-            .context("CDP WebSocket 已被取走")
+        self.ws.as_mut().context("CDP WebSocket 已被取走")
     }
 
     fn next_id(&mut self) -> u64 {

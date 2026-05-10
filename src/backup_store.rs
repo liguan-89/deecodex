@@ -38,8 +38,7 @@ impl BackupStore {
             "data": data,
         });
 
-        let json = serde_json::to_vec_pretty(&payload)
-            .with_context(|| "序列化备份数据失败")?;
+        let json = serde_json::to_vec_pretty(&payload).with_context(|| "序列化备份数据失败")?;
         std::fs::write(&path, json)
             .with_context(|| format!("写入备份文件失败: {}", path.display()))?;
 
@@ -54,8 +53,7 @@ impl BackupStore {
         }
         let json = std::fs::read_to_string(&path)
             .with_context(|| format!("读取备份文件失败: {}", path.display()))?;
-        serde_json::from_str(&json)
-            .with_context(|| format!("解析备份文件失败: {}", path.display()))
+        serde_json::from_str(&json).with_context(|| format!("解析备份文件失败: {}", path.display()))
     }
 
     /// 删除指定 token 的备份文件。

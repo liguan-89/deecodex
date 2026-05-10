@@ -1,12 +1,12 @@
 mod commands;
 
 use std::io::Write;
-use tokio::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     Manager,
 };
+use tokio::sync::Mutex;
 
 struct FlushWriter<W: Write>(W);
 
@@ -162,13 +162,7 @@ pub fn run() {
     }
 
     tracing_subscriber::fmt()
-        .with_writer(move || {
-            FlushWriter(
-                log_file
-                    .try_clone()
-                    .expect("日志文件描述符克隆失败"),
-            )
-        })
+        .with_writer(move || FlushWriter(log_file.try_clone().expect("日志文件描述符克隆失败")))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "deecodex=info".into()),
@@ -187,8 +181,8 @@ pub fn run() {
                 let h = 48u32;
                 let center = 24.0;
                 let outer_r = 22.0; // 外层菱形半对角线
-                let inner_r = 7.0;  // 内层挖空半对角线（接近 CSS logo 比例）
-                let feather = 1.2;  // 边缘羽化
+                let inner_r = 7.0; // 内层挖空半对角线（接近 CSS logo 比例）
+                let feather = 1.2; // 边缘羽化
                 let mut rgba = Vec::with_capacity((w * h * 4) as usize);
                 for y in 0..h {
                     for x in 0..w {
@@ -236,9 +230,7 @@ pub fn run() {
                             });
                         }
                         "open" => {
-                            if let Some(window) =
-                                app.get_webview_window("main")
-                            {
+                            if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
@@ -247,8 +239,7 @@ pub fn run() {
                             let handle = app.clone();
                             tauri::async_runtime::spawn(async move {
                                 let manager = handle.state::<ServerManager>();
-                                let _ =
-                                    commands::stop_service_inner(&manager).await;
+                                let _ = commands::stop_service_inner(&manager).await;
                                 handle.exit(0);
                             });
                         }

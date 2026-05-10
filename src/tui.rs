@@ -872,10 +872,9 @@ fn activate_field(field: &FieldDef, state: &mut TuiAppState) {
                     &mut state.codex_persistent_inject,
                     "codex_persistent_inject",
                 ),
-                "codex_launch_with_cdp" => (
-                    &mut state.codex_launch_with_cdp,
-                    "codex_launch_with_cdp",
-                ),
+                "codex_launch_with_cdp" => {
+                    (&mut state.codex_launch_with_cdp, "codex_launch_with_cdp")
+                }
                 _ => return,
             };
             let new_value = !*current;

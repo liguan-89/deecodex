@@ -346,8 +346,7 @@ impl Args {
                 codex_auto_inject: self.codex_auto_inject && file.codex_auto_inject,
                 codex_persistent_inject: self.codex_persistent_inject
                     || file.codex_persistent_inject,
-                codex_launch_with_cdp: self.codex_launch_with_cdp
-                    || file.codex_launch_with_cdp,
+                codex_launch_with_cdp: self.codex_launch_with_cdp || file.codex_launch_with_cdp,
                 cdp_port: pick(self.cdp_port, file.cdp_port, 9222),
                 prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
                     file.prompts_dir
