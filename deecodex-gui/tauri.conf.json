@@ -23,17 +23,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg"],
+    "targets": ["dmg", "msi", "nsis"],
     "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      },
+      "wix": {
+        "language": "zh-CN"
+      }
     }
   }
 }

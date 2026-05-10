@@ -224,19 +224,15 @@ fn check_browser_use_bridge(_args: &Args, diags: &mut Vec<Diagnostic>) {
     if !command.is_empty() {
         // 检查命令是否在 PATH 中
         let cmd_name = command.split_whitespace().next().unwrap_or(&command);
-        let which = std::process::Command::new("which").arg(cmd_name).output();
-        match which {
-            Ok(output) if output.status.success() => {}
-            _ => {
-                diags.push(Diagnostic {
-                    severity: Severity::Warn,
-                    category: "computer_executor",
-                    message: format!(
-                        "browser-use bridge 命令 '{}' 不在 PATH 中——bridge 调用将失败",
-                        cmd_name
-                    ),
-                });
-            }
+        if !which::which(cmd_name).is_ok() {
+            diags.push(Diagnostic {
+                severity: Severity::Warn,
+                category: "computer_executor",
+                message: format!(
+                    "browser-use bridge 命令 '{}' 不在 PATH 中——bridge 调用将失败",
+                    cmd_name
+                ),
+            });
         }
     }
 }
@@ -358,20 +354,15 @@ fn check_single_mcp_server(label: &str, config: &serde_json::Value, diags: &mut 
     }
 
     // 检查命令是否在 PATH 中
-    let which = std::process::Command::new("which").arg(command).output();
-
-    match which {
-        Ok(output) if output.status.success() => {}
-        _ => {
-            diags.push(Diagnostic {
-                severity: Severity::Warn,
-                category: "mcp_executor",
-                message: format!(
-                    "MCP server '{}' 的命令 '{}' 不在 PATH 中——工具调用将失败",
-                    label, command
-                ),
-            });
-        }
+    if !which::which(command).is_ok() {
+        diags.push(Diagnostic {
+            severity: Severity::Warn,
+            category: "mcp_executor",
+            message: format!(
+                "MCP server '{}' 的命令 '{}' 不在 PATH 中——工具调用将失败",
+                label, command
+            ),
+        });
     }
 
     // 检查 read_only 标记

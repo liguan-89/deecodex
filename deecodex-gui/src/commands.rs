@@ -306,12 +306,24 @@ pub async fn start_service_inner(
     if args.codex_launch_with_cdp {
         let cdp_port = args.cdp_port;
         tokio::spawn(async move {
+            #[cfg(target_os = "macos")]
             let result = tokio::process::Command::new("open")
                 .arg("-a")
                 .arg("Codex.app")
                 .arg("--args")
                 .arg(format!("--remote-debugging-port={cdp_port}"))
                 .spawn();
+            #[cfg(target_os = "windows")]
+            let result = tokio::process::Command::new("cmd")
+                .arg("/c")
+                .arg("start")
+                .arg("")
+                .arg(format!("Codex.exe --remote-debugging-port={cdp_port}"))
+                .spawn();
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let result: std::io::Result<tokio::process::Child> = Err(
+                std::io::Error::new(std::io::ErrorKind::Unsupported, "CDP 启动不支持当前平台")
+            );
             match result {
                 Ok(_) => tracing::info!("已启动 Codex 桌面版 (CDP 端口 {cdp_port})"),
                 Err(e) => tracing::warn!("启动 Codex 桌面版失败: {e}"),
@@ -411,6 +423,7 @@ async fn get_status_internal(manager: &ServerManager) -> ServiceInfo {
 pub fn launch_codex_cdp() -> Result<(), String> {
     let args = load_args();
     let cdp_port = args.cdp_port;
+    #[cfg(target_os = "macos")]
     std::process::Command::new("open")
         .arg("-a")
         .arg("Codex.app")
@@ -418,16 +431,38 @@ pub fn launch_codex_cdp() -> Result<(), String> {
         .arg(format!("--remote-debugging-port={cdp_port}"))
         .spawn()
         .map_err(|e| format!("启动 Codex 失败: {e}"))?;
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .arg("/c")
+        .arg("start")
+        .arg("")
+        .arg(format!("Codex.exe --remote-debugging-port={cdp_port}"))
+        .spawn()
+        .map_err(|e| format!("启动 Codex 失败: {e}"))?;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err("CDP 启动不支持当前平台".to_string());
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_codex_cdp() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
     std::process::Command::new("osascript")
         .arg("-e")
         .arg("quit app \"Codex\"")
         .spawn()
         .map_err(|e| format!("停止 Codex 失败: {e}"))?;
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .arg("/c")
+        .arg("taskkill")
+        .arg("/f")
+        .arg("/im")
+        .arg("Codex.exe")
+        .spawn()
+        .map_err(|e| format!("停止 Codex 失败: {e}"))?;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err("CDP 停止不支持当前平台".to_string());
     Ok(())
 }
 

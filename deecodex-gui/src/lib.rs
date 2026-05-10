@@ -100,8 +100,8 @@ fn find_env_file() -> Option<std::path::PathBuf> {
     if std::path::Path::new(".env").exists() {
         return Some(PathBuf::from(".env"));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home_env = PathBuf::from(&home).join(".deecodex").join(".env");
+    if let Some(home) = deecodex::config::home_dir() {
+        let home_env = home.join(".deecodex").join(".env");
         if home_env.exists() {
             return Some(home_env);
         }
