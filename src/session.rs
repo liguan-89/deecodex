@@ -450,19 +450,10 @@ impl SessionStore {
         input_items: Vec<Value>,
     ) {
         let rid = response_id.to_string();
-        let is_new = self
-            .inner
-            .insert(rid.clone(), messages)
-            .is_none()
-            || self
-                .responses
-                .insert(rid.clone(), response)
-                .is_none()
-            || self
-                .input_items
-                .insert(rid.clone(), input_items)
-                .is_none();
-        if is_new {
+        let a = self.inner.insert(rid.clone(), messages).is_none();
+        let b = self.responses.insert(rid.clone(), response).is_none();
+        let c = self.input_items.insert(rid.clone(), input_items).is_none();
+        if a || b || c {
             self.response_order.lock().unwrap().push_back(rid);
         }
     }
@@ -475,15 +466,9 @@ impl SessionStore {
         items: Vec<Value>,
     ) {
         let cid = conversation_id.to_string();
-        let is_new = self
-            .conversations
-            .insert(cid.clone(), messages)
-            .is_none()
-            || self
-                .conversation_items
-                .insert(cid.clone(), items)
-                .is_none();
-        if is_new {
+        let a = self.conversations.insert(cid.clone(), messages).is_none();
+        let b = self.conversation_items.insert(cid.clone(), items).is_none();
+        if a || b {
             self.conversation_order.lock().unwrap().push_back(cid);
         }
     }
