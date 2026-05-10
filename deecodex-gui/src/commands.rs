@@ -300,6 +300,28 @@ pub async fn start_service_inner(
     *manager.port.lock().await = port;
     *manager.start_time.lock().await = Some(std::time::Instant::now());
 
+    // CDP 注入：自动启动 Codex 桌面版并注入 JS
+    if args.codex_launch_with_cdp {
+        let cdp_port = args.cdp_port;
+        tokio::spawn(async move {
+            let result = tokio::process::Command::new("open")
+                .arg("-a")
+                .arg("Codex.app")
+                .arg("--args")
+                .arg(format!("--remote-debugging-port={cdp_port}"))
+                .spawn();
+            match result {
+                Ok(_) => tracing::info!("已启动 Codex 桌面版 (CDP 端口 {cdp_port})"),
+                Err(e) => tracing::warn!("启动 Codex 桌面版失败: {e}"),
+            }
+        });
+    }
+    let inject_state = Arc::new(state.clone());
+    let cdp_port = args.cdp_port;
+    tokio::spawn(async move {
+        deecodex::inject::try_inject_with_port(inject_state, cdp_port).await;
+    });
+
     manager.update_tray().await;
     tracing::info!("服务已启动 → http://127.0.0.1:{port}");
 
