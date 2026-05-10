@@ -232,9 +232,7 @@ fn start_service_daemon(args: &Args) -> Result<()> {
             cmd.arg(arg);
         }
     }
-    // 确保关键参数被传递，即使 CLI 中没有显式指定
-    cmd.arg("--codex-auto-inject")
-        .arg(args.codex_auto_inject.to_string());
+    // config.json 已在上方保存，daemon 进程会自行加载
 
     let child = cmd
         .stdin(std::process::Stdio::null())

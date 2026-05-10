@@ -2333,7 +2333,7 @@ function updateExecutorBadge(elId, enabled, label) {
     el.style.background = '#1a3a1a';
     el.style.color = '#4caf50';
   } else {
-    el.textContent = label + '：未启用（需在「配置」页设置）';
+    el.innerHTML = label + '：未启用 — <a href="javascript:void(0)" onclick="switchPanel(\'config\');setTimeout(()=>document.getElementById(\'cfg-security\')?.scrollIntoView({behavior:\'smooth\'}),100)" style="color:#ff9800;text-decoration:underline;">点击配置</a>';
     el.style.background = '#3a2a1a';
     el.style.color = '#ff9800';
   }
