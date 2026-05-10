@@ -1,0 +1,5 @@
+# Tauri 自动生成
+gen/
+
+# Rust 构建
+target/

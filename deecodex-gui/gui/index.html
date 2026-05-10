@@ -1,0 +1,1463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>deecodex · 控制台</title>
+<style>
+/* ============================================================
+   deecodex 控制台 — Precision Instrument 设计系统
+   ============================================================ */
+
+:root {
+  --bg-root: #060b14;
+  --bg-surface: #0b1120;
+  --bg-elevated: #0f1729;
+  --bg-input: #0a1020;
+  --border-subtle: #131d33;
+  --border-default: #1a2a45;
+  --border-active: #00c8e8;
+  --border-glow: rgba(0, 200, 232, 0.25);
+
+  --text-primary: #c4d0e4;
+  --text-secondary: #6b7fa8;
+  --text-muted: #3a4f72;
+  --text-heading: #8ea4c8;
+
+  --accent: #00c8e8;
+  --accent-dim: rgba(0, 200, 232, 0.10);
+  --accent-soft: rgba(0, 200, 232, 0.18);
+  --amber: #f09040;
+  --amber-dim: rgba(240, 144, 64, 0.12);
+  --green: #00d68f;
+  --green-dim: rgba(0, 214, 143, 0.12);
+  --red: #ff3c5c;
+  --red-dim: rgba(255, 60, 92, 0.12);
+
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-lg: 8px;
+  --sidebar-w: 268px;
+  --transition: 160ms ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { height: 100%; }
+body {
+  height: 100%;
+  font-family: var(--font-sans);
+  background: var(--bg-root);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ── App Shell ── */
+.app { display: flex; height: 100vh; position: relative; }
+
+.app::after {
+  content: '';
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    linear-gradient(rgba(0,200,232,0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,232,0.018) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at 50% 0%, black 40%, transparent 70%);
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+  position: relative; z-index: 20;
+  overflow-y: auto; overflow-x: hidden;
+}
+
+.sidebar::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+}
+
+.sidebar-brand {
+  padding: 20px 22px 16px; position: relative; z-index: 2;
+  display: flex; align-items: center; gap: 10px;
+}
+
+.sidebar-brand .logo {
+  width: 18px; height: 18px; position: relative; flex-shrink: 0;
+}
+.sidebar-brand .logo::before {
+  content: ''; position: absolute; inset: 0;
+  background: var(--accent);
+  transform: rotate(45deg); border-radius: 3px;
+  box-shadow: 0 0 10px var(--accent), 0 0 22px var(--border-glow);
+  animation: logo-pulse 3s ease-in-out infinite;
+}
+.sidebar-brand .logo::after {
+  content: ''; position: absolute;
+  width: 6px; height: 6px;
+  background: var(--bg-surface);
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border-radius: 1px;
+}
+
+@keyframes logo-pulse {
+  0%, 100% { box-shadow: 0 0 10px var(--accent), 0 0 22px var(--border-glow); opacity: 1; }
+  50% { box-shadow: 0 0 4px var(--accent), 0 0 10px var(--border-glow); opacity: 0.7; }
+}
+
+.sidebar-brand h1 {
+  font-family: var(--font-mono); font-size: 22px; font-weight: 600;
+  color: var(--text-primary); letter-spacing: 0.04em; line-height: 1;
+}
+
+.sidebar-brand .version {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  padding: 2px 7px; border-radius: var(--radius-sm);
+}
+
+/* ── Sidebar Nav ── */
+.sidebar-nav {
+  flex: 1; padding: 4px 14px; position: relative; z-index: 2;
+  display: flex; flex-direction: column; gap: 2px;
+}
+
+.nav-section-label {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 16px 10px 6px;
+}
+.nav-section-label:first-child { padding-top: 4px; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--text-secondary); cursor: pointer;
+  transition: all var(--transition);
+  border: none; background: none; width: 100%; text-align: left;
+  position: relative; letter-spacing: 0.02em;
+}
+
+.nav-item:hover { color: var(--text-primary); background: var(--accent-dim); }
+
+.nav-item.active {
+  color: var(--accent); background: var(--accent-dim);
+}
+.nav-item.active::before {
+  content: ''; position: absolute; left: 0; top: 4px; bottom: 4px;
+  width: 2px; background: var(--accent); border-radius: 1px;
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.nav-item .icon { width: 18px; text-align: center; flex-shrink: 0; font-size: 15px; }
+
+/* ── Sidebar Footer ── */
+.sidebar-footer {
+  padding: 12px 14px; position: relative; z-index: 2;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.sidebar-footer .save-btn {
+  width: 100%; padding: 9px 0;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  border-radius: var(--radius); cursor: pointer;
+  transition: all var(--transition);
+  background: var(--accent-soft);
+  border: 1px solid rgba(0,200,232,0.35); color: var(--accent);
+}
+.sidebar-footer .save-btn:hover {
+  background: rgba(0,200,232,0.25);
+  box-shadow: 0 0 16px rgba(0,200,232,0.12);
+}
+.sidebar-footer .save-btn:active { transform: scale(0.98); }
+.sidebar-footer .save-btn:disabled {
+  background: rgba(0,200,232,0.05); border-color: var(--border-default);
+  color: var(--text-muted); cursor: not-allowed; box-shadow: none;
+}
+
+.sidebar-status {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  text-align: center; min-height: 16px; letter-spacing: 0.02em;
+  transition: color var(--transition);
+}
+.sidebar-status.success { color: var(--green); }
+.sidebar-status.error { color: var(--red); }
+.sidebar-status.loading { color: var(--amber); }
+
+/* ── Status Bar (connection indicator) ── */
+.status-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-muted); letter-spacing: 0.04em;
+}
+.status-bar .indicator {
+  width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+}
+.status-bar .indicator.ok { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.status-bar .indicator.warn { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+.status-bar .indicator.err { background: var(--red); box-shadow: 0 0 4px var(--red); }
+
+/* ── Main Content ── */
+.main {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  position: relative; z-index: 10;
+  padding: 28px 36px 60px; min-width: 0;
+}
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+.page-header { margin-bottom: 24px; }
+.page-header h2 {
+  font-family: var(--font-mono); font-size: 16px; font-weight: 600;
+  color: var(--text-heading); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.page-header p { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+
+/* ── Status Grid ── */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.status-card {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 12px 14px;
+  display: flex; flex-direction: column;
+  min-height: 90px;
+  position: relative;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.status-card:hover { border-color: var(--border-default); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+
+.status-card .card-icon { font-size: 10px; color: var(--text-muted); margin-bottom: 6px; flex-shrink: 0; }
+
+.status-card .card-value {
+  font-family: var(--font-mono); font-weight: 600;
+  font-size: clamp(11px, 1.3vw, 13px);
+  color: var(--text-primary); word-break: break-all; line-height: 1.3;
+}
+.status-card .card-value.small { font-size: clamp(10px, 1.1vw, 11px); }
+
+.status-card .card-label {
+  font-family: var(--font-mono); font-size: 9px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-top: auto; flex-shrink: 0;
+}
+
+.status-card .card-badge {
+  display: inline-block; align-self: flex-start;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  padding: 2px 7px; border-radius: var(--radius-sm); margin-top: 4px;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.card-badge.on { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.card-badge.off { background: rgba(107,127,168,0.06); color: var(--text-muted); border: 1px solid rgba(107,127,168,0.12); }
+
+.status-card::after {
+  content: ''; position: absolute; top: 0; left: 0;
+  width: 2px; height: 100%; background: var(--accent);
+  transform: scaleY(0); transition: transform var(--transition);
+  border-radius: 0 1px 1px 0;
+}
+.status-card:hover::after { transform: scaleY(1); }
+
+/* ── Config Panel ── */
+.config-section { margin-bottom: 28px; }
+
+.config-section-header {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 16px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.config-section-header .section-icon { font-size: 15px; color: var(--accent); width: 18px; text-align: center; }
+.config-section-header h3 {
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+  color: var(--text-heading); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.config-section-header .section-desc {
+  margin-left: auto; font-family: var(--font-mono);
+  font-size: 11px; color: var(--text-muted);
+}
+
+.config-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; }
+.config-field { display: flex; flex-direction: column; }
+.config-field.wide { grid-column: 1 / -1; }
+
+.config-field label {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 5px;
+}
+.config-field .hint {
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-muted); margin-top: 4px; opacity: 0.8;
+}
+
+.config-field input,
+.config-field select,
+.config-field textarea {
+  background: var(--bg-input); border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm); color: var(--text-primary);
+  padding: 8px 11px; font-size: 13px; font-family: var(--font-mono);
+  outline: none; transition: border-color var(--transition), box-shadow var(--transition);
+}
+.config-field input:focus,
+.config-field select:focus,
+.config-field textarea:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim);
+}
+.config-field input::placeholder,
+.config-field textarea::placeholder { color: var(--text-muted); opacity: 0.5; }
+
+.config-field select {
+  cursor: pointer; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%236b7fa8' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  padding-right: 28px;
+}
+.config-field textarea { min-height: 80px; resize: vertical; line-height: 1.5; }
+
+.pass-group { display: flex; gap: 0; }
+.pass-group input { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.pass-group button {
+  background: var(--bg-elevated); border: 1px solid var(--border-default); border-left: none;
+  padding: 8px 11px; cursor: pointer; font-size: 13px;
+  color: var(--text-secondary); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: color var(--transition), background var(--transition); font-family: var(--font-mono);
+}
+.pass-group button:hover { color: var(--accent); background: var(--accent-dim); }
+
+.check-row { display: flex; align-items: center; gap: 10px; }
+.check-row label {
+  margin-bottom: 0; cursor: pointer; color: var(--text-primary);
+  text-transform: none; letter-spacing: normal; font-size: 13px; font-family: var(--font-sans);
+}
+.check-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+
+.config-actions {
+  display: flex; gap: 12px; margin-top: 24px; padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Diagnostics ── */
+.diag-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.diag-results { display: flex; flex-direction: column; gap: 8px; }
+
+.diag-item {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 16px; border-radius: var(--radius-sm); border-left: 3px solid;
+  background: var(--bg-surface);
+}
+.diag-item.error { border-left-color: var(--red); }
+.diag-item.warn  { border-left-color: var(--amber); }
+
+.diag-item .diag-sev {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 2px 8px; border-radius: var(--radius-sm);
+  white-space: nowrap; flex-shrink: 0;
+}
+.diag-item.error .diag-sev { background: var(--red-dim); color: var(--red); }
+.diag-item.warn  .diag-sev { background: var(--amber-dim); color: var(--amber); }
+
+.diag-item .diag-cat {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); white-space: nowrap; flex-shrink: 0;
+}
+.diag-item .diag-msg { font-size: 13px; color: var(--text-primary); font-family: var(--font-mono); line-height: 1.5; }
+.diag-empty {
+  color: var(--text-muted); font-family: var(--font-mono);
+  font-size: 12px; text-align: center; padding: 32px; letter-spacing: 0.04em;
+}
+
+/* ── Help Panel ── */
+.help-toc {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px;
+}
+.help-toc a {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-secondary);
+  text-decoration: none; padding: 5px 12px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius);
+  transition: all var(--transition); cursor: pointer;
+}
+.help-toc a:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+.help-section { margin-bottom: 32px; scroll-margin-top: 20px; }
+.help-section h3 {
+  font-family: var(--font-mono); font-size: 15px; font-weight: 600;
+  color: var(--accent); margin-bottom: 12px; letter-spacing: 0.04em;
+  display: flex; align-items: center; gap: 8px;
+}
+.help-section h3::before { content: '#'; color: var(--text-muted); font-weight: 400; }
+.help-section p { font-size: 14px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.7; }
+.help-section p strong { color: var(--text-primary); font-weight: 600; }
+.help-section ul { list-style: none; padding-left: 0; margin-bottom: 10px; }
+.help-section ul li {
+  font-size: 14px; color: var(--text-secondary); padding: 3px 0;
+  padding-left: 16px; position: relative; line-height: 1.6;
+}
+.help-section ul li::before { content: '—'; position: absolute; left: 0; color: var(--text-muted); }
+
+.code-block {
+  background: var(--bg-root); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 14px 18px;
+  margin: 10px 0 16px; overflow-x: auto;
+}
+.code-block pre { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); line-height: 1.7; white-space: pre; }
+.code-block .comment { color: var(--text-muted); }
+.code-block .key { color: var(--accent); }
+.code-block .val { color: var(--amber); }
+.code-block .str { color: var(--green); }
+
+.faq-list { display: flex; flex-direction: column; gap: 4px; }
+.faq-item { border: 1px solid var(--border-subtle); border-radius: var(--radius); overflow: hidden; background: var(--bg-surface); }
+.faq-q {
+  width: 100%; background: none; border: none; padding: 12px 16px; text-align: left; cursor: pointer;
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-primary);
+  transition: color var(--transition);
+}
+.faq-q:hover { color: var(--accent); }
+.faq-q .faq-arrow { font-size: 10px; color: var(--text-muted); transition: transform var(--transition); flex-shrink: 0; }
+.faq-item.open .faq-q .faq-arrow { transform: rotate(90deg); color: var(--accent); }
+.faq-a { display: none; padding: 0 16px 14px 34px; font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
+.faq-item.open .faq-a { display: block; }
+.faq-a code { font-family: var(--font-mono); font-size: 11px; background: var(--bg-root); padding: 1px 5px; border-radius: 2px; color: var(--accent); }
+
+.cmd-table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 12px; }
+.cmd-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 8px 12px; border-bottom: 2px solid var(--border-subtle);
+}
+.cmd-table td { padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); color: var(--text-secondary); }
+.cmd-table td:first-child { color: var(--accent); white-space: nowrap; }
+
+/* ── Buttons ── */
+.btn {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 9px 20px; cursor: pointer; border-radius: var(--radius);
+  transition: all var(--transition); white-space: nowrap;
+  border: 1px solid transparent;
+}
+.btn-primary {
+  background: var(--accent-soft); border-color: rgba(0,200,232,0.35); color: var(--accent);
+}
+.btn-primary:hover { background: rgba(0,200,232,0.25); box-shadow: 0 0 16px rgba(0,200,232,0.12); }
+.btn-primary:disabled {
+  background: rgba(0,200,232,0.05); border-color: var(--border-default);
+  color: var(--text-muted); cursor: not-allowed; box-shadow: none;
+}
+.btn-ghost {
+  background: transparent; border-color: var(--border-default); color: var(--text-secondary);
+}
+.btn-ghost:hover { border-color: var(--text-muted); color: var(--text-primary); }
+.btn-ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn-danger {
+  background: var(--red-dim); border-color: rgba(255,60,92,0.3); color: var(--red);
+}
+.btn-danger:hover { background: rgba(255,60,92,0.22); box-shadow: 0 0 16px rgba(255,60,92,0.12); }
+.btn-danger:disabled {
+  background: rgba(255,60,92,0.05); border-color: var(--border-default);
+  color: var(--text-muted); cursor: not-allowed; box-shadow: none;
+}
+
+/* ── Management Section ── */
+.mgmt-section { margin-top: 24px; }
+.mgmt-section .mgmt-header {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  color: var(--text-heading); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+}
+.mgmt-section .mgmt-header::before { content: '>'; color: var(--accent); font-weight: 700; }
+.mgmt-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ── Log Modal ── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  animation: fade-in 0.15s ease;
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-box {
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); width: 90vw; max-width: 940px;
+  max-height: 80vh; display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-bottom: 1px solid var(--border-subtle);
+}
+.modal-header h3 { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.04em; }
+.modal-close {
+  background: none; border: 1px solid var(--border-subtle); color: var(--text-secondary);
+  width: 28px; height: 28px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 16px; display: flex; align-items: center; justify-content: center;
+  transition: all var(--transition); font-family: var(--font-mono);
+}
+.modal-close:hover { border-color: var(--accent); color: var(--accent); }
+.modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+
+.log-entry {
+  display: flex; gap: 10px; padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
+  align-items: flex-start;
+}
+.log-entry:last-child { border-bottom: none; }
+.log-time { flex-shrink: 0; width: 62px; color: var(--text-muted); font-size: 10px; }
+.log-level-badge {
+  flex-shrink: 0; min-width: 44px; text-align: center;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em;
+  padding: 1px 5px; border-radius: 2px; text-transform: uppercase;
+}
+.log-level-error { color: #ff3c5c; background: var(--red-dim); }
+.log-level-warn  { color: #f09040; background: var(--amber-dim); }
+.log-level-info  { color: #00c8e8; background: var(--accent-dim); }
+.log-level-debug { color: var(--text-muted); background: rgba(58,79,114,0.15); }
+.log-level-unknown { color: var(--text-muted); background: transparent; }
+
+.log-target {
+  flex-shrink: 0; max-width: 170px; color: var(--text-muted);
+  font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.log-msg { flex: 1; color: var(--text-primary); word-break: break-word; min-width: 0; }
+.log-empty { color: var(--text-muted); text-align: center; padding: 32px; font-family: var(--font-mono); font-size: 12px; }
+
+/* ── Toast ── */
+.toast-container {
+  position: fixed; top: 20px; right: 20px; z-index: 200;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 11px 18px; border-radius: var(--radius);
+  animation: toast-in 0.2s ease, toast-out 0.2s ease 2.8s forwards;
+  max-width: 400px; border-left: 3px solid; background: var(--bg-elevated);
+}
+.toast.success { border-color: var(--green); color: var(--green); }
+.toast.error   { border-color: var(--red);   color: var(--red); }
+.toast.info    { border-color: var(--accent); color: var(--accent); }
+
+@keyframes toast-in  { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toast-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+
+/* ── Scrollbar ── */
+.main::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 3px; }
+.main::-webkit-scrollbar-track, .sidebar::-webkit-scrollbar-track { background: transparent; }
+.main::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 2px; }
+.main::-webkit-scrollbar-thumb:hover, .sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+.empty-state {
+  text-align: center; padding: 48px 20px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <span class="logo"></span>
+      <h1>deecodex</h1>
+      <span class="version" id="sidebarVersion">—</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <span class="nav-section-label">导航</span>
+
+      <button class="nav-item active" data-panel="status" onclick="switchPanel('status')">
+        <span class="icon">◉</span> 服务概览
+      </button>
+
+      <button class="nav-item" data-panel="config" onclick="switchPanel('config')">
+        <span class="icon">⚙</span> 配置
+      </button>
+
+      <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
+        <span class="icon">◇</span> 诊断
+      </button>
+
+      <span class="nav-section-label">帮助</span>
+
+      <button class="nav-item" data-panel="help" onclick="switchPanel('help')">
+        <span class="icon">?</span> 使用帮助
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="status-bar" id="statusBar">
+        <span class="indicator ok" id="connDot"></span>
+        <span id="connLabel">服务运行中</span>
+      </div>
+      <button class="save-btn" id="sidebarSaveBtn" onclick="saveConfig()">保存配置</button>
+      <div class="sidebar-status" id="sidebarMsg"></div>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ═══ -->
+  <main class="main" id="mainContent"></main>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Tauri IPC
+// ═══════════════════════════════════════════════════════════════
+const invoke = window.__TAURI__?.core?.invoke || (async (cmd, args) => {
+  console.warn('Tauri API 不可用，命令未执行:', cmd, args);
+  throw new Error('Tauri API 不可用');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 数据定义（与 GuiConfig 对应）
+// ═══════════════════════════════════════════════════════════════
+const CONFIG_SECTIONS = [
+  {
+    id: 'basic', icon: '●', label: '基础设置',
+    fields: [
+      { key: 'port', label: '监听端口', hint: '服务监听的本地端口，默认 4446', type: 'number', min: 1, max: 65535 },
+      { key: 'upstream', label: '上游 API 地址', hint: 'DeepSeek / OpenRouter Chat Completions 端点', type: 'text', placeholder: 'https://api.deepseek.com/v1' },
+      { key: 'api_key', label: 'API Key', hint: '上游 LLM 提供商的 API 密钥', type: 'password' },
+      { key: 'client_api_key', label: '客户端认证密钥', hint: '客户端调用 deecodex 需要的 Bearer Token，留空不验证', type: 'password' },
+      { key: 'model_map', label: '模型映射', hint: 'JSON 格式，键名大小写敏感', type: 'json', placeholder: '{"gpt-5.5":"deepseek-v4-pro"}' },
+      { key: 'max_body_mb', label: '最大请求体 (MB)', hint: '上传/请求体大小上限', type: 'number', min: 1, max: 2048 },
+      { key: 'chinese_thinking', label: '中文思考模式', hint: '强制中文思维链输出', type: 'checkbox' },
+      { key: 'codex_auto_inject', label: '自动注入 Codex 配置', hint: '启动时将 deecodex 路由注入 Codex config.toml，停止时移除', type: 'checkbox' },
+      { key: 'codex_persistent_inject', label: '持久注入', hint: '配置持久保留在 Codex config.toml 中，不再自动移除', type: 'checkbox' },
+      { key: 'data_dir', label: '数据目录', hint: '配置文件、日志、PID 文件存储位置', type: 'text', placeholder: '.deecodex' },
+      { key: 'prompts_dir', label: 'Prompts 目录', hint: 'Hosted Prompts 模板存放目录', type: 'text', placeholder: 'prompts' },
+    ]
+  },
+  {
+    id: 'vision', icon: '◎', label: '视觉路由',
+    fields: [
+      { key: 'vision_upstream', label: '视觉上游地址', hint: '多模态图片模型的 API 地址', type: 'text', placeholder: 'https://api.minimax.chat' },
+      { key: 'vision_api_key', label: '视觉 API Key', hint: '视觉模型的 API 密钥', type: 'password' },
+      { key: 'vision_model', label: '视觉模型名', hint: '使用的视觉模型名称', type: 'text', placeholder: 'MiniMax-M1' },
+      { key: 'vision_endpoint', label: '视觉端点路径', hint: '视觉 API 的具体端点', type: 'text', placeholder: 'v1/coding_plan/vlm' },
+    ]
+  },
+  {
+    id: 'token', icon: '◈', label: 'Token 异常检测',
+    fields: [
+      { key: 'token_anomaly_prompt_max', label: '最大提示词 Token', hint: '单次请求提示词 Token 上限，0=禁用', type: 'number', min: 0, placeholder: '200000' },
+      { key: 'token_anomaly_spike_ratio', label: '飙升比率阈值', hint: '相对于滑动平均的突然飙升倍数，0=禁用', type: 'number', min: 0, step: 0.1, placeholder: '5.0' },
+      { key: 'token_anomaly_burn_window', label: '燃烧检测窗口 (秒)', hint: '突发消耗的统计窗口大小', type: 'number', min: 1, placeholder: '120' },
+      { key: 'token_anomaly_burn_rate', label: '燃烧速率阈值', hint: '窗口内 Token/分钟 消耗速率上限，0=禁用', type: 'number', min: 0, placeholder: '500000' },
+    ]
+  },
+  {
+    id: 'security', icon: '◈', label: '安全策略 & 执行器',
+    fields: [
+      { key: 'allowed_mcp_servers', label: 'MCP 服务器白名单', hint: '逗号分隔，如 filesystem,github', type: 'text', placeholder: 'filesystem,github' },
+      { key: 'allowed_computer_displays', label: '显示器/环境白名单', hint: '逗号分隔的允许显示器标识', type: 'text' },
+      { key: 'computer_executor', label: 'Computer 后端', hint: 'computer_use 工具的执行后端', type: 'select', options: ['disabled', 'playwright', 'browser-use'] },
+      { key: 'computer_executor_timeout_secs', label: 'Computer 超时 (秒)', hint: '单步操作最大执行时间', type: 'number', min: 1, max: 600 },
+      { key: 'mcp_executor_config', label: 'MCP 执行器配置', hint: 'JSON 配置或 JSON 文件路径', type: 'json', placeholder: '{}' },
+      { key: 'mcp_executor_timeout_secs', label: 'MCP 超时 (秒)', hint: '单次工具调用最大时间', type: 'number', min: 1, max: 600 },
+      { key: 'playwright_state_dir', label: 'Playwright 状态目录', hint: '浏览器状态 (cookies/localStorage) 持久化目录', type: 'text' },
+      { key: 'browser_use_bridge_url', label: 'Browser-Use Bridge URL', hint: 'Browser-Use HTTP 桥接地址', type: 'text' },
+      { key: 'browser_use_bridge_command', label: 'Browser-Use Bridge 命令', hint: '通过环境变量接收 JSON 的命令', type: 'text' },
+    ]
+  },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// 全局状态
+// ═══════════════════════════════════════════════════════════════
+let currentPanel = 'status';
+let currentConfig = {};
+
+// ═══════════════════════════════════════════════════════════════
+// 初始化
+// ═══════════════════════════════════════════════════════════════
+async function init() {
+  switchPanel('status');
+  await Promise.all([loadStatus(), loadConfig()]);
+  setInterval(async () => {
+    if (currentPanel === 'status') await loadStatus();
+  }, 10000);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 导航
+// ═══════════════════════════════════════════════════════════════
+function switchPanel(panelId) {
+  currentPanel = panelId;
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.panel === panelId);
+  });
+  const saveBtn = document.getElementById('sidebarSaveBtn');
+  saveBtn.style.display = (panelId === 'config') ? '' : 'none';
+  renderPanel(panelId);
+}
+
+function renderPanel(panelId) {
+  const container = document.getElementById('mainContent');
+  switch (panelId) {
+    case 'status': container.innerHTML = renderStatus(); break;
+    case 'config': container.innerHTML = renderConfig(); break;
+    case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
+    case 'help': container.innerHTML = renderHelp(); break;
+    default: container.innerHTML = '<div class="empty-state">未知面板</div>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 状态面板
+// ═══════════════════════════════════════════════════════════════
+function renderStatus() {
+  const s = window._statusData || {};
+  const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
+  const badge = (cond) => cond
+    ? '<span class="card-badge on">启用</span>'
+    : '<span class="card-badge off">未启用</span>';
+
+  return `
+    <div class="page-header">
+      <h2>服务概览</h2>
+      <p>实时监控 deecodex 运行状态与连接信息</p>
+    </div>
+    <div class="status-grid">
+      <div class="status-card">
+        <div class="card-icon">◉ 版本</div>
+        <div class="card-value small">${esc(v(s.version, '—'))}</div>
+        <div class="card-label">服务版本</div>
+        <span class="card-badge" style="visibility:hidden">—</span>
+      </div>
+      <div class="status-card">
+        <div class="card-icon">◷ 运行时长</div>
+        <div class="card-value small">${esc(fmtUptime(s.uptime_secs))}</div>
+        <div class="card-label">自启动以来</div>
+        <span class="card-badge" style="visibility:hidden">—</span>
+      </div>
+      <div class="status-card">
+        <div class="card-icon">⬡ 端口</div>
+        <div class="card-value">${esc(v(s.port, '—'))}</div>
+        <div class="card-label">监听端口</div>
+        <span class="card-badge" style="visibility:hidden">—</span>
+      </div>
+      <div class="status-card">
+        <div class="card-icon">→ 上游</div>
+        <div class="card-value small">${esc(trunc(v(s.upstream, '—'), 42))}</div>
+        <div class="card-label">API 上游地址</div>
+        <span class="card-badge" style="visibility:hidden">—</span>
+      </div>
+      <div class="status-card">
+        <div class="card-icon">◎ Vision</div>
+        <div class="card-value small">${esc(s.vision_enabled ? '已连接' : '未配置')}</div>
+        <div class="card-label">视觉路由状态</div>
+        ${badge(s.vision_enabled)}
+      </div>
+      <div class="status-card">
+        <div class="card-icon">▷ Computer</div>
+        <div class="card-value small">${esc(computerLabel(s.computer_executor))}</div>
+        <div class="card-label">Computer Executor</div>
+        ${badge(s.computer_executor && s.computer_executor !== 'disabled')}
+      </div>
+      <div class="status-card">
+        <div class="card-icon">◈ 思考</div>
+        <div class="card-value small">${esc(v(s.chinese_thinking, false) ? '中文' : '默认')}</div>
+        <div class="card-label">思考模式</div>
+        ${badge(s.chinese_thinking)}
+      </div>
+      <div class="status-card">
+        <div class="card-icon">⬡ 认证</div>
+        <div class="card-value small">${esc(s.client_auth_enabled ? '需要密钥' : '开放访问')}</div>
+        <div class="card-label">客户端认证</div>
+        ${badge(s.client_auth_enabled)}
+      </div>
+    </div>
+
+    <div class="mgmt-section">
+      <div class="mgmt-header">服务管理</div>
+      <div class="mgmt-actions">
+        <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${s.running ? '◼ 停止服务' : '▶ 启动服务'}</button>
+        <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart" ${!s.running ? 'disabled' : ''}>⟳ 重启服务</button>
+        <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
+        <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
+      </div>
+    </div>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 配置面板
+// ═══════════════════════════════════════════════════════════════
+function renderConfig() {
+  let html = `
+    <div class="page-header">
+      <h2>配置</h2>
+      <p>修改配置后点击「保存配置」使其生效，部分变更需重启服务</p>
+    </div>`;
+
+  for (const sec of CONFIG_SECTIONS) {
+    html += `
+    <div class="config-section">
+      <div class="config-section-header">
+        <span class="section-icon">${sec.icon}</span>
+        <h3>${sec.label}</h3>
+        <span class="section-desc">${sec.fields.length} 项</span>
+      </div>
+      <div class="config-fields">`;
+    for (const f of sec.fields) {
+      html += renderField(f);
+    }
+    html += `</div></div>`;
+  }
+
+  html += `
+    <div class="config-actions">
+      <button class="btn btn-primary" id="btnSave" onclick="saveConfig()">保存配置</button>
+      <button class="btn btn-ghost" id="btnValidate" onclick="validateConfig()">验证配置</button>
+      <span id="configMsg" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);align-self:center;margin-left:8px;"></span>
+    </div>`;
+
+  return html;
+}
+
+function renderField(f) {
+  const val = currentConfig[f.key] !== undefined ? currentConfig[f.key] : '';
+  const wide = (f.type === 'json' || f.type === 'textarea') ? ' wide' : '';
+
+  let inputHtml = '';
+  switch (f.type) {
+    case 'password':
+      inputHtml = `
+        <div class="pass-group">
+          <input type="password" id="field_${f.key}" name="${f.key}" value="${escAttr(String(val))}" placeholder="${escAttr(f.placeholder || '')}" autocomplete="off">
+          <button type="button" onclick="togglePass('field_${f.key}', this)" title="显示/隐藏">⊙</button>
+        </div>`;
+      break;
+    case 'number':
+      const step = f.step || (f.key.includes('ratio') ? '0.1' : '1');
+      inputHtml = `<input type="number" id="field_${f.key}" name="${f.key}" value="${escAttr(String(val))}" min="${f.min ?? ''}" max="${f.max ?? ''}" step="${step}" placeholder="${escAttr(f.placeholder || '')}">`;
+      break;
+    case 'checkbox':
+      inputHtml = `
+        <div class="check-row">
+          <input type="checkbox" id="field_${f.key}" name="${f.key}" ${val === true || val === 'true' ? 'checked' : ''}>
+          <label for="field_${f.key}">${esc(f.label)}</label>
+        </div>`;
+      break;
+    case 'select':
+      const opts = (f.options || []).map(o => `<option value="${escAttr(o)}" ${String(val) === o ? 'selected' : ''}>${esc(o)}</option>`).join('');
+      inputHtml = `<select id="field_${f.key}" name="${f.key}">${opts}</select>`;
+      break;
+    case 'json':
+      inputHtml = `<textarea id="field_${f.key}" name="${f.key}" placeholder="${escAttr(f.placeholder || '{}')}" spellcheck="false">${esc(typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val))}</textarea>`;
+      break;
+    default:
+      inputHtml = `<input type="text" id="field_${f.key}" name="${f.key}" value="${escAttr(String(val))}" placeholder="${escAttr(f.placeholder || '')}">`;
+  }
+
+  if (f.type === 'checkbox') {
+    return `<div class="config-field${wide}">${inputHtml}<span class="hint">${esc(f.hint)}</span></div>`;
+  }
+
+  return `
+    <div class="config-field${wide}">
+      <label for="field_${f.key}">${esc(f.label)}</label>
+      ${inputHtml}
+      <span class="hint">${esc(f.hint)}</span>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 诊断面板
+// ═══════════════════════════════════════════════════════════════
+function renderDiagnostics() {
+  const diag = window._diagData || [];
+  let body = '';
+  if (diag.length === 0) {
+    body = '<div class="diag-empty">尚未运行诊断。点击下方按钮验证当前配置。</div>';
+  } else {
+    body = '<div class="diag-results">' + diag.map(d => `
+      <div class="diag-item ${d.severity === 'error' ? 'error' : 'warn'}">
+        <span class="diag-sev">${d.severity === 'error' ? '错误' : '警告'}</span>
+        <span class="diag-cat">${esc(d.category || '—')}</span>
+        <span class="diag-msg">${esc(d.message)}</span>
+      </div>
+    `).join('') + '</div>';
+  }
+
+  return `
+    <div class="page-header">
+      <h2>配置诊断</h2>
+      <p>检测当前配置的潜在问题，保存配置时也会自动执行</p>
+    </div>
+    <div class="diag-header">
+      <button class="btn btn-primary" id="btnValidateDiag" onclick="validateConfig()">运行诊断</button>
+    </div>
+    ${body}
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 帮助面板
+// ═══════════════════════════════════════════════════════════════
+function renderHelp() {
+  return `
+    <div class="page-header">
+      <h2>使用帮助</h2>
+      <p>安装后的配置指南、常见问题与故障排查</p>
+    </div>
+
+    <div class="help-toc">
+      <a onclick="document.getElementById('h-quickstart').scrollIntoView({behavior:'smooth'})">快速开始</a>
+      <a onclick="document.getElementById('h-codex-config').scrollIntoView({behavior:'smooth'})">Codex 配置</a>
+      <a onclick="document.getElementById('h-model-map').scrollIntoView({behavior:'smooth'})">模型映射</a>
+      <a onclick="document.getElementById('h-commands').scrollIntoView({behavior:'smooth'})">管理命令</a>
+      <a onclick="document.getElementById('h-faq').scrollIntoView({behavior:'smooth'})">常见问题</a>
+    </div>
+
+    <div class="help-section" id="h-quickstart">
+      <h3>快速开始</h3>
+      <p>安装完成后，<strong>deecodex 已自动启动</strong>。你需要配置 Codex 将请求发送到 deecodex：</p>
+      <ul>
+        <li>打开 Codex 设置 → 找到「模型提供商」或「自定义 Provider」</li>
+        <li>将 API 地址设为 <strong>http://127.0.0.1:4446/v1</strong></li>
+        <li>API Key 可填任意值（如果 deecodex 未开启客户端认证）</li>
+        <li>模型名填写 deecodex 模型映射中的任一 Codex 侧名称，如 <strong>gpt-5.5</strong></li>
+      </ul>
+      <p>配置完成后发送一条测试消息，观察 deecodex 日志应有 ← codex 和 → upstream 输出。</p>
+    </div>
+
+    <div class="help-section" id="h-codex-config">
+      <h3>Codex 配置</h3>
+      <p><strong>Codex 桌面版</strong> — 编辑 <code>~/.codex/config.toml</code>：</p>
+      <div class="code-block"><pre><span class="comment"># ~/.codex/config.toml</span>
+<span class="key">model</span> = <span class="str">"deepseek-v4-pro"</span>
+<span class="key">model_provider</span> = <span class="str">"custom"</span>
+<span class="key">model_reasoning_effort</span> = <span class="str">"medium"</span>
+
+<span class="key">[model_providers.custom]</span>
+<span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/v1"</span>
+<span class="key">name</span> = <span class="str">"custom"</span>
+<span class="key">requires_openai_auth</span> = <span class="val">true</span>
+<span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
+      <p style="font-size:11px; color:var(--text-muted);">⚠ base_url 末尾不要加 /，端口须与 deecodex 监听端口一致。</p>
+
+      <p style="margin-top:16px;"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
+      <ul>
+        <li>API 请求地址：<strong>http://127.0.0.1:4446/v1</strong></li>
+        <li>API Key：任意值（若 deecodex 未开启客户端认证）</li>
+      </ul>
+    </div>
+
+    <div class="help-section" id="h-model-map">
+      <h3>模型映射</h3>
+      <p>模型映射定义了 <strong>Codex 使用的模型名 → DeepSeek 实际模型名</strong> 的对应关系。</p>
+      <p>默认映射：</p>
+      <div class="code-block"><pre><span class="key">"GPT-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-5.4"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"gpt-5.4-mini"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"codex-auto-review"</span>: <span class="str">"deepseek-v4-flash"</span></pre></div>
+      <p>键名<strong>大小写敏感</strong>。新模型发布后需更新此映射表。</p>
+    </div>
+
+    <div class="help-section" id="h-commands">
+      <h3>管理命令</h3>
+      <p style="font-size:12px; color:var(--text-muted);">先进入数据目录：<code>cd ~/.deecodex</code>（Windows 为 <code>cd %LOCALAPPDATA%\\Programs\\deecodex</code>）</p>
+      <table class="cmd-table">
+        <thead><tr><th>操作</th><th>macOS / Linux</th><th>Windows</th></tr></thead>
+        <tbody>
+          <tr><td>启动</td><td><code>./deecodex.sh start</code></td><td><code>deecodex.bat start</code></td></tr>
+          <tr><td>停止</td><td><code>./deecodex.sh stop</code></td><td><code>deecodex.bat stop</code></td></tr>
+          <tr><td>重启</td><td><code>./deecodex.sh restart</code></td><td><code>deecodex.bat restart</code></td></tr>
+          <tr><td>状态</td><td><code>./deecodex.sh status</code></td><td><code>deecodex.bat status</code></td></tr>
+          <tr><td>日志</td><td><code>./deecodex.sh logs</code></td><td><code>deecodex.bat logs</code></td></tr>
+          <tr><td>健康检查</td><td><code>./deecodex.sh health</code></td><td><code>deecodex.bat health</code></td></tr>
+          <tr><td>升级</td><td><code>./deecodex.sh update</code></td><td><code>deecodex.bat update</code></td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>
+    </div>
+
+    <div class="help-section" id="h-faq">
+      <h3>常见问题</h3>
+      <div class="faq-list">
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> Codex 连接不上 deecodex (connection refused)</button>
+          <div class="faq-a">deecodex 可能未启动。在此 GUI 中点击「启动服务」，或终端执行<code>./deecodex.sh start</code>（Windows 用<code>deecodex.bat start</code>）确认服务是否运行。</div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 提示 model not found</button>
+          <div class="faq-a">Codex 请求的模型名未在 deecodex 模型映射中找到。在配置面板的「配置 → 模型映射」中添加对应条目，或检查 Codex 中填写的模型名大小写是否与映射键名一致。</div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 对话一直转圈不响应</button>
+          <div class="faq-a">通常是 DeepSeek 上游不可达或 API Key 无效。查看日志观察是否有 <code>→ upstream</code> 输出以及对应的 HTTP 状态码。401/403 说明 API Key 问题。</div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 思维链 (reasoning_content) 输出异常</button>
+          <div class="faq-a">DeepSeek 流式响应中思维链可能跨 chunk 分片。deecodex 内置三级恢复策略（call_id 匹配 / turn 指纹 / 历史扫描）并自动重试最多 3 次。若仍出现错误，尝试缩短对话上下文。</div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 413 Payload Too Large</button>
+          <div class="faq-a">请求体超过大小限制。在配置面板中将「最大请求体 (MB)」调大。</div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 保存配置后什么时候生效？</button>
+          <div class="faq-a">多数配置保存后即时生效（如模型映射、Token 检测参数）。端口、数据目录等核心配置需要重启 deecodex 才会生效。</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleFaq(btn) {
+  btn.parentElement.classList.toggle('open');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 表单工具
+// ═══════════════════════════════════════════════════════════════
+function togglePass(fieldId, btn) {
+  const input = document.getElementById(fieldId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text'; btn.textContent = '⊘'; btn.title = '隐藏';
+  } else {
+    input.type = 'password'; btn.textContent = '⊙'; btn.title = '显示';
+  }
+}
+
+function collectFormData() {
+  const data = {};
+  for (const sec of CONFIG_SECTIONS) {
+    for (const f of sec.fields) {
+      const el = document.getElementById('field_' + f.key);
+      if (!el) continue;
+      if (f.type === 'checkbox') {
+        data[f.key] = el.checked;
+      } else if (f.type === 'number') {
+        const v = el.value.trim();
+        if (v === '') {
+          data[f.key] = null;
+        } else if (f.key.includes('ratio') || f.step < 1) {
+          data[f.key] = parseFloat(v);
+        } else {
+          data[f.key] = parseInt(v, 10);
+        }
+      } else if (f.type === 'json') {
+        data[f.key] = el.value.trim() || '{}';
+      } else {
+        data[f.key] = el.value;
+      }
+    }
+  }
+  return data;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tauri IPC 调用
+// ═══════════════════════════════════════════════════════════════
+async function loadConfig() {
+  try {
+    currentConfig = await invoke('get_config');
+    if (currentPanel === 'config') renderPanel('config');
+  } catch (err) {
+    showToast('加载配置失败: ' + err, 'error');
+  }
+}
+
+async function loadStatus() {
+  try {
+    const [status, cfg] = await Promise.all([
+      invoke('get_service_status').catch(() => null),
+      invoke('get_config').catch(() => null),
+    ]);
+
+    // 更新侧边栏版本号
+    if (status?.version) {
+      document.getElementById('sidebarVersion').textContent = 'v' + status.version;
+    }
+
+    window._statusData = {
+      running: status?.running ?? false,
+      port: status?.port ?? '—',
+      uptime_secs: status?.running ? status.uptime_secs : 0,
+      version: status?.version || '—',
+      upstream: cfg ? cfg.upstream : '—',
+      vision_enabled: cfg ? !!(cfg.vision_upstream && cfg.vision_api_key) : false,
+      computer_executor: cfg ? cfg.computer_executor : 'disabled',
+      chinese_thinking: cfg ? cfg.chinese_thinking : false,
+      client_auth_enabled: cfg ? !!cfg.client_api_key : false,
+    };
+
+    // 更新侧边栏连接指示器
+    const dot = document.getElementById('connDot');
+    const label = document.getElementById('connLabel');
+    if (status?.running) {
+      dot.className = 'indicator ok'; label.textContent = '服务运行中';
+    } else {
+      dot.className = 'indicator err'; label.textContent = '服务已停止';
+    }
+
+    if (currentPanel === 'status') renderPanel('status');
+  } catch (err) {
+    window._statusData = { running: false, port: '—', uptime_secs: 0 };
+    document.getElementById('connDot').className = 'indicator err';
+    document.getElementById('connLabel').textContent = '服务不可达';
+    if (currentPanel === 'status') renderPanel('status');
+  }
+}
+
+async function saveConfig() {
+  const sidebarBtn = document.getElementById('sidebarSaveBtn');
+  const mainBtn = document.getElementById('btnSave');
+  const sidebarMsg = document.getElementById('sidebarMsg');
+  const configMsg = document.getElementById('configMsg');
+
+  const setLoading = (loading) => {
+    [sidebarBtn, mainBtn].forEach(b => { if (b) b.disabled = loading; });
+    const msg = loading ? '保存中...' : '';
+    if (sidebarMsg) { sidebarMsg.textContent = msg; sidebarMsg.className = 'sidebar-status loading'; }
+    if (configMsg) { configMsg.textContent = msg; configMsg.style.color = 'var(--amber)'; }
+  };
+
+  setLoading(true);
+
+  try {
+    const data = collectFormData();
+    await invoke('save_config', { config: data });
+
+    const msg = '配置已保存';
+    if (sidebarMsg) { sidebarMsg.textContent = msg; sidebarMsg.className = 'sidebar-status success'; }
+    if (configMsg) { configMsg.textContent = msg; configMsg.style.color = 'var(--green)'; }
+    showToast('配置保存成功', 'success');
+
+    await loadConfig();
+  } catch (err) {
+    const errMsg = String(err);
+    if (sidebarMsg) { sidebarMsg.textContent = errMsg; sidebarMsg.className = 'sidebar-status error'; }
+    if (configMsg) { configMsg.textContent = errMsg; configMsg.style.color = 'var(--red)'; }
+    showToast(errMsg, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function validateConfig() {
+  const sidebarMsg = document.getElementById('sidebarMsg');
+  const configMsg = document.getElementById('configMsg');
+  const mainBtn = document.getElementById('btnValidate') || document.getElementById('btnValidateDiag');
+
+  if (mainBtn) mainBtn.disabled = true;
+  if (sidebarMsg) { sidebarMsg.textContent = '验证中...'; sidebarMsg.className = 'sidebar-status loading'; }
+
+  try {
+    // 配置面板未渲染时（如从诊断面板调用），使用已加载的配置
+    const data = document.getElementById('field_port')
+      ? collectFormData()
+      : currentConfig;
+    const result = await invoke('validate_config', { config: data });
+    window._diagData = result || [];
+
+    if (currentPanel !== 'diagnostics') {
+      switchPanel('diagnostics');
+    } else {
+      renderPanel('diagnostics');
+    }
+
+    const diags = result || [];
+    const errs = diags.filter(d => d.severity === 'error').length;
+    const warns = diags.filter(d => d.severity !== 'error').length;
+
+    if (diags.length === 0) {
+      if (sidebarMsg) { sidebarMsg.textContent = '验证通过'; sidebarMsg.className = 'sidebar-status success'; }
+      showToast('验证通过，配置无异常', 'success');
+    } else {
+      const parts = [];
+      if (errs) parts.push(errs + ' 个错误');
+      if (warns) parts.push(warns + ' 个警告');
+      if (sidebarMsg) { sidebarMsg.textContent = parts.join('，'); sidebarMsg.className = errs ? 'sidebar-status error' : 'sidebar-status loading'; }
+      showToast('发现 ' + parts.join('、'), errs ? 'error' : 'info');
+    }
+  } catch (err) {
+    if (sidebarMsg) { sidebarMsg.textContent = '验证失败'; sidebarMsg.className = 'sidebar-status error'; }
+    showToast('验证请求失败: ' + err, 'error');
+  } finally {
+    if (mainBtn) mainBtn.disabled = false;
+    if (sidebarMsg && sidebarMsg.className === 'sidebar-status loading') {
+      sidebarMsg.textContent = ''; sidebarMsg.className = 'sidebar-status';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 服务管理
+// ═══════════════════════════════════════════════════════════════
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('confirmModal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'confirmModal';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:380px;">
+        <div class="modal-header">
+          <h3>确认操作</h3>
+        </div>
+        <div class="modal-body" style="padding:20px;text-align:center;font-family:var(--font-mono);font-size:13px;color:var(--text-secondary);">
+          ${esc(message)}
+        </div>
+        <div style="display:flex;gap:12px;padding:0 20px 16px;justify-content:center;">
+          <button class="btn btn-primary" id="confirmOk">确认</button>
+          <button class="btn btn-ghost" id="confirmCancel">取消</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const cleanup = () => overlay.remove();
+    document.getElementById('confirmOk').onclick = () => { cleanup(); resolve(true); };
+    document.getElementById('confirmCancel').onclick = () => { cleanup(); resolve(false); };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { cleanup(); resolve(false); } });
+  });
+}
+
+async function mgmtToggle() {
+  const btn = document.getElementById('btnToggle');
+  if (btn) btn.disabled = true;
+
+  try {
+    const status = await invoke('get_service_status');
+    if (status.running) {
+      await invoke('stop_service');
+      showToast('服务正在停止', 'info');
+    } else {
+      await invoke('start_service');
+      showToast('服务已启动', 'success');
+    }
+  } catch (err) {
+    showToast('操作失败: ' + err, 'error');
+  }
+
+  await loadStatus();
+  if (btn) btn.disabled = false;
+}
+
+async function mgmtRestart() {
+  if (!await showConfirm('确定要重启 deecodex 服务吗？')) return;
+
+  const btn = document.getElementById('btnRestart');
+  if (btn) btn.disabled = true;
+
+  try {
+    showToast('正在停止服务...', 'info');
+    await invoke('stop_service');
+    showToast('服务已停止，正在重新启动...', 'info');
+    await new Promise(r => setTimeout(r, 800));
+    await invoke('start_service');
+    showToast('服务已重启', 'success');
+  } catch (err) {
+    showToast('重启失败: ' + err, 'error');
+  }
+
+  await loadStatus();
+  if (btn) btn.disabled = false;
+}
+
+async function mgmtUpdate() {
+  if (!await showConfirm('确定要升级 deecodex 到最新版本吗？\n\n升级将下载最新 Release，完成后请手动重启服务。')) return;
+
+  const btn = document.getElementById('btnUpdate');
+  if (btn) btn.disabled = true;
+  showToast('正在启动升级...', 'info');
+
+  try {
+    const msg = await invoke('update_service');
+    showToast(msg, 'success');
+  } catch (err) {
+    showToast('升级失败: ' + err, 'error');
+  }
+
+  if (btn) btn.disabled = false;
+}
+
+async function mgmtLogs() {
+  // 移除已存在的日志弹窗
+  const existing = document.getElementById('logModal');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'logModal';
+
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:940px;">
+      <div class="modal-header">
+        <h3>☰ 服务日志</h3>
+        <button class="modal-close" onclick="document.getElementById('logModal').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="logContent">加载中...</div>
+      </div>
+    </div>`;
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  try {
+    const lines = await invoke('get_logs');
+    const container = document.getElementById('logContent');
+
+    if (!lines || lines.length === 0) {
+      container.innerHTML = '<div class="log-empty">暂无日志</div>';
+      return;
+    }
+
+    // 过滤掉空行和占位符
+    const filtered = lines.filter(l => l && l !== '(暂无日志)');
+    if (filtered.length === 0) {
+      container.innerHTML = '<div class="log-empty">暂无日志</div>';
+      return;
+    }
+
+    let html = '';
+    for (const line of filtered) {
+      const parsed = parseLogLine(line);
+      html += '<div class="log-entry">' +
+        '<span class="log-time">' + esc(parsed.time || '') + '</span>' +
+        '<span class="log-level-badge log-level-' + (parsed.level || 'unknown') + '">' + esc((parsed.level || '?').toUpperCase()) + '</span>' +
+        '<span class="log-target" title="' + escAttr(parsed.target || '') + '">' + esc(parsed.target || '') + '</span>' +
+        '<span class="log-msg">' + esc(parsed.message || '') + '</span>' +
+        '</div>';
+    }
+    container.innerHTML = html || '<div class="log-empty">无匹配日志条目</div>';
+  } catch (err) {
+    document.getElementById('logContent').innerHTML = '<div class="log-empty">无法加载日志: ' + esc(String(err)) + '</div>';
+  }
+}
+
+// 解析日志行（与 web 端 parse_log_line 逻辑一致）
+function parseLogLine(raw) {
+  // 移除 ANSI 转义码
+  const clean = raw.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  if (!clean) return { level: 'unknown', time: '', target: '', message: raw };
+
+  // ISO 8601 时间戳: "2026-05-07T17:26:48.845500Z " (27 字符)
+  let time = '';
+  let rest = clean;
+  if (clean.length >= 27 && clean[4] === '-') {
+    time = clean.substring(11, 19); // HH:MM:SS
+    rest = clean.substring(27).trim();
+  }
+
+  // rest: "LEVEL target: message key=val..."
+  const wsIdx = rest.indexOf(' ');
+  if (wsIdx === -1) return { level: 'unknown', time, target: '', message: rest };
+
+  const level = rest.substring(0, wsIdx).toUpperCase();
+  const afterLevel = rest.substring(wsIdx + 1).trim();
+
+  // afterLevel: "target: message" 或 "message"
+  let target = '';
+  let message = afterLevel;
+  const colonIdx = afterLevel.indexOf(': ');
+  if (colonIdx > 0) {
+    target = afterLevel.substring(0, colonIdx);
+    message = afterLevel.substring(colonIdx + 2);
+  }
+
+  return { level: level.toLowerCase(), time, target, message };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Toast
+// ═══════════════════════════════════════════════════════════════
+function showToast(message, type) {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  toast.addEventListener('animationend', (e) => {
+    if (e.animationName === 'toast-out') toast.remove();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 工具函数
+// ═══════════════════════════════════════════════════════════════
+function esc(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escAttr(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function trunc(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.substring(0, len) + '...' : str;
+}
+
+function fmtUptime(secs) {
+  if (!secs || secs <= 0) return '—';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const parts = [];
+  if (d > 0) parts.push(d + '天');
+  if (h > 0) parts.push(h + '小时');
+  parts.push(m + '分钟');
+  return parts.join(' ');
+}
+
+function computerLabel(v) {
+  if (!v || v === 'disabled') return '已禁用';
+  if (v === 'playwright') return 'Playwright';
+  if (v === 'browser-use') return 'Browser-Use';
+  return v;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 键盘快捷键
+// ═══════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (currentPanel === 'config') saveConfig();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 启动
+// ═══════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>
