@@ -33,12 +33,14 @@ jobs:
       - name: Install NSIS
         run: choco install nsis --version 3.10 -y --no-progress
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Build Tauri app
         working-directory: deecodex-gui
-        run: cargo tauri build
+        run: npx @tauri-apps/cli build
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
