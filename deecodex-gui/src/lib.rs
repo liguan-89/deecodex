@@ -272,6 +272,12 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .manage(ServerManager::new())
         .invoke_handler(tauri::generate_handler![
             commands::start_service,
@@ -282,6 +288,8 @@ pub fn run() {
             commands::get_logs,
             commands::validate_config,
             commands::update_service,
+            commands::launch_codex_cdp,
+            commands::stop_codex_cdp,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

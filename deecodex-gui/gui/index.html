@@ -573,6 +573,59 @@ body {
   text-align: center; padding: 48px 20px; color: var(--text-muted);
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
 }
+
+/* ── Sessions Panel ── */
+.session-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+}
+.session-section {
+  margin-bottom: 24px;
+}
+.session-section .section-label {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--text-heading); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.session-section .section-label .count {
+  font-size: 10px; color: var(--text-muted); font-weight: 400;
+  background: var(--bg-elevated); padding: 2px 8px; border-radius: var(--radius-sm);
+}
+.session-list {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.session-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-root); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); transition: border-color var(--transition);
+}
+.session-card:hover { border-color: var(--border-default); }
+.session-card .card-id {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-primary);
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.session-card .card-meta {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+  flex-shrink: 0; padding: 2px 8px; background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+}
+.session-card .card-meta.status-completed { color: var(--green); }
+.session-card .card-actions {
+  display: flex; gap: 4px; flex-shrink: 0;
+}
+.session-card .card-actions button {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  padding: 4px 10px; cursor: pointer; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid var(--border-subtle);
+  color: var(--text-secondary); transition: all var(--transition);
+}
+.session-card .card-actions button:hover {
+  border-color: var(--red); color: var(--red); background: var(--red-dim);
+}
+.session-empty {
+  color: var(--text-muted); font-family: var(--font-mono);
+  font-size: 11px; text-align: center; padding: 20px;
+}
 </style>
 </head>
 <body>
@@ -599,6 +652,10 @@ body {
 
       <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
         <span class="icon">◇</span> 诊断
+      </button>
+
+      <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
+        <span class="icon">▤</span> 会话管理
       </button>
 
       <span class="nav-section-label">帮助</span>
@@ -685,6 +742,13 @@ const CONFIG_SECTIONS = [
       { key: 'browser_use_bridge_command', label: 'Browser-Use Bridge 命令', hint: '通过环境变量接收 JSON 的命令', type: 'text' },
     ]
   },
+  {
+    id: 'cdp', icon: '⬢', label: 'CDP 注入',
+    fields: [
+      { key: 'codex_launch_with_cdp', label: '自动启动 Codex', hint: '启动服务时自动打开 Codex 桌面版并注入插件解锁脚本', type: 'checkbox' },
+      { key: 'cdp_port', label: 'CDP 调试端口', hint: 'Codex Electron 远程调试端口', type: 'number', min: 9222, max: 9999 },
+    ]
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -714,6 +778,9 @@ function switchPanel(panelId) {
   });
   const saveBtn = document.getElementById('sidebarSaveBtn');
   saveBtn.style.display = (panelId === 'config') ? '' : 'none';
+  // 清理侧边栏残留消息
+  const sidebarMsg = document.getElementById('sidebarMsg');
+  if (sidebarMsg) { sidebarMsg.textContent = ''; sidebarMsg.className = 'sidebar-status'; }
   renderPanel(panelId);
 }
 
@@ -724,6 +791,7 @@ function renderPanel(panelId) {
     case 'config': container.innerHTML = renderConfig(); break;
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
     case 'help': container.innerHTML = renderHelp(); break;
+    case 'sessions': container.innerHTML = renderSessions(); refreshSessions(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
 }
@@ -792,12 +860,19 @@ function renderStatus() {
         <div class="card-label">客户端认证</div>
         ${badge(s.client_auth_enabled)}
       </div>
+      <div class="status-card">
+        <div class="card-icon">⬢ CDP 注入</div>
+        <div class="card-value small">端口 ${esc(v(s.cdp_port, '—'))}</div>
+        <div class="card-label">Codex 远程调试</div>
+        ${badge(window._cdpLaunched)}
+      </div>
     </div>
 
     <div class="mgmt-section">
       <div class="mgmt-header">服务管理</div>
       <div class="mgmt-actions">
         <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${s.running ? '◼ 停止服务' : '▶ 启动服务'}</button>
+        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex" style="border-color:rgba(0,200,232,0.35);color:var(--accent)">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
         <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart" ${!s.running ? 'disabled' : ''}>⟳ 重启服务</button>
         <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
         <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
@@ -1110,6 +1185,8 @@ async function loadStatus() {
       computer_executor: cfg ? cfg.computer_executor : 'disabled',
       chinese_thinking: cfg ? cfg.chinese_thinking : false,
       client_auth_enabled: cfg ? !!cfg.client_api_key : false,
+      cdp_port: cfg ? cfg.cdp_port : 9222,
+      codex_launch_with_cdp: cfg ? cfg.codex_launch_with_cdp : false,
     };
 
     // 更新侧边栏连接指示器
@@ -1243,6 +1320,41 @@ function showConfirm(message) {
     document.getElementById('confirmCancel').onclick = () => { cleanup(); resolve(false); };
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { cleanup(); resolve(false); } });
   });
+}
+
+window._cdpLaunched = false;
+
+async function mgmtLaunchCodex() {
+  if (window._cdpLaunched) {
+    // 停止 CDP：退出 Codex.app
+    try {
+      await invoke('stop_codex_cdp');
+      window._cdpLaunched = false;
+      renderPanel('status');
+      showToast('CDP 已停止', 'info');
+    } catch (e) {
+      showToast('停止 CDP 失败: ' + e, 'error');
+    }
+    return;
+  }
+  try {
+    // 如果服务未运行，先启动服务
+    const status = await invoke('get_service_status');
+    if (!status.running) {
+      await invoke('start_service');
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        const s = await invoke('get_service_status');
+        if (s.running) break;
+      }
+    }
+    await invoke('launch_codex_cdp');
+    window._cdpLaunched = true;
+    renderPanel('status');
+    showToast('CDP 已启动', 'success');
+  } catch (e) {
+    showToast('启动 CDP 失败: ' + e, 'error');
+  }
 }
 
 async function mgmtToggle() {
@@ -1442,6 +1554,109 @@ function computerLabel(v) {
   if (v === 'browser-use') return 'Browser-Use';
   return v;
 }
+
+	// ═══════════════════════════════════════════════════════════════
+	// 会话管理
+	// ═══════════════════════════════════════════════════════════════
+	let _undoToken = null;
+
+	function renderSessions() {
+	  return `<div class="panel">
+	    <div class="panel-header"><h2>会话管理</h2><span class="panel-subtitle">管理活跃的响应和对话</span></div>
+	    <div class="session-toolbar">
+	      <button class="btn btn-primary" onclick="refreshSessions()">⟳ 刷新</button>
+	      <button class="btn btn-ghost" id="undoBtn" onclick="undoDelete()" disabled>↩ 撤销删除</button>
+	    </div>
+	    <div class="session-section">
+	      <div class="section-label">▸ 响应列表 <span class="count" id="respCount">—</span></div>
+	      <div class="session-list" id="respList"></div>
+	    </div>
+	    <div class="session-section">
+	      <div class="section-label">▸ 对话列表 <span class="count" id="convCount">—</span></div>
+	      <div class="session-list" id="convList"></div>
+	    </div>
+	  </div>`;
+	}
+
+	async function refreshSessions() {
+	  const respList = document.getElementById('respList');
+	  const convList = document.getElementById('convList');
+	  const respCount = document.getElementById('respCount');
+	  const convCount = document.getElementById('convCount');
+	  try {
+	    const res = await fetch('/api/sessions');
+	    if (!res.ok) throw new Error(await res.text());
+	    const data = await res.json();
+	    respCount.textContent = data.responses.length + ' 个';
+	    convCount.textContent = data.conversations.length + ' 个';
+	    respList.innerHTML = data.responses.length
+	      ? data.responses.map(r => renderSessionCard('responses', r.id, r.status || '—')).join('')
+	      : '<div class="session-empty">暂无活跃响应</div>';
+	    convList.innerHTML = data.conversations.length
+	      ? data.conversations.map(c => renderSessionCard('conversations', c.id, (c.message_count || 0) + ' 条消息')).join('')
+	      : '<div class="session-empty">暂无活跃对话</div>';
+	  } catch (e) {
+	    respList.innerHTML = '<div class="session-empty" style="color:var(--red)">加载失败: ' + esc(e.message) + '</div>';
+	    convList.innerHTML = '';
+	    respCount.textContent = '错误';
+	    convCount.textContent = '错误';
+	  }
+	}
+
+	function renderSessionCard(type, id, meta) {
+	  const shortId = id.length > 40 ? id.substring(0, 40) + '...' : id;
+	  return `<div class="session-card">
+	    <span class="card-id" title="${escAttr(id)}">${esc(shortId)}</span>
+	    <span class="card-meta">${esc(meta)}</span>
+	    <span class="card-actions">
+	      <button onclick="deleteItem('${escAttr(type)}', '${escAttr(id)}')">删除</button>
+	    </span>
+	  </div>`;
+	}
+
+	async function deleteItem(type, id) {
+	  if (!confirm('确定要删除这个会话吗？删除后可通过“撤销删除”恢复。')) return;
+	  try {
+	    const res = await fetch('/api/sessions/' + type + '/' + encodeURIComponent(id), { method: 'DELETE' });
+	    if (!res.ok) {
+	      const err = await res.json().catch(() => ({}));
+	      toast(err.error || '删除失败', 'error');
+	      return;
+	    }
+	    const data = await res.json();
+	    if (data.undo_token) {
+	      _undoToken = data.undo_token;
+	      document.getElementById('undoBtn').disabled = false;
+	    }
+	    toast('已删除，可通过撤销按钮恢复', 'info');
+	    refreshSessions();
+	  } catch (e) {
+	    toast('删除失败: ' + e.message, 'error');
+	  }
+	}
+
+	async function undoDelete() {
+	  if (!_undoToken) return;
+	  try {
+	    const res = await fetch('/api/sessions/undo', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify({ undo_token: _undoToken }),
+	    });
+	    if (!res.ok) {
+	      const err = await res.json().catch(() => ({}));
+	      toast(err.error || '撤销失败', 'error');
+	      return;
+	    }
+	    _undoToken = null;
+	    document.getElementById('undoBtn').disabled = true;
+	    toast('已撤销删除', 'success');
+	    refreshSessions();
+	  } catch (e) {
+	    toast('撤销失败: ' + e.message, 'error');
+	  }
+	}
+
 
 // ═══════════════════════════════════════════════════════════════
 // 键盘快捷键

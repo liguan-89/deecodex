@@ -97,7 +97,7 @@ pub struct Args {
     #[arg(
         long = "cdp-port",
         env = "DEECODEX_CDP_PORT",
-        default_value = "4448",
+        default_value = "9222",
         global = true
     )]
     pub cdp_port: u16,
@@ -348,7 +348,7 @@ impl Args {
                     || file.codex_persistent_inject,
                 codex_launch_with_cdp: self.codex_launch_with_cdp
                     || file.codex_launch_with_cdp,
-                cdp_port: pick(self.cdp_port, file.cdp_port, 4448),
+                cdp_port: pick(self.cdp_port, file.cdp_port, 9222),
                 prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
                     file.prompts_dir
                 } else {
@@ -484,7 +484,7 @@ mod tests {
             codex_auto_inject: true,
             codex_persistent_inject: false,
             codex_launch_with_cdp: false,
-            cdp_port: 4448,
+            cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: dir.clone(),
             token_anomaly_prompt_max: 200000,
@@ -522,7 +522,7 @@ mod tests {
             codex_auto_inject: true,
             codex_persistent_inject: false,
             codex_launch_with_cdp: false,
-            cdp_port: 4448,
+            cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: PathBuf::from(".deecodex"),
             token_anomaly_prompt_max: 200000,

@@ -350,6 +350,8 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
         "chinese_thinking": state.chinese_thinking,
         "codex_auto_inject": state.codex_auto_inject,
         "codex_persistent_inject": state.codex_persistent_inject,
+        "codex_launch_with_cdp": state.codex_launch_with_cdp,
+        "cdp_port": state.cdp_port,
         "client_auth_enabled": client_auth_enabled,
     }))
 }

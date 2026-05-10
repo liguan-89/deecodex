@@ -20,6 +20,8 @@ pub struct ServiceInfo {
     pub port: u16,
     pub uptime_secs: Option<u64>,
     pub version: String,
+    pub cdp_port: u16,
+    pub codex_launch_with_cdp: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -143,7 +145,7 @@ pub(crate) fn load_args() -> Args {
                 browser_use_bridge_command: String::new(),
                 daemon: false,
                 codex_launch_with_cdp: false,
-                cdp_port: 4448,
+                cdp_port: 9222,
             }
         }),
     };
@@ -394,12 +396,39 @@ async fn get_status_internal(manager: &ServerManager) -> ServiceInfo {
     } else {
         None
     };
+    let args = load_args();
     ServiceInfo {
         running,
         port,
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        cdp_port: args.cdp_port,
+        codex_launch_with_cdp: args.codex_launch_with_cdp,
     }
+}
+
+#[tauri::command]
+pub fn launch_codex_cdp() -> Result<(), String> {
+    let args = load_args();
+    let cdp_port = args.cdp_port;
+    std::process::Command::new("open")
+        .arg("-a")
+        .arg("Codex.app")
+        .arg("--args")
+        .arg(format!("--remote-debugging-port={cdp_port}"))
+        .spawn()
+        .map_err(|e| format!("启动 Codex 失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_codex_cdp() -> Result<(), String> {
+    std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("quit app \"Codex\"")
+        .spawn()
+        .map_err(|e| format!("停止 Codex 失败: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
