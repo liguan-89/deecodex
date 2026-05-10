@@ -224,7 +224,7 @@ fn check_browser_use_bridge(_args: &Args, diags: &mut Vec<Diagnostic>) {
     if !command.is_empty() {
         // 检查命令是否在 PATH 中
         let cmd_name = command.split_whitespace().next().unwrap_or(&command);
-        if !which::which(cmd_name).is_ok() {
+        if which::which(cmd_name).is_err() {
             diags.push(Diagnostic {
                 severity: Severity::Warn,
                 category: "computer_executor",
@@ -354,7 +354,7 @@ fn check_single_mcp_server(label: &str, config: &serde_json::Value, diags: &mut 
     }
 
     // 检查命令是否在 PATH 中
-    if !which::which(command).is_ok() {
+    if which::which(command).is_err() {
         diags.push(Diagnostic {
             severity: Severity::Warn,
             category: "mcp_executor",
