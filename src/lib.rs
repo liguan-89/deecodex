@@ -1,10 +1,12 @@
 pub mod backup_store;
 pub mod cache;
+pub mod cdp;
 pub mod codex_config;
 pub mod config;
 pub mod executor;
 pub mod files;
 pub mod handlers;
+pub mod inject;
 pub mod metrics;
 pub mod prompts;
 pub mod ratelimit;

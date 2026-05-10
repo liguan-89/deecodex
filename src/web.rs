@@ -59,7 +59,7 @@ fn fallback_args(state: &AppState) -> Args {
         port: 4446,
         upstream: state.upstream.as_ref().to_string(),
         api_key: state.api_key.as_ref().to_string(),
-        client_api_key: state.client_api_key.as_ref().to_string(),
+        client_api_key: state.client_api_key.try_read().map(|g| g.clone()).unwrap_or_default(),
         model_map: if state.model_map.is_empty() {
             "{}".into()
         } else {
@@ -77,6 +77,8 @@ fn fallback_args(state: &AppState) -> Args {
         chinese_thinking: state.chinese_thinking,
         codex_auto_inject: state.codex_auto_inject,
         codex_persistent_inject: state.codex_persistent_inject,
+        codex_launch_with_cdp: state.codex_launch_with_cdp,
+        cdp_port: state.cdp_port,
         data_dir: state.data_dir.as_ref().clone(),
         prompts_dir: state.data_dir.join("prompts"),
         token_anomaly_prompt_max: 200000,
@@ -288,6 +290,18 @@ pub async fn put_config(
         crate::codex_config::remove();
     }
 
+    // 运行时更新 executor 配置和 client_api_key（无需重启）
+    match crate::executor::LocalExecutorConfig::from_raw(
+        &updated.computer_executor,
+        updated.computer_executor_timeout_secs,
+        &updated.mcp_executor_config,
+        updated.mcp_executor_timeout_secs,
+    ) {
+        Ok(exec) => *state.executors.write().await = exec,
+        Err(e) => tracing::warn!("运行时更新 executor 配置失败: {e}"),
+    }
+    *state.client_api_key.write().await = updated.client_api_key;
+
     let diag_msgs: Vec<Value> = diags
         .iter()
         .map(|d| {
@@ -323,18 +337,20 @@ pub async fn validate_config(State(state): State<AppState>) -> impl IntoResponse
 /// GET /api/status — 服务运行状态
 pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = state.start_time.elapsed().as_secs();
+    let exec = state.executors.read().await;
+    let client_auth_enabled = !state.client_api_key.read().await.is_empty();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime,
         "port": state.port,
         "upstream": state.upstream.as_str(),
         "vision_enabled": state.vision_upstream.is_some(),
-        "mcp_enabled": state.executors.mcp.enabled(),
-        "computer_executor": state.executors.computer.backend.as_str(),
+        "mcp_enabled": exec.mcp.enabled(),
+        "computer_executor": exec.computer.backend.as_str(),
         "chinese_thinking": state.chinese_thinking,
         "codex_auto_inject": state.codex_auto_inject,
         "codex_persistent_inject": state.codex_persistent_inject,
-        "client_auth_enabled": !state.client_api_key.is_empty(),
+        "client_auth_enabled": client_auth_enabled,
     }))
 }
 

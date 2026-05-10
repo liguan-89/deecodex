@@ -83,6 +83,25 @@ pub struct Args {
     )]
     pub codex_persistent_inject: bool,
 
+    /// 启动 deecodex 时自动启动 Codex 桌面版（带 CDP 调试端口）。
+    #[arg(
+        long = "cdp",
+        visible_alias = "codex-launch-with-cdp",
+        env = "DEECODEX_CODEX_LAUNCH_WITH_CDP",
+        default_value = "false",
+        global = true
+    )]
+    pub codex_launch_with_cdp: bool,
+
+    /// Codex CDP 调试端口。
+    #[arg(
+        long = "cdp-port",
+        env = "DEECODEX_CDP_PORT",
+        default_value = "4448",
+        global = true
+    )]
+    pub cdp_port: u16,
+
     #[arg(long, env = "DEECODEX_PROMPTS_DIR", default_value = "prompts")]
     pub prompts_dir: PathBuf,
 
@@ -327,6 +346,9 @@ impl Args {
                 codex_auto_inject: self.codex_auto_inject && file.codex_auto_inject,
                 codex_persistent_inject: self.codex_persistent_inject
                     || file.codex_persistent_inject,
+                codex_launch_with_cdp: self.codex_launch_with_cdp
+                    || file.codex_launch_with_cdp,
+                cdp_port: pick(self.cdp_port, file.cdp_port, 4448),
                 prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
                     file.prompts_dir
                 } else {
@@ -461,6 +483,8 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_launch_with_cdp: false,
+            cdp_port: 4448,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: dir.clone(),
             token_anomaly_prompt_max: 200000,
@@ -497,6 +521,8 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_launch_with_cdp: false,
+            cdp_port: 4448,
             prompts_dir: PathBuf::from("prompts"),
             data_dir: PathBuf::from(".deecodex"),
             token_anomaly_prompt_max: 200000,

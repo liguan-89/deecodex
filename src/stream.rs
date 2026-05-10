@@ -45,7 +45,7 @@ pub struct StreamArgs {
     pub cache_key: Option<u64>,
     pub token_tracker: Arc<TokenTracker>,
     pub metrics: Arc<Metrics>,
-    pub executors: Arc<LocalExecutorConfig>,
+    pub executors: Arc<tokio::sync::RwLock<LocalExecutorConfig>>,
     pub allowed_mcp_servers: Vec<String>,
     pub allowed_computer_displays: Vec<String>,
 }
@@ -237,6 +237,7 @@ pub fn translate_stream(
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
 
     let event_stream = stream! {
+        let executors = executors.read().await.clone();
         let mut seq = 0_u32;
         yield event_with_sequence(
             &mut seq,

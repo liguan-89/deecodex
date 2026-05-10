@@ -1635,6 +1635,8 @@ const CONFIG_SECTIONS = [
       { key: 'chinese_thinking', label: '中文思考模式', hint: '强制中文思维链输出', type: 'checkbox' },
       { key: 'codex_auto_inject', label: '自动注入 Codex 配置', hint: '启动时将 deecodex 路由注入 Codex config.toml，停止时移除', type: 'checkbox' },
       { key: 'codex_persistent_inject', label: '持久注入', hint: '配置持久保留在 Codex config.toml 中，不再自动移除', type: 'checkbox' },
+      { key: 'codex_launch_with_cdp', label: '自动启动 Codex 桌面版', hint: 'deecodex 启动时自动打开 Codex.app 并开启 CDP 调试端口', type: 'checkbox' },
+      { key: 'cdp_port', label: 'CDP 调试端口', hint: 'Codex 的 Chrome DevTools Protocol 端口，用于插件解锁和会话删除', type: 'text', placeholder: '4448' },
       { key: 'data_dir', label: '数据目录', hint: '配置文件、日志、PID 文件存储位置', type: 'text', placeholder: '.deecodex' },
       { key: 'prompts_dir', label: 'Prompts 目录', hint: 'Hosted Prompts 模板存放目录', type: 'text', placeholder: 'prompts' },
     ]
@@ -1721,7 +1723,7 @@ function renderPanel(panelId) {
   const container = document.getElementById('mainContent');
   switch (panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
-    case 'config': container.innerHTML = renderConfig(); break;
+    case 'config': container.innerHTML = renderConfig(); loadConfig(); break;
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
     case 'sessions': renderSessionsPanel(); break;
     case 'tool-policy': container.innerHTML = renderToolPolicy(); loadToolPolicy(); break;
@@ -2263,37 +2265,51 @@ function renderToolPolicy() {
   return `
     <div class="page-header">
       <h2>工具策略</h2>
-      <p>管理 MCP / Computer 工具的白名单与执行器状态</p>
+      <p>管理 MCP / Computer 工具的访问白名单，并启用对应执行器</p>
     </div>
 
     <div class="policy-section">
       <div class="policy-section-header">
         <span class="section-icon">◈</span>
-        <h3>MCP 服务器白名单</h3>
-        <span class="executor-badge" id="mcpExecutorBadge" style="margin-left:auto;font-size:12px;padding:2px 8px;border-radius:10px;background:#444;color:#aaa;">检查中...</span>
+        <h3>MCP 工具</h3>
+        <span class="executor-badge" id="mcpExecutorBadge">检查中...</span>
       </div>
       <div class="policy-field">
-        <label for="policyMcp">允许的 MCP 服务器</label>
+        <label for="policyMcp">允许的 MCP 服务器（白名单）</label>
         <input type="text" id="policyMcp" placeholder="filesystem,github（逗号分隔，留空允许全部）" spellcheck="false">
-        <span class="hint">逗号分隔的服务器名称列表，为空时允许所有 MCP 服务器</span>
+        <span class="hint">逗号分隔的服务器名称。为空 = 允许全部；设为 __all_locked__ = 禁止所有</span>
+      </div>
+      <div class="policy-field">
+        <label for="policyMcpConfig">MCP 执行器配置（JSON，留空 = 不启用本地执行）</label>
+        <textarea id="policyMcpConfig" rows="3" placeholder='{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/path"]}}' spellcheck="false" style="font-family:monospace;font-size:13px;"></textarea>
+        <span class="hint">JSON 对象，key 为服务器名，value 包含 command 和 args</span>
       </div>
     </div>
 
     <div class="policy-section">
       <div class="policy-section-header">
         <span class="section-icon">▷</span>
-        <h3>计算机显示器白名单</h3>
-        <span class="executor-badge" id="computerExecutorBadge" style="margin-left:auto;font-size:12px;padding:2px 8px;border-radius:10px;background:#444;color:#aaa;">检查中...</span>
+        <h3>Computer 工具</h3>
+        <span class="executor-badge" id="computerExecutorBadge">检查中...</span>
       </div>
       <div class="policy-field">
-        <label for="policyDisplay">允许的显示器/环境</label>
+        <label for="policyDisplay">允许的显示器/环境（白名单）</label>
         <input type="text" id="policyDisplay" placeholder="display-1,display-2（逗号分隔，留空允许全部）" spellcheck="false">
-        <span class="hint">逗号分隔的显示器标识列表，为空时允许所有显示器</span>
+        <span class="hint">逗号分隔的显示器标识。为空 = 允许全部；设为 __all_locked__ = 禁止所有</span>
+      </div>
+      <div class="policy-field">
+        <label for="policyComputerBackend">Computer 执行后端</label>
+        <select id="policyComputerBackend">
+          <option value="disabled">禁用</option>
+          <option value="playwright">Playwright（推荐）</option>
+          <option value="browser-use">Browser-Use</option>
+        </select>
+        <span class="hint">选择执行后端以在本地运行 computer_use 工具</span>
       </div>
     </div>
 
     <div class="policy-actions">
-      <button class="btn btn-primary" id="btnPolicySave" onclick="saveToolPolicy()">保存策略</button>
+      <button class="btn btn-primary" id="btnPolicySave" onclick="saveToolPolicy()">保存全部</button>
       <button class="btn btn-ghost" onclick="unlockAll()">解锁全部</button>
       <button class="btn btn-ghost" onclick="lockAll()">全部锁定</button>
       <span class="policy-msg" id="policyMsg"></span>
@@ -2303,26 +2319,38 @@ function renderToolPolicy() {
 
 async function loadToolPolicy() {
   try {
-    const res = await fetch('/api/tool-policy');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const mcpEl = document.getElementById('policyMcp');
-    const displayEl = document.getElementById('policyDisplay');
-    if (mcpEl) mcpEl.value = (data.allowed_mcp_servers || []).join(', ');
-    if (displayEl) displayEl.value = (data.allowed_computer_displays || []).join(', ');
+    const [tpRes, cfgRes] = await Promise.all([
+      fetch('/api/tool-policy'),
+      fetch('/api/config'),
+    ]);
+    if (tpRes.ok) {
+      const data = await tpRes.json();
+      const mcpEl = document.getElementById('policyMcp');
+      const displayEl = document.getElementById('policyDisplay');
+      if (mcpEl) mcpEl.value = (data.allowed_mcp_servers || []).join(', ');
+      if (displayEl) displayEl.value = (data.allowed_computer_displays || []).join(', ');
+    }
+    if (cfgRes.ok) {
+      const cfg = await cfgRes.json();
+      const mcpBackend = document.getElementById('policyComputerBackend');
+      if (mcpBackend) mcpBackend.value = cfg.computer_executor || 'disabled';
+      const mcpCfg = document.getElementById('policyMcpConfig');
+      if (mcpCfg) {
+        try {
+          const raw = cfg.mcp_executor_config || '';
+          mcpCfg.value = raw ? JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw, null, 2) : '';
+        } catch (_) { mcpCfg.value = cfg.mcp_executor_config || ''; }
+      }
+      updateExecutorBadge('mcpExecutorBadge',
+        !!(cfg.mcp_executor_config && cfg.mcp_executor_config !== '{}' && cfg.mcp_executor_config !== ''),
+        'MCP 执行器');
+      updateExecutorBadge('computerExecutorBadge',
+        cfg.computer_executor && cfg.computer_executor !== 'disabled',
+        'Computer 执行器');
+    }
   } catch (err) {
     showToast('加载工具策略失败: ' + err.message, 'error');
   }
-
-  // 同时加载执行器状态
-  try {
-    const cfgRes = await fetch('/api/config');
-    if (cfgRes.ok) {
-      const cfg = await cfgRes.json();
-      updateExecutorBadge('mcpExecutorBadge', cfg.mcp_enabled, 'MCP 执行器');
-      updateExecutorBadge('computerExecutorBadge', cfg.computer_executor && cfg.computer_executor !== 'disabled', 'Computer 执行器');
-    }
-  } catch (_) {}
 }
 
 function updateExecutorBadge(elId, enabled, label) {
@@ -2330,12 +2358,10 @@ function updateExecutorBadge(elId, enabled, label) {
   if (!el) return;
   if (enabled) {
     el.textContent = label + '：已启用';
-    el.style.background = '#1a3a1a';
-    el.style.color = '#4caf50';
+    el.style.background = '#1a3a1a'; el.style.color = '#4caf50';
   } else {
-    el.innerHTML = label + '：未启用 — <a href="javascript:void(0)" onclick="switchPanel(\'config\');setTimeout(()=>document.getElementById(\'cfg-security\')?.scrollIntoView({behavior:\'smooth\'}),100)" style="color:#ff9800;text-decoration:underline;">点击配置</a>';
-    el.style.background = '#3a2a1a';
-    el.style.color = '#ff9800';
+    el.textContent = label + '：未启用';
+    el.style.background = '#3a2a1a'; el.style.color = '#ff9800';
   }
 }
 
@@ -2347,27 +2373,49 @@ async function saveToolPolicy() {
 
   const mcpRaw = (document.getElementById('policyMcp')?.value || '').trim();
   const displayRaw = (document.getElementById('policyDisplay')?.value || '').trim();
+  const computerBackend = document.getElementById('policyComputerBackend')?.value || 'disabled';
+  const mcpConfigRaw = document.getElementById('policyMcpConfig')?.value?.trim() || '';
 
   const mcpList = mcpRaw ? mcpRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
   const displayList = displayRaw ? displayRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
 
+  // 校验 MCP 配置 JSON
+  let mcpConfig = mcpConfigRaw;
+  if (mcpConfigRaw) {
+    try { mcpConfig = JSON.stringify(JSON.parse(mcpConfigRaw)); } catch (e) {
+      if (msg) { msg.textContent = 'MCP 配置 JSON 格式错误: ' + e.message; msg.className = 'policy-msg error'; }
+      if (btn) btn.disabled = false;
+      return;
+    }
+  }
+
   try {
-    const res = await fetch('/api/tool-policy', {
+    // 1. 保存工具策略白名单
+    let res = await fetch('/api/tool-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowed_mcp_servers: mcpList, allowed_computer_displays: displayList }),
+    });
+    let result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.error || '保存策略失败');
+
+    // 2. 保存执行器配置
+    res = await fetch('/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        allowed_mcp_servers: mcpList,
-        allowed_computer_displays: displayList,
+        computer_executor: computerBackend,
+        mcp_executor_config: mcpConfig,
       }),
     });
-    const result = await res.json();
-    if (!res.ok || !result.ok) {
-      throw new Error(result.error || '保存失败');
+    if (!res.ok) {
+      const cfgErr = await res.json();
+      throw new Error(cfgErr.error || '保存执行器配置失败');
     }
-    if (msg) { msg.textContent = '策略已保存'; msg.className = 'policy-msg success'; }
-    showToast('工具策略保存成功', 'success');
-    // 刷新显示
-    await loadToolPolicy();
+
+    if (msg) { msg.textContent = '已保存，服务重启中...'; msg.className = 'policy-msg success'; }
+    showToast('工具策略保存成功，服务重启中', 'success');
+    setTimeout(() => loadToolPolicy(), 2000);
   } catch (err) {
     if (msg) { msg.textContent = err.message; msg.className = 'policy-msg error'; }
     showToast('保存失败: ' + err.message, 'error');
@@ -2428,7 +2476,7 @@ function collectFormData() {
           data[f.key] = parseInt(v, 10);
         }
       } else if (f.type === 'json') {
-        data[f.key] = el.value.trim() || '{}';
+        data[f.key] = el.value.trim();
       } else {
         data[f.key] = el.value;
       }

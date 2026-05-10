@@ -562,6 +562,8 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_launch_with_cdp: false,
+            cdp_port: 4448,
             prompts_dir: std::path::PathBuf::from("prompts"),
             data_dir: std::path::PathBuf::from(".deecodex"),
             token_anomaly_prompt_max: 200000,

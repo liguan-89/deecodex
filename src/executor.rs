@@ -167,6 +167,7 @@ impl ComputerActionOutput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    #[serde(default)]
     pub label: String,
     pub command: String,
     #[serde(default)]

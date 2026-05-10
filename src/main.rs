@@ -1,10 +1,12 @@
 mod backup_store;
 mod cache;
+mod cdp;
 mod codex_config;
 mod config;
 mod executor;
 mod files;
 mod handlers;
+mod inject;
 mod metrics;
 mod prompts;
 mod ratelimit;
@@ -28,7 +30,7 @@ use clap::Parser;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use config::{Args, Commands};
 
@@ -508,7 +510,7 @@ async fn main() -> Result<()> {
             .build()?,
         upstream: Arc::new(upstream),
         api_key: Arc::new(args.api_key),
-        client_api_key: Arc::new(args.client_api_key),
+        client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key)),
         model_map: Arc::new(model_map),
         vision_upstream,
         vision_api_key: Arc::new(args.vision_api_key),
@@ -523,6 +525,8 @@ async fn main() -> Result<()> {
         chinese_thinking: args.chinese_thinking,
         codex_auto_inject: args.codex_auto_inject,
         codex_persistent_inject: args.codex_persistent_inject,
+        codex_launch_with_cdp: args.codex_launch_with_cdp,
+        cdp_port: args.cdp_port,
         port: args.port,
         metrics: Arc::new(metrics::Metrics::new()),
         token_tracker: Arc::new(crate::token_anomaly::TokenTracker::new(
@@ -536,7 +540,7 @@ async fn main() -> Result<()> {
             allowed_mcp_servers: parse_csv_list(&args.allowed_mcp_servers),
             allowed_computer_displays: parse_csv_list(&args.allowed_computer_displays),
         })),
-        executors: Arc::new(executors),
+        executors: Arc::new(tokio::sync::RwLock::new(executors)),
         data_dir: Arc::new(args.data_dir.clone()),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
@@ -591,25 +595,25 @@ async fn main() -> Result<()> {
         );
     }
     drop(tp);
+    let startup_exec = state.executors.read().await.clone();
     info!(
         "computer executor: {} (timeout={}s)",
-        state.executors.computer.backend.as_str(),
-        state.executors.computer.timeout_secs
+        startup_exec.computer.backend.as_str(),
+        startup_exec.computer.timeout_secs
     );
-    if state.executors.computer.enabled() {
+    if startup_exec.computer.enabled() {
         info!("computer executor is enabled behind local tool policy");
     }
-    if state.executors.mcp.enabled() {
+    if startup_exec.mcp.enabled() {
         info!(
             "MCP executor: {} configured server(s), timeout={}s",
-            state.executors.mcp.servers.len(),
-            state.executors.mcp.timeout_secs
+            startup_exec.mcp.servers.len(),
+            startup_exec.mcp.timeout_secs
         );
-        if let Some(label) = state.executors.mcp.servers.keys().next() {
+        if let Some(label) = startup_exec.mcp.servers.keys().next() {
             debug!(
                 "first configured MCP executor server: {}",
-                state
-                    .executors
+                startup_exec
                     .mcp
                     .get_server(label)
                     .map(|server| server.label.as_str())
@@ -619,7 +623,7 @@ async fn main() -> Result<()> {
     } else {
         info!("MCP executor: disabled (no configured servers)");
     }
-    if state.client_api_key.is_empty() {
+    if state.client_api_key.read().await.is_empty() {
         tracing::warn!("client auth disabled: client_api_key is empty");
     } else {
         info!("client auth enabled for /v1 API routes");
@@ -645,8 +649,32 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject(args.port, &state.client_api_key);
+        codex_config::inject(args.port, &state.client_api_key.read().await);
     }
+
+    // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口
+    if args.codex_launch_with_cdp {
+        let cdp_port = args.cdp_port;
+        tokio::spawn(async move {
+            let result = tokio::process::Command::new("open")
+                .arg("-a")
+                .arg("Codex.app")
+                .arg("--args")
+                .arg(format!("--remote-debugging-port={cdp_port}"))
+                .spawn();
+            match result {
+                Ok(_) => info!("已启动 Codex 桌面版 (CDP 端口 {cdp_port})"),
+                Err(e) => warn!("启动 Codex 桌面版失败: {e}"),
+            }
+        });
+    }
+
+    // 尝试 CDP 注入（插件解锁 + 会话删除 UI），异步执行，不阻塞服务启动
+    let inject_state = state.clone();
+    let cdp_port = args.cdp_port;
+    tokio::spawn(async move {
+        inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
+    });
 
     #[cfg(unix)]
     async fn shutdown_signal() {

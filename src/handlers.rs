@@ -38,7 +38,7 @@ pub struct AppState {
     pub client: Client,
     pub upstream: Arc<Url>,
     pub api_key: Arc<String>,
-    pub client_api_key: Arc<String>,
+    pub client_api_key: Arc<tokio::sync::RwLock<String>>,
     pub model_map: Arc<ModelMap>,
     pub vision_upstream: Option<Arc<Url>>,
     pub vision_api_key: Arc<String>,
@@ -53,11 +53,13 @@ pub struct AppState {
     pub chinese_thinking: bool,
     pub codex_auto_inject: bool,
     pub codex_persistent_inject: bool,
+    pub codex_launch_with_cdp: bool,
+    pub cdp_port: u16,
     pub port: u16,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub metrics: Arc<Metrics>,
     pub tool_policy: Arc<tokio::sync::RwLock<ToolPolicy>>,
-    pub executors: Arc<LocalExecutorConfig>,
+    pub executors: Arc<tokio::sync::RwLock<LocalExecutorConfig>>,
     pub token_tracker: Arc<TokenTracker>,
     pub data_dir: Arc<std::path::PathBuf>,
 }
@@ -213,14 +215,15 @@ async fn require_client_auth(State(state): State<AppState>, req: Request, next: 
     if path == "/health" || path == "/v1" {
         return next.run(req).await;
     }
-    if state.client_api_key.is_empty() {
+    let client_api_key = state.client_api_key.read().await.clone();
+    if client_api_key.is_empty() {
         return next.run(req).await;
     }
     let authorized = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|value| authorization_matches(value, state.client_api_key.as_str()));
+        .is_some_and(|value| authorization_matches(value, &client_api_key));
     if authorized {
         next.run(req).await
     } else {
@@ -1122,10 +1125,11 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         return response;
     }
     if let Some(ref limiter) = state.rate_limiter {
-        let key = if !state.client_api_key.is_empty() {
+        let client_key_snip = state.client_api_key.read().await.clone();
+        let key = if !client_key_snip.is_empty() {
             format!(
                 "rl_{}",
-                &state.client_api_key[..4.min(state.client_api_key.len())]
+                &client_key_snip[..4.min(client_key_snip.len())]
             )
         } else {
             "rl_default".into()
@@ -1820,7 +1824,8 @@ fn save_response_unless_cancelled(sessions: &SessionStore, id: String, response:
 }
 
 async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {
-    if !state.executors.computer.enabled() {
+    let computer_config = state.executors.read().await.computer.clone();
+    if !computer_config.enabled() {
         return;
     }
 
@@ -1858,7 +1863,7 @@ async fn append_local_computer_outputs(state: &AppState, response: &mut Value) {
                 invocation.display
             ))
         } else {
-            state.executors.computer.execute_action(invocation).await
+            computer_config.execute_action(invocation).await
         };
         outputs.push(local_computer_call_output_item(&call_id, result));
     }
@@ -1882,7 +1887,8 @@ fn local_computer_call_output_item(
 }
 
 async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
-    if !state.executors.mcp.enabled() {
+    let mcp_config = state.executors.read().await.mcp.clone();
+    if !mcp_config.enabled() {
         return;
     }
 
@@ -1921,7 +1927,7 @@ async fn append_local_mcp_outputs(state: &AppState, response: &mut Value) {
                 invocation.server_label
             ))
         } else {
-            state.executors.mcp.execute_tool(invocation).await
+            mcp_config.execute_tool(invocation).await
         };
         outputs.push(local_mcp_tool_output_item(&call_id, result));
     }

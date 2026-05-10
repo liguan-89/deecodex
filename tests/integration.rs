@@ -28,7 +28,7 @@ fn test_state() -> AppState {
         client: reqwest::Client::builder().build().unwrap(),
         upstream: Arc::new(reqwest::Url::parse("https://example.com").unwrap()),
         api_key: Arc::new("test".into()),
-        client_api_key: Arc::new(String::new()),
+        client_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
         model_map: Arc::new(std::collections::HashMap::new()),
         vision_upstream: None,
         vision_api_key: Arc::new(String::new()),
@@ -43,12 +43,14 @@ fn test_state() -> AppState {
         chinese_thinking: false,
         codex_auto_inject: true,
         codex_persistent_inject: false,
+        codex_launch_with_cdp: false,
+        cdp_port: 4448,
         port: 4444,
         rate_limiter: None,
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         tool_policy: Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy::default())),
-        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
         data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
     }
 }
@@ -1517,7 +1519,7 @@ fn make_stream_args(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
-        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
     }
@@ -1557,7 +1559,7 @@ fn make_stream_args_custom(
         cache_key,
         token_tracker: Arc::new(deecodex::token_anomaly::TokenTracker::default()),
         metrics: Arc::new(deecodex::metrics::Metrics::new()),
-        executors: Arc::new(deecodex::executor::LocalExecutorConfig::default()),
+        executors: Arc::new(tokio::sync::RwLock::new(deecodex::executor::LocalExecutorConfig::default())),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
     }
@@ -2006,7 +2008,7 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
         )
         .await,
     );
-    state.executors = Arc::new(
+    state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw(
             "disabled",
             30,
@@ -2021,7 +2023,7 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
             5,
         )
         .unwrap(),
-    );
+    ));
     state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
         allowed_mcp_servers: vec!["filesystem".into()],
         ..Default::default()
@@ -2081,9 +2083,9 @@ async fn test_responses_blocking_local_computer_executor_appends_failed_output()
         )
         .await,
     );
-    state.executors = Arc::new(
+    state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
-    );
+    ));
     state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
         allowed_computer_displays: vec!["browser".into()],
         ..Default::default()
@@ -3450,9 +3452,9 @@ async fn test_computer_use_multiturn_roundtrip() {
         allowed_computer_displays: vec!["browser".into()],
         ..Default::default()
     }));
-    state.executors = Arc::new(
+    state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
-    );
+    ));
     let sessions = state.sessions.clone();
     let files = state.files.clone();
     let app = build_router(state);
@@ -3573,9 +3575,9 @@ async fn test_computer_use_multiturn_state_persistence() {
         allowed_computer_displays: vec!["browser".into()],
         ..Default::default()
     }));
-    state.executors = Arc::new(
+    state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
-    );
+    ));
     let sessions = state.sessions.clone();
 
     // Round 1

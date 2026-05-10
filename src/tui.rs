@@ -77,6 +77,8 @@ struct TuiAppState {
     chinese_thinking: bool,
     codex_auto_inject: bool,
     codex_persistent_inject: bool,
+    codex_launch_with_cdp: bool,
+    cdp_port: String,
 
     // Upstream
     upstream: String,
@@ -127,6 +129,8 @@ impl TuiAppState {
             chinese_thinking: args.chinese_thinking,
             codex_auto_inject: args.codex_auto_inject,
             codex_persistent_inject: args.codex_persistent_inject,
+            codex_launch_with_cdp: args.codex_launch_with_cdp,
+            cdp_port: args.cdp_port.to_string(),
 
             upstream: args.upstream.clone(),
             api_key: args.api_key.clone(),
@@ -196,6 +200,11 @@ impl TuiAppState {
             chinese_thinking: self.chinese_thinking,
             codex_auto_inject: self.codex_auto_inject,
             codex_persistent_inject: self.codex_persistent_inject,
+            codex_launch_with_cdp: self.codex_launch_with_cdp,
+            cdp_port: self
+                .cdp_port
+                .parse()
+                .map_err(|_| anyhow::anyhow!("CDP 端口无效"))?,
             prompts_dir: PathBuf::from(self.prompts_dir),
             data_dir: PathBuf::from(self.data_dir),
             token_anomaly_prompt_max: self
@@ -243,6 +252,8 @@ impl TuiAppState {
             "chinese_thinking" => self.chinese_thinking.to_string(),
             "codex_auto_inject" => self.codex_auto_inject.to_string(),
             "codex_persistent_inject" => self.codex_persistent_inject.to_string(),
+            "codex_launch_with_cdp" => self.codex_launch_with_cdp.to_string(),
+            "cdp_port" => self.cdp_port.clone(),
             "upstream" => self.upstream.clone(),
             "api_key" => self.api_key.clone(),
             "client_api_key" => self.client_api_key.clone(),
@@ -296,6 +307,14 @@ impl TuiAppState {
                     "否".into()
                 }
             }
+            "codex_launch_with_cdp" => {
+                if self.codex_launch_with_cdp {
+                    "是".into()
+                } else {
+                    "否".into()
+                }
+            }
+            "cdp_port" => self.cdp_port.clone(),
             "upstream" => self.upstream.clone(),
             "api_key" => self.api_key.clone(),
             "client_api_key" => self.client_api_key.clone(),
@@ -398,6 +417,7 @@ impl TuiAppState {
             "playwright_state_dir" => self.playwright_state_dir = value.to_string(),
             "browser_use_bridge_url" => self.browser_use_bridge_url = value.to_string(),
             "browser_use_bridge_command" => self.browser_use_bridge_command = value.to_string(),
+            "cdp_port" => self.cdp_port = value.to_string(),
             _ => {}
         }
     }
@@ -517,6 +537,18 @@ fn basic_settings_fields() -> Vec<FieldDef> {
             key: "codex_persistent_inject",
             kind: FieldKind::Bool,
             help: "开启后配置持久保留，不再自动注入/移除（优先于自动注入）",
+        },
+        FieldDef {
+            label: "自动启动 Codex 桌面版",
+            key: "codex_launch_with_cdp",
+            kind: FieldKind::Bool,
+            help: "deecodex 启动时自动打开 Codex.app 并开启 CDP 调试端口",
+        },
+        FieldDef {
+            label: "CDP 调试端口",
+            key: "cdp_port",
+            kind: FieldKind::Text,
+            help: "Codex Chrome DevTools Protocol 端口，用于插件解锁和会话删除 (默认: 4448)",
         },
     ]
 }
@@ -839,6 +871,10 @@ fn activate_field(field: &FieldDef, state: &mut TuiAppState) {
                 "codex_persistent_inject" => (
                     &mut state.codex_persistent_inject,
                     "codex_persistent_inject",
+                ),
+                "codex_launch_with_cdp" => (
+                    &mut state.codex_launch_with_cdp,
+                    "codex_launch_with_cdp",
                 ),
                 _ => return,
             };
