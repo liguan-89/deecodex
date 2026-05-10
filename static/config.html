@@ -2263,13 +2263,14 @@ function renderToolPolicy() {
   return `
     <div class="page-header">
       <h2>工具策略</h2>
-      <p>管理 MCP 服务器与计算机显示器的访问白名单，空列表表示允许全部</p>
+      <p>管理 MCP / Computer 工具的白名单与执行器状态</p>
     </div>
 
     <div class="policy-section">
       <div class="policy-section-header">
         <span class="section-icon">◈</span>
         <h3>MCP 服务器白名单</h3>
+        <span class="executor-badge" id="mcpExecutorBadge" style="margin-left:auto;font-size:12px;padding:2px 8px;border-radius:10px;background:#444;color:#aaa;">检查中...</span>
       </div>
       <div class="policy-field">
         <label for="policyMcp">允许的 MCP 服务器</label>
@@ -2282,6 +2283,7 @@ function renderToolPolicy() {
       <div class="policy-section-header">
         <span class="section-icon">▷</span>
         <h3>计算机显示器白名单</h3>
+        <span class="executor-badge" id="computerExecutorBadge" style="margin-left:auto;font-size:12px;padding:2px 8px;border-radius:10px;background:#444;color:#aaa;">检查中...</span>
       </div>
       <div class="policy-field">
         <label for="policyDisplay">允许的显示器/环境</label>
@@ -2310,6 +2312,30 @@ async function loadToolPolicy() {
     if (displayEl) displayEl.value = (data.allowed_computer_displays || []).join(', ');
   } catch (err) {
     showToast('加载工具策略失败: ' + err.message, 'error');
+  }
+
+  // 同时加载执行器状态
+  try {
+    const cfgRes = await fetch('/api/config');
+    if (cfgRes.ok) {
+      const cfg = await cfgRes.json();
+      updateExecutorBadge('mcpExecutorBadge', cfg.mcp_enabled, 'MCP 执行器');
+      updateExecutorBadge('computerExecutorBadge', cfg.computer_executor && cfg.computer_executor !== 'disabled', 'Computer 执行器');
+    }
+  } catch (_) {}
+}
+
+function updateExecutorBadge(elId, enabled, label) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (enabled) {
+    el.textContent = label + '：已启用';
+    el.style.background = '#1a3a1a';
+    el.style.color = '#4caf50';
+  } else {
+    el.textContent = label + '：未启用（需在「配置」页设置）';
+    el.style.background = '#3a2a1a';
+    el.style.color = '#ff9800';
   }
 }
 

@@ -161,16 +161,16 @@ fn do_inject(path: &std::path::Path, port: u16, client_api_key: &str) -> Result<
 
     let already_exists = doc
         .get("model_providers")
-        .and_then(|mp| mp.get("custom"))
+        .and_then(|mp| mp.get("deecodex"))
         .is_some();
 
-    doc["model_provider"] = toml_edit::value("custom");
-    doc["model_providers"]["custom"]["base_url"] =
+    doc["model_provider"] = toml_edit::value("deecodex");
+    doc["model_providers"]["deecodex"]["base_url"] =
         toml_edit::value(format!("http://127.0.0.1:{}/v1", port));
-    doc["model_providers"]["custom"]["name"] = toml_edit::value("custom");
-    doc["model_providers"]["custom"]["requires_openai_auth"] = toml_edit::value(false);
-    doc["model_providers"]["custom"]["api_key"] = toml_edit::value(client_api_key);
-    doc["model_providers"]["custom"]["wire_api"] = toml_edit::value("responses");
+    doc["model_providers"]["deecodex"]["name"] = toml_edit::value("deecodex");
+    doc["model_providers"]["deecodex"]["requires_openai_auth"] = toml_edit::value(false);
+    doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value(client_api_key);
+    doc["model_providers"]["deecodex"]["wire_api"] = toml_edit::value("responses");
 
     std::fs::write(path, doc.to_string())?;
     Ok(!already_exists)
@@ -182,22 +182,22 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
 
     let mut removed = false;
 
-    if doc.get("model_provider").and_then(|v| v.as_str()) == Some("custom") {
+    if doc.get("model_provider").and_then(|v| v.as_str()) == Some("deecodex") {
         doc.remove("model_provider");
         removed = true;
     }
 
-    // 尝试从常规 table 或 inline table 中移除 custom
+    // 尝试从常规 table 或 inline table 中移除 deecodex
     if let Some(providers) = doc.get_mut("model_providers") {
         // 检查是否是 inline table
         let mut found = false;
         if let Some(inline) = providers.as_inline_table_mut() {
-            found = inline.remove("custom").is_some();
+            found = inline.remove("deecodex").is_some();
             if inline.is_empty() {
                 doc.remove("model_providers");
             }
         } else if let Some(table) = providers.as_table_mut() {
-            found = table.remove("custom").is_some();
+            found = table.remove("deecodex").is_some();
             if table.is_empty() {
                 doc.remove("model_providers");
             }
@@ -253,8 +253,8 @@ fn do_fix(path: &std::path::Path) -> Result<u32> {
     let lines: Vec<&str> = content.lines().collect();
     let mut fixes = 0u32;
 
-    // 1. 检测重复的 [model_providers.custom] 节
-    let custom_sections = find_section_ranges(&lines, "model_providers.custom");
+    // 1. 检测重复的 [model_providers.deecodex] 节（行级修复，先于 toml_edit）
+    let custom_sections = find_section_ranges(&lines, "model_providers.deecodex");
     let mut remove_line_indices: std::collections::BTreeSet<usize> =
         std::collections::BTreeSet::new();
 
@@ -266,12 +266,12 @@ fn do_fix(path: &std::path::Path) -> Result<u32> {
         }
         fixes += (custom_sections.len() - 1) as u32;
         warn!(
-            "Codex config.toml: 发现 {} 个重复的 [model_providers.custom] 节，保留最后一份",
+            "Codex config.toml: 发现 {} 个重复的 [model_providers.deecodex] 节，保留最后一份",
             custom_sections.len()
         );
     }
 
-    // 2. 检测 [windows] sandbox 问题
+    // 3. 检测 [windows] sandbox 问题
     let windows_section = find_section_range(&lines, "windows");
     if let Some((ws_start, ws_end)) = windows_section {
         for (i, line) in lines
@@ -309,6 +309,37 @@ fn do_fix(path: &std::path::Path) -> Result<u32> {
             new_content.pop();
         }
         std::fs::write(path, new_content)?;
+    }
+
+    // 2. 清理旧的 [model_providers.custom] 节（已迁移到 deecodex）
+    {
+        let current = std::fs::read_to_string(path)?;
+        if let Ok(mut doc) = current.parse::<toml_edit::DocumentMut>() {
+            let mut changed = false;
+            if let Some(providers) = doc.get_mut("model_providers") {
+                let removed = if let Some(inline) = providers.as_inline_table_mut() {
+                    inline.remove("custom").is_some()
+                } else if let Some(table) = providers.as_table_mut() {
+                    table.remove("custom").is_some()
+                } else {
+                    false
+                };
+                if removed {
+                    fixes += 1;
+                    changed = true;
+                    info!("Codex config.toml: 已清理旧的 [model_providers.custom] 节");
+                }
+            }
+            if doc.get("model_provider").and_then(|v| v.as_str()) == Some("custom") {
+                doc["model_provider"] = toml_edit::value("deecodex");
+                fixes += 1;
+                changed = true;
+                info!("Codex config.toml: model_provider 已从 custom 更新为 deecodex");
+            }
+            if changed {
+                std::fs::write(path, doc.to_string())?;
+            }
+        }
     }
 
     Ok(fixes)
@@ -376,7 +407,7 @@ mod tests {
     #[test]
     fn fix_duplicate_custom_sections_keeps_last() {
         let content = "\
-[model_providers.custom]
+[model_providers.deecodex]
 base_url = \"http://127.0.0.1:4446/v1\"
 name = \"custom\"
 wire_api = \"responses\"
@@ -384,7 +415,7 @@ wire_api = \"responses\"
 [other]
 key = \"value\"
 
-[model_providers.custom]
+[model_providers.deecodex]
 base_url = \"http://127.0.0.1:5555/v1\"
 name = \"custom\"
 wire_api = \"responses\"
@@ -409,7 +440,7 @@ wire_api = \"responses\"
         assert_eq!(
             fixed
                 .lines()
-                .filter(|l| l.trim() == "[model_providers.custom]")
+                .filter(|l| l.trim() == "[model_providers.deecodex]")
                 .count(),
             1,
             "should have exactly one custom section header"
@@ -457,13 +488,13 @@ wire_api = \"responses\"
 [windows]
 sandbox = \"unelevated\"
 
-[model_providers.custom]
+[model_providers.deecodex]
 base_url = \"http://old/v1\"
 
 [other]
 key = \"value\"
 
-[model_providers.custom]
+[model_providers.deecodex]
 base_url = \"http://new/v1\"
 ";
         let path = write_temp_config(content);
@@ -477,7 +508,7 @@ base_url = \"http://new/v1\"
         assert_eq!(
             fixed
                 .lines()
-                .filter(|l| l.trim() == "[model_providers.custom]")
+                .filter(|l| l.trim() == "[model_providers.deecodex]")
                 .count(),
             1
         );
