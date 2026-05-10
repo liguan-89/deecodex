@@ -30,17 +30,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release
-        run: cargo build --release
+      - name: Install NSIS
+        run: choco install nsis --version 3.10 -y --no-progress
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri app
+        working-directory: deecodex-gui
+        run: cargo tauri build
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
         with:
           name: deecodex-gui-windows-msi
-          path: target/release/bundle/msi/*.msi
+          path: deecodex-gui/target/release/bundle/msi/*.msi
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
           name: deecodex-gui-windows-nsis
-          path: target/release/bundle/nsis/*.exe
+          path: deecodex-gui/target/release/bundle/nsis/*.exe
