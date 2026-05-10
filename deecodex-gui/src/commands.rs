@@ -148,7 +148,7 @@ pub(crate) fn load_args() -> Args {
                     codex_launch_with_cdp: false,
                     cdp_port: 9222,
                 }
-            })
+            });
         }
     };
     args.merge_with_file()
