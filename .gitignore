@@ -5,6 +5,7 @@
 deecodex.pid
 codex-relay.pid
 logs/
+.deecodex/
 
 # macOS
 .DS_Store
