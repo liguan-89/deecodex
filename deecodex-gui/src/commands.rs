@@ -707,6 +707,15 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     args.save_to_file(&config_path)
         .map_err(|e| format!("保存配置失败: {e}"))?;
 
+    // 根据更新后的 Codex 注入开关立即应用/移除 Codex config.toml 修改
+    let port = args.port;
+    let ca_key = args.client_api_key.clone();
+    if args.codex_auto_inject || args.codex_persistent_inject {
+        deecodex::codex_config::inject(port, &ca_key);
+    } else {
+        deecodex::codex_config::remove();
+    }
+
     tracing::info!("配置已保存 → {}", config_path.display());
     Ok(())
 }
