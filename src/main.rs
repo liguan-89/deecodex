@@ -168,7 +168,8 @@ fn stop_service(
 
     if !is_running(pid) {
         let _ = std::fs::remove_file(pid_path(data_dir));
-        if codex_auto_inject && !codex_persistent_inject {
+        let migration_active = data_dir.join("thread_migration_backup.json").exists();
+        if codex_auto_inject && !codex_persistent_inject && !migration_active {
             codex_config::remove();
         }
         bail!("PID {} 对应的进程已不存在，已清理 PID 文件", pid);
@@ -500,6 +501,7 @@ async fn main() -> Result<()> {
         vision_model: args.vision_model.clone(),
         vision_endpoint: args.vision_endpoint.clone(),
         from_codex_config: false,
+        balance_url: String::new(),
         created_at: now_secs(),
         updated_at: now_secs(),
     };
@@ -706,7 +708,9 @@ async fn main() -> Result<()> {
         .await?;
 
     // 清理 codex config.toml 中的 deecodex 配置
-    if args.codex_auto_inject && !args.codex_persistent_inject {
+    // 线程聚合迁移激活时不删除，否则 Codex 重启后找不到 provider 会隐藏所有会话
+    let migration_active = args.data_dir.join("thread_migration_backup.json").exists();
+    if args.codex_auto_inject && !args.codex_persistent_inject && !migration_active {
         codex_config::remove();
     }
 

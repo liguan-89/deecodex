@@ -131,7 +131,9 @@ pub(crate) fn load_args() -> Args {
                     codex_auto_inject: true,
                     codex_persistent_inject: false,
                     prompts_dir: "prompts".into(),
-                    data_dir: ".deecodex".into(),
+                    data_dir: deecodex::config::home_dir()
+                        .map(|h| h.join(".deecodex"))
+                        .unwrap_or_else(|| std::path::PathBuf::from(".deecodex")),
                     token_anomaly_prompt_max: 200000,
                     token_anomaly_spike_ratio: 5.0,
                     token_anomaly_burn_window: 120,
@@ -206,6 +208,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 vision_model: file_args.vision_model.clone(),
                 vision_endpoint: file_args.vision_endpoint.clone(),
                 from_codex_config: false,
+                balance_url: String::new(),
                 created_at: now_secs(),
                 updated_at: now_secs(),
             };
@@ -242,6 +245,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             vision_model: String::new(),
             vision_endpoint: String::new(),
             from_codex_config: false,
+            balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
         };
@@ -485,7 +489,20 @@ pub async fn stop_service_inner(manager: &ServerManager) -> Result<ServiceInfo, 
     }
 
     let args = load_args();
-    if args.codex_auto_inject && !args.codex_persistent_inject {
+    // 线程已聚合并依赖 deecodex 时才保留注入，否则安全清理。
+    let needs_deecodex_injection = {
+        let bp = args.data_dir.join("thread_migration_backup.json");
+        if bp.exists() {
+            std::fs::read_to_string(&bp)
+                .ok()
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+                .and_then(|v| v.get("target_provider")?.as_str().map(|s| s == "deecodex"))
+                .unwrap_or(true) // 解析失败则保守保留
+        } else {
+            false
+        }
+    };
+    if args.codex_auto_inject && !args.codex_persistent_inject && !needs_deecodex_injection {
         deecodex::codex_config::remove();
     }
 
@@ -855,6 +872,7 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
                 "vision_model": a.vision_model,
                 "vision_endpoint": a.vision_endpoint,
                 "from_codex_config": a.from_codex_config,
+                "balance_url": a.balance_url,
                 "created_at": a.created_at,
                 "updated_at": a.updated_at,
             })
@@ -898,37 +916,53 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
     }
 }
 
-/// 根据供应商类型创建新账号
+/// 创建新账号（支持传入完整 account_json，用于前端先编辑后保存的流程）
 #[tauri::command]
 pub async fn add_account(
     manager: State<'_, ServerManager>,
     provider: String,
+    account_json: Option<String>,
 ) -> Result<Value, String> {
-    use deecodex::accounts::{generate_id, get_provider_presets, now_secs, Account};
+    use deecodex::accounts::{
+        generate_id, get_provider_presets, guess_provider, now_secs, Account,
+    };
 
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
-    let presets = get_provider_presets();
-    let preset = presets
-        .iter()
-        .find(|p| p.slug == provider)
-        .ok_or_else(|| format!("未知供应商: {provider}"))?;
+    let new_account = if let Some(json) = account_json {
+        let mut a: Account =
+            serde_json::from_str(&json).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
+        a.id = generate_id();
+        if a.provider.is_empty() {
+            a.provider = guess_provider(&a.upstream).to_string();
+        }
+        a.created_at = now_secs();
+        a.updated_at = now_secs();
+        a
+    } else {
+        let presets = get_provider_presets();
+        let preset = presets
+            .iter()
+            .find(|p| p.slug == provider)
+            .ok_or_else(|| format!("未知供应商: {provider}"))?;
 
-    let new_account = Account {
-        id: generate_id(),
-        name: format!("{} 账号", preset.label),
-        provider: provider.clone(),
-        upstream: preset.default_upstream.clone(),
-        api_key: String::new(),
-        model_map: Default::default(),
-        vision_upstream: String::new(),
-        vision_api_key: String::new(),
-        vision_model: String::new(),
-        vision_endpoint: String::new(),
-        from_codex_config: false,
-        created_at: now_secs(),
-        updated_at: now_secs(),
+        Account {
+            id: generate_id(),
+            name: format!("{} 账号", preset.label),
+            provider: provider.clone(),
+            upstream: preset.default_upstream.clone(),
+            api_key: String::new(),
+            model_map: Default::default(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            from_codex_config: false,
+            balance_url: String::new(),
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        }
     };
 
     // 如果没有活跃账号，自动设为活跃
@@ -1123,6 +1157,363 @@ pub fn get_provider_presets() -> Result<Value, String> {
     Ok(json!(list))
 }
 
+// ── 模型列表获取 ──────────────────────────────────────────────────────────
+
+/// 从上游获取模型列表（传入 account_id 时自动查真实 Key）
+#[tauri::command]
+pub async fn fetch_upstream_models(
+    manager: State<'_, ServerManager>,
+    account_id: Option<String>,
+    upstream: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    let (upstream, api_key) = if let Some(id) = account_id {
+        let data_dir = manager.data_dir.lock().await.clone();
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        let account = store
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| "账号不存在".to_string())?;
+        (account.upstream.clone(), account.api_key.clone())
+    } else {
+        (
+            upstream.ok_or("缺少 upstream 参数")?,
+            api_key.unwrap_or_default(),
+        )
+    };
+
+    let base = upstream.trim_end_matches('/');
+    let urls = vec![format!("{base}/models")];
+
+    let client = reqwest::Client::new();
+    for url in &urls {
+        let mut req = client.get(url);
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: Value = resp.json().await.map_err(|e| format!("解析失败: {e}"))?;
+                let models: Vec<String> = body["data"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|m| m["id"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            _ => continue,
+        }
+    }
+    Err("无法从上游获取模型列表".to_string())
+}
+
+/// 查询余额/额度信息，自动探测端点与计费模式
+#[derive(Serialize)]
+pub struct BalanceInfo {
+    pub mode: String,
+    pub credit_remaining: Option<f64>,
+    pub credit_limit: Option<f64>,
+    pub credit_label: Option<String>,
+    pub weekly_remaining: Option<String>,
+    pub weekly_limit: Option<String>,
+    pub hours_5_remaining: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_remains: Option<Vec<ModelRemain>>,
+}
+
+#[derive(Serialize)]
+pub struct ModelRemain {
+    pub model_name: String,
+    pub interval_total: f64,
+    pub interval_used: f64,
+    pub weekly_total: f64,
+    pub weekly_used: f64,
+}
+
+#[tauri::command]
+pub async fn fetch_balance(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<BalanceInfo, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let upstream = account.upstream.trim_end_matches('/').to_string();
+    let api_key = account.api_key.clone();
+
+    if api_key.is_empty() {
+        return Ok(BalanceInfo {
+            mode: "unsupported".into(),
+            credit_remaining: None,
+            credit_limit: None,
+            credit_label: None,
+            weekly_remaining: None,
+            weekly_limit: None,
+            hours_5_remaining: None,
+            model_remains: None,
+        });
+    }
+
+    let client = reqwest::Client::new();
+
+    // 如果账号配置了自定义 balance_url，直接用该 URL 探测
+    if !account.balance_url.is_empty() {
+        let url = account.balance_url.trim_end_matches('/').to_string();
+        let mut req = client.get(&url);
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+        tracing::info!("使用自定义 balance_url 探测: {}", url);
+        match req.send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if let Ok(body) = resp.json::<Value>().await {
+                        if let Some(info) = try_parse_balance(&body) {
+                            return Ok(info);
+                        }
+                        tracing::info!("自定义 balance_url 解析未能匹配: {:?}", body);
+                    }
+                } else {
+                    tracing::info!("自定义 balance_url HTTP {}: {}", resp.status().as_u16(), url);
+                }
+            }
+            Err(e) => tracing::info!("自定义 balance_url 请求失败: {} → {}", url, e),
+        }
+        return Ok(BalanceInfo {
+            mode: "unsupported".into(),
+            credit_remaining: None,
+            credit_limit: None,
+            credit_label: None,
+            weekly_remaining: None,
+            weekly_limit: None,
+            hours_5_remaining: None,
+            model_remains: None,
+        });
+    }
+
+    // 生成基础 URL 列表：完整 upstream + 去除 /v1、/v1beta、/api/v1 的根路径
+    let mut bases = vec![upstream.clone()];
+    for strip in &["/v1", "/v1beta", "/api/v1"] {
+        if let Some(root) = upstream.strip_suffix(strip) {
+            let root = root.to_string();
+            if root != upstream && !bases.contains(&root) {
+                bases.push(root);
+            }
+        }
+    }
+
+    // 按顺序尝试各端点：(路径后缀, 是否允许返回非 200 也不放弃)
+    let probes: Vec<&str> = vec![
+        "/v1/coding_plan/remains",
+        "/v1/api/openplatform/coding_plan/remains",
+        "/user/balance",
+        "/auth/key",
+        "/v1/auth/key",
+        "/api/v1/auth/key",
+        "/v1/billing/info",
+        "/v1/account/info",
+        "/v1/account",
+        "/v1/user/info",
+        "/v1/billing",
+        "/v1/dashboard/billing/credit_grants",
+        "/v1/dashboard/billing/subscription",
+        "/v1/subscription",
+        "/v1/usage",
+        "/v1/plan",
+        "/v1/quota",
+        "/v1/api/user/info",
+    ];
+
+    fn try_parse_balance(body: &Value) -> Option<BalanceInfo> {
+        // 1. MiniMax 风格: { base_resp: { status_code: 0 }, model_remains: [...] }
+        if body["base_resp"]["status_code"].as_i64() == Some(0) {
+            if let Some(remains) = body["model_remains"].as_array() {
+                let models: Vec<ModelRemain> = remains
+                    .iter()
+                    .map(|m| ModelRemain {
+                        model_name: m["model_name"].as_str().unwrap_or("?").into(),
+                        interval_total: m["current_interval_total_count"].as_f64().unwrap_or(0.0),
+                        interval_used: m["current_interval_usage_count"].as_f64().unwrap_or(0.0),
+                        weekly_total: m["current_weekly_total_count"].as_f64().unwrap_or(0.0),
+                        weekly_used: m["current_weekly_usage_count"].as_f64().unwrap_or(0.0),
+                    })
+                    .collect();
+                return Some(BalanceInfo {
+                    mode: "coding_plan".into(),
+                    credit_remaining: None,
+                    credit_limit: None,
+                    credit_label: None,
+                    weekly_remaining: None,
+                    weekly_limit: None,
+                    hours_5_remaining: None,
+                    model_remains: Some(models),
+                });
+            }
+        }
+
+        // 2. OpenRouter 风格: { data: { limit_remaining, limit, label } }
+        let data = body.get("data").unwrap_or(body);
+        let cr = data["limit_remaining"].as_f64();
+        let cl = data["limit"].as_f64();
+        if cr.is_some() || cl.is_some() {
+            return Some(BalanceInfo {
+                mode: "token_credit".into(),
+                credit_remaining: cr,
+                credit_limit: cl,
+                credit_label: data["label"].as_str().map(String::from),
+                weekly_remaining: None,
+                weekly_limit: None,
+                hours_5_remaining: None,
+                model_remains: None,
+            });
+        }
+
+        // 3. DeepSeek 风格: { balance_infos: [{ total_balance, currency }] }
+        if let Some(infos) = body["balance_infos"].as_array() {
+            if let Some(first) = infos.first() {
+                if let Some(total) = first["total_balance"].as_str() {
+                    let cr = total.parse::<f64>().ok();
+                    return Some(BalanceInfo {
+                        mode: "token_credit".into(),
+                        credit_remaining: cr,
+                        credit_limit: None,
+                        credit_label: first["currency"].as_str().map(String::from),
+                        weekly_remaining: None,
+                        weekly_limit: None,
+                        hours_5_remaining: None,
+                        model_remains: None,
+                    });
+                }
+            }
+        }
+
+        // 4. data 为数组: { data: [{ balance / credit / quota, ... }] }
+        if let Some(arr) = data.as_array().and_then(|a| a.first()) {
+            for key in &["balance", "credit", "credit_remaining", "quota", "remaining"] {
+                if let Some(v) = arr[key].as_f64() {
+                    return Some(BalanceInfo {
+                        mode: "token_credit".into(),
+                        credit_remaining: Some(v),
+                        credit_limit: arr["limit"].as_f64().or(arr["credit_limit"].as_f64()),
+                        credit_label: arr["currency"].as_str().map(String::from),
+                        weekly_remaining: None,
+                        weekly_limit: None,
+                        hours_5_remaining: None,
+                        model_remains: None,
+                    });
+                }
+            }
+        }
+
+        // 5. 顶层 token/credit 相关字段
+        for key in &[
+            "balance",
+            "credit",
+            "credit_remaining",
+            "total_balance",
+            "quota",
+            "remaining_quota",
+            "token_balance",
+            "remaining",
+        ] {
+            if let Some(v) = body[key].as_f64() {
+                return Some(BalanceInfo {
+                    mode: "token_credit".into(),
+                    credit_remaining: Some(v),
+                    credit_limit: None,
+                    credit_label: body["currency"].as_str().map(String::from),
+                    weekly_remaining: None,
+                    weekly_limit: None,
+                    hours_5_remaining: None,
+                    model_remains: None,
+                });
+            }
+        }
+
+        // 6. 订阅模式: { subscription / plan: { weekly_remaining, ... } }
+        if let Some(sub) = body.get("subscription").or(body.get("plan")) {
+            return Some(BalanceInfo {
+                mode: "subscription".into(),
+                credit_remaining: None,
+                credit_limit: None,
+                credit_label: None,
+                weekly_remaining: sub
+                    .get("weekly_remaining")
+                    .and_then(|v| v.as_str().or_else(|| v.as_number().map(|_| "")))
+                    .map(|s| s.to_string()),
+                weekly_limit: sub
+                    .get("weekly_limit")
+                    .and_then(|v| v.as_str().or_else(|| v.as_number().map(|_| "")))
+                    .map(|s| s.to_string()),
+                hours_5_remaining: sub
+                    .get("5h_remaining")
+                    .or(sub.get("hours_5_remaining"))
+                    .and_then(|v| v.as_str().or_else(|| v.as_number().map(|_| "")))
+                    .map(|s| s.to_string()),
+                model_remains: None,
+            });
+        }
+
+        None
+    }
+
+    for probe in &probes {
+        for base in &bases {
+            let url = format!("{}{}", base, probe);
+            let mut req = client.get(&url);
+            if !api_key.is_empty() {
+                req = req.bearer_auth(&api_key);
+            }
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        match resp.json::<Value>().await {
+                            Ok(body) => {
+                                tracing::info!(
+                                    "余额探测成功: {} → body keys: {:?}",
+                                    url,
+                                    body.as_object().map(|o| o.keys().collect::<Vec<_>>())
+                                );
+                                if let Some(info) = try_parse_balance(&body) {
+                                    return Ok(info);
+                                }
+                                tracing::info!("余额解析未能匹配已知格式: {:?}", body);
+                            }
+                            Err(e) => tracing::info!("余额探测 JSON 解析失败: {} → {}", url, e),
+                        }
+                    } else {
+                        tracing::info!("余额探测 HTTP {}: {}", status.as_u16(), url);
+                    }
+                }
+                Err(e) => tracing::debug!("余额探测请求失败: {} → {}", url, e),
+            }
+        }
+    }
+    tracing::info!("余额探测全部失败: upstream={}, bases={:?}", upstream, bases);
+
+    Ok(BalanceInfo {
+        mode: "unsupported".into(),
+        credit_remaining: None,
+        credit_limit: None,
+        credit_label: None,
+        weekly_remaining: None,
+        weekly_limit: None,
+        hours_5_remaining: None,
+        model_remains: None,
+    })
+}
+
 // ── 会话管理 ──────────────────────────────────────────────────────────────
 
 /// 列出所有活跃会话
@@ -1241,7 +1632,6 @@ pub async fn undo_delete_session(
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 
-/// 将 Account 转为前端安全的 Value（Key 脱敏）
 fn account_to_value(a: &deecodex::accounts::Account) -> Value {
     json!({
         "id": a.id,
@@ -1255,7 +1645,69 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "vision_model": a.vision_model,
         "vision_endpoint": a.vision_endpoint,
         "from_codex_config": a.from_codex_config,
+        "balance_url": a.balance_url,
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     })
+}
+
+// ── 线程聚合 ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let status =
+        deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
+    Ok(serde_json::to_value(status).map_err(|e| format!("序列化失败: {e}"))?)
+}
+
+#[tauri::command]
+pub async fn list_threads() -> Result<Value, String> {
+    let threads =
+        deecodex::codex_threads::list_all().map_err(|e| format!("获取线程列表失败: {e}"))?;
+    Ok(serde_json::to_value(threads).map_err(|e| format!("序列化失败: {e}"))?)
+}
+
+#[tauri::command]
+pub async fn migrate_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("迁移失败: {e}"))?;
+    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+}
+
+#[tauri::command]
+pub async fn restore_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = deecodex::codex_threads::restore(&data_dir).map_err(|e| format!("还原失败: {e}"))?;
+    // 还原后若服务未运行，清理 Codex config.toml 中的 deecodex 注入
+    if !manager.is_running().await {
+        deecodex::codex_config::remove();
+    }
+    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+}
+
+#[tauri::command]
+pub async fn calibrate_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff =
+        deecodex::codex_threads::calibrate(&data_dir).map_err(|e| format!("校准失败: {e}"))?;
+    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+}
+
+#[tauri::command]
+pub async fn get_thread_content(thread_id: String) -> Result<Value, String> {
+    let content = deecodex::codex_threads::get_thread_content(&thread_id)
+        .map_err(|e| format!("获取线程内容失败: {e}"))?;
+    serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn delete_thread(
+    manager: State<'_, ServerManager>,
+    thread_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    deecodex::codex_threads::delete_thread(&data_dir, &thread_id)
+        .map_err(|e| format!("删除线程失败: {e}"))?;
+    Ok(serde_json::json!({ "ok": true, "message": "线程已永久删除" }))
 }

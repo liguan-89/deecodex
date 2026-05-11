@@ -25,7 +25,11 @@ pub struct Account {
     pub vision_endpoint: String,
     #[serde(default)]
     pub from_codex_config: bool,
+    #[serde(default)]
+    pub balance_url: String,
+    #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
 }
 
@@ -72,12 +76,8 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
                 "deepseek/deepseek-reasoner".into(),
                 "anthropic/claude-sonnet-4.5".into(),
                 "anthropic/claude-opus-4.5".into(),
-                "openai/gpt-5.1".into(),
-                "openai/gpt-5.1-mini".into(),
-                "openai/gpt-5.1-nano".into(),
+                "openai/gpt-5.3-codex".into(),
                 "openai/gpt-5".into(),
-                "google/gemini-2.5-pro".into(),
-                "google/gemini-2.5-flash".into(),
                 "meta-llama/llama-4-maverick".into(),
             ],
             default_api_key_env: "OPENROUTER_API_KEY".into(),
@@ -96,9 +96,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             description: "OpenAI 官方 API，提供 GPT 系列模型".into(),
             default_upstream: "https://api.openai.com/v1".into(),
             known_models: vec![
-                "gpt-5.1".into(),
-                "gpt-5.1-mini".into(),
-                "gpt-5.1-nano".into(),
+                "gpt-5.3-codex".into(),
                 "gpt-5".into(),
                 "gpt-4.1".into(),
                 "gpt-4.1-mini".into(),
@@ -115,7 +113,6 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
                 "claude-sonnet-4-5".into(),
                 "claude-opus-4-5".into(),
                 "claude-haiku-4-5".into(),
-                "claude-3-5-sonnet".into(),
                 "claude-3-5-haiku".into(),
             ],
             default_api_key_env: "ANTHROPIC_API_KEY".into(),
@@ -125,11 +122,7 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
             label: "Google AI".into(),
             description: "Google AI Studio，提供 Gemini 系列模型，有免费额度".into(),
             default_upstream: "https://generativelanguage.googleapis.com/v1beta".into(),
-            known_models: vec![
-                "gemini-2.5-pro".into(),
-                "gemini-2.5-flash".into(),
-                "gemini-2.0-flash".into(),
-            ],
+            known_models: vec!["gemini-2.0-flash".into()],
             default_api_key_env: "GEMINI_API_KEY".into(),
         },
         ProviderPreset {
@@ -149,16 +142,9 @@ pub const CODEX_MODEL_LIST: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
-    "gpt-5.1",
-    "gpt-5.1-mini",
-    "gpt-5.1-nano",
+    "gpt-5.3-codex",
     "gpt-5",
     "codex-auto-review",
-    "claude-sonnet-4-5",
-    "claude-opus-4-5",
-    "claude-3-5-sonnet",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
 ];
 
 // ── 持久化 ─────────────────────────────────────────────────────────────────

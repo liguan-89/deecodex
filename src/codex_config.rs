@@ -275,6 +275,7 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             vision_model: String::new(),
             vision_endpoint: String::new(),
             from_codex_config: true,
+            balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
         };
@@ -384,37 +385,6 @@ fn do_fix(path: &std::path::Path) -> Result<u32> {
             new_content.pop();
         }
         std::fs::write(path, new_content)?;
-    }
-
-    // 2. 清理旧的 [model_providers.custom] 节（已迁移到 deecodex）
-    {
-        let current = std::fs::read_to_string(path)?;
-        if let Ok(mut doc) = current.parse::<toml_edit::DocumentMut>() {
-            let mut changed = false;
-            if let Some(providers) = doc.get_mut("model_providers") {
-                let removed = if let Some(inline) = providers.as_inline_table_mut() {
-                    inline.remove("custom").is_some()
-                } else if let Some(table) = providers.as_table_mut() {
-                    table.remove("custom").is_some()
-                } else {
-                    false
-                };
-                if removed {
-                    fixes += 1;
-                    changed = true;
-                    info!("Codex config.toml: 已清理旧的 [model_providers.custom] 节");
-                }
-            }
-            if doc.get("model_provider").and_then(|v| v.as_str()) == Some("custom") {
-                doc["model_provider"] = toml_edit::value("deecodex");
-                fixes += 1;
-                changed = true;
-                info!("Codex config.toml: model_provider 已从 custom 更新为 deecodex");
-            }
-            if changed {
-                std::fs::write(path, doc.to_string())?;
-            }
-        }
     }
 
     Ok(fixes)

@@ -1,6 +1,6 @@
 [package]
 name = "deecodex-gui"
-version = "1.7.0"
+version = "1.8.6"
 edition = "2021"
 description = "deecodex Desktop GUI"
 
@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-deecodex = { path = ".." }
+deecodex = { path = "..", features = ["pro"] }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

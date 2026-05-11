@@ -264,7 +264,6 @@ body {
   font-family: var(--font-mono); font-size: 9px; font-weight: 600;
   padding: 2px 7px; border-radius: var(--radius-sm); margin-top: 4px;
   letter-spacing: 0.05em;
-  flex-shrink: 0;
 }
 .card-badge.on { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
 .card-badge.off { background: rgba(107,127,168,0.06); color: var(--text-muted); border: 1px solid rgba(107,127,168,0.12); }
@@ -476,8 +475,16 @@ body {
 }
 .btn-danger:hover { background: rgba(255,60,92,0.22); box-shadow: 0 0 16px rgba(255,60,92,0.12); }
 .btn-danger:disabled {
-  background: rgba(255,60,92,0.05); border-color: var(--border-default);
-  color: var(--text-muted); cursor: not-allowed; box-shadow: none;
+  opacity: 0.35; cursor: not-allowed; background: transparent; color: var(--text-muted);
+  border-color: var(--border-dim); box-shadow: none;
+}
+.btn-warning {
+  background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.26);
+}
+.btn-warning:hover { background: rgba(240,144,64,0.22); box-shadow: 0 0 16px rgba(240,144,64,0.12); }
+.btn-warning:disabled {
+  opacity: 0.35; cursor: not-allowed; background: transparent; color: var(--text-muted);
+  border-color: var(--border-dim); box-shadow: none;
 }
 
 /* ── Management Section ── */
@@ -574,6 +581,73 @@ body {
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
 }
 
+/* ── Threads Panel ── */
+.threads-summary {
+  display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;
+}
+.threads-stat {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 14px 20px; min-width: 140px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.threads-stat .stat-value {
+  font-family: var(--font-mono); font-size: 28px; font-weight: 700;
+  color: var(--text-primary); line-height: 1;
+}
+.threads-stat .stat-label {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.threads-stat.other .stat-value { color: var(--amber); }
+.threads-stat.migrated .stat-value { color: var(--green); }
+
+/* ── Threads Toggle ── */
+.threads-toggle-row { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.threads-toggle-label { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.threads-toggle-label.active { color: var(--text-primary); font-weight: 600; }
+.threads-toggle-track {
+  position: relative; width: 52px; height: 28px; flex-shrink: 0;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: 14px; cursor: pointer; transition: background 0.2s, border-color 0.2s;
+}
+.threads-toggle-track.on { background: var(--accent); border-color: var(--accent); }
+.threads-toggle-track.disabled { opacity: 0.5; cursor: not-allowed; }
+.threads-toggle-knob {
+  position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+  background: var(--text-primary); border-radius: 50%; transition: transform 0.2s;
+}
+.threads-toggle-track.on .threads-toggle-knob { transform: translateX(24px); background: #fff; }
+
+.threads-table {
+  width: 100%; border-collapse: collapse; margin-top: 12px;
+}
+.threads-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 8px 0; border-bottom: 2px solid var(--border-subtle);
+}
+.threads-table td {
+  padding: 7px 8px; border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.threads-table td:first-child {
+  color: var(--text-primary); overflow: visible; white-space: nowrap;
+}
+.td-title-text {
+  display: inline-block; max-width: 250px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: middle;
+}
+
+.tag {
+  display: inline-block; font-family: var(--font-mono); font-size: 9px;
+  font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
+  letter-spacing: 0.05em; text-transform: uppercase;
+}
+.tag-current { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.tag-other { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+
 /* ── Sessions Panel ── */
 .session-toolbar {
   display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
@@ -651,7 +725,8 @@ body {
 
 .account-card {
   background: var(--bg-surface); border: 1px solid var(--border-subtle);
-  border-radius: var(--radius); padding: 18px; cursor: pointer;
+  border-radius: var(--radius); padding: 16px; min-height: 150px;
+  display: flex; flex-direction: column;
   transition: all var(--transition); position: relative;
 }
 .account-card:hover { border-color: var(--border-default); }
@@ -679,7 +754,7 @@ body {
 }
 
 .account-card .card-actions-row {
-  display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end;
+  display: flex; gap: 6px; margin-top: auto; padding-top: 8px; justify-content: flex-end;
 }
 .account-card .card-actions-row button {
   font-family: var(--font-mono); font-size: 10px; font-weight: 600;
@@ -692,6 +767,44 @@ body {
 }
 .account-card .card-actions-row button.danger:hover {
   border-color: var(--red); color: var(--red); background: var(--red-dim);
+}
+
+/* Apply button */
+.btn-apply {
+  background: var(--accent) !important; color: #000 !important;
+  border: 1px solid var(--accent) !important; font-weight: 700 !important;
+}
+.btn-apply:hover { opacity: 0.8; }
+.btn-applied {
+  background: var(--green-dim) !important; color: var(--green) !important;
+  border: 1px solid rgba(0,214,143,0.3) !important; cursor: default !important;
+}
+.btn-refresh {
+  font-size: 12px !important; padding: 2px 6px !important; min-width: auto !important;
+  border: 1px solid transparent !important;
+}
+.active-badge {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  padding: 2px 6px; border-radius: var(--radius-sm);
+  color: var(--accent); background: var(--accent-dim);
+  border: 1px solid rgba(0,200,232,0.2);
+}
+
+/* Balance display */
+.card-balance {
+  font-family: var(--font-mono); font-size: 11px;
+  margin-top: 4px; min-height: 18px;
+}
+.balance-loading { color: var(--text-muted); font-style: italic; }
+.balance-na { color: var(--text-muted); font-size: 10px; }
+.balance-row { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+.balance-row .bar-track {
+  flex: 1; height: 3px; background: var(--border-subtle);
+  border-radius: 2px; overflow: hidden;
+}
+.balance-row .bar-fill {
+  height: 100%; background: var(--accent); border-radius: 2px;
+  transition: width 0.4s ease;
 }
 
 /* Provider Badges */
@@ -845,6 +958,79 @@ body {
   display: flex; align-items: center; gap: 8px;
 }
 .section-sub-label::before { content: '>'; color: var(--accent); font-weight: 700; }
+
+/* ── Thread Row ── */
+.thread-row { cursor: pointer; transition: background var(--transition); }
+.thread-row:hover { background: var(--accent-dim); }
+.tag-delete {
+  display: none; font-family: var(--font-mono); font-size: 9px;
+  font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+  background: var(--red-dim); color: var(--red);
+  border: 1px solid rgba(255, 60, 92, 0.2); vertical-align: middle;
+}
+.thread-row:hover .tag-delete { display: inline-block; }
+.tag-delete:hover { background: rgba(255, 60, 92, 0.25); }
+
+/* ── Detail Panel ── */
+.detail-panel {
+  display: flex; flex-direction: column; height: 100%;
+}
+.detail-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface); flex-shrink: 0;
+}
+.detail-header h2 {
+  flex: 1; font-family: var(--font-mono); font-size: 14px;
+  font-weight: 600; color: var(--text-heading);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.detail-back-btn {
+  background: none; border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+  color: var(--text-secondary); cursor: pointer; font-size: 16px; line-height: 1;
+  padding: 4px 10px; transition: border-color var(--transition), color var(--transition);
+}
+.detail-back-btn:hover { border-color: var(--accent); color: var(--accent); }
+.detail-delete-btn {
+  background: none; border: 1px solid var(--red); border-radius: var(--radius-sm);
+  color: var(--red); cursor: pointer; font-size: 12px; font-weight: 600;
+  padding: 4px 12px; transition: background var(--transition);
+  font-family: var(--font-sans);
+}
+.detail-delete-btn:hover { background: var(--red-dim); }
+
+.detail-messages {
+  flex: 1; overflow-y: auto; padding: 16px;
+}
+
+.msg-bubble {
+  margin-bottom: 12px; padding: 10px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border-subtle); background: var(--bg-elevated);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+}
+.msg-bubble .msg-role {
+  font-weight: 700; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 4px;
+}
+.msg-bubble.user .msg-role { color: #4ea8ff; }
+.msg-bubble.assistant .msg-role { color: var(--green); }
+.msg-bubble.developer .msg-role, .msg-bubble.tool .msg-role { color: var(--text-muted); }
+.msg-bubble .msg-body {
+  color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto;
+}
+.msg-bubble .msg-body.expanded { max-height: none; }
+.msg-expand-btn {
+  display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted);
+  cursor: pointer; background: none; border: none; font-family: var(--font-mono);
+}
+.msg-expand-btn:hover { color: var(--accent); }
+
+.detail-loading {
+  display: flex; align-items: center; justify-content: center;
+  height: 200px; color: var(--text-muted); font-family: var(--font-mono);
+}
 </style>
 </head>
 <body>
@@ -881,6 +1067,10 @@ body {
 
       <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
         <span class="icon">▤</span> 会话管理
+      </button>
+
+      <button class="nav-item" data-panel="threads" onclick="switchPanel('threads')">
+        <span class="icon">⟐</span> 线程聚合
       </button>
 
       <span class="nav-section-label">帮助</span>
@@ -986,6 +1176,7 @@ let accountsView = 'list';
 let accountsData = { accounts: [], active_id: null };
 let editingAccount = null;
 let providerPresets = [];
+let upstreamModels = [];
 
 // ═══════════════════════════════════════════════════════════════
 // 初始化
@@ -1023,6 +1214,7 @@ function renderPanel(panelId) {
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
     case 'help': container.innerHTML = renderHelp(); break;
     case 'sessions': container.innerHTML = renderSessions(); refreshSessions(); break;
+    case 'threads': container.innerHTML = renderThreads(); refreshThreads(); break;
     case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
@@ -1878,9 +2070,330 @@ function computerLabel(v) {
 
 
 // ═══════════════════════════════════════════════════════════════
+// 线程聚合
+// ═══════════════════════════════════════════════════════════════
+let _threadsData = null;
+
+function renderThreads() {
+  return `<div class="page-header">
+    <h2>线程聚合</h2>
+    <p>切换 Codex 侧边栏会话历史的 provider 归属</p>
+  </div>
+  <div class="threads-toggle-row">
+    <span class="threads-toggle-label" id="toggleLabelCodex">隔离模式</span>
+    <div class="threads-toggle-track" id="threadsToggle" onclick="toggleThreadsMode()">
+      <div class="threads-toggle-knob"></div>
+    </div>
+    <span class="threads-toggle-label" id="toggleLabelDeecodex">聚合模式</span>
+  </div>
+  <div class="threads-summary" id="threadsSummary">
+    <div class="threads-stat"><div class="stat-value">—</div><div class="stat-label">总线程数</div></div>
+    <div class="threads-stat other"><div class="stat-value">—</div><div class="stat-label">非统一线程</div></div>
+    <div class="threads-stat migrated"><div class="stat-value">—</div><div class="stat-label">当前模式</div></div>
+  </div>
+  <div class="mgmt-actions" style="margin-bottom:20px;">
+    <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()">⟐ 聚合所有线程</button>
+    <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()">↩ 还原隔离模式</button>
+    <button class="btn btn-warning" id="btnCalibrate" onclick="doCalibrate()" style="display:none;">⟐ 校准</button>
+    <button class="btn btn-ghost" onclick="refreshThreads()">⟳ 刷新</button>
+  </div>
+  <div id="threadsProviderBreakdown"></div>
+  <div class="section-sub-label" style="margin-top:20px;">线程列表</div>
+  <div style="max-height:50vh;overflow-y:auto;">
+    <table class="threads-table">
+      <thead><tr><th>标题</th><th>Provider</th><th>更新时间</th><th>状态</th></tr></thead>
+      <tbody id="threadsTableBody"><tr><td colspan="4" style="text-align:center;color:var(--text-muted);">加载中...</td></tr></tbody>
+    </table>
+  </div>`;
+}
+
+async function refreshThreads() {
+  try {
+    const [status, list] = await Promise.all([
+      invoke('get_threads_status'),
+      invoke('list_threads'),
+    ]);
+    _threadsData = { status, list };
+
+    // 更新统计卡片
+    const cards = document.querySelectorAll('#threadsSummary .stat-value');
+    if (cards.length >= 3) {
+      cards[0].textContent = status.total;
+      cards[1].textContent = status.non_unified_count;
+      if (status.calibration_needed) {
+        cards[2].textContent = '需要校准';
+        cards[2].style.color = 'var(--amber)';
+      } else {
+        cards[2].textContent = status.migrated ? '聚合模式' : '隔离模式';
+        cards[2].style.color = status.migrated ? 'var(--green)' : 'var(--text-primary)';
+      }
+    }
+
+    // 更新 toggle 状态
+    updateToggle(status.migrated && !status.calibration_needed, status.active_provider);
+
+    // 更新按钮状态
+    const btnMigrate = document.getElementById('btnMigrate');
+    const btnRestore = document.getElementById('btnRestore');
+    const btnCalibrate = document.getElementById('btnCalibrate');
+    if (btnMigrate) btnMigrate.style.display = status.calibration_needed ? 'none' : '';
+    if (btnMigrate) btnMigrate.disabled = status.migrated || status.non_unified_count === 0;
+    if (btnRestore) btnRestore.style.display = status.calibration_needed ? 'none' : '';
+    if (btnRestore) btnRestore.disabled = !status.migrated;
+    if (btnCalibrate) btnCalibrate.style.display = status.calibration_needed ? '' : 'none';
+
+    // 各 provider 分布
+    const breakdown = document.getElementById('threadsProviderBreakdown');
+    if (breakdown) {
+      breakdown.innerHTML = status.summary.map(s => {
+        const cls = s.provider === status.active_provider ? 'tag-current' : 'tag-other';
+        return `<span class="tag ${cls}" style="margin-right:6px;margin-bottom:4px;">${esc(s.provider)}: ${s.count}</span>`;
+      }).join('');
+    }
+
+    // 线程列表
+    const tbody = document.getElementById('threadsTableBody');
+    if (tbody) {
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">无线程数据</td></tr>';
+      } else {
+        tbody.innerHTML = list.map(t => {
+          const isActive = status.active_provider && t.model_provider === status.active_provider;
+          const providerTag = isActive
+            ? `<span class="tag tag-current">${esc(t.model_provider)}</span>`
+            : `<span class="tag tag-other">${esc(t.model_provider)}</span>`;
+          const time = t.updated_at_ms
+            ? new Date(t.updated_at_ms).toLocaleString('zh-CN')
+            : '—';
+          const archived = t.archived ? ' [已归档]' : '';
+          return `<tr class="thread-row" onclick="openThread('${escAttr(t.id)}')">
+            <td title="${escAttr(t.title)}"><span class="td-title-text">${esc(t.title || '(无标题)')}${archived}</span><span class="tag-delete" onclick="event.stopPropagation();deleteThreadRow('${escAttr(t.id)}')">删除</span></td>
+            <td>${providerTag}</td>
+            <td>${esc(time)}</td>
+            <td>${esc(t.id).substring(0,12)}...</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+  } catch (err) {
+    showToast('加载线程数据失败: ' + err, 'error');
+    const tbody = document.getElementById('threadsTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--red);">加载失败: ' + esc(String(err)) + '</td></tr>';
+  }
+}
+
+function updateToggle(migrated, activeProvider) {
+  const track = document.getElementById('threadsToggle');
+  const labelCodex = document.getElementById('toggleLabelCodex');
+  const labelDeecodex = document.getElementById('toggleLabelDeecodex');
+  if (track) {
+    if (migrated) track.classList.add('on'); else track.classList.remove('on');
+  }
+  if (labelCodex) {
+    if (migrated) labelCodex.classList.remove('active'); else labelCodex.classList.add('active');
+  }
+  if (labelDeecodex) {
+    labelDeecodex.textContent = '聚合模式';
+    if (migrated) labelDeecodex.classList.add('active'); else labelDeecodex.classList.remove('active');
+  }
+}
+
+async function doMigrate() {
+  if (!await showConfirm('确定要聚合所有线程吗？\n\n所有线程将统一到当前活跃 provider，Codex 侧边栏将聚合显示所有会话。\n迁移前会自动备份，可随时还原。')) return;
+
+  const btn = document.getElementById('btnMigrate');
+  if (btn) btn.disabled = true;
+  showToast('迁移中...', 'info');
+
+  try {
+    const diff = await invoke('migrate_threads');
+    showToast(`已迁移 ${diff.changed_count} 条线程`, 'success');
+    await refreshThreads();
+  } catch (err) {
+    showToast('迁移失败: ' + err, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function doRestore() {
+  if (!await showConfirm('确定要切换到隔离模式吗？\n\n所有线程将还原到各自的原始 provider。\n\n还原后备份将被删除。')) return;
+
+  const btn = document.getElementById('btnRestore');
+  if (btn) btn.disabled = true;
+  showToast('还原中...', 'info');
+
+  try {
+    const diff = await invoke('restore_threads');
+    showToast(`已还原 ${diff.changed_count} 条线程`, 'success');
+    await refreshThreads();
+  } catch (err) {
+    showToast('还原失败: ' + err, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function doCalibrate() {
+  const activeProvider = (_threadsData && _threadsData.status && _threadsData.status.active_provider) || '';
+  if (!await showConfirm(`检测到活跃 provider 已变更，需要重新校准。\n\n将还原原始 provider 后重新聚合到「${activeProvider}」。`)) return;
+
+  const btn = document.getElementById('btnCalibrate');
+  if (btn) btn.disabled = true;
+  showToast('校准中...', 'info');
+
+  try {
+    const diff = await invoke('calibrate_threads');
+    showToast(`已校准 ${diff.changed_count} 条线程到 ${diff.target_provider}`, 'success');
+    await refreshThreads();
+  } catch (err) {
+    showToast('校准失败: ' + err, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function toggleThreadsMode() {
+  const track = document.getElementById('threadsToggle');
+  const isCurrentlyOn = track && track.classList.contains('on');
+  const needsCalibration = _threadsData && _threadsData.status && _threadsData.status.calibration_needed;
+  const activeProvider = (_threadsData && _threadsData.status && _threadsData.status.active_provider) || '';
+
+  // 需要校准时，点击 toggle 触发校准
+  if (needsCalibration) {
+    await doCalibrate();
+    return;
+  }
+
+  const newMode = !isCurrentlyOn;
+
+  const label = newMode ? '聚合模式' : '隔离模式';
+  if (!await showConfirm(`确定要切换到「${label}」模式吗？\n\n${newMode ? `所有线程将统一标识为「${activeProvider}」，Codex 侧边栏下聚合显示。\n不影响 Codex 当前路由行为。` : '线程将还原到各自的原始 provider。'}`)) return;
+
+  track.classList.add('disabled');
+  showToast('切换中...', 'info');
+
+  try {
+    if (newMode) {
+      const diff = await invoke('migrate_threads');
+      showToast(`已切换到聚合模式，${diff.changed_count} 条线程已迁移`, 'success');
+    } else {
+      const diff = await invoke('restore_threads');
+      showToast(`已切换到隔离模式，${diff.changed_count} 条线程已还原`, 'success');
+    }
+    await refreshThreads();
+  } catch (err) {
+    showToast('切换失败: ' + err, 'error');
+  } finally {
+    track.classList.remove('disabled');
+  }
+}
+
+// ── 线程详情面板 ──
+
+let _currentThreadId = null;
+
+function openThread(threadId) {
+  _currentThreadId = threadId;
+  const container = document.getElementById('mainContent');
+  if (!container) return;
+  container.innerHTML = `<div class="detail-panel">
+    <div class="detail-header">
+      <button class="detail-back-btn" onclick="closeThreadDetail()">← 返回</button>
+      <h2 id="detailTitle">加载中...</h2>
+      <button class="detail-delete-btn" onclick="deleteThreadFromDetail('${escAttr(threadId)}')">删除</button>
+    </div>
+    <div class="detail-messages" id="detailMessages">
+      <div class="detail-loading">加载中...</div>
+    </div>
+  </div>`;
+
+  invoke('get_thread_content', { threadId })
+    .then(content => {
+      const titleEl = document.getElementById('detailTitle');
+      if (titleEl) titleEl.textContent = content.thread.title || '(无标题)';
+      const msgsEl = document.getElementById('detailMessages');
+      if (!msgsEl) return;
+      if (!content.messages || content.messages.length === 0) {
+        msgsEl.innerHTML = '<div class="detail-loading">此会话无对话内容</div>';
+        return;
+      }
+      msgsEl.innerHTML = content.messages.map(renderMessage).join('');
+    })
+    .catch(err => {
+      const msgsEl = document.getElementById('detailMessages');
+      if (msgsEl) msgsEl.innerHTML = `<div class="detail-loading" style="color:var(--red);">加载失败: ${esc(String(err))}</div>`;
+    });
+}
+
+function closeThreadDetail() {
+  _currentThreadId = null;
+  const container = document.getElementById('mainContent');
+  if (container) container.innerHTML = renderThreads();
+  refreshThreads();
+}
+
+function renderMessage(msg) {
+  const role = (msg.payload && msg.payload.role) || msg.role || (msg.type || 'system');
+  const roleClass = ['user', 'assistant', 'developer', 'tool'].includes(role) ? role : 'system';
+
+  let body = '';
+  if (msg.payload && msg.payload.content) {
+    if (Array.isArray(msg.payload.content)) {
+      body = msg.payload.content
+        .filter(c => c.type === 'input_text' || c.type === 'output_text' || c.type === 'text')
+        .map(c => c.text || '')
+        .join('\n');
+    } else if (typeof msg.payload.content === 'string') {
+      body = msg.payload.content;
+    }
+  }
+  if (!body && msg.payload && msg.payload.text) {
+    body = msg.payload.text;
+  }
+  if (!body) {
+    try { body = JSON.stringify(msg.payload || msg, null, 2); } catch (_) { body = '(无法解析)'; }
+  }
+
+  const truncated = body.length > 500;
+  const displayBody = truncated ? body.substring(0, 500) : body;
+  const expandBtn = truncated
+    ? `<button class="msg-expand-btn" onclick="this.previousElementSibling.classList.toggle('expanded');this.textContent=this.previousElementSibling.classList.contains('expanded')?'收起':'展开全部';">展开全部</button>`
+    : '';
+
+  return `<div class="msg-bubble ${roleClass}">
+    <div class="msg-role">${esc(role)}</div>
+    <div class="msg-body">${esc(displayBody)}</div>
+    ${expandBtn}
+  </div>`;
+}
+
+async function deleteThreadFromDetail(threadId) {
+  if (!await showConfirm('确定要永久删除此线程吗？\n\n此操作不可恢复，线程将从 SQLite、会话文件和迁移备份中同时移除。')) return;
+  try {
+    await invoke('delete_thread', { threadId });
+    showToast('线程已永久删除', 'success');
+    closeThreadDetail();
+  } catch (err) {
+    showToast('删除失败: ' + err, 'error');
+  }
+}
+
+async function deleteThreadRow(threadId) {
+  if (!await showConfirm('确定要永久删除此线程吗？\n\n此操作不可恢复，线程将从 SQLite、会话文件和迁移备份中同时移除。')) return;
+  try {
+    await invoke('delete_thread', { threadId });
+    showToast('线程已永久删除', 'success');
+    refreshThreads();
+  } catch (err) {
+    showToast('删除失败: ' + err, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 账号管理
 // ═══════════════════════════════════════════════════════════════
-const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-5.1-mini', 'gpt-5.1-nano', 'gpt-5', 'codex-auto-review', 'claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-5-sonnet', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5', 'codex-auto-review'];
 
 function providerBadgeClass(p) {
   return 'badge-provider badge-' + (p || 'custom');
@@ -1917,25 +2430,31 @@ function renderAccountList() {
   } else {
     cards = '<div class="accounts-grid">' + list.map(a => {
       const active = a.id === accountsData.active_id;
-      const preset = providerPresets.find(p => p.slug === a.provider);
-      const knownCount = preset ? preset.known_models.length : 0;
-      return `<div class="account-card${active ? ' active' : ''}" onclick="switchAccount('${escAttr(a.id)}')">
+      return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-header">
           <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
-          <button class="card-delete-btn" onclick="event.stopPropagation();deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
+          ${active ? '<span class="active-badge">✓ 活跃</span>' : ''}
+          <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
         </div>
         <div class="card-name">${esc(a.name)}</div>
         <div class="card-key">${esc(a.api_key || '(未配置)')}</div>
         <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
+        <div class="card-balance" id="balance-${escAttr(a.id)}">
+          <span class="balance-loading">—</span>
+        </div>
         <div class="card-actions-row">
-          <button onclick="event.stopPropagation();editAccount('${escAttr(a.id)}')">⚙ 编辑</button>
+          <button class="btn-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">↻</button>
+          ${active
+            ? '<button class="btn-applied" disabled>✓ 已应用</button>'
+            : `<button class="btn-apply" onclick="applyAccount('${escAttr(a.id)}')">▶ 应用</button>`}
+          <button onclick="editAccount('${escAttr(a.id)}')">⚙ 编辑</button>
         </div>
       </div>`;
     }).join('') + '</div>';
   }
 
   return `<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
-    <div><h2>账号管理</h2><p>管理上游 LLM 账号，点击卡片切换活跃账号</p></div>
+    <div><h2>账号管理</h2><p>管理上游 LLM 账号，点击「应用」切换活跃账号</p></div>
     <div style="display:flex;gap:10px;">
       <button class="btn btn-ghost" onclick="importFromCodex()">📥 导入 Codex 配置</button>
       <button class="btn btn-primary" onclick="navigateAccounts('add')">+ 添加账号</button>
@@ -2002,10 +2521,19 @@ function renderAccountDetail() {
         </div>
         <span class="hint">如包含 **** 表示未修改，保存时将保留原值</span>
       </div>
+      <div class="config-field">
+        <label>余额查询 URL <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
+        <input type="text" id="edit_balance_url" value="${escAttr(a.balance_url || '')}" placeholder="留空则自动探测">
+        <span class="hint">自定义余额/额度查询接口地址，例如 https://api.minimax.com/v1/account/info</span>
+      </div>
     </div>
 
     <div class="section-sub-label">模型映射</div>
     <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">左侧为 Codex 请求的模型名，右侧为上游实际模型名</div>
+    <div style="margin-bottom:10px;">
+      <button class="btn btn-ghost" onclick="fetchAndPopulateModels()" style="font-size:11px;">⬇ 从上游获取模型列表</button>
+      <span id="modelFetchStatus" style="font-size:10px;color:var(--text-muted);margin-left:8px;"></span>
+    </div>
     <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
     <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
 
@@ -2060,10 +2588,11 @@ function renderModelMappingRows(knownModels) {
       rows.push({ codexModel: k, val: v, readonly: false });
     }
   }
-  // 额外空行
+  // 优先使用从上游获取的模型列表，否则用预设列表
+  const modelSource = upstreamModels.length > 0 ? upstreamModels : (knownModels || []);
   const datalistId = 'dl_' + Math.random().toString(36).slice(2, 8);
-  const datalistOptions = (knownModels || []).map(m => `<option value="${escAttr(m)}">`).join('');
-  const datalistHtml = datalistOptions ? `<datalist id="${datalistId}">${datalistOptions}</datalist>` : '';
+  const datalistOptions = modelSource.map(m => `<option value="${escAttr(m)}">`).join('');
+  const datalistHtml = `<datalist id="${datalistId}">${datalistOptions}</datalist>`;
 
   return datalistHtml + rows.map((r, i) => {
     const labelExtra = r.readonly ? '' : ' (自定义)';
@@ -2087,6 +2616,10 @@ async function loadAccountsData() {
     accountsData = result;
     if (!providerPresets.length) await loadProviderPresets();
     if (accountsView !== 'add') renderMainContent();
+    // 异步加载余额（不阻塞渲染）
+    if (accountsView === 'list') {
+      (accountsData.accounts || []).forEach(a => fetchBalanceForCard(a));
+    }
   } catch (e) {
     showToast('加载账号失败: ' + e, 'error');
   }
@@ -2176,20 +2709,25 @@ async function switchAccount(id) {
   }
 }
 
-async function addAccount(provider) {
-  try {
-    const result = await invoke('add_account', { provider });
-    showToast('账号已创建', 'success');
-    await loadAccountsData();
-    // 找到新账号进入编辑
-    editingAccount = accountsData.accounts.find(a => a.id === result.id);
-    if (editingAccount) {
-      accountsView = 'edit';
-      renderMainContent();
-    }
-  } catch (e) {
-    showToast('创建账号失败: ' + e, 'error');
-  }
+function addAccount(provider) {
+  const preset = providerPresets.find(p => p.slug === provider);
+  if (!preset) return;
+  editingAccount = {
+    id: '',
+    name: preset.label + ' 账号',
+    provider: provider,
+    upstream: preset.default_upstream,
+    api_key: '',
+    model_map: {},
+    vision_upstream: '',
+    vision_api_key: '',
+    vision_model: '',
+    vision_endpoint: '',
+    from_codex_config: false,
+    balance_url: '',
+  };
+  accountsView = 'edit';
+  renderMainContent();
 }
 
 function editAccount(id) {
@@ -2214,7 +2752,6 @@ async function saveAccount() {
   const keyInput = document.getElementById('edit_api_key');
   if (keyInput) {
     const newKey = keyInput.value.trim();
-    // 只有用户真正修改了才传新 Key
     if (newKey && !newKey.includes('****') && newKey !== a.api_key) {
       a.api_key = newKey;
     }
@@ -2232,12 +2769,22 @@ async function saveAccount() {
   const ve = document.getElementById('edit_vision_endpoint');
   if (ve) a.vision_endpoint = ve.value.trim();
 
+  const bu = document.getElementById('edit_balance_url');
+  if (bu) a.balance_url = bu.value.trim();
+
   a.model_map = collectModelMap();
   a.updated_at = Math.floor(Date.now() / 1000);
 
   try {
-    const result = await invoke('update_account', { accountJson: JSON.stringify(a) });
-    showToast('账号已保存', 'success');
+    let result;
+    if (!a.id) {
+      // 新账号
+      result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: JSON.stringify(a) });
+      showToast('账号已创建', 'success');
+    } else {
+      result = await invoke('update_account', { accountJson: JSON.stringify(a) });
+      showToast('账号已保存', 'success');
+    }
     await loadAccountsData();
     editingAccount = accountsData.accounts.find(ac => ac.id === result.id);
     if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));
@@ -2267,6 +2814,109 @@ async function importFromCodex() {
   } catch (e) {
     showToast('导入失败: ' + e, 'error');
   }
+}
+
+// ── 模型获取与余额查询 ──
+
+let balanceCache = {};
+
+async function applyAccount(id) {
+  try {
+    await invoke('switch_account', { id });
+    accountsData.active_id = id;
+    showToast('已切换活跃账号', 'success');
+    await loadAccountsData();
+  } catch (e) {
+    showToast('切换账号失败: ' + e, 'error');
+  }
+}
+
+async function fetchAndPopulateModels() {
+  const statusEl = document.getElementById('modelFetchStatus');
+  if (statusEl) statusEl.textContent = '获取中...';
+  try {
+    // 已有账号：传 accountId 让后端查真实 Key；新账号：传表单值
+    if (editingAccount && editingAccount.id) {
+      upstreamModels = await invoke('fetch_upstream_models', { accountId: editingAccount.id });
+    } else {
+      const upstream = document.getElementById('edit_upstream')?.value?.trim();
+      const keyInput = document.getElementById('edit_api_key');
+      let apiKey = keyInput ? keyInput.value.trim() : '';
+      if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
+      upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey });
+    }
+    if (upstreamModels.length > 0) {
+      if (statusEl) statusEl.textContent = `✓ 获取到 ${upstreamModels.length} 个模型`;
+      // 重新渲染模型映射行
+      const knownModels = getProviderKnownModels(editingAccount?.provider || '');
+      document.getElementById('modelMapRows').innerHTML = renderModelMappingRows(knownModels);
+    } else {
+      if (statusEl) statusEl.textContent = '上游未返回模型';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '获取失败';
+    showToast('获取模型列表失败: ' + e, 'error');
+  }
+}
+
+async function fetchBalanceForCard(a) {
+  const el = document.getElementById('balance-' + a.id);
+  if (!el) return;
+  const cacheKey = a.id;
+  // 5 分钟内使用缓存
+  if (balanceCache[cacheKey] && balanceCache[cacheKey].ts > Date.now() - 300000) {
+    el.innerHTML = renderBalanceInfo(balanceCache[cacheKey].info);
+    return;
+  }
+  el.innerHTML = '<span class="balance-loading">...</span>';
+  try {
+    const info = await invoke('fetch_balance', { accountId: a.id });
+    balanceCache[cacheKey] = { info, ts: Date.now() };
+    el.innerHTML = renderBalanceInfo(info);
+  } catch (e) {
+    el.innerHTML = '<span class="balance-na">不可用</span>';
+  }
+}
+
+async function refreshBalanceForCard(id) {
+  const a = (accountsData.accounts || []).find(acc => acc.id === id);
+  if (!a) return;
+  delete balanceCache[id];
+  await fetchBalanceForCard(a);
+}
+
+function renderBalanceInfo(info) {
+  if (info.mode === 'token_credit') {
+    const remaining = info.credit_remaining;
+    const limit = info.credit_limit;
+    const pct = limit > 0 ? Math.round(remaining / limit * 100) : 0;
+    const label = info.credit_label ? ` (${info.credit_label})` : '';
+    return `<div class="balance-row">
+      <span>💳 $${remaining != null ? remaining.toFixed(2) : '—'}${limit != null ? ' / $' + limit.toFixed(2) : ''}${label}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(pct, 100)}%"></div></div>
+    </div>`;
+  }
+  if (info.mode === 'subscription') {
+    return `<div class="balance-row">
+      <span>📅 ${info.weekly_remaining || '—'}/${info.weekly_limit || '—'}</span>
+      <span>⏱ 5h: ${info.hours_5_remaining || '—'}</span>
+    </div>`;
+  }
+  if (info.mode === 'coding_plan' && info.model_remains) {
+    const coding = info.model_remains.find(m => m.model_name === 'MiniMax-M*') || info.model_remains[0];
+    if (!coding) return '<span class="balance-na">无模型数据</span>';
+    const iRemain = coding.interval_total - coding.interval_used;
+    const iPct = coding.interval_total > 0 ? Math.round(iRemain / coding.interval_total * 100) : 0;
+    const wRemain = coding.weekly_total - coding.weekly_used;
+    const wPct = coding.weekly_total > 0 ? Math.round(wRemain / coding.weekly_total * 100) : 0;
+    return `<div class="balance-row">
+      <span>5h ${iRemain}/${coding.interval_total}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(iPct, 100)}%"></div></div>
+      <span style="font-size:10px;">周 ${wRemain}/${coding.weekly_total}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(wPct, 100)}%"></div></div>
+    </div>`;
+  }
+  return '<span class="balance-na">不支持</span>';
 }
 
 // ═══════════════════════════════════════════════════════════════

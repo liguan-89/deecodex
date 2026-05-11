@@ -295,9 +295,18 @@ pub fn run() {
             commands::switch_account,
             commands::import_codex_config,
             commands::get_provider_presets,
+            commands::fetch_upstream_models,
+            commands::fetch_balance,
             commands::list_sessions,
             commands::delete_session,
             commands::undo_delete_session,
+            commands::get_threads_status,
+            commands::list_threads,
+            commands::migrate_threads,
+            commands::restore_threads,
+            commands::calibrate_threads,
+            commands::get_thread_content,
+            commands::delete_thread,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

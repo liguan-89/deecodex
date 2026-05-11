@@ -1,16 +1,20 @@
 [workspace]
-members = ["deecodex-gui"]
+members = ["deecodex-gui", "deecodex-shared", "deecodex-private"]
 resolver = "2"
 
 [package]
 name = "deecodex"
-version = "1.7.0"
+version = "1.8.6"
 edition = "2021"
 description = "DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层"
 license = "MIT"
 repository = "https://github.com/liguan-89/deecodex"
 keywords = ["codex", "deepseek", "llm", "proxy", "responses-api"]
 categories = ["command-line-utilities", "network-programming"]
+
+[features]
+default = []
+pro = ["deecodex-private"]
 
 [lib]
 name = "deecodex"
@@ -49,3 +53,5 @@ prometheus = "0.14"
 toml_edit = "0.22"
 which = "7"
 rusqlite = { version = "0.31", features = ["bundled"] }
+deecodex-shared = { path = "./deecodex-shared" }
+deecodex-private = { path = "./deecodex-private", optional = true }
