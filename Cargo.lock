@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex-gui"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "axum",
