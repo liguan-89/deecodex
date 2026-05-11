@@ -1,0 +1,307 @@
+//! Codex 线程聚合模块。
+//!
+//! 读取 Codex 本地 state_*.sqlite 中 threads 表，提供跨 provider 的会话聚合功能。
+//! 支持「迁移」：将所有非 deecodex 线程的 model_provider 改为 "deecodex"，
+//! 以及「还原」：从备份恢复原始 model_provider 值。
+//!
+//! 迁移前自动备份，还原后自动清理备份。全程不破坏 Codex 原有数据。
+
+use anyhow::{Context, Result};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// 线程信息（只读）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadInfo {
+    pub id: String,
+    pub title: String,
+    pub model_provider: String,
+    pub created_at_ms: Option<i64>,
+    pub updated_at_ms: Option<i64>,
+    pub archived: bool,
+}
+
+/// 各 provider 的线程数量。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSummary {
+    pub provider: String,
+    pub count: usize,
+}
+
+/// 迁移/还原前后的差异对比。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrationDiff {
+    pub before: Vec<ProviderSummary>,
+    pub after: Vec<ProviderSummary>,
+    pub changed_count: usize,
+}
+
+/// 是否已有迁移备份（即迁移操作已执行过）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadStatus {
+    pub summary: Vec<ProviderSummary>,
+    pub total: usize,
+    pub migrated: bool,
+    pub non_deecodex_count: usize,
+}
+
+/// 查找 Codex 的 state SQLite 数据库。
+///
+/// 优先找版本号最大的 `state_*.sqlite`（不含 -wal/-shm 后缀）。
+fn find_state_db(home: &Path) -> Option<PathBuf> {
+    let codex_dir = home.join(".codex");
+    if !codex_dir.is_dir() {
+        return None;
+    }
+
+    let mut candidates: Vec<_> = std::fs::read_dir(&codex_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("state_")
+                && name.ends_with(".sqlite")
+                && !name.ends_with("-wal")
+                && !name.ends_with("-shm")
+            {
+                let path = e.path();
+                let size = path.metadata().ok()?.len();
+                Some((path, size))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // 取文件最大的（通常版本号最大）
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
+    candidates.into_iter().next().map(|(p, _)| p)
+}
+
+/// 备份文件路径（存在 deecodex data_dir 下）。
+pub fn backup_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("thread_migration_backup.json")
+}
+
+/// 获取当前状态：各 provider 线程数、是否已迁移。
+pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+
+    let summary = get_provider_summary(&db_path)?;
+    let total: usize = summary.iter().map(|s| s.count).sum();
+    let non_deecodex_count: usize = summary
+        .iter()
+        .filter(|s| s.provider != "deecodex")
+        .map(|s| s.count)
+        .sum();
+    let migrated = backup_path(data_dir).exists();
+
+    Ok(ThreadStatus {
+        summary,
+        total,
+        migrated,
+        non_deecodex_count,
+    })
+}
+
+/// 列出所有线程（不过滤 provider）。
+pub fn list_all() -> Result<Vec<ThreadInfo>> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    list_threads(&db_path)
+}
+
+/// 迁移：将所有非 deecodex 线程的 model_provider 改为 "deecodex"。
+/// 迁移前自动备份原始值到 `data_dir/thread_migration_backup.json`。
+pub fn migrate(data_dir: &Path) -> Result<MigrationDiff> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+
+    do_migrate(&db_path, &backup_path(data_dir))
+}
+
+/// 还原：从备份恢复原始 model_provider 值。
+/// 还原后自动删除备份文件。
+pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    let bp = backup_path(data_dir);
+
+    if !bp.exists() {
+        anyhow::bail!("没有迁移备份，无需还原");
+    }
+
+    do_restore(&db_path, &bp)
+}
+
+// ── 内部函数 ──
+
+fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {
+    let conn = Connection::open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived
+         FROM threads
+         ORDER BY COALESCE(updated_at_ms, updated_at) DESC",
+    )?;
+    let threads = stmt
+        .query_map([], |row| {
+            Ok(ThreadInfo {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                model_provider: row.get(2)?,
+                created_at_ms: row.get(3)?,
+                updated_at_ms: row.get(4)?,
+                archived: row.get::<_, i32>(5)? != 0,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(threads)
+}
+
+fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
+    let conn = Connection::open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(model_provider), ''), '(空)'), COUNT(*)
+         FROM threads
+         GROUP BY model_provider
+         ORDER BY COUNT(*) DESC",
+    )?;
+    let summary = stmt
+        .query_map([], |row| {
+            Ok(ProviderSummary {
+                provider: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(summary)
+}
+
+fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
+    let before = get_provider_summary(db_path)?;
+
+    let conn = Connection::open(db_path)?;
+    // 设置 busy timeout 以应对 Codex 持有的 WAL 写锁
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    let mut stmt =
+        conn.prepare("SELECT id, model_provider FROM threads WHERE model_provider != 'deecodex'")?;
+    let new_originals: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    if new_originals.is_empty() {
+        return Ok(MigrationDiff {
+            before: before.clone(),
+            after: before,
+            changed_count: 0,
+        });
+    }
+
+    // 与已有备份合并（追加新线程，保留旧备份中的原始 provider）
+    let mut merged: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if backup_path.exists() {
+        if let Ok(existing_json) = std::fs::read_to_string(backup_path) {
+            if let Ok(existing) = serde_json::from_str::<Vec<(String, String)>>(&existing_json) {
+                for (id, provider) in existing {
+                    merged.insert(id, provider);
+                }
+            }
+        }
+    }
+    for (id, provider) in new_originals {
+        merged.entry(id).or_insert(provider);
+    }
+    let merged_vec: Vec<(String, String)> = merged.into_iter().collect();
+
+    let backup_json = serde_json::to_string_pretty(&merged_vec).context("序列化迁移备份失败")?;
+    std::fs::write(backup_path, backup_json).context("写入迁移备份文件失败")?;
+
+    // 逐条 UPDATE 以避免 WAL 锁冲突导致整批失败
+    let mut changed = 0usize;
+    for (id, _) in &merged_vec {
+        match conn.execute(
+            "UPDATE threads SET model_provider = 'deecodex' WHERE id = ?1 AND model_provider != 'deecodex'",
+            rusqlite::params![id],
+        ) {
+            Ok(n) => changed += n,
+            Err(e) => {
+                tracing::warn!("迁移线程 {id} 失败: {e}");
+            }
+        }
+    }
+
+    let after = get_provider_summary(db_path)?;
+
+    let skipped = merged_vec.len().saturating_sub(changed);
+    if skipped > 0 {
+        tracing::warn!("迁移: {changed} 条成功, {skipped} 条因锁冲突跳过，下次迁移会自动重试");
+    } else {
+        tracing::info!(
+            "已迁移 {changed} 条线程到 deecodex，备份条目数 {}",
+            merged_vec.len()
+        );
+    }
+
+    Ok(MigrationDiff {
+        before,
+        after,
+        changed_count: changed,
+    })
+}
+
+fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
+    let before = get_provider_summary(db_path)?;
+
+    let backup_json = std::fs::read_to_string(backup_path).context("读取迁移备份文件失败")?;
+    let originals: Vec<(String, String)> =
+        serde_json::from_str(&backup_json).context("解析迁移备份文件失败")?;
+
+    let conn = Connection::open(db_path)?;
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    let mut restored = 0usize;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for (id, original_provider) in &originals {
+        match conn.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2",
+            rusqlite::params![original_provider, id],
+        ) {
+            Ok(n) => restored += n,
+            Err(e) => {
+                tracing::warn!("还原线程 {id} 失败: {e}");
+                failed.push((id.clone(), original_provider.clone()));
+            }
+        }
+    }
+
+    if failed.is_empty() {
+        std::fs::remove_file(backup_path).context("删除迁移备份文件失败")?;
+        tracing::info!("已还原 {restored} 条线程的 model_provider，备份已删除");
+    } else {
+        // 保留未成功还原的线程在备份中
+        let failed_json = serde_json::to_string_pretty(&failed).context("序列化剩余备份失败")?;
+        std::fs::write(backup_path, failed_json).context("写入剩余备份文件失败")?;
+        tracing::warn!(
+            "已还原 {restored}/{total} 条线程，{failed} 条因锁冲突保留在备份中",
+            total = originals.len(),
+            failed = failed.len()
+        );
+    }
+
+    let after = get_provider_summary(db_path)?;
+
+    Ok(MigrationDiff {
+        before,
+        after,
+        changed_count: restored,
+    })
+}

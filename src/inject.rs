@@ -87,10 +87,6 @@ async fn do_inject(client: &mut CdpClient, state: Arc<AppState>) -> anyhow::Resu
     let combined = format!("{}\n{}", BRIDGE_SHIM_JS, inject_js);
     client.evaluate(&combined).await?;
 
-    // 2.5 探查 Codex IndexedDB 结构（一次性，结果通过 /idb-report 桥接返回）
-    let explore_js = include_str!("../static/explore_idb.js");
-    client.evaluate(explore_js).await?;
-
     // 3. 取走 WebSocket，启动后台桥接循环
     let ws = client.take_ws()?;
     tokio::spawn(async move {

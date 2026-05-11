@@ -3,6 +3,7 @@ mod backup_store;
 mod cache;
 mod cdp;
 mod codex_config;
+mod codex_threads;
 mod config;
 mod executor;
 mod files;
@@ -16,12 +17,10 @@ mod sse;
 mod stream;
 mod token_anomaly;
 mod translate;
-mod tui;
 mod types;
 mod utils;
 mod validate;
 mod vector_stores;
-mod web;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -429,20 +428,8 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    // TUI 交互模式: `deecodex tui`
-    let args = if matches!(args.command, Some(Commands::Tui)) {
-        match crate::tui::run(args).await {
-            Some(finalized_args) => {
-                info!("TUI 配置完成，启动服务...");
-                finalized_args
-            }
-            None => {
-                info!("用户取消，退出。");
-                return Ok(());
-            }
-        }
-    } else {
-        // 非 TUI 模式：从 config.json 加载持久化配置并合并
+    // 从 config.json 加载持久化配置并合并
+    let args = {
         let merged = args.merge_with_file();
         // 启动时自动保存配置（确保 config.json 与当前 CLI/env 一致）
         let config_path = config::Args::default_config_path(&merged.data_dir);
@@ -653,9 +640,7 @@ async fn main() -> Result<()> {
     let max_bytes = args.max_body_mb * 1024 * 1024;
     let body_limit = axum::extract::DefaultBodyLimit::max(max_bytes);
 
-    let app = handlers::build_router(state.clone())
-        .merge(web::build_web_router(state.clone()))
-        .layer(body_limit);
+    let app = handlers::build_router(state.clone()).layer(body_limit);
 
     let addr = format!("127.0.0.1:{}", args.port);
     info!(

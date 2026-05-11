@@ -1816,9 +1816,7 @@ function computerLabel(v) {
 	  const respCount = document.getElementById('respCount');
 	  const convCount = document.getElementById('convCount');
 	  try {
-	    const res = await fetch('/api/sessions');
-	    if (!res.ok) throw new Error(await res.text());
-	    const data = await res.json();
+	    const data = await invoke('list_sessions');
 	    respCount.textContent = data.responses.length + ' 个';
 	    convCount.textContent = data.conversations.length + ' 个';
 	    respList.innerHTML = data.responses.length
@@ -1849,13 +1847,7 @@ function computerLabel(v) {
 	async function deleteItem(type, id) {
 	  if (!confirm('确定要删除这个会话吗？删除后可通过“撤销删除”恢复。')) return;
 	  try {
-	    const res = await fetch('/api/sessions/' + type + '/' + encodeURIComponent(id), { method: 'DELETE' });
-	    if (!res.ok) {
-	      const err = await res.json().catch(() => ({}));
-	      toast(err.error || '删除失败', 'error');
-	      return;
-	    }
-	    const data = await res.json();
+	    const data = await invoke('delete_session', { sessionType: type, sessionId: id });
 	    if (data.undo_token) {
 	      _undoToken = data.undo_token;
 	      document.getElementById('undoBtn').disabled = false;
@@ -1870,14 +1862,9 @@ function computerLabel(v) {
 	async function undoDelete() {
 	  if (!_undoToken) return;
 	  try {
-	    const res = await fetch('/api/sessions/undo', {
-	      method: 'POST',
-	      headers: { 'Content-Type': 'application/json' },
-	      body: JSON.stringify({ undo_token: _undoToken }),
-	    });
-	    if (!res.ok) {
-	      const err = await res.json().catch(() => ({}));
-	      toast(err.error || '撤销失败', 'error');
+	    const data = await invoke('undo_delete_session', { undoToken: _undoToken });
+	    if (!data.ok) {
+	      toast(data.error || '撤销失败', 'error');
 	      return;
 	    }
 	    _undoToken = null;

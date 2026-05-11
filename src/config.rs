@@ -188,8 +188,6 @@ pub struct Args {
 
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
-    /// 启动中文 TUI 交互配置菜单
-    Tui,
     /// 后台启动服务
     Start,
     /// 停止后台服务

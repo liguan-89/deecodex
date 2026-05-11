@@ -295,6 +295,9 @@ pub fn run() {
             commands::switch_account,
             commands::import_codex_config,
             commands::get_provider_presets,
+            commands::list_sessions,
+            commands::delete_session,
+            commands::undo_delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

@@ -168,6 +168,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
         .route("/metrics", get(handle_metrics))
+        // Codex 线程聚合（跨 provider）
+        .route("/api/threads", get(handle_list_threads_api))
+        .route("/api/threads/status", get(handle_threads_status_api))
+        .route("/api/threads/migrate", post(handle_migrate_threads_api))
+        .route("/api/threads/restore", post(handle_restore_threads_api))
         .fallback(handle_fallback)
         .layer(from_fn_with_state(state.clone(), require_client_auth))
         .with_state(state)
@@ -1092,6 +1097,70 @@ async fn handle_list_vector_store_file_batch_files(
     {
         Ok(files) => Json(files).into_response(),
         Err(err) => err.into_response(),
+    }
+}
+
+// ── Codex 线程聚合 API（复用 web.rs 中的 handler 逻辑）──
+
+async fn handle_list_threads_api(
+    State(state): State<AppState>,
+) -> Response {
+    match crate::codex_threads::list_all() {
+        Ok(threads) => Json(serde_json::json!({ "ok": true, "threads": threads })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "message": format!("读取线程失败: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_threads_status_api(
+    State(state): State<AppState>,
+) -> Response {
+    match crate::codex_threads::status(&state.data_dir) {
+        Ok(s) => Json(serde_json::json!({ "ok": true, "status": s })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "message": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_migrate_threads_api(
+    State(state): State<AppState>,
+) -> Response {
+    match crate::codex_threads::migrate(&state.data_dir) {
+        Ok(diff) => Json(serde_json::json!({
+            "ok": true,
+            "diff": diff,
+            "message": format!("已迁移 {} 条线程到 deecodex", diff.changed_count),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "message": format!("迁移失败: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_restore_threads_api(
+    State(state): State<AppState>,
+) -> Response {
+    match crate::codex_threads::restore(&state.data_dir) {
+        Ok(diff) => Json(serde_json::json!({
+            "ok": true,
+            "diff": diff,
+            "message": format!("已还原 {} 条线程的 model_provider", diff.changed_count),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "message": format!("还原失败: {e}") })),
+        )
+            .into_response(),
     }
 }
 
