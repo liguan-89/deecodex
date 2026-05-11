@@ -1,0 +1,35 @@
+{
+  "accounts": [
+    {
+      "id": "19e13ac4518",
+      "name": "自定义 账号",
+      "provider": "custom",
+      "upstream": "",
+      "api_key": "",
+      "model_map": {},
+      "vision_upstream": "",
+      "vision_api_key": "",
+      "vision_model": "",
+      "vision_endpoint": "",
+      "from_codex_config": false,
+      "created_at": 1778446517,
+      "updated_at": 1778446517
+    },
+    {
+      "id": "19e13b00413",
+      "name": "DeepSeek 账号",
+      "provider": "deepseek",
+      "upstream": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "model_map": {},
+      "vision_upstream": "",
+      "vision_api_key": "",
+      "vision_model": "",
+      "vision_endpoint": "",
+      "from_codex_config": false,
+      "created_at": 1778446763,
+      "updated_at": 1778446821
+    }
+  ],
+  "active_id": "19e13ac4518"
+}

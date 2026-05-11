@@ -412,6 +412,7 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         .map_err(|e| format!("无法绑定端口 {port}: {e}"))?;
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
+        deecodex::codex_config::fix();
         deecodex::codex_config::inject(port, &state.client_api_key.read().await);
     }
 
@@ -711,6 +712,7 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     let port = args.port;
     let ca_key = args.client_api_key.clone();
     if args.codex_auto_inject || args.codex_persistent_inject {
+        deecodex::codex_config::fix();
         deecodex::codex_config::inject(port, &ca_key);
     } else {
         deecodex::codex_config::remove();

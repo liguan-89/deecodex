@@ -344,6 +344,7 @@ pub async fn put_config(
 
     // Codex 配置注入/移除（根据更新后的开关立即执行）
     if updated.codex_auto_inject || updated.codex_persistent_inject {
+        crate::codex_config::fix();
         crate::codex_config::inject(updated.port, &updated.client_api_key);
     } else {
         crate::codex_config::remove();

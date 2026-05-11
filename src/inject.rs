@@ -87,6 +87,10 @@ async fn do_inject(client: &mut CdpClient, state: Arc<AppState>) -> anyhow::Resu
     let combined = format!("{}\n{}", BRIDGE_SHIM_JS, inject_js);
     client.evaluate(&combined).await?;
 
+    // 2.5 探查 Codex IndexedDB 结构（一次性，结果通过 /idb-report 桥接返回）
+    let explore_js = include_str!("../static/explore_idb.js");
+    client.evaluate(explore_js).await?;
+
     // 3. 取走 WebSocket，启动后台桥接循环
     let ws = client.take_ws()?;
     tokio::spawn(async move {
@@ -197,6 +201,7 @@ async fn handle_bridge(state: &AppState, path: &str, data: serde_json::Value) ->
     match path {
         "/delete" => handle_delete(state, &data).await,
         "/undo" => handle_undo(state, &data).await,
+        "/idb-report" => handle_idb_report(state, &data).await,
         _ => serde_json::json!({"status": "failed", "message": "未知桥接路径"}),
     }
 }
@@ -355,6 +360,30 @@ async fn handle_undo(state: &AppState, data: &serde_json::Value) -> serde_json::
         "session_id": session_id,
         "message": "已撤销删除"
     })
+}
+
+/// 处理 IndexedDB 探查报告：写入文件并记录日志。
+async fn handle_idb_report(state: &AppState, data: &serde_json::Value) -> serde_json::Value {
+    // 写入 idb_report.json
+    let report_path = state.data_dir.join("idb_report.json");
+    let report_json = serde_json::to_string_pretty(data).unwrap_or_default();
+    match std::fs::write(&report_path, &report_json) {
+        Ok(_) => {
+            tracing::info!(
+                "IndexedDB 探查报告已保存到 {} ({} 字节)",
+                report_path.display(),
+                report_json.len()
+            );
+            // 同时输出到日志，方便直接查看
+            tracing::info!("IndexedDB 探查报告:\n{report_json}");
+        }
+        Err(e) => {
+            tracing::warn!("IndexedDB 探查报告写入失败: {e}");
+            // 至少输出到日志
+            tracing::info!("IndexedDB 探查报告 (未持久化):\n{report_json}");
+        }
+    }
+    serde_json::json!({"status": "ok", "message": "探查报告已保存"})
 }
 
 async fn create_backup(
