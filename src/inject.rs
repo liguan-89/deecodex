@@ -36,7 +36,7 @@ pub async fn try_inject_with_port(state: Arc<AppState>, priority_port: u16) {
         if priority_port > 0 {
             ports.push(priority_port);
         }
-        ports.extend(9222..=9230_u16);
+        ports.extend(9222..=9250_u16);
 
         for port in ports {
             let targets = match cdp::list_targets(port).await {

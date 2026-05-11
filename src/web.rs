@@ -23,7 +23,10 @@ pub fn build_web_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(handle_web_panel))
         .route("/api/config", get(get_config).put(put_config))
-        .route("/api/config/validate", get(validate_config))
+        .route(
+            "/api/config/validate",
+            get(validate_config).post(post_validate_config),
+        )
         .route("/api/status", get(get_status))
         .route("/api/restart", post(post_restart))
         .route("/api/stop", post(post_stop))
@@ -212,7 +215,7 @@ pub async fn put_config(
         }
     }
     if let Some(v) = body.get("client_api_key").and_then(|v| v.as_str()) {
-        if v != "********" {
+        if v != Args::mask_sensitive(&updated.client_api_key) && v != "********" {
             updated.client_api_key = v.to_string();
         }
     }
@@ -373,10 +376,61 @@ pub async fn put_config(
     ))
 }
 
-/// POST /api/config/validate — 仅诊断不保存
+/// GET /api/config/validate — 验证已保存的磁盘配置
 pub async fn validate_config(State(state): State<AppState>) -> impl IntoResponse {
     let args_to_check = load_args(&state.data_dir).unwrap_or_else(|| fallback_args(&state));
     let diags = validate::validate(&args_to_check);
+    let diag_msgs: Vec<Value> = diags
+        .iter()
+        .map(|d| {
+            json!({
+                "severity": match d.severity { validate::Severity::Error => "error", validate::Severity::Warn => "warn" },
+                "category": d.category,
+                "message": d.message
+            })
+        })
+        .collect();
+    Json(json!({ "ok": true, "diagnostics": diag_msgs }))
+}
+
+/// POST /api/config/validate — 接受表单 JSON 进行验证
+pub async fn post_validate_config(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let mut args = load_args(&state.data_dir).unwrap_or_else(|| fallback_args(&state));
+
+    if let Some(v) = body.get("port").and_then(|v| v.as_u64()) {
+        args.port = v as u16;
+    }
+    if let Some(v) = body.get("upstream").and_then(|v| v.as_str()) {
+        args.upstream = v.to_string();
+    }
+    if let Some(v) = body.get("api_key").and_then(|v| v.as_str()) {
+        args.api_key = v.to_string();
+    }
+    if let Some(v) = body.get("client_api_key").and_then(|v| v.as_str()) {
+        args.client_api_key = v.to_string();
+    }
+    if let Some(v) = body.get("model_map").and_then(|v| v.as_str()) {
+        if serde_json::from_str::<Value>(v).is_ok() {
+            args.model_map = v.to_string();
+        }
+    }
+    if let Some(v) = body.get("vision_upstream").and_then(|v| v.as_str()) {
+        args.vision_upstream = v.to_string();
+    }
+    if let Some(v) = body.get("vision_api_key").and_then(|v| v.as_str()) {
+        args.vision_api_key = v.to_string();
+    }
+    if let Some(v) = body.get("vision_model").and_then(|v| v.as_str()) {
+        args.vision_model = v.to_string();
+    }
+    if let Some(v) = body.get("vision_endpoint").and_then(|v| v.as_str()) {
+        args.vision_endpoint = v.to_string();
+    }
+
+    let diags = validate::validate(&args);
     let diag_msgs: Vec<Value> = diags
         .iter()
         .map(|d| {

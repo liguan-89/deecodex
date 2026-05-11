@@ -2879,7 +2879,12 @@ async function validateConfig() {
   if (sidebarMsg) { sidebarMsg.textContent = '验证中...'; sidebarMsg.className = 'sidebar-status loading'; }
 
   try {
-    const res = await fetch('/api/config/validate');
+    const data = collectFormData();
+    const res = await fetch('/api/config/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
     const result = await res.json();
     window._diagData = result.diagnostics || [];
 

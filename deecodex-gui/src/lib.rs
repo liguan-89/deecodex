@@ -179,7 +179,7 @@ pub fn run() {
         .setup(|app| {
             // 保留 Dock 图标，用户可在 Dock 看到运行状态
 
-            let menu = build_tray_menu(&app.handle(), false)?;
+            let menu = build_tray_menu(app.handle(), false)?;
 
             let icon = {
                 // 生成 48x48 青色菱形托盘图标（RGBA），高分辨率让形状更清晰
@@ -195,9 +195,7 @@ pub fn run() {
                         let dx = (x as f32 - center + 0.5).abs();
                         let dy = (y as f32 - center + 0.5).abs();
                         let d = dx + dy; // 曼哈顿距离 → 菱形
-                        if d <= inner_r {
-                            rgba.extend_from_slice(&[0, 0, 0, 0]);
-                        } else if d >= outer_r + feather {
+                        if d <= inner_r || d >= outer_r + feather {
                             rgba.extend_from_slice(&[0, 0, 0, 0]);
                         } else if d >= outer_r {
                             let a = (255.0 * (1.0 - (d - outer_r) / feather)) as u8;

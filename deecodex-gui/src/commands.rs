@@ -412,7 +412,7 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         .map_err(|e| format!("无法绑定端口 {port}: {e}"))?;
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
-        deecodex::codex_config::inject(port, &*state.client_api_key.read().await);
+        deecodex::codex_config::inject(port, &state.client_api_key.read().await);
     }
 
     let (tx, mut rx) = tokio::sync::watch::channel(());
@@ -446,11 +446,8 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
                 .arg(format!("--remote-debugging-port={cdp_port}"))
                 .spawn();
             #[cfg(target_os = "windows")]
-            let result = tokio::process::Command::new("cmd")
-                .arg("/c")
-                .arg("start")
-                .arg("")
-                .arg(format!("Codex.exe --remote-debugging-port={cdp_port}"))
+            let result = tokio::process::Command::new("Codex.exe")
+                .arg(format!("--remote-debugging-port={cdp_port}"))
                 .spawn();
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let result: std::io::Result<tokio::process::Child> = Err(std::io::Error::new(
@@ -542,7 +539,7 @@ async fn get_status_internal(manager: &ServerManager) -> ServiceInfo {
 }
 
 #[tauri::command]
-pub fn launch_codex_cdp() -> Result<(), String> {
+pub fn launch_codex_cdp(manager: State<'_, ServerManager>) -> Result<(), String> {
     let args = load_args();
     let cdp_port = args.cdp_port;
     #[cfg(target_os = "macos")]
@@ -554,15 +551,22 @@ pub fn launch_codex_cdp() -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("启动 Codex 失败: {e}"))?;
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .arg("/c")
-        .arg("start")
-        .arg("")
-        .arg(format!("Codex.exe --remote-debugging-port={cdp_port}"))
+    std::process::Command::new("Codex.exe")
+        .arg(format!("--remote-debugging-port={cdp_port}"))
         .spawn()
         .map_err(|e| format!("启动 Codex 失败: {e}"))?;
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     return Err("CDP 启动不支持当前平台".to_string());
+
+    // 启动 Codex 后异步触发 JS 注入
+    let app_state =
+        tauri::async_runtime::block_on(async { manager.app_state.lock().await.clone() });
+    if let Some(state) = app_state {
+        tauri::async_runtime::spawn(async move {
+            deecodex::inject::try_inject_with_port(std::sync::Arc::new(state), cdp_port).await;
+        });
+    }
+
     Ok(())
 }
 
@@ -590,19 +594,77 @@ pub fn stop_codex_cdp() -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_config() -> Result<GuiConfig, String> {
-    let args = load_args();
+    let mut args = load_args();
+
+    // 用活跃账号的字段覆盖 config.json 的对应字段，保证配置面板显示的是实际运行值
+    let store = deecodex::accounts::load_accounts(&args.data_dir);
+    if let Some(active_id) = &store.active_id {
+        if let Some(active) = store.accounts.iter().find(|a| &a.id == active_id) {
+            if !active.upstream.is_empty() {
+                args.upstream = active.upstream.clone();
+            }
+            if !active.api_key.is_empty() {
+                args.api_key = active.api_key.clone();
+            }
+            if !active.model_map.is_empty() {
+                args.model_map = serde_json::to_string(&active.model_map).unwrap_or_default();
+            }
+            if !active.vision_upstream.is_empty() {
+                args.vision_upstream = active.vision_upstream.clone();
+            }
+            if !active.vision_api_key.is_empty() {
+                args.vision_api_key = active.vision_api_key.clone();
+            }
+            if !active.vision_model.is_empty() {
+                args.vision_model = active.vision_model.clone();
+            }
+            if !active.vision_endpoint.is_empty() {
+                args.vision_endpoint = active.vision_endpoint.clone();
+            }
+        }
+    }
+
     Ok(GuiConfig::from(args))
 }
 
 #[tauri::command]
 pub fn save_config(config: GuiConfig) -> Result<(), String> {
-    // 先同步关键字段到 .env（在字段被 move 之前）
     let data_dir: std::path::PathBuf = std::path::PathBuf::from(&config.data_dir);
+    let config_path = Args::default_config_path(&data_dir);
+    let existing = Args::load_from_file(&config_path);
+
+    // 掩码保护：若前端传回掩码值，保留原有明文 Key
+    let api_key = if config.api_key.contains("****") || config.api_key == "********" {
+        existing
+            .as_ref()
+            .map(|a| a.api_key.clone())
+            .unwrap_or_default()
+    } else {
+        config.api_key.clone()
+    };
+    let client_api_key =
+        if config.client_api_key.contains("****") || config.client_api_key == "********" {
+            existing
+                .as_ref()
+                .map(|a| a.client_api_key.clone())
+                .unwrap_or_default()
+        } else {
+            config.client_api_key.clone()
+        };
+    let vision_api_key =
+        if config.vision_api_key.contains("****") || config.vision_api_key == "********" {
+            existing
+                .as_ref()
+                .map(|a| a.vision_api_key.clone())
+                .unwrap_or_default()
+        } else {
+            config.vision_api_key.clone()
+        };
+
+    // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
     Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &config.upstream);
-    if !config.api_key.is_empty() {
-        Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &config.api_key);
-    }
+    Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &api_key);
     Args::sync_to_env_file(&data_dir, "DEECODEX_MODEL_MAP", &config.model_map);
 
     let args = Args {
@@ -610,12 +672,12 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         config: None,
         port: config.port,
         upstream: config.upstream,
-        api_key: config.api_key,
-        client_api_key: config.client_api_key,
+        api_key,
+        client_api_key,
         model_map: config.model_map,
         max_body_mb: config.max_body_mb as usize,
         vision_upstream: config.vision_upstream,
-        vision_api_key: config.vision_api_key,
+        vision_api_key,
         vision_model: config.vision_model,
         vision_endpoint: config.vision_endpoint,
         chinese_thinking: config.chinese_thinking,
@@ -898,8 +960,10 @@ pub async fn update_account(
     if account.api_key.is_empty() || account.api_key.contains("****") {
         account.api_key = store.accounts[pos].api_key.clone();
     }
-    // 自动猜测供应商
-    account.provider = guess_provider(&account.upstream).to_string();
+    // 仅当 provider 为空时自动检测，避免覆盖用户选择
+    if account.provider.is_empty() {
+        account.provider = guess_provider(&account.upstream).to_string();
+    }
     account.updated_at = now_secs();
 
     store.accounts[pos] = account.clone();

@@ -65,9 +65,9 @@ fn check_data_dir(args: &Args, diags: &mut Vec<Diagnostic>) {
 fn check_api_key(args: &Args, diags: &mut Vec<Diagnostic>) {
     if args.api_key.trim().is_empty() {
         diags.push(Diagnostic {
-            severity: Severity::Error,
+            severity: Severity::Warn,
             category: "api_key",
-            message: "API Key 未配置——所有上游请求将返回 401 认证失败".into(),
+            message: "API Key 未配置——上游请求将因认证失败而报错，请在账号管理中配置".into(),
         });
     }
 }
@@ -789,14 +789,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_api_key_is_error() {
+    fn empty_api_key_is_warn() {
         let args = base_args();
         let diags = validate(&args);
         assert!(
             diags
                 .iter()
-                .any(|d| d.category == "api_key" && d.severity == Severity::Error),
-            "空 API Key 应产生错误诊断，实际: {:?}",
+                .any(|d| d.category == "api_key" && d.severity == Severity::Warn),
+            "空 API Key 应产生警告诊断，实际: {:?}",
             diags
         );
     }
