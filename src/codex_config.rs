@@ -217,6 +217,81 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
     Ok(removed)
 }
 
+/// 从 Codex 的 config.toml 中提取非 deecodex 的 provider 配置，
+/// 用于首次启动时将 Codex 原有账号迁移到 deecodex。
+/// 返回 None 表示没有找到可导入的账号。
+#[allow(dead_code)]
+pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
+    use crate::accounts::{generate_id, guess_provider, now_secs, Account};
+    use std::collections::HashMap;
+
+    let path = codex_config_path()?;
+    if !path.exists() {
+        tracing::info!("Codex config.toml 不存在，跳过账号导入");
+        return None;
+    }
+
+    let content = read_config_file(&path).ok()?;
+    let doc: toml_edit::DocumentMut = content.parse().ok()?;
+
+    let providers = doc.get("model_providers")?.as_table()?;
+
+    for (key, value) in providers.iter() {
+        // 跳过 deecodex 自身（本地代理）
+        if key == "deecodex" {
+            continue;
+        }
+
+        let base_url = value.get("base_url")?.as_str()?.to_string();
+
+        // 跳过本地地址
+        if base_url.contains("127.0.0.1") || base_url.contains("localhost") {
+            continue;
+        }
+
+        let api_key = value
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let provider = guess_provider(&base_url).to_string();
+
+        let name = if key == provider {
+            format!("Codex 导入 - {}", provider)
+        } else {
+            format!("Codex 导入 - {}", key)
+        };
+
+        let account = Account {
+            id: generate_id(),
+            name,
+            provider: provider.to_string(),
+            upstream: base_url,
+            api_key,
+            model_map: HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            from_codex_config: true,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        };
+
+        tracing::info!(
+            "从 Codex config.toml 导入账号: provider={}, base_url={}",
+            provider,
+            account.upstream
+        );
+        return Some(account);
+    }
+
+    // 只有 deecodex 自身，没有第三方 provider
+    tracing::info!("Codex config.toml 中未找到可导入的第三方 provider");
+    None
+}
+
 /// 检测并修复 Codex config.toml 中的已知错误值。
 /// 返回修复的问题数量。0 表示没有发现问题。
 pub fn fix() -> u32 {

@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod backup_store;
 pub mod cache;
 pub mod cdp;

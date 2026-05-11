@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
 
+use deecodex::accounts::AccountStore;
 use deecodex::config::Args;
 use deecodex::handlers;
 use deecodex::{files, metrics, vector_stores};
@@ -154,27 +155,143 @@ pub(crate) fn load_args() -> Args {
     args.merge_with_file()
 }
 
-fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
-    let model_map: HashMap<String, String> = if args.model_map.is_empty() {
-        HashMap::new()
-    } else {
-        match serde_json::from_str(&args.model_map) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("模型映射解析失败: {e}");
-                HashMap::new()
-            }
-        }
+/// 执行首次启动迁移：如果 accounts.json 不存在，从旧配置和 Codex config 迁移账号。
+/// 返回迁移后的 AccountStore（已持久化）。
+fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
+    use deecodex::accounts::{
+        generate_id, get_provider_presets, guess_provider, now_secs, Account, AccountStore,
     };
 
-    let upstream = handlers::validate_upstream(&args.upstream)?;
+    let path = deecodex::accounts::accounts_file_path(data_dir);
 
-    let vision_upstream = if args.vision_upstream.is_empty() {
+    // 已有账号文件，直接加载
+    if path.exists() {
+        tracing::info!("加载已有账号文件: {}", path.display());
+        return deecodex::accounts::load_accounts(data_dir);
+    }
+
+    tracing::info!("accounts.json 不存在，执行首次迁移");
+
+    let mut accounts: Vec<Account> = Vec::new();
+
+    // a. 检查 config.json 是否有自定义上游/Key
+    let config_path = Args::default_config_path(data_dir);
+    if let Some(file_args) = Args::load_from_file(&config_path) {
+        // 上游非默认 OpenRouter 或 Key 不为空 → 迁移旧配置
+        let has_custom_upstream = file_args.upstream != "https://openrouter.ai/api/v1";
+        let has_api_key = !file_args.api_key.is_empty();
+        if has_custom_upstream || has_api_key {
+            let model_map: HashMap<String, String> =
+                if file_args.model_map.is_empty() || file_args.model_map == "{}" {
+                    HashMap::new()
+                } else {
+                    serde_json::from_str(&file_args.model_map).unwrap_or_default()
+                };
+
+            let provider = if has_custom_upstream {
+                guess_provider(&file_args.upstream)
+            } else {
+                "openrouter"
+            };
+
+            let migrated = Account {
+                id: generate_id(),
+                name: "旧配置导入".into(),
+                provider: provider.to_string(),
+                upstream: file_args.upstream.clone(),
+                api_key: file_args.api_key.clone(),
+                model_map,
+                vision_upstream: file_args.vision_upstream.clone(),
+                vision_api_key: file_args.vision_api_key.clone(),
+                vision_model: file_args.vision_model.clone(),
+                vision_endpoint: file_args.vision_endpoint.clone(),
+                from_codex_config: false,
+                created_at: now_secs(),
+                updated_at: now_secs(),
+            };
+            tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
+            accounts.push(migrated);
+        }
+    }
+
+    // b. 从 Codex config.toml 导入
+    if let Some(codex_account) = deecodex::codex_config::extract_account_from_codex_config() {
+        // 避免重复（如果旧配置已经包含了同样的 upstream）
+        let is_duplicate = accounts.iter().any(|a| {
+            a.from_codex_config
+                || (a.upstream == codex_account.upstream && a.api_key == codex_account.api_key)
+        });
+        if !is_duplicate {
+            accounts.push(codex_account);
+        }
+    }
+
+    // c. 都没有 → 创建默认 OpenRouter 空账号
+    if accounts.is_empty() {
+        let presets = get_provider_presets();
+        let openrouter = presets.iter().find(|p| p.slug == "openrouter").unwrap();
+        let default = Account {
+            id: generate_id(),
+            name: "默认账号".into(),
+            provider: "openrouter".into(),
+            upstream: openrouter.default_upstream.clone(),
+            api_key: String::new(),
+            model_map: HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            from_codex_config: false,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        };
+        tracing::info!("创建默认 OpenRouter 空账号");
+        accounts.push(default);
+    }
+
+    let store = AccountStore {
+        active_id: Some(accounts[0].id.clone()),
+        accounts,
+    };
+
+    // 持久化
+    if let Err(e) = deecodex::accounts::save_accounts(data_dir, &store) {
+        tracing::warn!("保存迁移后的账号文件失败: {e}");
+    } else {
+        tracing::info!("首次迁移完成，已保存 {} 个账号", store.accounts.len());
+    }
+
+    store
+}
+
+fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
+    // 迁移/加载账号
+    let account_store = migrate_or_load_accounts(&args.data_dir);
+
+    // 解析活跃账号的配置
+    let active_account = account_store
+        .active_id
+        .as_ref()
+        .and_then(|id| account_store.accounts.iter().find(|a| &a.id == id))
+        .cloned()
+        .unwrap_or_else(|| account_store.accounts[0].clone());
+
+    let model_map: HashMap<String, String> = active_account.model_map.clone();
+    let upstream = handlers::validate_upstream(&active_account.upstream).unwrap_or_else(|_| {
+        tracing::warn!("活跃账号上游 URL 无效，使用默认 OpenRouter");
+        handlers::validate_upstream("https://openrouter.ai/api/v1").unwrap()
+    });
+
+    let vision_upstream = if active_account.vision_upstream.is_empty() {
         None
     } else {
-        Some(Arc::new(handlers::validate_upstream(
-            &args.vision_upstream,
-        )?))
+        match handlers::validate_upstream(&active_account.vision_upstream) {
+            Ok(url) => Some(url),
+            Err(e) => {
+                tracing::warn!("视觉上游 URL 无效: {e}");
+                None
+            }
+        }
     };
 
     let file_store = files::FileStore::with_data_dir(&args.data_dir)?;
@@ -208,6 +325,18 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         }
     };
 
+    let vision_api_key = active_account.vision_api_key.clone();
+    let vision_model = if active_account.vision_model.is_empty() {
+        args.vision_model.clone()
+    } else {
+        active_account.vision_model.clone()
+    };
+    let vision_endpoint = if active_account.vision_endpoint.is_empty() {
+        args.vision_endpoint.clone()
+    } else {
+        active_account.vision_endpoint.clone()
+    };
+
     Ok(handlers::AppState {
         sessions: deecodex::session::SessionStore::new(),
         client: reqwest::Client::builder()
@@ -215,14 +344,14 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
             .pool_max_idle_per_host(4)
             .timeout(std::time::Duration::from_secs(300))
             .build()?,
-        upstream: Arc::new(upstream),
-        api_key: Arc::new(args.api_key.clone()),
+        upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
+        api_key: Arc::new(tokio::sync::RwLock::new(active_account.api_key.clone())),
         client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key.clone())),
-        model_map: Arc::new(model_map),
-        vision_upstream,
-        vision_api_key: Arc::new(args.vision_api_key.clone()),
-        vision_model: Arc::new(args.vision_model.clone()),
-        vision_endpoint: Arc::new(args.vision_endpoint.clone()),
+        model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
+        vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
+        vision_api_key: Arc::new(tokio::sync::RwLock::new(vision_api_key)),
+        vision_model: Arc::new(tokio::sync::RwLock::new(vision_model)),
+        vision_endpoint: Arc::new(tokio::sync::RwLock::new(vision_endpoint)),
         start_time: std::time::Instant::now(),
         request_cache: deecodex::cache::RequestCache::default(),
         prompts: Arc::new(deecodex::prompts::PromptRegistry::new(&args.prompts_dir)),
@@ -250,6 +379,8 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         data_dir: Arc::new(args.data_dir.clone()),
         codex_launch_with_cdp: args.codex_launch_with_cdp,
         cdp_port: args.cdp_port,
+        account_store: Arc::new(tokio::sync::RwLock::new(account_store)),
+        active_account: Arc::new(tokio::sync::RwLock::new(active_account)),
     })
 }
 
@@ -265,6 +396,9 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
     let port = args.port;
 
     let state = build_app_state(&args).map_err(|e| format!("构建服务状态失败: {e}"))?;
+
+    // 将 AppState 存储到 ServerManager，供 switch_account 等命令使用
+    *manager.app_state.lock().await = Some(state.clone());
 
     let app = handlers::build_router(state.clone())
         .merge(deecodex::web::build_web_router(state.clone()))
@@ -360,6 +494,7 @@ pub async fn stop_service_inner(manager: &ServerManager) -> Result<ServiceInfo, 
     }
 
     *manager.start_time.lock().await = None;
+    *manager.app_state.lock().await = None;
     manager.update_tray().await;
     tracing::info!("服务已停止");
 
@@ -623,4 +758,315 @@ pub fn update_service() -> Result<String, String> {
     }
 
     Ok("升级已启动，完成后请重启服务".to_string())
+}
+
+// ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────
+
+/// 获取账号列表，Key 字段脱敏后返回
+#[tauri::command]
+pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+
+    let accounts: Vec<Value> = store
+        .accounts
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "provider": a.provider,
+                "upstream": a.upstream,
+                "api_key": a.mask_key(),
+                "model_map": a.model_map,
+                "vision_upstream": a.vision_upstream,
+                "vision_api_key": a.vision_api_key,
+                "vision_model": a.vision_model,
+                "vision_endpoint": a.vision_endpoint,
+                "from_codex_config": a.from_codex_config,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "accounts": accounts,
+        "active_id": store.active_id,
+    }))
+}
+
+/// 获取当前活跃账号
+#[tauri::command]
+pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+
+    let active = store
+        .active_id
+        .as_ref()
+        .and_then(|id| store.accounts.iter().find(|a| &a.id == id));
+
+    match active {
+        Some(a) => Ok(json!({
+            "id": a.id,
+            "name": a.name,
+            "provider": a.provider,
+            "upstream": a.upstream,
+            "api_key": a.mask_key(),
+            "model_map": a.model_map,
+            "vision_upstream": a.vision_upstream,
+            "vision_api_key": a.vision_api_key,
+            "vision_model": a.vision_model,
+            "vision_endpoint": a.vision_endpoint,
+            "from_codex_config": a.from_codex_config,
+            "created_at": a.created_at,
+            "updated_at": a.updated_at,
+        })),
+        None => Err("没有活跃账号".to_string()),
+    }
+}
+
+/// 根据供应商类型创建新账号
+#[tauri::command]
+pub async fn add_account(
+    manager: State<'_, ServerManager>,
+    provider: String,
+) -> Result<Value, String> {
+    use deecodex::accounts::{generate_id, get_provider_presets, now_secs, Account};
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+
+    let presets = get_provider_presets();
+    let preset = presets
+        .iter()
+        .find(|p| p.slug == provider)
+        .ok_or_else(|| format!("未知供应商: {provider}"))?;
+
+    let new_account = Account {
+        id: generate_id(),
+        name: format!("{} 账号", preset.label),
+        provider: provider.clone(),
+        upstream: preset.default_upstream.clone(),
+        api_key: String::new(),
+        model_map: Default::default(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        from_codex_config: false,
+        created_at: now_secs(),
+        updated_at: now_secs(),
+    };
+
+    // 如果没有活跃账号，自动设为活跃
+    if store.active_id.is_none() {
+        store.active_id = Some(new_account.id.clone());
+    }
+
+    store.accounts.push(new_account.clone());
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    Ok(account_to_value(&new_account))
+}
+
+/// 更新账号信息（从前端接收完整 JSON）
+#[tauri::command]
+pub async fn update_account(
+    manager: State<'_, ServerManager>,
+    account_json: String,
+) -> Result<Value, String> {
+    use deecodex::accounts::{guess_provider, now_secs, Account};
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+
+    let updated: Account =
+        serde_json::from_str(&account_json).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
+
+    let pos = store
+        .accounts
+        .iter()
+        .position(|a| a.id == updated.id)
+        .ok_or_else(|| format!("账号不存在: {}", updated.id))?;
+
+    // 保留原有 api_key 若前端传过来的是脱敏值或空值
+    let mut account = updated.clone();
+    if account.api_key.is_empty() || account.api_key.contains("****") {
+        account.api_key = store.accounts[pos].api_key.clone();
+    }
+    // 自动猜测供应商
+    account.provider = guess_provider(&account.upstream).to_string();
+    account.updated_at = now_secs();
+
+    store.accounts[pos] = account.clone();
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    Ok(account_to_value(&account))
+}
+
+/// 删除账号（拒绝删除最后一个）
+#[tauri::command]
+pub async fn delete_account(
+    manager: State<'_, ServerManager>,
+    id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+
+    if store.accounts.len() <= 1 {
+        return Err("不能删除最后一个账号".to_string());
+    }
+
+    let was_active = store.active_id.as_deref() == Some(&id);
+
+    store.accounts.retain(|a| a.id != id);
+
+    // 如果删除的是活跃账号，切换到第一个
+    if was_active {
+        store.active_id = Some(store.accounts[0].id.clone());
+    }
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    Ok(json!({"success": true}))
+}
+
+/// 切换活跃账号，同步更新运行中服务的上游/Key/模型映射等热字段
+#[tauri::command]
+pub async fn switch_account(
+    manager: State<'_, ServerManager>,
+    id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+
+    let target = store
+        .accounts
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("账号不存在: {id}"))?
+        .clone();
+
+    store.active_id = Some(id);
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    // 如果服务在运行，同步更新 AppState 热字段
+    if let Some(app_state) = manager.app_state.lock().await.as_ref() {
+        // 更新上游 URL
+        let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
+            .map_err(|e| format!("目标账号上游 URL 无效: {e}"))?;
+        *app_state.upstream.write().await = upstream_url;
+
+        // 更新 API Key
+        *app_state.api_key.write().await = target.api_key.clone();
+
+        // 更新模型映射
+        *app_state.model_map.write().await = target.model_map.clone();
+
+        // 更新视觉配置
+        let vision_upstream = if target.vision_upstream.is_empty() {
+            None
+        } else {
+            Some(
+                deecodex::handlers::validate_upstream(&target.vision_upstream)
+                    .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
+            )
+        };
+        *app_state.vision_upstream.write().await = vision_upstream;
+        *app_state.vision_api_key.write().await = target.vision_api_key.clone();
+        *app_state.vision_model.write().await = target.vision_model.clone();
+        *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
+
+        // 更新 active_account
+        *app_state.active_account.write().await = target.clone();
+
+        // 同步更新 account_store
+        *app_state.account_store.write().await = store;
+
+        tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
+    }
+
+    Ok(account_to_value(&target))
+}
+
+/// 从 Codex 的 config.toml 导入账号
+#[tauri::command]
+pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+
+    let imported = deecodex::codex_config::extract_account_from_codex_config()
+        .ok_or_else(|| "Codex config.toml 中未找到可导入的第三方 provider 配置".to_string())?;
+
+    // 检查是否已存在相同 upstream + key 的账号
+    let is_duplicate = store
+        .accounts
+        .iter()
+        .any(|a| a.upstream == imported.upstream && a.api_key == imported.api_key);
+
+    if is_duplicate {
+        return Err("已存在相同上游和 Key 的账号，跳过导入".to_string());
+    }
+
+    // 如果没有活跃账号，自动设为活跃
+    if store.active_id.is_none() {
+        store.active_id = Some(imported.id.clone());
+    }
+
+    store.accounts.push(imported.clone());
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    Ok(account_to_value(&imported))
+}
+
+/// 返回供应商预设列表
+#[tauri::command]
+pub fn get_provider_presets() -> Result<Value, String> {
+    let presets = deecodex::accounts::get_provider_presets();
+    let list: Vec<Value> = presets
+        .iter()
+        .map(|p| {
+            json!({
+                "slug": p.slug,
+                "label": p.label,
+                "description": p.description,
+                "default_upstream": p.default_upstream,
+                "known_models": p.known_models,
+                "default_api_key_env": p.default_api_key_env,
+            })
+        })
+        .collect();
+    Ok(json!(list))
+}
+
+// ── 辅助函数 ──────────────────────────────────────────────────────────────
+
+/// 将 Account 转为前端安全的 Value（Key 脱敏）
+fn account_to_value(a: &deecodex::accounts::Account) -> Value {
+    json!({
+        "id": a.id,
+        "name": a.name,
+        "provider": a.provider,
+        "upstream": a.upstream,
+        "api_key": a.mask_key(),
+        "model_map": a.model_map,
+        "vision_upstream": a.vision_upstream,
+        "vision_api_key": a.vision_api_key,
+        "vision_model": a.vision_model,
+        "vision_endpoint": a.vision_endpoint,
+        "from_codex_config": a.from_codex_config,
+        "created_at": a.created_at,
+        "updated_at": a.updated_at,
+    })
 }

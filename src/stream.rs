@@ -26,7 +26,7 @@ use crate::{
 pub struct StreamArgs {
     pub client: reqwest::Client,
     pub url: String,
-    pub api_key: Arc<String>,
+    pub api_key: String,
     pub chat_req: ChatRequest,
     pub response_id: String,
     pub sessions: SessionStore,

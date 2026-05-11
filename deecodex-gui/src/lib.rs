@@ -29,6 +29,10 @@ pub struct ServerManager {
     pub start_time: Mutex<Option<std::time::Instant>>,
     pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
+    /// 数据目录路径，用于账号文件等持久化存储
+    pub data_dir: Mutex<std::path::PathBuf>,
+    /// 运行中的 AppState，供 switch_account 等命令更新热字段
+    pub app_state: Mutex<Option<deecodex::handlers::AppState>>,
 }
 
 impl ServerManager {
@@ -40,6 +44,8 @@ impl ServerManager {
             start_time: Mutex::new(None),
             tray: Mutex::new(None),
             app_handle: Mutex::new(None),
+            data_dir: Mutex::new(std::path::PathBuf::from(".deecodex")),
+            app_state: Mutex::new(None),
         }
     }
 
@@ -253,12 +259,14 @@ pub fn run() {
                 let _ = window.show();
             }
 
-            // 存储托盘引用和 AppHandle 到状态管理器
+            // 存储托盘引用、AppHandle 和 data_dir 到状态管理器
             let manager = app.state::<ServerManager>();
             let app_handle = app.handle().clone();
+            let data_dir = crate::commands::load_args().data_dir.clone();
             tauri::async_runtime::block_on(async {
                 *manager.tray.lock().await = Some(tray);
                 *manager.app_handle.lock().await = Some(app_handle);
+                *manager.data_dir.lock().await = data_dir;
             });
 
             Ok(())
@@ -281,6 +289,14 @@ pub fn run() {
             commands::update_service,
             commands::launch_codex_cdp,
             commands::stop_codex_cdp,
+            commands::list_accounts,
+            commands::get_active_account,
+            commands::add_account,
+            commands::update_account,
+            commands::delete_account,
+            commands::switch_account,
+            commands::import_codex_config,
+            commands::get_provider_presets,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

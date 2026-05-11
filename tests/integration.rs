@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use deecodex::{
+    accounts::{Account, AccountStore},
     cache::RequestCache,
     handlers::{build_router, AppState},
     session::SessionStore,
@@ -26,14 +27,16 @@ fn test_state() -> AppState {
     AppState {
         sessions: deecodex::session::SessionStore::new(),
         client: reqwest::Client::builder().build().unwrap(),
-        upstream: Arc::new(reqwest::Url::parse("https://example.com").unwrap()),
-        api_key: Arc::new("test".into()),
+        upstream: Arc::new(tokio::sync::RwLock::new(
+            reqwest::Url::parse("https://example.com").unwrap(),
+        )),
+        api_key: Arc::new(tokio::sync::RwLock::new("test".into())),
         client_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
-        model_map: Arc::new(std::collections::HashMap::new()),
-        vision_upstream: None,
-        vision_api_key: Arc::new(String::new()),
-        vision_model: Arc::new("test".into()),
-        vision_endpoint: Arc::new("v1/test".into()),
+        model_map: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        vision_upstream: Arc::new(tokio::sync::RwLock::new(None)),
+        vision_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
+        vision_model: Arc::new(tokio::sync::RwLock::new("test".into())),
+        vision_endpoint: Arc::new(tokio::sync::RwLock::new("v1/test".into())),
         start_time: Instant::now(),
         request_cache: deecodex::cache::RequestCache::default(),
         prompts: Arc::new(deecodex::prompts::PromptRegistry::new("prompts")),
@@ -56,6 +59,39 @@ fn test_state() -> AppState {
             deecodex::executor::LocalExecutorConfig::default(),
         )),
         data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
+        account_store: Arc::new(tokio::sync::RwLock::new(AccountStore {
+            accounts: vec![Account {
+                id: "test-account".into(),
+                name: "测试账号".into(),
+                provider: "custom".into(),
+                upstream: "https://example.com".into(),
+                api_key: "test".into(),
+                model_map: std::collections::HashMap::new(),
+                vision_upstream: String::new(),
+                vision_api_key: String::new(),
+                vision_model: "test".into(),
+                vision_endpoint: "v1/test".into(),
+                from_codex_config: false,
+                created_at: 0,
+                updated_at: 0,
+            }],
+            active_id: Some("test-account".into()),
+        })),
+        active_account: Arc::new(tokio::sync::RwLock::new(Account {
+            id: "test-account".into(),
+            name: "测试账号".into(),
+            provider: "custom".into(),
+            upstream: "https://example.com".into(),
+            api_key: "test".into(),
+            model_map: std::collections::HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: "test".into(),
+            vision_endpoint: "v1/test".into(),
+            from_codex_config: false,
+            created_at: 0,
+            updated_at: 0,
+        })),
     }
 }
 
@@ -717,7 +753,7 @@ async fn test_responses_unsupported_include_returns_400() {
 #[tokio::test]
 async fn test_responses_file_search_outputs_local_call() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -727,7 +763,7 @@ async fn test_responses_file_search_outputs_local_call() {
             }"#,
         )
         .await,
-    );
+    ));
     state
         .files
         .insert(
@@ -771,7 +807,7 @@ async fn test_responses_file_search_outputs_local_call() {
 #[tokio::test]
 async fn test_responses_file_search_evidence_survives_retrieve_and_input_items() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -781,7 +817,7 @@ async fn test_responses_file_search_evidence_survives_retrieve_and_input_items()
             }"#,
         )
         .await,
-    );
+    ));
     let first_file = state
         .files
         .insert(
@@ -1500,7 +1536,7 @@ fn make_stream_args(
     StreamArgs {
         client,
         url: url.to_string(),
-        api_key: Arc::new(String::new()),
+        api_key: String::new(),
         chat_req: make_chat_req(),
         response_id: "test_resp_stream".into(),
         sessions: SessionStore::new(),
@@ -1542,7 +1578,7 @@ fn make_stream_args_custom(
     StreamArgs {
         client,
         url: url.to_string(),
-        api_key: Arc::new(String::new()),
+        api_key: String::new(),
         chat_req,
         response_id: "test_resp_stream".into(),
         sessions: SessionStore::new(),
@@ -1876,7 +1912,7 @@ async fn test_translate_cached_reasoning_completed_output_matches_live_shape() {
 #[tokio::test]
 async fn test_responses_blocking_text() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -1886,7 +1922,7 @@ async fn test_responses_blocking_text() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let response = app
@@ -1918,7 +1954,7 @@ async fn test_responses_blocking_text() {
 #[tokio::test]
 async fn test_responses_blocking_tool_call() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -1939,7 +1975,7 @@ async fn test_responses_blocking_tool_call() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let response = app
@@ -1994,7 +2030,7 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
     .unwrap();
 
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -2015,7 +2051,7 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
             }"#,
         )
         .await,
-    );
+    ));
     state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw(
             "disabled",
@@ -2069,7 +2105,7 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
 #[tokio::test]
 async fn test_responses_blocking_local_computer_executor_appends_failed_output() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -2090,7 +2126,7 @@ async fn test_responses_blocking_local_computer_executor_appends_failed_output()
             }"#,
         )
         .await,
-    );
+    ));
     state.executors = Arc::new(tokio::sync::RwLock::new(
         deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
     ));
@@ -2131,7 +2167,7 @@ async fn test_responses_blocking_local_computer_executor_appends_failed_output()
 #[tokio::test]
 async fn test_responses_blocking_reasoning() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -2145,7 +2181,7 @@ async fn test_responses_blocking_reasoning() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let response = app
@@ -2228,7 +2264,7 @@ async fn test_tool_call_outputs_are_normalized_for_upstream_and_input_items() {
     )
     .await;
     let mut state = test_state();
-    state.upstream = Arc::new(upstream);
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
     let sessions = state.sessions.clone();
     let app = build_router(state);
 
@@ -2305,7 +2341,7 @@ async fn test_tool_call_outputs_are_normalized_for_upstream_and_input_items() {
 #[tokio::test]
 async fn test_responses_background_queued() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -2315,7 +2351,7 @@ async fn test_responses_background_queued() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let response = app
@@ -2353,7 +2389,7 @@ async fn test_responses_stream_store_and_retrieve() {
     mock_url.set_path("");
 
     let mut state = test_state();
-    state.upstream = Arc::new(mock_url);
+    state.upstream = Arc::new(tokio::sync::RwLock::new(mock_url));
     let sessions = state.sessions.clone();
     let app = build_router(state);
 
@@ -2599,7 +2635,7 @@ async fn test_response_compact_uses_previous_input_items() {
 #[tokio::test]
 async fn test_responses_simple_text_input() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -2609,7 +2645,7 @@ async fn test_responses_simple_text_input() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let response = app
@@ -2724,7 +2760,7 @@ async fn test_delete_response_not_found() {
 #[tokio::test]
 async fn test_get_response_after_create() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -2737,7 +2773,7 @@ async fn test_get_response_after_create() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state.clone());
 
     let response = app
@@ -3455,7 +3491,7 @@ async fn test_computer_use_multiturn_roundtrip() {
     )
     .await;
     let mut state = test_state();
-    state.upstream = Arc::new(upstream1);
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream1));
     state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
         allowed_computer_displays: vec!["browser".into()],
         ..Default::default()
@@ -3534,7 +3570,7 @@ async fn test_computer_use_multiturn_roundtrip() {
     });
 
     let mut state2 = test_state();
-    state2.upstream = Arc::new(upstream2);
+    state2.upstream = Arc::new(tokio::sync::RwLock::new(upstream2));
     state2.sessions = sessions.clone();
     state2.files = files.clone();
     let app2 = build_router(state2);
@@ -3589,7 +3625,7 @@ async fn test_computer_use_multiturn_state_persistence() {
     let sessions = state.sessions.clone();
 
     // Round 1
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [{
@@ -3610,7 +3646,7 @@ async fn test_computer_use_multiturn_state_persistence() {
             }"#,
         )
         .await,
-    );
+    ));
     let app = build_router(state);
 
     let r1 = app
@@ -3645,7 +3681,7 @@ async fn test_computer_use_multiturn_state_persistence() {
         allowed_computer_displays: vec!["browser".into()],
         ..Default::default()
     }));
-    state2.upstream = Arc::new(
+    state2.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -3655,7 +3691,7 @@ async fn test_computer_use_multiturn_state_persistence() {
             }"#,
         )
         .await,
-    );
+    ));
     let app2 = build_router(state2);
 
     let r2 = app2
@@ -3689,7 +3725,7 @@ async fn test_computer_use_multiturn_state_persistence() {
 #[tokio::test]
 async fn test_file_search_multifile_chunk_quality() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -3699,7 +3735,7 @@ async fn test_file_search_multifile_chunk_quality() {
             }"#,
         )
         .await,
-    );
+    ));
 
     // 上传 3 个文件：小文件、中等文件含目标词多次、大文件目标词在中间
     state
@@ -3843,7 +3879,7 @@ async fn test_file_search_multifile_chunk_quality() {
 #[tokio::test]
 async fn test_file_search_chunk_boundary_large_file() {
     let mut state = test_state();
-    state.upstream = Arc::new(
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
         one_shot_upstream(
             r#"{
                 "choices": [
@@ -3853,7 +3889,7 @@ async fn test_file_search_chunk_boundary_large_file() {
             }"#,
         )
         .await,
-    );
+    ));
 
     // 跨 chunk 的大文件：目标词放在第 2 个 chunk (1200+ 字符之后)
     let prefix_len = 1300usize;

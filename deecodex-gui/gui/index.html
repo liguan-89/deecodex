@@ -626,6 +626,225 @@ body {
   color: var(--text-muted); font-family: var(--font-mono);
   font-size: 11px; text-align: center; padding: 20px;
 }
+
+/* ── Accounts Panel ── */
+.accounts-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+}
+
+.back-link {
+  font-family: var(--font-mono); font-size: 12px; color: var(--accent);
+  cursor: pointer; transition: opacity var(--transition);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.back-link:hover { opacity: 0.8; }
+
+.breadcrumb {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  margin-bottom: 20px; letter-spacing: 0.04em;
+}
+.breadcrumb span { color: var(--text-secondary); }
+
+.accounts-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+
+.account-card {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 18px; cursor: pointer;
+  transition: all var(--transition); position: relative;
+}
+.account-card:hover { border-color: var(--border-default); }
+.account-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--border-glow);
+}
+
+.account-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.account-card .card-name {
+  font-family: var(--font-mono); font-size: 14px; font-weight: 600;
+  color: var(--text-primary); margin-bottom: 4px;
+}
+.account-card .card-key {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.account-card .card-upstream {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.account-card .card-actions-row {
+  display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end;
+}
+.account-card .card-actions-row button {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  background: transparent; border: 1px solid var(--border-subtle);
+  color: var(--text-secondary); transition: all var(--transition);
+}
+.account-card .card-actions-row button:hover {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-dim);
+}
+.account-card .card-actions-row button.danger:hover {
+  border-color: var(--red); color: var(--red); background: var(--red-dim);
+}
+
+/* Provider Badges */
+.badge-provider {
+  display: inline-block; font-family: var(--font-mono); font-size: 9px;
+  font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
+  letter-spacing: 0.05em; text-transform: uppercase;
+}
+.badge-deepseek { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+.badge-openai { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.badge-openrouter { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,200,232,0.2); }
+.badge-anthropic { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+.badge-google-ai { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.badge-custom { background: rgba(107,127,168,0.08); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+
+/* Delete button in card header */
+.card-delete-btn {
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 6px;
+  transition: all var(--transition); font-family: var(--font-mono); line-height: 1;
+}
+.card-delete-btn:hover { color: var(--red); border-color: rgba(255,60,92,0.3); background: var(--red-dim); }
+
+/* Provider Selection Grid */
+.provider-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+}
+
+.provider-card {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 20px 16px; cursor: pointer;
+  text-align: center; transition: all var(--transition);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.provider-card:hover {
+  border-color: var(--accent); background: var(--accent-dim);
+  box-shadow: 0 0 16px rgba(0,200,232,0.08);
+}
+.provider-card .provider-icon {
+  font-size: 28px; line-height: 1;
+}
+.provider-card .provider-name {
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+  color: var(--text-primary); letter-spacing: 0.03em;
+}
+.provider-card .provider-desc {
+  font-size: 11px; color: var(--text-muted); line-height: 1.5;
+}
+.provider-card .provider-default-upstream {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* Model Mapping Table */
+.model-table {
+  width: 100%; border-collapse: collapse; margin-top: 12px;
+}
+.model-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 8px 0; border-bottom: 2px solid var(--border-subtle);
+}
+.model-table td {
+  padding: 6px 0; border-bottom: 1px solid var(--border-subtle);
+}
+
+.model-row {
+  display: flex; align-items: center; gap: 12px; padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.model-row .model-label {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-primary);
+  flex: 1; min-width: 0;
+}
+.model-row .model-label.codex {
+  color: var(--accent);
+}
+.model-row .model-value {
+  flex: 2.5; display: flex; align-items: center; gap: 6px;
+}
+.model-row .model-value input {
+  flex: 1; background: var(--bg-input); border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm); color: var(--text-primary);
+  padding: 7px 10px; font-size: 12px; font-family: var(--font-mono);
+  outline: none; transition: border-color var(--transition), box-shadow var(--transition);
+}
+.model-row .model-value input:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim);
+}
+.model-row .model-value input::placeholder {
+  color: var(--text-muted); opacity: 0.4; font-style: italic;
+}
+.model-row .model-remove {
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; font-size: 16px; padding: 2px 6px;
+  transition: all var(--transition); font-family: var(--font-mono); line-height: 1;
+}
+.model-row .model-remove:hover { color: var(--red); border-color: rgba(255,60,92,0.3); background: var(--red-dim); }
+
+.model-add-row {
+  margin-top: 10px; text-align: center;
+}
+.model-add-row button {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  padding: 6px 16px; border-radius: var(--radius); cursor: pointer;
+  background: transparent; border: 1px dashed var(--border-default);
+  color: var(--text-secondary); transition: all var(--transition);
+}
+.model-add-row button:hover {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-dim);
+}
+
+/* Account Detail Form */
+.account-form {
+  max-width: 680px;
+}
+
+/* Collapsible section */
+.collapsible-section {
+  margin-top: 16px;
+}
+.collapsible-toggle {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); cursor: pointer;
+  padding: 8px 0; text-transform: uppercase; letter-spacing: 0.06em;
+  background: none; border: none; width: 100%; text-align: left;
+  transition: color var(--transition);
+}
+.collapsible-toggle:hover { color: var(--text-primary); }
+.collapsible-toggle .arrow {
+  font-size: 9px; transition: transform var(--transition); color: var(--text-muted);
+}
+.collapsible-toggle.open .arrow { transform: rotate(90deg); }
+.collapsible-content {
+  display: none; padding-bottom: 12px;
+}
+.collapsible-content.open { display: block; }
+
+/* Accounts bottom actions */
+.accounts-actions {
+  display: flex; gap: 12px; margin-top: 28px; padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Section label for model mapping */
+.section-sub-label {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  color: var(--text-heading); margin-top: 20px; margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-sub-label::before { content: '>'; color: var(--accent); font-weight: 700; }
 </style>
 </head>
 <body>
@@ -652,6 +871,12 @@ body {
 
       <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
         <span class="icon">◇</span> 诊断
+      </button>
+
+      <span class="nav-section-label">账号</span>
+
+      <button class="nav-item" data-panel="accounts" onclick="switchPanel('accounts')">
+        <span class="icon">▣</span> 账号管理
       </button>
 
       <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
@@ -757,6 +982,11 @@ const CONFIG_SECTIONS = [
 let currentPanel = 'status';
 let currentConfig = {};
 
+let accountsView = 'list';
+let accountsData = { accounts: [], active_id: null };
+let editingAccount = null;
+let providerPresets = [];
+
 // ═══════════════════════════════════════════════════════════════
 // 初始化
 // ═══════════════════════════════════════════════════════════════
@@ -776,6 +1006,7 @@ function switchPanel(panelId) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.panel === panelId);
   });
+  if (panelId === 'accounts') accountsView = 'list';
   const saveBtn = document.getElementById('sidebarSaveBtn');
   saveBtn.style.display = (panelId === 'config') ? '' : 'none';
   // 清理侧边栏残留消息
@@ -792,6 +1023,7 @@ function renderPanel(panelId) {
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
     case 'help': container.innerHTML = renderHelp(); break;
     case 'sessions': container.innerHTML = renderSessions(); refreshSessions(); break;
+    case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
 }
@@ -1657,6 +1889,398 @@ function computerLabel(v) {
 	  }
 	}
 
+
+// ═══════════════════════════════════════════════════════════════
+// 账号管理
+// ═══════════════════════════════════════════════════════════════
+const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-5.1-mini', 'gpt-5.1-nano', 'gpt-5', 'codex-auto-review', 'claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-5-sonnet', 'gemini-2.5-pro', 'gemini-2.5-flash'];
+
+function providerBadgeClass(p) {
+  return 'badge-provider badge-' + (p || 'custom');
+}
+
+function providerIcon(p) {
+  const icons = { openrouter: '◉', deepseek: '⬡', openai: '◆', anthropic: '◈', 'google-ai': '◎', custom: '…' };
+  return icons[p] || '…';
+}
+
+function navigateAccounts(view) {
+  accountsView = view;
+  if (view === 'list') editingAccount = null;
+  renderMainContent();
+}
+
+function renderMainContent() {
+  document.getElementById('mainContent').innerHTML = renderAccountsPanel();
+}
+
+function renderAccountsPanel() {
+  if (accountsView === 'add') return renderAddAccount();
+  if (accountsView === 'edit') return renderAccountDetail();
+  return renderAccountList();
+}
+
+// ── Level 1: 账号列表 ──
+
+function renderAccountList() {
+  const list = accountsData.accounts || [];
+  let cards = '';
+  if (list.length === 0) {
+    cards = '<div class="empty-state">暂无账号，点击下方按钮创建</div>';
+  } else {
+    cards = '<div class="accounts-grid">' + list.map(a => {
+      const active = a.id === accountsData.active_id;
+      const preset = providerPresets.find(p => p.slug === a.provider);
+      const knownCount = preset ? preset.known_models.length : 0;
+      return `<div class="account-card${active ? ' active' : ''}" onclick="switchAccount('${escAttr(a.id)}')">
+        <div class="account-card-header">
+          <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
+          <button class="card-delete-btn" onclick="event.stopPropagation();deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
+        </div>
+        <div class="card-name">${esc(a.name)}</div>
+        <div class="card-key">${esc(a.api_key || '(未配置)')}</div>
+        <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
+        <div class="card-actions-row">
+          <button onclick="event.stopPropagation();editAccount('${escAttr(a.id)}')">⚙ 编辑</button>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+  }
+
+  return `<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <div><h2>账号管理</h2><p>管理上游 LLM 账号，点击卡片切换活跃账号</p></div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn btn-ghost" onclick="importFromCodex()">📥 导入 Codex 配置</button>
+      <button class="btn btn-primary" onclick="navigateAccounts('add')">+ 添加账号</button>
+    </div>
+  </div>
+  ${cards}`;
+}
+
+// ── Level 2: 添加账号 ──
+
+function renderAddAccount() {
+  let cards = '';
+  if (providerPresets.length === 0) {
+    cards = '<div class="empty-state">加载供应商列表...</div>';
+  } else {
+    cards = '<div class="provider-grid">' + providerPresets.map(p => {
+      const upstream = p.default_upstream || '(自定义)';
+      return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}')">
+        <div class="provider-icon">${providerIcon(p.slug)}</div>
+        <div class="provider-name">${esc(p.label)}</div>
+        <div class="provider-desc">${esc(p.description)}</div>
+        <div class="provider-default-upstream" title="${escAttr(upstream)}">${esc(trunc(upstream, 42))}</div>
+      </div>`;
+    }).join('') + '</div>';
+  }
+
+  return `<div class="breadcrumb">
+    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
+    <span> / 添加账号</span>
+  </div>
+  <div class="page-header"><h2>选择供应商</h2><p>选择 LLM 供应商以创建新账号配置</p></div>
+  ${cards}`;
+}
+
+// ── Level 3: 编辑账号 ──
+
+function renderAccountDetail() {
+  if (!editingAccount) return '<div class="empty-state">账号数据丢失，请返回列表</div>';
+  const a = editingAccount;
+  const knownModels = getProviderKnownModels(a.provider);
+
+  return `<div class="breadcrumb">
+    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
+    <span> / ${esc(a.name)}</span>
+  </div>
+  <div class="page-header"><h2>${esc(a.name)}</h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
+
+  <div class="account-form">
+    <div class="config-fields">
+      <div class="config-field">
+        <label>账号名称</label>
+        <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+      </div>
+      <div class="config-field">
+        <label>上游 URL</label>
+        <input type="text" id="edit_upstream" value="${escAttr(a.upstream)}" placeholder="https://api.example.com/v1">
+        <span class="hint">Chat Completions API 基础地址</span>
+      </div>
+      <div class="config-field">
+        <label>API Key</label>
+        <div class="pass-group">
+          <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+          <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
+        </div>
+        <span class="hint">如包含 **** 表示未修改，保存时将保留原值</span>
+      </div>
+    </div>
+
+    <div class="section-sub-label">模型映射</div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">左侧为 Codex 请求的模型名，右侧为上游实际模型名</div>
+    <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
+    <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
+
+    <div class="collapsible-section">
+      <button class="collapsible-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+        <span class="arrow">▸</span> 视觉路由（可选）
+      </button>
+      <div class="collapsible-content">
+        <div class="config-fields" style="margin-top:12px;">
+          <div class="config-field">
+            <label>视觉上游 URL</label>
+            <input type="text" id="edit_vision_upstream" value="${escAttr(a.vision_upstream || '')}" placeholder="https://api.minimax.chat">
+          </div>
+          <div class="config-field">
+            <label>视觉 API Key</label>
+            <div class="pass-group">
+              <input type="password" id="edit_vision_api_key" value="${escAttr(a.vision_api_key || '')}" placeholder="视觉模型密钥" autocomplete="off">
+              <button type="button" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏">⊙</button>
+            </div>
+          </div>
+          <div class="config-field">
+            <label>视觉模型名</label>
+            <input type="text" id="edit_vision_model" value="${escAttr(a.vision_model || '')}" placeholder="MiniMax-M1">
+          </div>
+          <div class="config-field">
+            <label>视觉端点路径</label>
+            <input type="text" id="edit_vision_endpoint" value="${escAttr(a.vision_endpoint || '')}" placeholder="v1/coding_plan/vlm">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="accounts-actions">
+    <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+    <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
+  </div>`;
+}
+
+function renderModelMappingRows(knownModels) {
+  const a = editingAccount;
+  if (!a) return '';
+  const map = a.model_map || {};
+  const rows = [];
+  for (const codexModel of CODEX_MODEL_LIST) {
+    const val = map[codexModel] || '';
+    rows.push({ codexModel, val, readonly: true });
+  }
+  // 添加自定义映射（不在预定义列表中的）
+  for (const [k, v] of Object.entries(map)) {
+    if (!CODEX_MODEL_LIST.includes(k) && k) {
+      rows.push({ codexModel: k, val: v, readonly: false });
+    }
+  }
+  // 额外空行
+  const datalistId = 'dl_' + Math.random().toString(36).slice(2, 8);
+  const datalistOptions = (knownModels || []).map(m => `<option value="${escAttr(m)}">`).join('');
+  const datalistHtml = datalistOptions ? `<datalist id="${datalistId}">${datalistOptions}</datalist>` : '';
+
+  return datalistHtml + rows.map((r, i) => {
+    const labelExtra = r.readonly ? '' : ' (自定义)';
+    return `<div class="model-row">
+      <div class="model-label codex">${esc(r.codexModel)}${labelExtra}</div>
+      <div class="model-value">
+        <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)" list="${datalistId}"
+          data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
+          onchange="onModelMapChange(this)">
+        <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── 数据加载 ──
+
+async function loadAccountsData() {
+  try {
+    const result = await invoke('list_accounts');
+    accountsData = result;
+    if (!providerPresets.length) await loadProviderPresets();
+    if (accountsView !== 'add') renderMainContent();
+  } catch (e) {
+    showToast('加载账号失败: ' + e, 'error');
+  }
+}
+
+async function loadProviderPresets() {
+  try {
+    providerPresets = await invoke('get_provider_presets');
+  } catch (e) {
+    showToast('加载供应商列表失败: ' + e, 'error');
+  }
+}
+
+function getProviderKnownModels(provider) {
+  const p = providerPresets.find(pp => pp.slug === provider);
+  return p ? p.known_models : [];
+}
+
+// ── 模型映射编辑辅助 ──
+
+function onModelMapChange(input) {
+  // 预留：当用户修改上游模型名时更新占位数据
+}
+
+function removeModelMapRow(btn) {
+  const row = btn.closest('.model-row');
+  const input = row.querySelector('input');
+  if (input) {
+    const codex = input.dataset.codex;
+    if (editingAccount && editingAccount.model_map) {
+      delete editingAccount.model_map[codex];
+    }
+  }
+  row.remove();
+}
+
+function addModelRow(containerId, knownModelsJson) {
+  const knownModels = JSON.parse(knownModelsJson);
+  const datalistId = 'dl_custom_' + Math.random().toString(36).slice(2, 8);
+  const datalistOptions = knownModels.map(m => `<option value="${escAttr(m)}">`).join('');
+
+  const container = document.getElementById(containerId);
+  const datalist = document.createElement('datalist');
+  datalist.id = datalistId;
+  datalist.innerHTML = datalistOptions;
+  container.appendChild(datalist);
+
+  const row = document.createElement('div');
+  row.className = 'model-row';
+  row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名" style="width:100%;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--radius-sm);color:var(--text-primary);padding:7px 10px;font-size:12px;font-family:var(--font-mono);outline:none;"></div>
+    <div class="model-value">
+      <input type="text" placeholder="上游模型名" list="${datalistId}">
+      <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
+    </div>`;
+  container.appendChild(row);
+}
+
+function collectModelMap() {
+  const result = {};
+  const rows = document.querySelectorAll('#modelMapRows .model-row');
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll('input[type="text"]');
+    let codex, upstream;
+    if (inputs.length === 2) {
+      // 自定义行：左输入框是 codex 模型名，右是上游
+      codex = inputs[0].value.trim();
+      upstream = inputs[1].value.trim();
+    } else if (inputs.length === 1) {
+      codex = inputs[0].dataset.codex;
+      upstream = inputs[0].value.trim();
+    }
+    if (codex && upstream) result[codex] = upstream;
+  });
+  return result;
+}
+
+// ── CRUD 操作 ──
+
+async function switchAccount(id) {
+  try {
+    await invoke('switch_account', { id });
+    accountsData.active_id = id;
+    showToast('已切换活跃账号', 'success');
+    await loadAccountsData();
+  } catch (e) {
+    showToast('切换账号失败: ' + e, 'error');
+  }
+}
+
+async function addAccount(provider) {
+  try {
+    const result = await invoke('add_account', { provider });
+    showToast('账号已创建', 'success');
+    await loadAccountsData();
+    // 找到新账号进入编辑
+    editingAccount = accountsData.accounts.find(a => a.id === result.id);
+    if (editingAccount) {
+      accountsView = 'edit';
+      renderMainContent();
+    }
+  } catch (e) {
+    showToast('创建账号失败: ' + e, 'error');
+  }
+}
+
+function editAccount(id) {
+  editingAccount = accountsData.accounts.find(a => a.id === id);
+  if (!editingAccount) {
+    showToast('账号不存在', 'error');
+    return;
+  }
+  // 深拷贝避免直接修改原数据
+  editingAccount = JSON.parse(JSON.stringify(editingAccount));
+  accountsView = 'edit';
+  renderMainContent();
+}
+
+async function saveAccount() {
+  if (!editingAccount) return;
+  const a = editingAccount;
+
+  a.name = document.getElementById('edit_name')?.value?.trim() || a.name;
+  a.upstream = document.getElementById('edit_upstream')?.value?.trim() || a.upstream;
+
+  const keyInput = document.getElementById('edit_api_key');
+  if (keyInput) {
+    const newKey = keyInput.value.trim();
+    // 只有用户真正修改了才传新 Key
+    if (newKey && !newKey.includes('****') && newKey !== a.api_key) {
+      a.api_key = newKey;
+    }
+  }
+
+  const vu = document.getElementById('edit_vision_upstream');
+  if (vu) a.vision_upstream = vu.value.trim();
+  const vk = document.getElementById('edit_vision_api_key');
+  if (vk) {
+    const nk = vk.value.trim();
+    if (nk && !nk.includes('****')) a.vision_api_key = nk;
+  }
+  const vm = document.getElementById('edit_vision_model');
+  if (vm) a.vision_model = vm.value.trim();
+  const ve = document.getElementById('edit_vision_endpoint');
+  if (ve) a.vision_endpoint = ve.value.trim();
+
+  a.model_map = collectModelMap();
+  a.updated_at = Math.floor(Date.now() / 1000);
+
+  try {
+    const result = await invoke('update_account', { accountJson: JSON.stringify(a) });
+    showToast('账号已保存', 'success');
+    await loadAccountsData();
+    editingAccount = accountsData.accounts.find(ac => ac.id === result.id);
+    if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));
+    renderMainContent();
+  } catch (e) {
+    showToast('保存账号失败: ' + e, 'error');
+  }
+}
+
+async function deleteAccount(id) {
+  if (!await showConfirm('确定要删除此账号吗？')) return;
+  try {
+    await invoke('delete_account', { id });
+    showToast('账号已删除', 'success');
+    accountsView = 'list'; editingAccount = null;
+    await loadAccountsData();
+  } catch (e) {
+    showToast('删除账号失败: ' + e, 'error');
+  }
+}
+
+async function importFromCodex() {
+  try {
+    await invoke('import_codex_config');
+    showToast('Codex 配置导入成功', 'success');
+    await loadAccountsData();
+  } catch (e) {
+    showToast('导入失败: ' + e, 'error');
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 键盘快捷键

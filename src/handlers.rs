@@ -1,3 +1,4 @@
+use crate::accounts::{Account, AccountStore};
 use crate::cache::RequestCache;
 use crate::config::Args;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
@@ -36,14 +37,14 @@ const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_item
 pub struct AppState {
     pub sessions: SessionStore,
     pub client: Client,
-    pub upstream: Arc<Url>,
-    pub api_key: Arc<String>,
+    pub upstream: Arc<tokio::sync::RwLock<Url>>,
+    pub api_key: Arc<tokio::sync::RwLock<String>>,
     pub client_api_key: Arc<tokio::sync::RwLock<String>>,
-    pub model_map: Arc<ModelMap>,
-    pub vision_upstream: Option<Arc<Url>>,
-    pub vision_api_key: Arc<String>,
-    pub vision_model: Arc<String>,
-    pub vision_endpoint: Arc<String>,
+    pub model_map: Arc<tokio::sync::RwLock<ModelMap>>,
+    pub vision_upstream: Arc<tokio::sync::RwLock<Option<Url>>>,
+    pub vision_api_key: Arc<tokio::sync::RwLock<String>>,
+    pub vision_model: Arc<tokio::sync::RwLock<String>>,
+    pub vision_endpoint: Arc<tokio::sync::RwLock<String>>,
     pub start_time: std::time::Instant,
     pub request_cache: RequestCache,
     pub prompts: Arc<prompts::PromptRegistry>,
@@ -62,6 +63,8 @@ pub struct AppState {
     pub executors: Arc<tokio::sync::RwLock<LocalExecutorConfig>>,
     pub token_tracker: Arc<TokenTracker>,
     pub data_dir: Arc<std::path::PathBuf>,
+    pub account_store: Arc<tokio::sync::RwLock<AccountStore>>,
+    pub active_account: Arc<tokio::sync::RwLock<Account>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -75,7 +78,7 @@ struct BlockingArgs<'a> {
     chat_req: ChatRequest,
     url: String,
     model: String,
-    api_key: Arc<String>,
+    api_key: String,
     response_id: String,
     store_response: bool,
     conversation_id: Option<String>,
@@ -86,7 +89,7 @@ struct BlockingArgs<'a> {
 struct VlmArgs {
     state: AppState,
     url: String,
-    api_key: Arc<String>,
+    api_key: String,
     vlm_body: Value,
     model: String,
     stream_response: bool,
@@ -812,10 +815,12 @@ fn unsupported_param(param: &str, message: &str) -> Response {
 
 async fn handle_models(State(state): State<AppState>) -> Response {
     debug!("GET /v1/models");
-    let url = format!("{}models", join_base(&state.upstream));
+    let upstream = state.upstream.read().await;
+    let url = format!("{}models", join_base(&upstream));
     let mut builder = state.client.get(&url);
-    if !state.api_key.is_empty() {
-        builder = builder.bearer_auth(state.api_key.as_str());
+    let api_key = state.api_key.read().await;
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
     match builder.send().await {
         Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
@@ -1253,7 +1258,8 @@ async fn handle_responses_inner(
     let original_model = req.model.clone();
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
-    let mapped_model = resolve_model(&original_model, &state.model_map);
+    let model_map = state.model_map.read().await.clone();
+    let mapped_model = resolve_model(&original_model, &model_map);
     let store_response = req.store.unwrap_or(true);
     let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
     if !local_output_prefix_items.is_empty() {
@@ -1309,7 +1315,7 @@ async fn handle_responses_inner(
         &req,
         history.clone(),
         &state.sessions,
-        &state.model_map,
+        &model_map,
         state.chinese_thinking,
     );
     let mut chat_req = translated.chat;
@@ -1333,10 +1339,10 @@ async fn handle_responses_inner(
             }
         }),
     };
-    let route_to_vision = translated.has_images
-        && state.vision_upstream.is_some()
-        && !is_review_model
-        && has_new_image;
+    let vision_upstream_val = state.vision_upstream.read().await.clone();
+    let route_to_vision =
+        translated.has_images && vision_upstream_val.is_some() && !is_review_model && has_new_image;
+    drop(vision_upstream_val);
     info!(
         "route_to_vision: has_images={} review={} new_image={} msgs={} route={}",
         translated.has_images,
@@ -1372,33 +1378,32 @@ async fn handle_responses_inner(
         }
     }
 
+    let vision_upstream_val = state.vision_upstream.read().await.clone();
+    let vision_endpoint = state.vision_endpoint.read().await.clone();
+    let vision_model_val = state.vision_model.read().await.clone();
+    let vision_api_key_val = state.vision_api_key.read().await.clone();
+
     let (url, api_key) = if route_to_vision {
-        let vu = state
-            .vision_upstream
+        let vu = vision_upstream_val
             .as_ref()
             .expect("vision_upstream must be set");
-        let use_vlm = state.vision_endpoint.contains("vlm");
-        let url = format!(
-            "{}{}",
-            join_base(vu.as_ref()),
-            state.vision_endpoint.as_str()
-        );
-        let vmodel = state.vision_model.as_ref().clone();
+        let use_vlm = vision_endpoint.contains("vlm");
+        let url = format!("{}{}", join_base(vu), vision_endpoint.as_str());
+        let vmodel = vision_model_val.clone();
         info!(
             "📷 routing to vision upstream: {} model={} endpoint={} vlm={}",
-            vu.as_ref(),
+            vu,
             vmodel,
-            state.vision_endpoint.as_str(),
+            vision_endpoint.as_str(),
             use_vlm
         );
 
         if use_vlm {
             let vlm_body = build_vlm_body(&chat_req);
-            let api_key = state.vision_api_key.clone();
             return handle_vlm(VlmArgs {
                 state,
                 url,
-                api_key,
+                api_key: vision_api_key_val.clone(),
                 vlm_body,
                 model: vmodel,
                 stream_response: req.stream,
@@ -1410,10 +1415,12 @@ async fn handle_responses_inner(
         }
 
         chat_req.model = vmodel;
-        (url, state.vision_api_key.clone())
+        (url, vision_api_key_val.clone())
     } else {
-        let url = format!("{}chat/completions", join_base(&state.upstream));
-        (url, state.api_key.clone())
+        let upstream = state.upstream.read().await;
+        let url = format!("{}chat/completions", join_base(&upstream));
+        let api_key = state.api_key.read().await;
+        (url, api_key.clone())
     };
 
     let vision_label = if route_to_vision { " 📷" } else { "" };
@@ -1567,7 +1574,7 @@ async fn handle_responses_inner(
             conversation_id: conversation_id.clone(),
             response_extra,
             model: mapped_model,
-            model_map: state.model_map.as_ref().clone(),
+            model_map: model_map.clone(),
             cache: if store_response && conversation_id.is_none() {
                 Some(state.request_cache.clone())
             } else {

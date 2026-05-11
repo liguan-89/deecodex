@@ -1552,6 +1552,265 @@ body {
 .status-bar .indicator.ok { background: var(--green); box-shadow: 0 0 4px var(--green); }
 .status-bar .indicator.warn { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
 .status-bar .indicator.err { background: var(--red); box-shadow: 0 0 4px var(--red); }
+
+/* ============================================================
+   ACCOUNT MANAGEMENT
+   ============================================================ */
+
+.active-account-banner {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.active-account-banner .banner-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.active-account-banner .banner-icon {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  flex-shrink: 0;
+}
+.active-account-banner .banner-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.active-account-banner .banner-text strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.active-account-banner .banner-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.account-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  transition: all var(--transition);
+  cursor: pointer;
+  position: relative;
+}
+.account-card:hover {
+  border-color: var(--border-default);
+}
+.account-card.active {
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 12px var(--border-glow);
+}
+.account-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.account-card .card-name {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.account-card .card-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-card .card-meta span {
+  word-break: break-all;
+}
+.account-card .card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.account-card .card-actions .btn {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.provider-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.provider-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.provider-card .provider-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+.provider-card .provider-label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.provider-card .provider-desc {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.back-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 4px 0;
+  margin-bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color var(--transition);
+}
+.back-link:hover { color: var(--accent); }
+
+.provider-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.provider-badge.deepseek { background: var(--amber-dim); color: var(--amber); }
+.provider-badge.openai { background: var(--green-dim); color: var(--green); }
+.provider-badge.openrouter { background: var(--accent-dim); color: var(--accent); }
+.provider-badge.anthropic { background: var(--amber-dim); color: var(--amber); }
+.provider-badge.google-ai { background: var(--green-dim); color: var(--green); }
+.provider-badge.custom { background: rgba(107,127,168,0.15); color: var(--text-muted); }
+
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.model-row:last-child { border-bottom: none; }
+.model-row .model-arrow {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 20px;
+  text-align: center;
+}
+.model-row .model-codex {
+  flex: 1;
+  min-width: 0;
+}
+.model-row .model-codex select,
+.model-row .model-codex input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+}
+.model-row .model-upstream {
+  flex: 1;
+  min-width: 0;
+}
+.model-row .model-upstream input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+}
+.model-row .model-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  transition: color var(--transition);
+}
+.model-row .model-remove:hover { color: var(--red); }
+
+.add-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border: 1px dashed var(--border-subtle);
+  background: none;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  margin-top: 10px;
+  transition: all var(--transition);
+}
+.add-model-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  .accounts-grid { grid-template-columns: 1fr; }
+  .provider-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 480px) {
+  .provider-grid { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
@@ -1579,6 +1838,12 @@ body {
 
       <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
         <span class="icon">◇</span> 诊断
+      </button>
+
+      <span class="nav-section-label">账号</span>
+
+      <button class="nav-item" data-panel="accounts" onclick="switchPanel('accounts')">
+        <span class="icon">▣</span> 账号管理
       </button>
 
       <span class="nav-section-label">管理</span>
@@ -1683,6 +1948,12 @@ let currentPanel = 'status';
 let currentConfig = {};
 let serverVersion = '';
 
+// Accounts state
+let accountsView = 'list';
+let accountsData = { accounts: [], active_id: null };
+let editingAccount = null;
+let providerPresets = [];
+
 // ============================================================
 // INIT
 // ============================================================
@@ -1708,12 +1979,23 @@ function switchPanel(panelId) {
     el.classList.toggle('active', el.dataset.panel === panelId);
   });
 
+  // reset accounts view when switching away
+  if (panelId === 'accounts') {
+    accountsView = 'list';
+    editingAccount = null;
+  }
+
   // show/hide save button (only relevant on config)
   const saveBtn = document.getElementById('sidebarSaveBtn');
   saveBtn.style.display = (panelId === 'config') ? '' : 'none';
 
   // render
   renderPanel(panelId);
+
+  // load active account banner when on config page
+  if (panelId === 'config') {
+    loadActiveAccountBanner();
+  }
 
   // close mobile sidebar
   document.getElementById('sidebar').classList.remove('open');
@@ -1728,6 +2010,7 @@ function renderPanel(panelId) {
     case 'sessions': renderSessionsPanel(); break;
     case 'tool-policy': container.innerHTML = renderToolPolicy(); loadToolPolicy(); break;
     case 'help': container.innerHTML = renderHelp(); break;
+    case 'accounts': renderAccountsPanel(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
 }
@@ -1822,6 +2105,13 @@ function renderConfig() {
     <div class="page-header">
       <h2>配置</h2>
       <p>修改配置后点击「保存配置」使其生效，部分变更需重启服务</p>
+    </div>
+    <div class="active-account-banner" id="activeAccountBanner">
+      <div class="banner-info">
+        <div class="banner-icon"></div>
+        <div class="banner-text">加载中...</div>
+      </div>
+      <div class="banner-hint">账号配置请在「账号管理」中修改</div>
     </div>`;
 
   for (const sec of CONFIG_SECTIONS) {
@@ -2897,6 +3187,483 @@ function computerLabel(v) {
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ============================================================
+// ACCOUNT MANAGEMENT
+// ============================================================
+
+// --- Codex 端模型列表（映射表左侧） ---
+const CODEX_MODEL_LIST = [
+  'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-5.1-mini', 'gpt-5.1-nano',
+  'gpt-5', 'codex-auto-review',
+  'claude-sonnet-4-5', 'claude-opus-4-5', 'claude-3-5-sonnet',
+  'gemini-2.5-pro', 'gemini-2.5-flash'
+];
+
+// --- 数据加载 ---
+
+async function loadAccountsData() {
+  try {
+    const res = await fetch('/api/accounts');
+    if (!res.ok) throw new Error('加载账号列表失败');
+    const data = await res.json();
+    accountsData.accounts = data.accounts || [];
+
+    // 同时获取活跃账号 ID
+    try {
+      const activeRes = await fetch('/api/accounts/active');
+      if (activeRes.ok) {
+        const activeData = await activeRes.json();
+        accountsData.active_id = activeData.account ? activeData.account.id : null;
+      }
+    } catch (_) {
+      accountsData.active_id = null;
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+    accountsData = { accounts: [], active_id: null };
+  }
+}
+
+async function loadProviderPresets() {
+  try {
+    const res = await fetch('/api/provider-presets');
+    if (!res.ok) throw new Error('加载供应商预设失败');
+    const data = await res.json();
+    providerPresets = data.presets || [];
+  } catch (e) {
+    showToast(e.message, 'error');
+    providerPresets = [];
+  }
+}
+
+async function loadActiveAccountBanner() {
+  const banner = document.getElementById('activeAccountBanner');
+  if (!banner) return;
+  try {
+    const res = await fetch('/api/accounts/active');
+    if (!res.ok) throw new Error('加载活跃账号失败');
+    const data = await res.json();
+    const acct = data.account;
+    if (!acct) {
+      banner.innerHTML =
+        '<div class="banner-info"><div class="banner-icon" style="background:var(--red);box-shadow:0 0 6px var(--red);"></div><div class="banner-text">无活跃账号</div></div><div class="banner-hint">账号配置请在「账号管理」中修改</div>';
+      return;
+    }
+    const providerLabel = getProviderLabel(acct.provider);
+    banner.innerHTML =
+      '<div class="banner-info"><div class="banner-icon"></div><div class="banner-text">活跃账号：<strong>' + esc(acct.name) + '</strong> <span class="provider-badge ' + escAttr(acct.provider) + '">' + esc(providerLabel) + '</span></div></div><div class="banner-hint">账号配置请在「账号管理」中修改</div>';
+  } catch (e) {
+    banner.innerHTML =
+      '<div class="banner-info"><div class="banner-icon" style="background:var(--amber);box-shadow:0 0 6px var(--amber);"></div><div class="banner-text">活跃账号加载失败</div></div><div class="banner-hint">账号配置请在「账号管理」中修改</div>';
+  }
+}
+
+function getProviderLabel(slug) {
+  const preset = providerPresets.find(function(p) { return p.slug === slug; });
+  return preset ? preset.label : slug;
+}
+
+// --- 页面分发 ---
+
+function renderAccountsPanel() {
+  const container = document.getElementById('mainContent');
+  if (accountsView === 'list') {
+    container.innerHTML = renderAccountList();
+    loadAccountsData().then(function() { renderAccountListCards(); });
+  } else if (accountsView === 'add') {
+    container.innerHTML = renderAddAccount();
+    loadProviderPresets().then(function() { renderProviderCards(); });
+  } else if (accountsView === 'detail') {
+    container.innerHTML = renderAccountDetail();
+    loadProviderPresets().then(function() { renderAccountDetailForm(); });
+  }
+}
+
+// --- Level 1: 账号列表 ---
+
+function renderAccountList() {
+  return '<div class="page-header"><h2>账号管理</h2><p>管理多供应商账号，一键切换上游 API 配置</p></div>' +
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:14px;">' +
+    '<button class="btn btn-primary" onclick="accountsView=\'add\';renderAccountsPanel();">+ 添加账号</button>' +
+    '</div>' +
+    '<div class="accounts-grid" id="accountsGrid"><div class="empty-state">加载中...</div></div>';
+}
+
+function renderAccountListCards() {
+  const grid = document.getElementById('accountsGrid');
+  if (!grid) return;
+
+  if (accountsData.accounts.length === 0) {
+    grid.innerHTML = '<div class="empty-state">暂无账号，点击「添加账号」创建</div>';
+    return;
+  }
+
+  grid.innerHTML = accountsData.accounts.map(function(acct) {
+    var isActive = acct.id === accountsData.active_id;
+    var providerLabel = getProviderLabel(acct.provider);
+    var createdDate = formatTimestamp(acct.created_at);
+    return '<div class="account-card' + (isActive ? ' active' : '') + '" onclick="switchAccountCard(\'' + escAttr(acct.id) + '\')">' +
+      '<div class="account-card-header">' +
+      '<span class="provider-badge ' + escAttr(acct.provider) + '">' + esc(providerLabel) + '</span>' +
+      (isActive ? '<span style="font-size:11px;color:var(--accent);font-family:var(--font-mono);">● 活跃</span>' : '') +
+      '</div>' +
+      '<div class="card-name">' + esc(acct.name) + '</div>' +
+      '<div class="card-meta">' +
+      '<span>上游: ' + esc(trunc(acct.upstream, 40)) + '</span>' +
+      '<span>创建: ' + esc(createdDate) + '</span>' +
+      '</div>' +
+      '<div class="card-actions">' +
+      (!isActive ? '<button class="btn btn-primary" onclick="event.stopPropagation();switchAccount(\'' + escAttr(acct.id) + '\')">切换</button>' : '') +
+      '<button class="btn btn-ghost" onclick="event.stopPropagation();openEditAccount(\'' + escAttr(acct.id) + '\')">编辑</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '—';
+  var d = new Date(ts * 1000);
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+async function switchAccountCard(id) {
+  if (id === accountsData.active_id) return;
+  showConfirm('切换账号', '确认切换为所选账号？这将更新服务的热配置（上游 URL、API Key、模型映射等）。', async function() {
+    await switchAccount(id);
+  });
+}
+
+function openEditAccount(id) {
+  editingAccount = accountsData.accounts.find(function(a) { return a.id === id; }) || null;
+  if (editingAccount) {
+    accountsView = 'detail';
+    renderAccountsPanel();
+  }
+}
+
+// --- Level 2: 选择供应商 ---
+
+function renderAddAccount() {
+  return '<div class="page-header"><h2>添加账号</h2><p>选择供应商后创建新账号</p></div>' +
+    '<button class="back-link" onclick="accountsView=\'list\';renderAccountsPanel();">← 返回账号列表</button>' +
+    '<div class="provider-grid" id="providerGrid"><div class="empty-state">加载中...</div></div>';
+}
+
+function renderProviderCards() {
+  var grid = document.getElementById('providerGrid');
+  if (!grid) return;
+
+  if (providerPresets.length === 0) {
+    grid.innerHTML = '<div class="empty-state">暂无可用供应商预设</div>';
+    return;
+  }
+
+  grid.innerHTML = providerPresets.map(function(p) {
+    var icon = providerIcon(p.slug);
+    return '<div class="provider-card" onclick="doAddAccount(\'' + escAttr(p.slug) + '\')">' +
+      '<div class="provider-icon">' + icon + '</div>' +
+      '<div class="provider-label">' + esc(p.label) + '</div>' +
+      '<div class="provider-desc">' + esc(p.description) + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function providerIcon(slug) {
+  switch (slug) {
+    case 'deepseek': return '🔍';
+    case 'openai': return '🧠';
+    case 'openrouter': return '🌐';
+    case 'anthropic': return '🎨';
+    case 'google-ai': return '🔮';
+    default: return '⚙';
+  }
+}
+
+// --- Level 3: 账号详情/编辑 ---
+
+function renderAccountDetail() {
+  return '<div class="page-header"><h2>' + (editingAccount ? '编辑账号: ' + esc(editingAccount.name) : '账号详情') + '</h2></div>' +
+    '<button class="back-link" onclick="accountsView=\'list\';editingAccount=null;renderAccountsPanel();">← 返回账号列表</button>' +
+    '<div id="accountDetailForm"><div class="empty-state">加载中...</div></div>';
+}
+
+function renderAccountDetailForm() {
+  var container = document.getElementById('accountDetailForm');
+  if (!container || !editingAccount) return;
+
+  var preset = providerPresets.find(function(p) { return p.slug === editingAccount.provider; });
+  var knownModels = preset ? preset.known_models : [];
+
+  // 准备模型映射行
+  var modelEntries = [];
+  var modelMap = editingAccount.model_map || {};
+  Object.keys(modelMap).forEach(function(k) {
+    modelEntries.push({ codex: k, upstream: modelMap[k] });
+  });
+
+  var html = '';
+
+  // 基本信息
+  html += '<div class="config-section"><div class="config-section-header"><h3>基本信息</h3></div><div class="config-fields">';
+
+  html += '<div class="config-field">';
+  html += '<label>账号名称</label>';
+  html += '<input type="text" id="acctName" value="' + escAttr(editingAccount.name) + '">';
+  html += '<span class="hint">账号的显示名称</span>';
+  html += '</div>';
+
+  html += '<div class="config-field">';
+  html += '<label>供应商</label>';
+  html += '<select id="acctProvider">';
+  providerPresets.forEach(function(p) {
+    html += '<option value="' + escAttr(p.slug) + '"' + (p.slug === editingAccount.provider ? ' selected' : '') + '>' + esc(p.label) + '</option>';
+  });
+  html += '</select>';
+  html += '<span class="hint">上游 LLM 提供商</span>';
+  html += '</div>';
+
+  html += '<div class="config-field wide">';
+  html += '<label>上游 API 地址</label>';
+  html += '<input type="text" id="acctUpstream" value="' + escAttr(editingAccount.upstream) + '">';
+  html += '<span class="hint">Chat Completions 端点 URL</span>';
+  html += '</div>';
+
+  html += '<div class="config-field">';
+  html += '<label>API Key <span style="font-weight:normal;text-transform:none;">（脱敏值，不修改则不更新）</span></label>';
+  html += '<input type="password" id="acctApiKey" value="' + escAttr(editingAccount.api_key || '') + '" autocomplete="off">';
+  html += '<span class="hint">修改后保存才会更新密钥</span>';
+  html += '</div>';
+
+  html += '<div class="config-field wide">';
+  html += '<label>视觉上游地址</label>';
+  html += '<input type="text" id="acctVisionUpstream" value="' + escAttr(editingAccount.vision_upstream || '') + '">';
+  html += '<span class="hint">多模态模型的 API 地址（可选）</span>';
+  html += '</div>';
+
+  html += '<div class="config-field">';
+  html += '<label>视觉 API Key <span style="font-weight:normal;text-transform:none;">（脱敏值）</span></label>';
+  html += '<input type="password" id="acctVisionApiKey" value="' + escAttr(editingAccount.vision_api_key || '') + '" autocomplete="off">';
+  html += '<span class="hint">修改后保存才会更新（可选）</span>';
+  html += '</div>';
+
+  html += '<div class="config-field">';
+  html += '<label>视觉模型名</label>';
+  html += '<input type="text" id="acctVisionModel" value="' + escAttr(editingAccount.vision_model || '') + '">';
+  html += '<span class="hint">使用的视觉模型名称（可选）</span>';
+  html += '</div>';
+
+  html += '<div class="config-field">';
+  html += '<label>视觉端点路径</label>';
+  html += '<input type="text" id="acctVisionEndpoint" value="' + escAttr(editingAccount.vision_endpoint || '') + '">';
+  html += '<span class="hint">视觉 API 具体端点路径（可选）</span>';
+  html += '</div>';
+
+  html += '</div></div>';
+
+  // 模型映射
+  html += '<div class="config-section"><div class="config-section-header"><h3>模型映射</h3><span class="section-desc">' + (Object.keys(modelMap).length || 0) + ' 条</span></div>';
+  html += '<div id="modelMapRows" style="padding: 0 4px;">';
+
+  modelEntries.forEach(function(entry, idx) {
+    html += renderModelRow(idx, entry.codex, entry.upstream, knownModels);
+  });
+
+  html += '</div>';
+  html += '<button class="add-model-btn" onclick="addModelRow()">+ 添加映射</button>';
+  html += '</div>';
+
+  // 操作按钮
+  html += '<div class="config-actions" style="margin-top:20px;display:flex;gap:10px;align-items:center;">';
+  html += '<button class="btn btn-primary" id="btnUpdateAccount" onclick="doUpdateAccount()">保存修改</button>';
+  html += '<button class="btn btn-danger" id="btnDeleteAccount" onclick="deleteAccountConfirm()">删除账号</button>';
+  html += '<span id="accountDetailMsg" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);align-self:center;margin-left:8px;"></span>';
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+function renderModelRow(idx, codexModel, upstreamModel, knownModels) {
+  var datalistId = 'modelDatalist_' + idx;
+  var html = '<div class="model-row" id="modelRow_' + idx + '">';
+  html += '<div class="model-codex">';
+  html += '<select id="modelCodex_' + idx + '" style="width:100%;background:var(--bg-input);border:1px solid var(--border-subtle);color:var(--text-primary);font-family:var(--font-mono);font-size:12px;padding:5px 8px;border-radius:var(--radius-sm);">';
+  CODEX_MODEL_LIST.forEach(function(m) {
+    html += '<option value="' + escAttr(m) + '"' + (m === codexModel ? ' selected' : '') + '>' + esc(m) + '</option>';
+  });
+  // 如果当前值不在预定义列表中，添加自定义选项
+  if (codexModel && CODEX_MODEL_LIST.indexOf(codexModel) === -1) {
+    html += '<option value="' + escAttr(codexModel) + '" selected>' + esc(codexModel) + '</option>';
+  }
+  html += '</select></div>';
+  html += '<div class="model-arrow">→</div>';
+  html += '<div class="model-upstream">';
+  html += '<input type="text" id="modelUpstream_' + idx + '" value="' + escAttr(upstreamModel || '') + '" list="' + datalistId + '" style="width:100%;" placeholder="上游模型名">';
+  html += '<datalist id="' + datalistId + '">';
+  knownModels.forEach(function(m) {
+    html += '<option value="' + escAttr(m) + '">';
+  });
+  html += '</datalist></div>';
+  html += '<button class="model-remove" onclick="removeModelRow(\'' + idx + '\')" title="移除">✕</button>';
+  html += '</div>';
+  return html;
+}
+
+// --- 模型映射行管理（动态添加/删除） ---
+
+function addModelRow() {
+  var rows = document.getElementById('modelMapRows');
+  if (!rows) return;
+  var idx = Date.now();
+  var preset = providerPresets.find(function(p) { return p.slug === editingAccount.provider; });
+  var knownModels = preset ? preset.known_models : [];
+  rows.insertAdjacentHTML('beforeend', renderModelRow(idx, '', '', knownModels));
+}
+
+function removeModelRow(idx) {
+  var row = document.getElementById('modelRow_' + idx);
+  if (row) row.remove();
+}
+
+function collectModelMap() {
+  var map = {};
+  var rows = document.querySelectorAll('[id^="modelRow_"]');
+  rows.forEach(function(row) {
+    var idParts = row.id.split('_').slice(1).join('_');
+    var select = document.getElementById('modelCodex_' + idParts);
+    var input = document.getElementById('modelUpstream_' + idParts);
+    if (select && input && input.value.trim()) {
+      map[select.value.trim()] = input.value.trim();
+    }
+  });
+  return map;
+}
+
+// --- 账号操作 ---
+
+async function switchAccount(id) {
+  try {
+    var res = await fetch('/api/accounts/' + encodeURIComponent(id) + '/activate', { method: 'POST' });
+    if (!res.ok) {
+      var errData = await res.json().catch(function() { return {}; });
+      throw new Error(errData.error || '切换账号失败');
+    }
+    await loadAccountsData();
+    if (accountsView === 'list') renderAccountsPanel();
+    await loadActiveAccountBanner();
+    showToast('账号已切换', 'success');
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
+async function doAddAccount(provider) {
+  try {
+    var preset = providerPresets.find(function(p) { return p.slug === provider; });
+    var name = preset ? preset.label + ' 账号' : '新账号';
+    var res = await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, name: name })
+    });
+    if (!res.ok) {
+      var errData = await res.json().catch(function() { return {}; });
+      throw new Error(errData.error || '创建账号失败');
+    }
+    var data = await res.json();
+    showToast('账号已创建', 'success');
+    await loadAccountsData();
+    // 直接进入编辑
+    editingAccount = data.account || accountsData.accounts.find(function(a) { return a.id === data.account.id; });
+    if (!editingAccount && accountsData.accounts.length > 0) {
+      editingAccount = accountsData.accounts[accountsData.accounts.length - 1];
+    }
+    accountsView = 'detail';
+    renderAccountsPanel();
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
+async function doUpdateAccount() {
+  if (!editingAccount) return;
+  var btn = document.getElementById('btnUpdateAccount');
+  var msgEl = document.getElementById('accountDetailMsg');
+  if (btn) btn.disabled = true;
+  if (msgEl) msgEl.textContent = '保存中...';
+
+  try {
+    var body = {
+      name: document.getElementById('acctName').value.trim(),
+      provider: document.getElementById('acctProvider').value,
+      upstream: document.getElementById('acctUpstream').value.trim(),
+      model_map: collectModelMap(),
+      vision_upstream: document.getElementById('acctVisionUpstream').value.trim(),
+      vision_model: document.getElementById('acctVisionModel').value.trim(),
+      vision_endpoint: document.getElementById('acctVisionEndpoint').value.trim()
+    };
+
+    // API Key: 仅当用户修改了脱敏值时才传
+    var apiKeyInput = document.getElementById('acctApiKey').value.trim();
+    if (apiKeyInput && apiKeyInput !== editingAccount.api_key && apiKeyInput !== '****') {
+      body.api_key = apiKeyInput;
+    }
+    var visionKeyInput = document.getElementById('acctVisionApiKey').value.trim();
+    if (visionKeyInput && visionKeyInput !== editingAccount.vision_api_key && visionKeyInput !== '****') {
+      body.vision_api_key = visionKeyInput;
+    }
+
+    var res = await fetch('/api/accounts/' + encodeURIComponent(editingAccount.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      var errData = await res.json().catch(function() { return {}; });
+      throw new Error(errData.error || '保存账号失败');
+    }
+    var data = await res.json();
+    if (data.account) {
+      editingAccount = data.account;
+    }
+    showToast('账号已保存', 'success');
+    await loadAccountsData();
+    await loadActiveAccountBanner();
+    if (msgEl) msgEl.textContent = '已保存';
+    setTimeout(function() { if (msgEl) msgEl.textContent = ''; }, 2000);
+  } catch (e) {
+    showToast(e.message, 'error');
+    if (msgEl) msgEl.textContent = '保存失败';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function deleteAccountConfirm() {
+  if (!editingAccount) return;
+  showConfirm('删除账号', '确认删除账号「' + editingAccount.name + '」？此操作不可恢复，且无法删除最后一个账号。', function() {
+    doDeleteAccount(editingAccount.id);
+  });
+}
+
+async function doDeleteAccount(id) {
+  try {
+    var res = await fetch('/api/accounts/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!res.ok) {
+      var errData = await res.json().catch(function() { return {}; });
+      throw new Error(errData.error || '删除账号失败');
+    }
+    showToast('账号已删除', 'success');
+    editingAccount = null;
+    await loadAccountsData();
+    await loadActiveAccountBanner();
+    accountsView = 'list';
+    renderAccountsPanel();
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
 </script>
 </body>
 </html>

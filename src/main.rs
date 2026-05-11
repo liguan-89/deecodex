@@ -1,3 +1,4 @@
+mod accounts;
 mod backup_store;
 mod cache;
 mod cdp;
@@ -484,9 +485,7 @@ async fn main() -> Result<()> {
     let vision_upstream = if args.vision_upstream.is_empty() {
         None
     } else {
-        Some(Arc::new(handlers::validate_upstream(
-            &args.vision_upstream,
-        )?))
+        Some(handlers::validate_upstream(&args.vision_upstream)?)
     };
     if vision_upstream.is_some() {
         info!("vision upstream configured: {}", args.vision_upstream);
@@ -501,6 +500,23 @@ async fn main() -> Result<()> {
         args.mcp_executor_timeout_secs,
     )?;
 
+    use crate::accounts::{generate_id, now_secs, Account, AccountStore};
+    let default_account = Account {
+        id: generate_id(),
+        name: "默认账号".into(),
+        provider: crate::accounts::guess_provider(&args.upstream).into(),
+        upstream: args.upstream.clone(),
+        api_key: args.api_key.clone(),
+        model_map: model_map.clone(),
+        vision_upstream: args.vision_upstream.clone(),
+        vision_api_key: args.vision_api_key.clone(),
+        vision_model: args.vision_model.clone(),
+        vision_endpoint: args.vision_endpoint.clone(),
+        from_codex_config: false,
+        created_at: now_secs(),
+        updated_at: now_secs(),
+    };
+
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
         client: Client::builder()
@@ -508,14 +524,14 @@ async fn main() -> Result<()> {
             .pool_max_idle_per_host(4)
             .timeout(std::time::Duration::from_secs(300))
             .build()?,
-        upstream: Arc::new(upstream),
-        api_key: Arc::new(args.api_key),
+        upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
+        api_key: Arc::new(tokio::sync::RwLock::new(args.api_key.clone())),
         client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key)),
-        model_map: Arc::new(model_map),
-        vision_upstream,
-        vision_api_key: Arc::new(args.vision_api_key),
-        vision_model: Arc::new(args.vision_model),
-        vision_endpoint: Arc::new(args.vision_endpoint),
+        model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
+        vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
+        vision_api_key: Arc::new(tokio::sync::RwLock::new(args.vision_api_key.clone())),
+        vision_model: Arc::new(tokio::sync::RwLock::new(args.vision_model.clone())),
+        vision_endpoint: Arc::new(tokio::sync::RwLock::new(args.vision_endpoint.clone())),
         start_time: std::time::Instant::now(),
         request_cache: crate::cache::RequestCache::default(),
         prompts: Arc::new(crate::prompts::PromptRegistry::new(&args.prompts_dir)),
@@ -542,6 +558,11 @@ async fn main() -> Result<()> {
         })),
         executors: Arc::new(tokio::sync::RwLock::new(executors)),
         data_dir: Arc::new(args.data_dir.clone()),
+        account_store: Arc::new(tokio::sync::RwLock::new(AccountStore {
+            accounts: vec![default_account.clone()],
+            active_id: Some(default_account.id.clone()),
+        })),
+        active_account: Arc::new(tokio::sync::RwLock::new(default_account)),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
@@ -640,7 +661,7 @@ async fn main() -> Result<()> {
     info!(
         "listening {} -> {} | body:{}MB",
         addr,
-        state.upstream.as_ref(),
+        state.upstream.read().await.as_ref(),
         args.max_body_mb
     );
 

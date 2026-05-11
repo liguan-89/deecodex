@@ -1,15 +1,19 @@
+use crate::accounts::*;
 use crate::backup_store::BackupStore;
 use crate::config::Args;
 use crate::handlers::{handle_get_tool_policy, handle_put_tool_policy, AppState};
 use crate::types::ChatMessage;
 use crate::validate;
 
+use reqwest::Url;
+use std::collections::HashMap;
+
 use axum::{
     extract::{Path, State},
     http::header,
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -39,6 +43,18 @@ pub fn build_web_router(state: AppState) -> Router {
             "/api/tool-policy",
             get(handle_get_tool_policy).put(handle_put_tool_policy),
         )
+        // 账号管理
+        .route("/api/accounts/active", get(handle_get_active_account))
+        .route("/api/accounts/:id/activate", post(handle_switch_account))
+        .route(
+            "/api/accounts/:id",
+            put(handle_update_account).delete(handle_delete_account),
+        )
+        .route(
+            "/api/accounts",
+            get(handle_list_accounts).post(handle_add_account),
+        )
+        .route("/api/provider-presets", get(handle_get_presets))
         .with_state(state)
 }
 
@@ -60,31 +76,64 @@ fn load_args(data_dir: &std::path::Path) -> Option<Args> {
 
 /// 从 AppState 构建 fallback Args（配置文件中不存在时使用）
 fn fallback_args(state: &AppState) -> Args {
+    let upstream = state
+        .upstream
+        .try_read()
+        .map(|g| g.to_string())
+        .unwrap_or_default();
+    let api_key = state
+        .api_key
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let model_map = state
+        .model_map
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vision_upstream_val = state
+        .vision_upstream
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vision_api_key_val = state
+        .vision_api_key
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vision_model_val = state
+        .vision_model
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let vision_endpoint_val = state
+        .vision_endpoint
+        .try_read()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     Args {
         command: None,
         config: None,
         port: 4446,
-        upstream: state.upstream.as_ref().to_string(),
-        api_key: state.api_key.as_ref().to_string(),
+        upstream,
+        api_key,
         client_api_key: state
             .client_api_key
             .try_read()
             .map(|g| g.clone())
             .unwrap_or_default(),
-        model_map: if state.model_map.is_empty() {
+        model_map: if model_map.is_empty() {
             "{}".into()
         } else {
-            serde_json::to_string(&*state.model_map).unwrap_or_else(|_| "{}".into())
+            serde_json::to_string(&model_map).unwrap_or_else(|_| "{}".into())
         },
         max_body_mb: 100,
-        vision_upstream: state
-            .vision_upstream
-            .as_ref()
-            .map(|u| u.as_ref().to_string())
+        vision_upstream: vision_upstream_val
+            .map(|u| u.to_string())
             .unwrap_or_default(),
-        vision_api_key: state.vision_api_key.as_ref().to_string(),
-        vision_model: state.vision_model.as_ref().to_string(),
-        vision_endpoint: state.vision_endpoint.as_ref().to_string(),
+        vision_api_key: vision_api_key_val,
+        vision_model: vision_model_val,
+        vision_endpoint: vision_endpoint_val,
         chinese_thinking: state.chinese_thinking,
         codex_auto_inject: state.codex_auto_inject,
         codex_persistent_inject: state.codex_persistent_inject,
@@ -346,12 +395,14 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = state.start_time.elapsed().as_secs();
     let exec = state.executors.read().await;
     let client_auth_enabled = !state.client_api_key.read().await.is_empty();
+    let upstream_val = state.upstream.read().await;
+    let vision_enabled = state.vision_upstream.read().await.is_some();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_secs": uptime,
         "port": state.port,
-        "upstream": state.upstream.as_str(),
-        "vision_enabled": state.vision_upstream.is_some(),
+        "upstream": upstream_val.as_str(),
+        "vision_enabled": vision_enabled,
         "mcp_enabled": exec.mcp.enabled(),
         "computer_executor": exec.computer.backend.as_str(),
         "chinese_thinking": state.chinese_thinking,
@@ -755,3 +806,316 @@ async fn handle_delete_conversation_with_backup(
 
 // ── 工具策略 ──────────────────────────────────────────────────
 // handle_get_tool_policy / handle_put_tool_policy 已移至 handlers.rs，路由注册在上方 build_web_router() 中
+
+// ── 账号管理 ──────────────────────────────────────────────────────
+
+/// 脱敏字段，显示前 4 位 + **** + 后 4 位
+pub fn mask_key_str(key: &str) -> String {
+    if key.is_empty() {
+        return String::new();
+    }
+    if key.len() <= 8 {
+        return "****".to_string();
+    }
+    format!("{}****{}", &key[..4], &key[key.len() - 4..])
+}
+
+/// 将 Account 转为 JSON，同时脱敏 api_key / vision_api_key
+fn account_to_masked_json(account: &Account) -> Value {
+    let mut v = serde_json::to_value(account).unwrap_or(json!({}));
+    v["api_key"] = json!(mask_key_str(&account.api_key));
+    if !account.vision_api_key.is_empty() {
+        v["vision_api_key"] = json!(mask_key_str(&account.vision_api_key));
+    }
+    v
+}
+
+/// 将 Account 的配置同步到 AppState 热字段（上游 URL、API Key、模型映射等）
+async fn update_hot_fields(state: &AppState, account: &Account) -> Result<(), String> {
+    *state.upstream.write().await =
+        Url::parse(&account.upstream).map_err(|e| format!("无效的上游 URL: {}", e))?;
+    *state.api_key.write().await = account.api_key.clone();
+    *state.model_map.write().await = account.model_map.clone();
+
+    // Vision 仅当 vision_upstream 非空时启用
+    if account.vision_upstream.is_empty() {
+        *state.vision_upstream.write().await = None;
+        *state.vision_api_key.write().await = String::new();
+    } else {
+        *state.vision_upstream.write().await = Some(
+            Url::parse(&account.vision_upstream)
+                .map_err(|e| format!("无效的 Vision 上游 URL: {}", e))?,
+        );
+        *state.vision_api_key.write().await = account.vision_api_key.clone();
+    }
+    *state.vision_model.write().await = account.vision_model.clone();
+    *state.vision_endpoint.write().await = account.vision_endpoint.clone();
+
+    *state.active_account.write().await = account.clone();
+
+    Ok(())
+}
+
+/// GET /api/accounts — 列出所有账号（Key 脱敏）
+pub async fn handle_list_accounts(State(state): State<AppState>) -> impl IntoResponse {
+    let store = state.account_store.read().await;
+    let accounts: Vec<Value> = store.accounts.iter().map(account_to_masked_json).collect();
+    Json(json!({ "accounts": accounts }))
+}
+
+/// GET /api/accounts/active — 获取当前活跃账号
+pub async fn handle_get_active_account(State(state): State<AppState>) -> impl IntoResponse {
+    let account = state.active_account.read().await;
+    Json(json!({ "account": account_to_masked_json(&account) }))
+}
+
+/// POST /api/accounts — 根据供应商预设创建新账号，Body JSON 含 provider 字段
+pub async fn handle_add_account(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let provider = body
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("custom");
+
+    let preset = get_provider_presets()
+        .into_iter()
+        .find(|p| p.slug == provider)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("未知供应商: {}", provider) })),
+            )
+        })?;
+
+    let now = now_secs();
+    let account = Account {
+        id: generate_id(),
+        name: body
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&preset.label)
+            .to_string(),
+        provider: preset.slug.clone(),
+        upstream: body
+            .get("upstream")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&preset.default_upstream)
+            .to_string(),
+        api_key: body
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        model_map: HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        from_codex_config: false,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let mut store = state.account_store.write().await;
+    store.accounts.push(account.clone());
+
+    // 如果是第一个账号，自动设为活跃
+    if store.accounts.len() == 1 {
+        store.active_id = Some(account.id.clone());
+        update_hot_fields(&state, &account).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e })),
+            )
+        })?;
+    }
+
+    save_accounts(&state.data_dir, &store).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("保存账号失败: {}", e) })),
+        )
+    })?;
+
+    Ok(Json(
+        json!({ "ok": true, "account": account_to_masked_json(&account) }),
+    ))
+}
+
+/// PUT /api/accounts/:id — 更新账号，Body JSON 含完整 Account 字段
+pub async fn handle_update_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let mut store = state.account_store.write().await;
+
+    let index = store
+        .accounts
+        .iter()
+        .position(|a| a.id == id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("账号不存在: {}", id) })),
+            )
+        })?;
+
+    let mut account = store.accounts[index].clone();
+
+    // 逐字段更新，id 不允许修改
+    if let Some(v) = body.get("name").and_then(|v| v.as_str()) {
+        account.name = v.to_string();
+    }
+    if let Some(v) = body.get("provider").and_then(|v| v.as_str()) {
+        account.provider = v.to_string();
+    }
+    if let Some(v) = body.get("upstream").and_then(|v| v.as_str()) {
+        account.upstream = v.to_string();
+    }
+    if let Some(v) = body.get("api_key").and_then(|v| v.as_str()) {
+        if v != mask_key_str(&account.api_key) && v != "****" {
+            account.api_key = v.to_string();
+        }
+    }
+    if let Some(v) = body.get("model_map") {
+        if let Ok(map) = serde_json::from_value::<HashMap<String, String>>(v.clone()) {
+            account.model_map = map;
+        }
+    }
+    if let Some(v) = body.get("vision_upstream").and_then(|v| v.as_str()) {
+        account.vision_upstream = v.to_string();
+    }
+    if let Some(v) = body.get("vision_api_key").and_then(|v| v.as_str()) {
+        if v != mask_key_str(&account.vision_api_key) && v != "****" {
+            account.vision_api_key = v.to_string();
+        }
+    }
+    if let Some(v) = body.get("vision_model").and_then(|v| v.as_str()) {
+        account.vision_model = v.to_string();
+    }
+    if let Some(v) = body.get("vision_endpoint").and_then(|v| v.as_str()) {
+        account.vision_endpoint = v.to_string();
+    }
+
+    account.updated_at = now_secs();
+    store.accounts[index] = account.clone();
+
+    save_accounts(&state.data_dir, &store).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("保存账号失败: {}", e) })),
+        )
+    })?;
+
+    // 如果更新的是当前活跃账号，同步热字段
+    if store.active_id.as_deref() == Some(&account.id) {
+        update_hot_fields(&state, &account).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e })),
+            )
+        })?;
+    }
+
+    Ok(Json(
+        json!({ "ok": true, "account": account_to_masked_json(&account) }),
+    ))
+}
+
+/// DELETE /api/accounts/:id — 删除账号（拒绝删除最后一个）
+pub async fn handle_delete_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let mut store = state.account_store.write().await;
+
+    if store.accounts.len() <= 1 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "无法删除最后一个账号" })),
+        ));
+    }
+
+    let index = store
+        .accounts
+        .iter()
+        .position(|a| a.id == id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("账号不存在: {}", id) })),
+            )
+        })?;
+
+    let was_active = store.active_id.as_deref() == Some(&id);
+    store.accounts.remove(index);
+
+    // 如果删除的是活跃账号，切换到第一个剩余账号
+    if was_active {
+        let first = store.accounts[0].clone();
+        store.active_id = Some(first.id.clone());
+        update_hot_fields(&state, &first).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e })),
+            )
+        })?;
+    }
+
+    save_accounts(&state.data_dir, &store).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("保存账号失败: {}", e) })),
+        )
+    })?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /api/accounts/:id/activate — 切换活跃账号，更新 AppState 热字段
+pub async fn handle_switch_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let mut store = state.account_store.write().await;
+
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == id)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("账号不存在: {}", id) })),
+            )
+        })?;
+
+    store.active_id = Some(account.id.clone());
+
+    update_hot_fields(&state, &account).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+    })?;
+
+    save_accounts(&state.data_dir, &store).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("保存账号失败: {}", e) })),
+        )
+    })?;
+
+    Ok(Json(
+        json!({ "ok": true, "account": account_to_masked_json(&account) }),
+    ))
+}
+
+/// GET /api/provider-presets — 返回供应商预设列表
+pub async fn handle_get_presets() -> impl IntoResponse {
+    Json(json!({ "presets": get_provider_presets() }))
+}
