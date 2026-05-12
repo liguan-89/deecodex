@@ -2020,98 +2020,95 @@ function computerLabel(v) {
   return v;
 }
 
-	// ═══════════════════════════════════════════════════════════════
-	// 会话管理
-	// ═══════════════════════════════════════════════════════════════
-	let _undoToken = null;
+		// ═══════════════════════════════════════════════════════════════
+		// 请求历史
+		// ═══════════════════════════════════════════════════════════════
 
-	function renderSessions() {
-	  return `<div class="page-header">
-	    <h2>会话管理</h2>
-	    <p>管理活跃的响应和对话</p>
-	  </div>
-	    <div class="session-toolbar">
-	      <button class="btn btn-primary" onclick="refreshSessions()">⟳ 刷新</button>
-	      <button class="btn btn-ghost" id="undoBtn" onclick="undoDelete()" disabled>↩ 撤销删除</button>
-	    </div>
-	    <div class="session-section">
-	      <div class="section-label">▸ 响应列表 <span class="count" id="respCount">—</span></div>
-	      <div class="session-list" id="respList"></div>
-	    </div>
-	    <div class="session-section">
-	      <div class="section-label">▸ 对话列表 <span class="count" id="convCount">—</span></div>
-	      <div class="session-list" id="convList"></div>
-	    </div>`;
-	}
+		function renderHistory() {
+		  return `<div class="page-header">
+		    <h2>请求历史</h2>
+		    <p>持久化的 API 请求记录（模型、Token 用量、耗时）</p>
+		  </div>
+		  <div class="session-toolbar">
+		    <button class="btn btn-primary" onclick="refreshHistory()">⟳ 刷新</button>
+		    <button class="btn btn-ghost" onclick="clearHistory()">✕ 清空历史</button>
+		  </div>
+		  <div id="historyTableContainer">
+		    <div class="history-loading">加载中...</div>
+		  </div>`;
+		}
 
-	async function refreshSessions() {
-	  const respList = document.getElementById('respList');
-	  const convList = document.getElementById('convList');
-	  const respCount = document.getElementById('respCount');
-	  const convCount = document.getElementById('convCount');
-	  try {
-	    const data = await invoke('list_sessions');
-	    respCount.textContent = data.responses.length + ' 个';
-	    convCount.textContent = data.conversations.length + ' 个';
-	    respList.innerHTML = data.responses.length
-	      ? data.responses.map(r => renderSessionCard('responses', r.id, r.status || '—')).join('')
-	      : '<div class="session-empty">暂无活跃响应</div>';
-	    convList.innerHTML = data.conversations.length
-	      ? data.conversations.map(c => renderSessionCard('conversations', c.id, (c.message_count || 0) + ' 条消息')).join('')
-	      : '<div class="session-empty">暂无活跃对话</div>';
-	  } catch (e) {
-	    respList.innerHTML = '<div class="session-empty" style="color:var(--red)">加载失败: ' + esc(e.message) + '</div>';
-	    convList.innerHTML = '';
-	    respCount.textContent = '错误';
-	    convCount.textContent = '错误';
-	  }
-	}
+		function fmtTime(unixSecs) {
+		  if (!unixSecs) return '—';
+		  const d = new Date(unixSecs * 1000);
+		  const pad = n => String(n).padStart(2, '0');
+		  return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+		}
 
-	function renderSessionCard(type, id, meta) {
-	  const shortId = id.length > 40 ? id.substring(0, 40) + '...' : id;
-	  return `<div class="session-card">
-	    <span class="card-id" title="${escAttr(id)}">${esc(shortId)}</span>
-	    <span class="card-meta">${esc(meta)}</span>
-	    <span class="card-actions">
-	      <button onclick="deleteItem('${escAttr(type)}', '${escAttr(id)}')">删除</button>
-	    </span>
-	  </div>`;
-	}
+		function fmtTokens(n) {
+		  if (!n) return '0';
+		  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+		  return n.toString();
+		}
 
-	async function deleteItem(type, id) {
-	  if (!confirm('确定要删除这个会话吗？删除后可通过“撤销删除”恢复。')) return;
-	  try {
-	    const data = await invoke('delete_session', { sessionType: type, sessionId: id });
-	    if (data.undo_token) {
-	      _undoToken = data.undo_token;
-	      document.getElementById('undoBtn').disabled = false;
-	    }
-	    toast('已删除，可通过撤销按钮恢复', 'info');
-	    refreshSessions();
-	  } catch (e) {
-	    toast('删除失败: ' + e.message, 'error');
-	  }
-	}
+		function fmtDuration(ms) {
+		  if (!ms) return '—';
+		  if (ms < 1000) return ms + 'ms';
+		  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+		  return (ms / 60000).toFixed(1) + 'min';
+		}
 
-	async function undoDelete() {
-	  if (!_undoToken) return;
-	  try {
-	    const data = await invoke('undo_delete_session', { undoToken: _undoToken });
-	    if (!data.ok) {
-	      toast(data.error || '撤销失败', 'error');
-	      return;
-	    }
-	    _undoToken = null;
-	    document.getElementById('undoBtn').disabled = true;
-	    toast('已撤销删除', 'success');
-	    refreshSessions();
-	  } catch (e) {
-	    toast('撤销失败: ' + e.message, 'error');
-	  }
-	}
+		function statusBadge(status) {
+		  const map = { completed: ['#22c55e', '✓ 成功'], failed: ['#ef4444', '✗ 失败'] };
+		  const [color, label] = map[status] || ['#9ca3af', status];
+		  return `<span style="color:${color};font-weight:500;">${label}</span>`;
+		}
 
+		async function refreshHistory() {
+		  const container = document.getElementById('historyTableContainer');
+		  if (!container) return;
+		  try {
+		    const entries = await invoke('list_request_history', { limit: 200 });
+		    if (!entries || !entries.length) {
+		      container.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
+		      return;
+		    }
+		    let html = `<table class="history-table">
+		      <thead><tr>
+		        <th>时间</th><th>模型</th><th>状态</th><th>输入 Token</th><th>输出 Token</th><th>耗时</th><th>上游</th>
+		      </tr></thead><tbody>`;
+		    for (const e of entries) {
+		      html += `<tr>
+		        <td class="ht-time">${fmtTime(e.created_at)}</td>
+		        <td class="ht-model">${esc(e.model)}</td>
+		        <td>${statusBadge(e.status)}</td>
+		        <td class="ht-tokens">${fmtTokens(e.input_tokens)}</td>
+		        <td class="ht-tokens">${fmtTokens(e.output_tokens)}</td>
+		        <td class="ht-dur">${fmtDuration(e.duration_ms)}</td>
+		        <td class="ht-url" title="${escAttr(e.upstream_url)}">${esc(trunc(e.upstream_url, 30))}</td>
+		      </tr>`;
+		      if (e.error_msg) {
+		        html += `<tr><td></td><td colspan="6" style="color:var(--red);font-size:11px;padding:2px 8px;">${esc(e.error_msg)}</td></tr>`;
+		      }
+		    }
+		    html += '</tbody></table>';
+		    container.innerHTML = html;
+		  } catch (e) {
+		    container.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
+		  }
+		}
 
-// ═══════════════════════════════════════════════════════════════
+		async function clearHistory() {
+		  if (!confirm('确定要清空所有请求历史吗？此操作不可恢复。')) return;
+		  try {
+		    await invoke('clear_request_history');
+		    showToast('请求历史已清空', 'success');
+		    refreshHistory();
+		  } catch (e) {
+		    showToast('清空失败: ' + e, 'error');
+		  }
+		}
+
 // 线程聚合
 // ═══════════════════════════════════════════════════════════════
 let _threadsData = null;
