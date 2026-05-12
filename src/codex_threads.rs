@@ -54,19 +54,24 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
     #[allow(unused_mut)]
     let mut search_dirs: Vec<PathBuf> = vec![home.join(".codex")];
 
-    // Windows：Codex Desktop 可能把数据放在 APPDATA 下
+    // Windows：Codex Desktop 可能把数据放在不同位置
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
             search_dirs.push(PathBuf::from(&appdata).join("Codex"));
+            search_dirs.push(PathBuf::from(&appdata).join("codex"));
         }
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             search_dirs.push(PathBuf::from(&local_appdata).join("Codex"));
+            search_dirs.push(PathBuf::from(&local_appdata).join("codex"));
         }
     }
 
+    tracing::debug!(dirs = ?search_dirs, "搜索 Codex state 数据库");
+
     for codex_dir in &search_dirs {
         if !codex_dir.is_dir() {
+            tracing::debug!(dir = %codex_dir.display(), "Codex 目录不存在，跳过");
             continue;
         }
 
@@ -92,10 +97,17 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
 
         if !candidates.is_empty() {
             candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
-            return candidates.into_iter().next().map(|(p, _)| p);
+            let found = candidates.into_iter().next().map(|(p, _)| p);
+            if let Some(ref db_path) = found {
+                tracing::info!(db = %db_path.display(), "找到 Codex state 数据库");
+            }
+            return found;
+        } else {
+            tracing::debug!(dir = %codex_dir.display(), "目录下未找到 state_*.sqlite");
         }
     }
 
+    tracing::warn!(home = %home.display(), "未找到 Codex state SQLite 数据库");
     None
 }
 
