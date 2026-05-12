@@ -207,11 +207,17 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 vision_api_key: file_args.vision_api_key.clone(),
                 vision_model: file_args.vision_model.clone(),
                 vision_endpoint: file_args.vision_endpoint.clone(),
+                vision_enabled: false,
                 from_codex_config: false,
                 balance_url: String::new(),
                 created_at: now_secs(),
                 updated_at: now_secs(),
                 context_window_override: None,
+                reasoning_effort_override: None,
+                thinking_tokens: None,
+                custom_headers: HashMap::new(),
+                request_timeout_secs: None,
+                max_retries: None,
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
             accounts.push(migrated);
@@ -245,11 +251,17 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             vision_api_key: String::new(),
             vision_model: String::new(),
             vision_endpoint: String::new(),
+            vision_enabled: false,
             from_codex_config: false,
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
             context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
         };
         tracing::info!("创建默认 OpenRouter 空账号");
         accounts.push(default);
@@ -397,6 +409,10 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         cdp_port: args.cdp_port,
         account_store: Arc::new(tokio::sync::RwLock::new(account_store)),
         active_account: Arc::new(tokio::sync::RwLock::new(active_account)),
+        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
+        thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
+        custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 
@@ -882,7 +898,7 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
                 "name": a.name,
                 "provider": a.provider,
                 "upstream": a.upstream,
-                "api_key": a.mask_key(),
+                "api_key": a.api_key.clone(),
                 "model_map": a.model_map,
                 "vision_upstream": a.vision_upstream,
                 "vision_api_key": a.vision_api_key,
@@ -919,7 +935,7 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
             "name": a.name,
             "provider": a.provider,
             "upstream": a.upstream,
-            "api_key": a.mask_key(),
+            "api_key": a.api_key.clone(),
             "model_map": a.model_map,
             "vision_upstream": a.vision_upstream,
             "vision_api_key": a.vision_api_key,
@@ -975,11 +991,17 @@ pub async fn add_account(
             vision_api_key: String::new(),
             vision_model: String::new(),
             vision_endpoint: String::new(),
+            vision_enabled: false,
             from_codex_config: false,
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
             context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
         }
     };
 
@@ -1016,11 +1038,7 @@ pub async fn update_account(
         .position(|a| a.id == updated.id)
         .ok_or_else(|| format!("账号不存在: {}", updated.id))?;
 
-    // 保留原有 api_key 若前端传过来的是脱敏值或空值
     let mut account = updated.clone();
-    if account.api_key.is_empty() || account.api_key.contains("****") {
-        account.api_key = store.accounts[pos].api_key.clone();
-    }
     // 仅当 provider 为空时自动检测，避免覆盖用户选择
     if account.provider.is_empty() {
         account.provider = guess_provider(&account.upstream).to_string();
@@ -1031,6 +1049,15 @@ pub async fn update_account(
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
+    if store.active_id.as_ref() == Some(&account.id) {
+        if let Some(app_state) = manager.app_state.lock().await.as_ref() {
+            let port = *manager.port.lock().await;
+            let client_api_key = app_state.client_api_key.read().await.clone();
+            deecodex::codex_config::inject(port, &client_api_key, account.context_window_override);
+        }
+    }
 
     Ok(account_to_value(&account))
 }
@@ -1110,6 +1137,13 @@ pub async fn switch_account(
         *app_state.vision_api_key.write().await = target.vision_api_key.clone();
         *app_state.vision_model.write().await = target.vision_model.clone();
         *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
+
+        // 同步推理配置
+        *app_state.reasoning_effort_override.write().await = target.reasoning_effort_override.clone();
+        *app_state.thinking_tokens.write().await = target.thinking_tokens;
+        *app_state.custom_headers.write().await = target.custom_headers.clone();
+        *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
+        // max_retries 通过 active_account 直接读取，无需单独同步
 
         // 更新 active_account
         *app_state.active_account.write().await = target.clone();
@@ -1661,12 +1695,19 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "name": a.name,
         "provider": a.provider,
         "upstream": a.upstream,
-        "api_key": a.mask_key(),
+        "api_key": a.api_key.clone(),
         "model_map": a.model_map,
         "vision_upstream": a.vision_upstream,
         "vision_api_key": a.vision_api_key,
         "vision_model": a.vision_model,
         "vision_endpoint": a.vision_endpoint,
+        "vision_enabled": a.vision_enabled,
+        "context_window_override": a.context_window_override,
+        "reasoning_effort_override": a.reasoning_effort_override,
+        "thinking_tokens": a.thinking_tokens,
+        "custom_headers": a.custom_headers,
+        "request_timeout_secs": a.request_timeout_secs,
+        "max_retries": a.max_retries,
         "from_codex_config": a.from_codex_config,
         "balance_url": a.balance_url,
         "created_at": a.created_at,
@@ -1734,3 +1775,49 @@ pub async fn delete_thread(
         .map_err(|e| format!("删除线程失败: {e}"))?;
     Ok(serde_json::json!({ "ok": true, "message": "线程已永久删除" }))
 }
+
+/// 测试上游 API 端点连通性
+#[tauri::command]
+pub async fn test_upstream_connectivity(
+    upstream: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let base = upstream.trim_end_matches('/');
+    // 尝试 /models 端点
+    let url = format!("{base}/models");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let mut req = client.get(&url);
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    let start = std::time::Instant::now();
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let latency_ms = start.elapsed().as_millis();
+            let body = resp.text().await.unwrap_or_default();
+            // 尝试解析模型数量
+            let model_count = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()));
+            Ok(serde_json::json!({
+                "ok": status < 500,
+                "status": status,
+                "latency_ms": latency_ms,
+                "model_count": model_count,
+                "endpoint": url,
+            }))
+        }
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "status": 0,
+            "latency_ms": start.elapsed().as_millis(),
+            "error": e.to_string(),
+            "endpoint": url,
+        })),
+    }
+}
+

@@ -23,6 +23,9 @@ pub struct Account {
     pub vision_model: String,
     #[serde(default)]
     pub vision_endpoint: String,
+    /// 是否启用多模态视觉路由，勾选后显式路由图片请求至视觉模型
+    #[serde(default)]
+    pub vision_enabled: bool,
     #[serde(default)]
     pub from_codex_config: bool,
     #[serde(default)]
@@ -35,6 +38,22 @@ pub struct Account {
     /// 注入 codex config 时写入 model_catalog_json。
     #[serde(default)]
     pub context_window_override: Option<u32>,
+    /// 强制推理强度，覆盖 Codex 请求中的 effort 值。
+    /// "low" / "medium" / "high" / "max"，None 则不覆盖
+    #[serde(default)]
+    pub reasoning_effort_override: Option<String>,
+    /// Claude Extended Thinking Token 预算，注入 thinking.budget_tokens
+    #[serde(default)]
+    pub thinking_tokens: Option<u32>,
+    /// 自定义 HTTP 头，发送上游请求时附加
+    #[serde(default)]
+    pub custom_headers: HashMap<String, String>,
+    /// 请求超时（秒），None 则使用全局默认 300s
+    #[serde(default)]
+    pub request_timeout_secs: Option<u64>,
+    /// 上游请求失败时的最大重试次数，None 使用默认值 3
+    #[serde(default)]
+    pub max_retries: Option<u32>,
 }
 
 impl Account {

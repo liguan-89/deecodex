@@ -48,6 +48,9 @@ pub struct StreamArgs {
     pub executors: Arc<tokio::sync::RwLock<LocalExecutorConfig>>,
     pub allowed_mcp_servers: Vec<String>,
     pub allowed_computer_displays: Vec<String>,
+    pub custom_headers: std::collections::HashMap<String, String>,
+    pub request_timeout_secs: Option<u64>,
+    pub max_retries: Option<u32>,
 }
 
 /// Arguments for replaying a cached response as SSE.
@@ -232,6 +235,9 @@ pub fn translate_stream(
         executors,
         allowed_mcp_servers,
         allowed_computer_displays,
+        custom_headers,
+        request_timeout_secs,
+        max_retries: account_max_retries,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
@@ -264,7 +270,7 @@ pub fn translate_stream(
         // If DeepSeek rejects with "reasoning_content must be passed back"
         // (e.g. after relay restart lost in-memory reasoning state),
         // retry once with thinking disabled.
-        let max_retries = 3;
+        let max_retries = account_max_retries.unwrap_or(3) as usize;
         let mut attempt = 0;
         let mut delay_ms: u64 = 500;
         let mut disable_thinking_retry = false;
@@ -272,6 +278,19 @@ pub fn translate_stream(
             let mut builder = client.post(&url).header("Content-Type", "application/json");
             if !api_key.is_empty() {
                 builder = builder.bearer_auth(api_key.as_str());
+            }
+            // 注入账号级自定义 HTTP 头
+            for (k, v) in &custom_headers {
+                if let (Ok(name), Ok(value)) = (
+                    axum::http::header::HeaderName::from_bytes(k.as_bytes()),
+                    axum::http::header::HeaderValue::from_str(v),
+                ) {
+                    builder = builder.header(name, value);
+                }
+            }
+            // 账号级请求超时
+            if let Some(secs) = request_timeout_secs {
+                builder = builder.timeout(std::time::Duration::from_secs(secs));
             }
 
             let req_to_send = if disable_thinking_retry {

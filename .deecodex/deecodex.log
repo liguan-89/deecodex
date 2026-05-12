@@ -26,3 +26,38 @@
 [2m2026-05-10T07:30:12.862474Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
 [2m2026-05-10T07:40:16.750881Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已从 codex config.toml 移除 deecodex 配置
 [2m2026-05-10T07:40:16.751002Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已停止
+[2m2026-05-12T05:31:42.631111Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T05:31:42.847362Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T05:31:46.385487Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T05:31:46.493184Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T05:32:26.638723Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 加载已有账号文件: .deecodex/accounts.json
+[2m2026-05-12T05:45:37.490262Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T05:45:37.709706Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T05:49:11.332884Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T05:49:11.512703Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T05:49:42.454671Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T05:49:42.527004Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T05:49:42.681640Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T05:49:42.833072Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T05:49:42.910455Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:00:01.062691Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:00:01.133026Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:00:01.170712Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:00:01.201640Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:00:01.273167Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:00:01.341931Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:00:01.359675Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T06:03:31.141728Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:03:31.201661Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:03:31.229724Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:03:31.271434Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:03:31.332848Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:03:31.398355Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T06:03:31.401783Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:08:59.996882Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:09:00.101795Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.minimaxi.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:09:00.141280Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:09:00.218562Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:09:00.270410Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
+[2m2026-05-12T06:09:00.297024Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:09:00.432087Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])

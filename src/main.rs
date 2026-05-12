@@ -500,11 +500,17 @@ async fn main() -> Result<()> {
         vision_api_key: args.vision_api_key.clone(),
         vision_model: args.vision_model.clone(),
         vision_endpoint: args.vision_endpoint.clone(),
+        vision_enabled: false,
         from_codex_config: false,
         balance_url: String::new(),
         created_at: now_secs(),
         updated_at: now_secs(),
         context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
     };
 
     let state = handlers::AppState {
@@ -553,6 +559,10 @@ async fn main() -> Result<()> {
             active_id: Some(default_account.id.clone()),
         })),
         active_account: Arc::new(tokio::sync::RwLock::new(default_account)),
+        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
+        thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
+        custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::accounts::{Account, AccountStore};
 use crate::cache::RequestCache;
 use crate::config::Args;
@@ -65,6 +67,14 @@ pub struct AppState {
     pub data_dir: Arc<std::path::PathBuf>,
     pub account_store: Arc<tokio::sync::RwLock<AccountStore>>,
     pub active_account: Arc<tokio::sync::RwLock<Account>>,
+    /// 强制推理强度，覆盖 Codex 请求中的 effort（来自活跃账号）
+    pub reasoning_effort_override: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// Claude Extended Thinking Token 预算（来自活跃账号）
+    pub thinking_tokens: Arc<tokio::sync::RwLock<Option<u32>>>,
+    /// 自定义 HTTP 头（来自活跃账号）
+    pub custom_headers: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
+    /// 请求超时秒数（来自活跃账号）
+    pub request_timeout_secs: Arc<tokio::sync::RwLock<Option<u64>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1344,7 +1354,22 @@ async fn handle_responses_inner(
         }
     }
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
-    let (reasoning_effort, thinking) = map_effort(effort);
+    let (mut reasoning_effort, mut thinking) = map_effort(effort);
+
+    // 账号级推理配置覆盖
+    {
+        let account = state.active_account.read().await;
+        if let Some(ref forced) = account.reasoning_effort_override {
+            reasoning_effort = Some(forced.clone());
+            thinking = Some(serde_json::json!({"type": "enabled"}));
+        }
+        if let Some(budget) = account.thinking_tokens {
+            if let Some(ref mut t) = thinking {
+                t["budget_tokens"] = serde_json::json!(budget);
+            }
+        }
+    }
+
     let msg_count = match &req.input {
         ResponsesInput::Messages(ref items) => items.len(),
         _ => 1,
@@ -1664,6 +1689,9 @@ async fn handle_responses_inner(
                 .await
                 .allowed_computer_displays
                 .clone(),
+            custom_headers: state.custom_headers.read().await.clone(),
+            request_timeout_secs: *state.request_timeout_secs.read().await,
+            max_retries: state.active_account.read().await.max_retries,
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -1723,7 +1751,42 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         builder = builder.bearer_auth(api_key.as_str());
     }
 
-    match builder.json(&chat_req).send().await {
+    // 注入账号级自定义 HTTP 头
+    let custom_headers = state.custom_headers.read().await.clone();
+    for (k, v) in &custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+
+    // 账号级请求超时
+    if let Some(secs) = *state.request_timeout_secs.read().await {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let max_retries = state.active_account.read().await.max_retries.unwrap_or(3) as usize;
+    let mut attempt: usize = 0;
+    let mut delay_ms: u64 = 500;
+    let result = loop {
+        match builder.try_clone().unwrap().json(&chat_req).send().await {
+            Err(e) => {
+                if attempt < max_retries {
+                    attempt += 1;
+                    warn!("upstream connection error (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                    continue;
+                }
+                break Err(e);
+            }
+            Ok(r) => break Ok(r),
+        }
+    };
+
+    match result {
         Err(e) => {
             error!("upstream error: {e}");
             if store_response {

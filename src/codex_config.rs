@@ -374,11 +374,17 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             vision_api_key: String::new(),
             vision_model: String::new(),
             vision_endpoint: String::new(),
+            vision_enabled: false,
             from_codex_config: true,
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
             context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
         };
 
         tracing::info!(

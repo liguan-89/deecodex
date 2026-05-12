@@ -297,6 +297,7 @@ pub fn run() {
             commands::get_provider_presets,
             commands::fetch_upstream_models,
             commands::fetch_balance,
+            commands::test_upstream_connectivity,
             commands::list_sessions,
             commands::delete_session,
             commands::undo_delete_session,

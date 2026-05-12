@@ -71,11 +71,17 @@ fn test_state() -> AppState {
                 vision_api_key: String::new(),
                 vision_model: "test".into(),
                 vision_endpoint: "v1/test".into(),
+                vision_enabled: false,
                 from_codex_config: false,
                 balance_url: String::new(),
                 created_at: 0,
                 updated_at: 0,
                 context_window_override: None,
+                reasoning_effort_override: None,
+                thinking_tokens: None,
+                custom_headers: std::collections::HashMap::new(),
+                request_timeout_secs: None,
+                max_retries: None,
             }],
             active_id: Some("test-account".into()),
         })),
@@ -90,12 +96,22 @@ fn test_state() -> AppState {
             vision_api_key: String::new(),
             vision_model: "test".into(),
             vision_endpoint: "v1/test".into(),
+            vision_enabled: false,
             from_codex_config: false,
             balance_url: String::new(),
             created_at: 0,
             updated_at: 0,
             context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: std::collections::HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
         })),
+        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
+        thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
+        custom_headers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }
 
@@ -1568,6 +1584,9 @@ fn make_stream_args(
         )),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
     }
 }
 
@@ -1610,6 +1629,9 @@ fn make_stream_args_custom(
         )),
         allowed_mcp_servers: vec![],
         allowed_computer_displays: vec![],
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
     }
 }
 

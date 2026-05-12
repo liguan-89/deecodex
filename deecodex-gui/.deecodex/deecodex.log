@@ -1,1 +1,24 @@
-﻿
+﻿[2m2026-05-12T06:12:24.301048Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 使用自定义 balance_url 探测: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:12:24.385423Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:12:24.448512Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:12:24.515742Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:12:37.540029Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:12:37.605836Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:15:39.631596Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 使用自定义 balance_url 探测: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:15:39.753538Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:15:39.823045Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:15:39.896643Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:15:39.989940Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:15:40.147171Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:19:45.814061Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 使用自定义 balance_url 探测: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:19:45.922491Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:19:45.996238Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:19:46.062745Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:19:46.174973Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:19:46.254527Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T06:23:09.094520Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 使用自定义 balance_url 探测: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:23:09.259816Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/coding_plan/remains
+[2m2026-05-12T06:23:09.323107Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/coding_plan/remains
+[2m2026-05-12T06:23:09.389915Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:23:09.461859Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
+[2m2026-05-12T06:23:09.543895Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])

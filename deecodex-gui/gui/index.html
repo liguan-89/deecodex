@@ -795,6 +795,10 @@ body {
   font-family: var(--font-mono); font-size: 11px;
   margin-top: 4px; min-height: 18px;
 }
+.card-context {
+  font-family: var(--font-mono); font-size: 11px;
+  margin-top: 2px; color: var(--accent); min-height: 16px;
+}
 .balance-loading { color: var(--text-muted); font-style: italic; }
 .balance-na { color: var(--text-muted); font-size: 10px; }
 .balance-row { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
@@ -1548,6 +1552,37 @@ function togglePass(fieldId, btn) {
   }
 }
 
+function toggleContextWindowFields() {
+  const cb = document.getElementById('edit_cw_enabled');
+  const sf = document.getElementById('cwSizeField');
+  if (cb && sf) {
+    sf.style.display = cb.checked ? '' : 'none';
+  }
+}
+
+function toggleVisionFields() {
+  const cb = document.getElementById('edit_vision_enabled');
+  const vf = document.getElementById('visionFields');
+  if (cb && vf) {
+    vf.style.display = cb.checked ? '' : 'none';
+  }
+}
+
+function toggleReasoningFields() {
+  const cb = document.getElementById('edit_reasoning_enabled');
+  const rf = document.getElementById('reasoningFields');
+  if (cb && rf) {
+    rf.style.display = cb.checked ? '' : 'none';
+    if (!cb.checked) {
+      // 取消勾选时清空值
+      const sel = document.getElementById('edit_reasoning_effort');
+      if (sel) sel.value = '';
+      const num = document.getElementById('edit_thinking_tokens');
+      if (num) num.value = '';
+    }
+  }
+}
+
 function collectFormData() {
   const data = {};
   for (const sec of CONFIG_SECTIONS) {
@@ -1958,6 +1993,12 @@ function escAttr(str) {
 function trunc(str, len) {
   if (!str) return '';
   return str.length > len ? str.substring(0, len) + '...' : str;
+}
+
+function maskKey(key) {
+  if (!key) return '';
+  if (key.length <= 8) return '****';
+  return key.substring(0, 4) + '****' + key.substring(key.length - 4);
 }
 
 function fmtUptime(secs) {
@@ -2437,11 +2478,14 @@ function renderAccountList() {
           <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
         </div>
         <div class="card-name">${esc(a.name)}</div>
-        <div class="card-key">${esc(a.api_key || '(未配置)')}</div>
+        <div class="card-key">${esc(maskKey(a.api_key) || '(未配置)')}</div>
         <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
         <div class="card-balance" id="balance-${escAttr(a.id)}">
           <span class="balance-loading">—</span>
         </div>
+        ${a.context_window_override ? `<div class="card-context" title="上下文窗口: ${a.context_window_override.toLocaleString()} tokens">⇄ ${a.context_window_override.toLocaleString()} tokens</div>` : ''}
+        ${a.vision_enabled ? '<div class="card-context" title="已启用多模态视觉路由">👁 多模态</div>' : ''}
+        ${a.reasoning_effort_override ? `<div class="card-context" title="推理强度: ${a.reasoning_effort_override}${a.thinking_tokens ? ', 思考预算: ' + a.thinking_tokens.toLocaleString() + ' tokens' : ''}">🧠 ${a.reasoning_effort_override}</div>` : ''}
         <div class="card-actions-row">
           <button class="btn-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">↻</button>
           ${active
@@ -2500,7 +2544,7 @@ function renderAccountDetail() {
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / ${esc(a.name)}</span>
   </div>
-  <div class="page-header"><h2>${esc(a.name)}</h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
+  <div class="page-header"><h2>${esc(a.name)} <span style="color:red;font-size:12px;">[v1.8.9-1M]</span></h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
 
   <div class="account-form">
     <div class="config-fields">
@@ -2512,6 +2556,8 @@ function renderAccountDetail() {
         <label>上游 URL</label>
         <input type="text" id="edit_upstream" value="${escAttr(a.upstream)}" placeholder="https://api.example.com/v1">
         <span class="hint">Chat Completions API 基础地址</span>
+        <button class="btn btn-ghost" onclick="testUpstreamConnectivity()" style="font-size:11px;margin-top:4px;">🔌 测试连通性</button>
+        <span id="connectivityResult" style="font-size:11px;margin-left:8px;"></span>
       </div>
       <div class="config-field">
         <label>API Key</label>
@@ -2519,7 +2565,7 @@ function renderAccountDetail() {
           <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
           <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
         </div>
-        <span class="hint">如包含 **** 表示未修改，保存时将保留原值</span>
+        <span class="hint">API Key 通过密码框安全存储</span>
       </div>
       <div class="config-field">
         <label>余额查询 URL <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
@@ -2538,10 +2584,16 @@ function renderAccountDetail() {
     <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
 
     <div class="collapsible-section">
-      <button class="collapsible-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
-        <span class="arrow">▸</span> 视觉路由（可选）
-      </button>
-      <div class="collapsible-content">
+      <div class="config-fields">
+        <div class="config-field">
+          <label style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="edit_vision_enabled" ${a.vision_enabled ? 'checked' : ''} onchange="toggleVisionFields()">
+            启用多模态（视觉路由）
+          </label>
+          <span class="hint">模型支持图片输入时勾选，配置独立的视觉模型路由</span>
+        </div>
+      </div>
+      <div id="visionFields" style="${a.vision_enabled ? '' : 'display:none;'}">
         <div class="config-fields" style="margin-top:12px;">
           <div class="config-field">
             <label>视觉上游 URL</label>
@@ -2562,6 +2614,78 @@ function renderAccountDetail() {
             <label>视觉端点路径</label>
             <input type="text" id="edit_vision_endpoint" value="${escAttr(a.vision_endpoint || '')}" placeholder="v1/coding_plan/vlm">
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-sub-label" style="color:red;">【测试】上下文窗口（1M 大上下文）</div>
+    <div class="config-fields" style="margin-bottom:10px;">
+      <div class="config-field">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="edit_cw_enabled" ${a.context_window_override ? 'checked' : ''} onchange="toggleContextWindowFields()">
+          启用上下文窗口覆盖
+        </label>
+        <span class="hint">勾选后 Codex 将使用下方设定的 token 数作为模型上下文窗口大小</span>
+      </div>
+      <div class="config-field" id="cwSizeField" style="${a.context_window_override ? '' : 'display:none;'}">
+        <label>上下文窗口大小 (token)</label>
+        <input type="number" id="edit_cw_size" value="${a.context_window_override || 1000000}" min="1" max="10000000" step="1" placeholder="1000000">
+        <span class="hint">Codex 有效上下文 = 此值 × 95%（如填 1052632 可达真正 1M）</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="collapsible-section">
+    <div class="config-fields">
+      <div class="config-field">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="edit_reasoning_enabled" ${a.reasoning_effort_override ? 'checked' : ''} onchange="toggleReasoningFields()">
+          强制推理强度（覆盖 Codex 请求）
+        </label>
+        <span class="hint">用于需要强制启用扩展思考的模型，如 Claude Opus、DeepSeek-R1</span>
+      </div>
+    </div>
+    <div id="reasoningFields" style="${a.reasoning_effort_override ? '' : 'display:none;'}">
+      <div class="config-fields" style="margin-top:12px;">
+        <div class="config-field">
+          <label>推理强度</label>
+          <select id="edit_reasoning_effort">
+            <option value="" ${!a.reasoning_effort_override ? 'selected' : ''}>不覆盖（跟随 Codex 请求）</option>
+            <option value="low" ${a.reasoning_effort_override === 'low' ? 'selected' : ''}>low - 低推理</option>
+            <option value="medium" ${a.reasoning_effort_override === 'medium' ? 'selected' : ''}>medium - 中等推理</option>
+            <option value="high" ${a.reasoning_effort_override === 'high' ? 'selected' : ''}>high - 高推理</option>
+            <option value="max" ${a.reasoning_effort_override === 'max' ? 'selected' : ''}>max - 最大推理</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label>思考 Token 预算 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
+          <input type="number" id="edit_thinking_tokens" value="${a.thinking_tokens || ''}" min="1024" max="128000" step="1024" placeholder="留空不设限制，如 16000">
+          <span class="hint">Claude Extended Thinking 的 token 预算，留空则不限制</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="collapsible-section">
+    <button class="collapsible-toggle${(a.custom_headers && Object.keys(a.custom_headers).length > 0) || a.request_timeout_secs ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+      <span class="arrow">▸</span> 高级（自定义头 / 超时）
+    </button>
+    <div class="collapsible-content${(a.custom_headers && Object.keys(a.custom_headers).length > 0) || a.request_timeout_secs ? ' open' : ''}">
+      <div class="config-fields" style="margin-top:12px;">
+        <div class="config-field">
+          <label>自定义 HTTP 头 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
+          <textarea id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123" style="font-family:monospace;font-size:12px;">${escAttr(Object.entries(a.custom_headers || {}).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
+          <span class="hint">每行一个头，格式: 头名称: 头值，将在每次上游请求时附加</span>
+        </div>
+        <div class="config-field">
+          <label>请求超时（秒） <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
+          <input type="number" id="edit_request_timeout" value="${a.request_timeout_secs || ''}" min="1" max="600" step="1" placeholder="留空使用默认 300s">
+          <span class="hint">此账号的上游请求超时时间，Claude 扩展思考建议设 180-300</span>
+        </div>
+        <div class="config-field">
+          <label>最大重试次数 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
+          <input type="number" id="edit_max_retries" value="${a.max_retries ?? ''}" min="0" max="10" step="1" placeholder="留空使用默认 3 次">
+          <span class="hint">上游请求失败（401/429/502/503/连接错误）时的重试次数，0 表示不重试</span>
         </div>
       </div>
     </div>
@@ -2719,12 +2843,19 @@ function addAccount(provider) {
     upstream: preset.default_upstream,
     api_key: '',
     model_map: {},
+    vision_enabled: false,
     vision_upstream: '',
     vision_api_key: '',
     vision_model: '',
     vision_endpoint: '',
     from_codex_config: false,
     balance_url: '',
+    context_window_override: null,
+    reasoning_effort_override: null,
+    thinking_tokens: null,
+    custom_headers: {},
+    request_timeout_secs: null,
+    max_retries: null,
   };
   accountsView = 'edit';
   renderMainContent();
@@ -2750,20 +2881,15 @@ async function saveAccount() {
   a.upstream = document.getElementById('edit_upstream')?.value?.trim() || a.upstream;
 
   const keyInput = document.getElementById('edit_api_key');
-  if (keyInput) {
-    const newKey = keyInput.value.trim();
-    if (newKey && !newKey.includes('****') && newKey !== a.api_key) {
-      a.api_key = newKey;
-    }
-  }
+  if (keyInput) a.api_key = keyInput.value.trim();
+
+  const visionEnabled = document.getElementById('edit_vision_enabled');
+  if (visionEnabled) a.vision_enabled = visionEnabled.checked;
 
   const vu = document.getElementById('edit_vision_upstream');
   if (vu) a.vision_upstream = vu.value.trim();
   const vk = document.getElementById('edit_vision_api_key');
-  if (vk) {
-    const nk = vk.value.trim();
-    if (nk && !nk.includes('****')) a.vision_api_key = nk;
-  }
+  if (vk) a.vision_api_key = vk.value.trim();
   const vm = document.getElementById('edit_vision_model');
   if (vm) a.vision_model = vm.value.trim();
   const ve = document.getElementById('edit_vision_endpoint');
@@ -2771,6 +2897,60 @@ async function saveAccount() {
 
   const bu = document.getElementById('edit_balance_url');
   if (bu) a.balance_url = bu.value.trim();
+
+  // 大上下文窗口覆盖
+  const cwEnabled = document.getElementById('edit_cw_enabled');
+  if (cwEnabled && cwEnabled.checked) {
+    const cwSize = document.getElementById('edit_cw_size');
+    a.context_window_override = cwSize ? parseInt(cwSize.value, 10) || null : null;
+  } else {
+    a.context_window_override = null;
+  }
+
+  // 推理配置
+  const reasoningEnabled = document.getElementById('edit_reasoning_enabled');
+  if (reasoningEnabled && reasoningEnabled.checked) {
+    const effortSel = document.getElementById('edit_reasoning_effort');
+    a.reasoning_effort_override = effortSel ? (effortSel.value || null) : null;
+    const thinkingTokens = document.getElementById('edit_thinking_tokens');
+    a.thinking_tokens = thinkingTokens ? (parseInt(thinkingTokens.value, 10) || null) : null;
+  } else {
+    a.reasoning_effort_override = null;
+    a.thinking_tokens = null;
+  }
+
+  // 自定义 HTTP 头
+  const headersText = document.getElementById('edit_custom_headers');
+  if (headersText) {
+    const raw = headersText.value.trim();
+    a.custom_headers = {};
+    if (raw) {
+      for (const line of raw.split('\n')) {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 0) {
+          const k = line.substring(0, colonIdx).trim();
+          const v = line.substring(colonIdx + 1).trim();
+          if (k && v) a.custom_headers[k] = v;
+        }
+      }
+    }
+  }
+
+  // 请求超时
+  const timeoutInput = document.getElementById('edit_request_timeout');
+  if (timeoutInput) {
+    a.request_timeout_secs = parseInt(timeoutInput.value, 10) || null;
+  } else {
+    a.request_timeout_secs = null;
+  }
+
+  // 最大重试次数
+  const retriesInput = document.getElementById('edit_max_retries');
+  if (retriesInput) {
+    a.max_retries = parseInt(retriesInput.value, 10) || null;
+  } else {
+    a.max_retries = null;
+  }
 
   a.model_map = collectModelMap();
   a.updated_at = Math.floor(Date.now() / 1000);
@@ -2852,6 +3032,32 @@ async function fetchAndPopulateModels() {
   } catch (e) {
     if (statusEl) statusEl.textContent = '获取失败';
     showToast('获取模型列表失败: ' + e, 'error');
+  }
+}
+
+async function testUpstreamConnectivity() {
+  const upstream = document.getElementById('edit_upstream')?.value?.trim();
+  if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
+  const keyInput = document.getElementById('edit_api_key');
+  const apiKey = keyInput ? keyInput.value.trim() : '';
+  const resultEl = document.getElementById('connectivityResult');
+  if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-muted);">检测中...</span>';
+  try {
+    const result = await invoke('test_upstream_connectivity', { upstream, apiKey });
+    if (result.ok) {
+      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
+      if (resultEl) resultEl.innerHTML = `<span style="color:#22c55e;">✓ 连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
+      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+    } else if (result.error) {
+      if (resultEl) resultEl.innerHTML = `<span style="color:#ef4444;">✗ ${esc(result.error)}</span>`;
+      showToast('连通失败: ' + result.error, 'error');
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span style="color:#f59e0b;">⚠ HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      showToast(`上游返回 HTTP ${result.status}`, 'error');
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:#ef4444;">✗ ${esc(String(e))}</span>`;
+    showToast('连通测试异常: ' + e, 'error');
   }
 }
 
