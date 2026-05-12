@@ -413,6 +413,18 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
         custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
+        request_history: {
+            let db_path = args.data_dir.join("request_history.db");
+            Arc::new(
+                deecodex::request_history::RequestHistoryStore::new(&db_path).unwrap_or_else(|e| {
+                    tracing::warn!("请求历史数据库初始化失败，使用内存存储: {e}");
+                    deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(
+                        ":memory:",
+                    ))
+                    .unwrap()
+                }),
+            )
+        },
     })
 }
 
@@ -889,28 +901,7 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
     let data_dir = manager.data_dir.lock().await.clone();
     let store = deecodex::accounts::load_accounts(&data_dir);
 
-    let accounts: Vec<Value> = store
-        .accounts
-        .iter()
-        .map(|a| {
-            json!({
-                "id": a.id,
-                "name": a.name,
-                "provider": a.provider,
-                "upstream": a.upstream,
-                "api_key": a.api_key.clone(),
-                "model_map": a.model_map,
-                "vision_upstream": a.vision_upstream,
-                "vision_api_key": a.vision_api_key,
-                "vision_model": a.vision_model,
-                "vision_endpoint": a.vision_endpoint,
-                "from_codex_config": a.from_codex_config,
-                "balance_url": a.balance_url,
-                "created_at": a.created_at,
-                "updated_at": a.updated_at,
-            })
-        })
-        .collect();
+    let accounts: Vec<Value> = store.accounts.iter().map(account_to_value).collect();
 
     Ok(json!({
         "accounts": accounts,
@@ -930,21 +921,7 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
         .and_then(|id| store.accounts.iter().find(|a| &a.id == id));
 
     match active {
-        Some(a) => Ok(json!({
-            "id": a.id,
-            "name": a.name,
-            "provider": a.provider,
-            "upstream": a.upstream,
-            "api_key": a.api_key.clone(),
-            "model_map": a.model_map,
-            "vision_upstream": a.vision_upstream,
-            "vision_api_key": a.vision_api_key,
-            "vision_model": a.vision_model,
-            "vision_endpoint": a.vision_endpoint,
-            "from_codex_config": a.from_codex_config,
-            "created_at": a.created_at,
-            "updated_at": a.updated_at,
-        })),
+        Some(a) => Ok(account_to_value(a)),
         None => Err("没有活跃账号".to_string()),
     }
 }
@@ -1139,7 +1116,8 @@ pub async fn switch_account(
         *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
 
         // 同步推理配置
-        *app_state.reasoning_effort_override.write().await = target.reasoning_effort_override.clone();
+        *app_state.reasoning_effort_override.write().await =
+            target.reasoning_effort_override.clone();
         *app_state.thinking_tokens.write().await = target.thinking_tokens;
         *app_state.custom_headers.write().await = target.custom_headers.clone();
         *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
@@ -1341,7 +1319,11 @@ pub async fn fetch_balance(
                         tracing::info!("自定义 balance_url 解析未能匹配: {:?}", body);
                     }
                 } else {
-                    tracing::info!("自定义 balance_url HTTP {}: {}", resp.status().as_u16(), url);
+                    tracing::info!(
+                        "自定义 balance_url HTTP {}: {}",
+                        resp.status().as_u16(),
+                        url
+                    );
                 }
             }
             Err(e) => tracing::info!("自定义 balance_url 请求失败: {} → {}", url, e),
@@ -1456,7 +1438,13 @@ pub async fn fetch_balance(
 
         // 4. data 为数组: { data: [{ balance / credit / quota, ... }] }
         if let Some(arr) = data.as_array().and_then(|a| a.first()) {
-            for key in &["balance", "credit", "credit_remaining", "quota", "remaining"] {
+            for key in &[
+                "balance",
+                "credit",
+                "credit_remaining",
+                "quota",
+                "remaining",
+            ] {
                 if let Some(v) = arr[key].as_f64() {
                     return Some(BalanceInfo {
                         mode: "token_credit".into(),
@@ -1821,3 +1809,23 @@ pub async fn test_upstream_connectivity(
     }
 }
 
+// ── 请求历史 ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_request_history(
+    manager: State<'_, ServerManager>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    let guard = manager.app_state.lock().await;
+    let state = guard.as_ref().ok_or("服务未启动")?;
+    let entries = state.request_history.list(limit.unwrap_or(100)).await;
+    Ok(serde_json::to_value(entries).unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let guard = manager.app_state.lock().await;
+    let state = guard.as_ref().ok_or("服务未启动")?;
+    state.request_history.clear().await?;
+    Ok(json!({ "ok": true }))
+}

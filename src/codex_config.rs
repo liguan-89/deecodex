@@ -197,8 +197,12 @@ fn do_inject(
     // 大上下文窗口覆盖
     if let Some(cw) = context_window_override {
         if let Some(codex_home) = codex_home_dir() {
-            doc["model_catalog_json"] =
-                toml_edit::value(codex_home.join(CATALOG_FILENAME).to_string_lossy().to_string());
+            doc["model_catalog_json"] = toml_edit::value(
+                codex_home
+                    .join(CATALOG_FILENAME)
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
         let compact_limit = (cw as u64 * 9 / 10).min(i64::MAX as u64) as i64;
         doc["model_auto_compact_token_limit"] = toml_edit::value(compact_limit);
@@ -275,8 +279,7 @@ fn generate_context_catalog(context_window: u32) -> Result<()> {
     let mut catalog: Value = if cache_path.exists() {
         let content = std::fs::read_to_string(&cache_path)
             .map_err(|e| anyhow!("读取 models_cache.json 失败: {e}"))?;
-        serde_json::from_str(&content)
-            .map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))?
+        serde_json::from_str(&content).map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))?
     } else {
         return Err(anyhow!("models_cache.json 不存在，请先运行一次 Codex"));
     };

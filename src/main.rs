@@ -12,6 +12,7 @@ mod inject;
 mod metrics;
 mod prompts;
 mod ratelimit;
+mod request_history;
 mod session;
 mod sse;
 mod stream;
@@ -563,6 +564,18 @@ async fn main() -> Result<()> {
         thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
         custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
+        request_history: {
+            let db_path = args.data_dir.join("request_history.db");
+            Arc::new(
+                crate::request_history::RequestHistoryStore::new(&db_path).unwrap_or_else(|e| {
+                    tracing::warn!("请求历史数据库初始化失败，使用内存存储: {e}");
+                    crate::request_history::RequestHistoryStore::new(std::path::Path::new(
+                        ":memory:",
+                    ))
+                    .unwrap()
+                }),
+            )
+        },
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))

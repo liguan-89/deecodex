@@ -301,6 +301,8 @@ pub fn run() {
             commands::list_sessions,
             commands::delete_session,
             commands::undo_delete_session,
+            commands::list_request_history,
+            commands::clear_request_history,
             commands::get_threads_status,
             commands::list_threads,
             commands::migrate_threads,

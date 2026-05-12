@@ -2026,8 +2026,10 @@ function computerLabel(v) {
 	let _undoToken = null;
 
 	function renderSessions() {
-	  return `<div class="panel">
-	    <div class="panel-header"><h2>会话管理</h2><span class="panel-subtitle">管理活跃的响应和对话</span></div>
+	  return `<div class="page-header">
+	    <h2>会话管理</h2>
+	    <p>管理活跃的响应和对话</p>
+	  </div>
 	    <div class="session-toolbar">
 	      <button class="btn btn-primary" onclick="refreshSessions()">⟳ 刷新</button>
 	      <button class="btn btn-ghost" id="undoBtn" onclick="undoDelete()" disabled>↩ 撤销删除</button>
@@ -2039,8 +2041,7 @@ function computerLabel(v) {
 	    <div class="session-section">
 	      <div class="section-label">▸ 对话列表 <span class="count" id="convCount">—</span></div>
 	      <div class="session-list" id="convList"></div>
-	    </div>
-	  </div>`;
+	    </div>`;
 	}
 
 	async function refreshSessions() {

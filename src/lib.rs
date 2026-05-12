@@ -12,6 +12,7 @@ pub mod inject;
 pub mod metrics;
 pub mod prompts;
 pub mod ratelimit;
+pub mod request_history;
 pub mod session;
 pub mod sse;
 pub mod stream;

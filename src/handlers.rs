@@ -75,6 +75,8 @@ pub struct AppState {
     pub custom_headers: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
     /// 请求超时秒数（来自活跃账号）
     pub request_timeout_secs: Arc<tokio::sync::RwLock<Option<u64>>>,
+    /// 请求历史持久化存储
+    pub request_history: Arc<crate::request_history::RequestHistoryStore>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -94,6 +96,7 @@ struct BlockingArgs<'a> {
     conversation_id: Option<String>,
     response_extra: Value,
     req: &'a ResponsesRequest,
+    start: Instant,
 }
 
 struct VlmArgs {
@@ -1112,9 +1115,7 @@ async fn handle_list_vector_store_file_batch_files(
 
 // ── Codex 线程聚合 API（复用 web.rs 中的 handler 逻辑）──
 
-async fn handle_list_threads_api(
-    State(state): State<AppState>,
-) -> Response {
+async fn handle_list_threads_api(State(_state): State<AppState>) -> Response {
     match crate::codex_threads::list_all() {
         Ok(threads) => Json(serde_json::json!({ "ok": true, "threads": threads })).into_response(),
         Err(e) => (
@@ -1125,9 +1126,7 @@ async fn handle_list_threads_api(
     }
 }
 
-async fn handle_threads_status_api(
-    State(state): State<AppState>,
-) -> Response {
+async fn handle_threads_status_api(State(state): State<AppState>) -> Response {
     match crate::codex_threads::status(&state.data_dir) {
         Ok(s) => Json(serde_json::json!({ "ok": true, "status": s })).into_response(),
         Err(e) => (
@@ -1138,9 +1137,7 @@ async fn handle_threads_status_api(
     }
 }
 
-async fn handle_migrate_threads_api(
-    State(state): State<AppState>,
-) -> Response {
+async fn handle_migrate_threads_api(State(state): State<AppState>) -> Response {
     match crate::codex_threads::migrate(&state.data_dir) {
         Ok(diff) => Json(serde_json::json!({
             "ok": true,
@@ -1156,9 +1153,7 @@ async fn handle_migrate_threads_api(
     }
 }
 
-async fn handle_restore_threads_api(
-    State(state): State<AppState>,
-) -> Response {
+async fn handle_restore_threads_api(State(state): State<AppState>) -> Response {
     match crate::codex_threads::restore(&state.data_dir) {
         Ok(diff) => Json(serde_json::json!({
             "ok": true,
@@ -1611,6 +1606,7 @@ async fn handle_responses_inner(
                 conversation_id: bg_conversation_id,
                 response_extra: response_extra.clone(),
                 req: &bg_req,
+                start: Instant::now(),
             })
             .await;
             task_cleanup.remove(&cleanup_id);
@@ -1721,6 +1717,7 @@ async fn handle_responses_inner(
             conversation_id,
             response_extra,
             req: &req,
+            start,
         })
         .await;
         let elapsed = start.elapsed();
@@ -1741,6 +1738,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         conversation_id,
         response_extra,
         req,
+        start,
     } = args;
     let mut builder = state
         .client
@@ -1809,6 +1807,20 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     ),
                 );
             }
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    now_unix_secs(),
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    e.to_string(),
+                )
+                .await;
             (StatusCode::BAD_GATEWAY, e.to_string()).into_response()
         }
         Ok(r) if !r.status().is_success() => {
@@ -1835,6 +1847,20 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     ),
                 );
             }
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    now_unix_secs(),
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    format!("HTTP {}", status.as_u16()),
+                )
+                .await;
             (
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
                 body,
@@ -1864,6 +1890,20 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         ),
                     );
                 }
+                let _ = state
+                    .request_history
+                    .record(
+                        response_id,
+                        now_unix_secs(),
+                        model,
+                        "failed".into(),
+                        0,
+                        0,
+                        start.elapsed().as_millis() as u64,
+                        url,
+                        e.to_string(),
+                    )
+                    .await;
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
             Ok(chat_resp) => {
@@ -1925,6 +1965,29 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         .sessions
                         .save_conversation(id.to_string(), full_history);
                 }
+
+                let _ = state
+                    .request_history
+                    .record(
+                        response_id.clone(),
+                        now_unix_secs(),
+                        model.clone(),
+                        "completed".into(),
+                        chat_resp
+                            .usage
+                            .as_ref()
+                            .map(|u| u.prompt_tokens)
+                            .unwrap_or(0),
+                        chat_resp
+                            .usage
+                            .as_ref()
+                            .map(|u| u.completion_tokens)
+                            .unwrap_or(0),
+                        start.elapsed().as_millis() as u64,
+                        url.clone(),
+                        String::new(),
+                    )
+                    .await;
 
                 let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
                 if let Ok(value) = serde_json::to_value(&resp) {

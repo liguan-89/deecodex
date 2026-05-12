@@ -220,7 +220,10 @@ pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
     conn.pragma_update(None, "busy_timeout", "5000")?;
 
     let affected = conn
-        .execute("DELETE FROM threads WHERE id = ?1", rusqlite::params![thread_id])
+        .execute(
+            "DELETE FROM threads WHERE id = ?1",
+            rusqlite::params![thread_id],
+        )
         .context("删除线程失败")?;
 
     if affected == 0 {

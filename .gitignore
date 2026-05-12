@@ -18,10 +18,6 @@ logs/
 # Backups
 *.bak
 
-# Private crates (closed-source)
-deecodex-private/
-deecodex-shared/
-
 # Rust build
 target/
 pyproject.toml

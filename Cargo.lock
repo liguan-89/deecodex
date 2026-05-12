@@ -744,8 +744,6 @@ dependencies = [
  "bytes",
  "clap",
  "dashmap",
- "deecodex-private",
- "deecodex-shared",
  "eventsource-stream",
  "futures-util",
  "http-body-util",
@@ -784,23 +782,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "deecodex-private"
-version = "0.1.0"
-dependencies = [
- "deecodex-shared",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "deecodex-shared"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

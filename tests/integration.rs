@@ -112,6 +112,10 @@ fn test_state() -> AppState {
         thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
         custom_headers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
+        request_history: Arc::new(
+            deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
+                .unwrap(),
+        ),
     }
 }
 
