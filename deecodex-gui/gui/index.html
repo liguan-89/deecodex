@@ -2835,16 +2835,12 @@ async function fetchAndPopulateModels() {
   const statusEl = document.getElementById('modelFetchStatus');
   if (statusEl) statusEl.textContent = '获取中...';
   try {
-    // 已有账号：传 accountId 让后端查真实 Key；新账号：传表单值
-    if (editingAccount && editingAccount.id) {
-      upstreamModels = await invoke('fetch_upstream_models', { accountId: editingAccount.id });
-    } else {
-      const upstream = document.getElementById('edit_upstream')?.value?.trim();
-      const keyInput = document.getElementById('edit_api_key');
-      let apiKey = keyInput ? keyInput.value.trim() : '';
-      if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
-      upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey });
-    }
+    // 统一使用表单中的 upstream 和 api_key（用户可能已修改但尚未保存）
+    const upstream = document.getElementById('edit_upstream')?.value?.trim();
+    const keyInput = document.getElementById('edit_api_key');
+    const apiKey = keyInput ? keyInput.value.trim() : '';
+    if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
+    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey });
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.textContent = `✓ 获取到 ${upstreamModels.length} 个模型`;
       // 重新渲染模型映射行
