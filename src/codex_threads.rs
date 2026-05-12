@@ -242,7 +242,20 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
     })?;
     drop(stmt);
 
-    // 2. stage1_outputs 摘要（可能包含 rollout summary）
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+
+    // 2. 首条用户消息
+    if let Some(first_msg) = thread.get("first_user_message").and_then(|v| v.as_str()) {
+        if !first_msg.is_empty() {
+            messages.push(serde_json::json!({
+                "role": "user",
+                "payload": { "role": "user", "content": [{ "type": "input_text", "text": first_msg }] }
+            }));
+        }
+    }
+
+    // 3. stage1_outputs 摘要
+    let mut rollout_summary = None;
     if let Ok(mut stmt) = conn.prepare(
         "SELECT rollout_summary, rollout_slug FROM stage1_outputs WHERE thread_id = ?1",
     ) {
@@ -250,6 +263,7 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
             rusqlite::params![thread_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
         ) {
+            rollout_summary = Some(summary.clone());
             thread["rollout_summary"] = serde_json::Value::String(summary);
             if let Some(s) = slug {
                 thread["rollout_slug"] = serde_json::Value::String(s);
@@ -257,7 +271,17 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
         }
     }
 
-    // 3. 线程关联的工具
+    // 将摘要作为 assistant 消息
+    if let Some(ref summary) = rollout_summary {
+        if !summary.is_empty() {
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "payload": { "role": "assistant", "content": [{ "type": "output_text", "text": summary }] }
+            }));
+        }
+    }
+
+    // 4. 线程关联的工具
     if let Ok(mut stmt) = conn.prepare(
         "SELECT name, description FROM thread_dynamic_tools WHERE thread_id = ?1 ORDER BY position",
     ) {
@@ -276,7 +300,10 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
         }
     }
 
-    Ok(thread)
+    Ok(serde_json::json!({
+        "thread": thread,
+        "messages": messages
+    }))
 }
 
 /// 永久删除指定线程。

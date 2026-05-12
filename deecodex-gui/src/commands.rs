@@ -11,6 +11,8 @@ use deecodex::config::Args;
 use deecodex::handlers;
 use deecodex::{files, metrics, vector_stores};
 
+use deecodex_plugin_host::PluginManager;
+
 use crate::ServerManager;
 
 // ── 前端返回类型 ──────────────────────────────────────────────────────────
@@ -1710,7 +1712,30 @@ pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Val
     let data_dir = manager.data_dir.lock().await.clone();
     let status =
         deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
-    Ok(serde_json::to_value(status).map_err(|e| format!("序列化失败: {e}"))?)
+
+    // 校准需求：已迁移但仍有非 deecodex 线程（备份可能过时）
+    let calibration_needed = status.migrated && status.non_deecodex_count > 0;
+
+    // 活跃 provider：迁移后为 "deecodex"，否则取数量最多的 provider
+    let active_provider = if status.migrated {
+        "deecodex"
+    } else {
+        status
+            .summary
+            .iter()
+            .max_by_key(|s| s.count)
+            .map(|s| s.provider.as_str())
+            .unwrap_or("(空)")
+    };
+
+    Ok(serde_json::json!({
+        "summary": status.summary,
+        "total": status.total,
+        "non_unified_count": status.non_deecodex_count,
+        "migrated": status.migrated,
+        "calibration_needed": calibration_needed,
+        "active_provider": active_provider,
+    }))
 }
 
 #[tauri::command]
@@ -1828,4 +1853,111 @@ pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<
     let state = guard.as_ref().ok_or("服务未启动")?;
     state.request_history.clear().await?;
     Ok(json!({ "ok": true }))
+}
+
+// ── 插件管理 ──────────────────────────────────────────────────────────────
+
+fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {
+    let guard = manager.plugin_manager.try_lock().map_err(|e| format!("锁获取失败: {e}"))?;
+    guard.as_ref().cloned().ok_or_else(|| "插件管理器未初始化".into())
+}
+
+#[tauri::command]
+pub async fn list_plugins(manager: State<'_, ServerManager>) -> Result<Vec<Value>, String> {
+    let pm = get_pm(&manager)?;
+    let plugins = pm.list().await;
+    Ok(plugins
+        .iter()
+        .map(|p| serde_json::to_value(p).unwrap_or_default())
+        .collect())
+}
+
+#[tauri::command]
+pub async fn install_plugin(
+    manager: State<'_, ServerManager>,
+    path: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    let manifest = pm.install(std::path::Path::new(&path)).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(&manifest).unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn uninstall_plugin(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.uninstall(&plugin_id).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn start_plugin(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn stop_plugin(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.stop(&plugin_id).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn update_plugin_config(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    config: Value,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.update_config(&plugin_id, config).await.map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn get_plugin_qrcode(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    if !pm.is_running(&plugin_id) {
+        pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
+    }
+    pm.send_plugin_request(&plugin_id, "weixin.login", Some(json!({ "account_id": account_id })))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_login_cancel(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.send_plugin_request(&plugin_id, "weixin.login_cancel", Some(json!({ "account_id": account_id })))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn query_plugin_status(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager)?;
+    pm.send_plugin_request(&plugin_id, "weixin.status", Some(json!({ "account_id": account_id })))
+        .await
+        .map_err(|e| e.to_string())
 }
