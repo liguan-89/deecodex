@@ -137,6 +137,116 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
     do_restore(&db_path, &bp)
 }
 
+/// 校准迁移备份：移除已删除的线程，追加新增的非 deecodex 线程。
+pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    let bp = backup_path(data_dir);
+
+    let before = get_provider_summary(&db_path)?;
+
+    if !bp.exists() {
+        return Ok(MigrationDiff {
+            before: before.clone(),
+            after: before,
+            changed_count: 0,
+        });
+    }
+
+    // 读取当前备份
+    let backup_json = std::fs::read_to_string(&bp).context("读取迁移备份文件失败")?;
+    let mut originals: Vec<(String, String)> =
+        serde_json::from_str(&backup_json).context("解析迁移备份文件失败")?;
+
+    // 获取当前所有线程 ID
+    let conn = Connection::open(&db_path)?;
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+    let mut stmt = conn.prepare("SELECT id FROM threads")?;
+    let current_ids: std::collections::HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+
+    let old_len = originals.len();
+    // 移除已删除的线程
+    originals.retain(|(id, _)| current_ids.contains(id));
+
+    let removed = old_len - originals.len();
+    if removed > 0 {
+        tracing::info!("校准: 从备份中移除 {removed} 条已删除线程");
+    }
+
+    let new_backup = serde_json::to_string_pretty(&originals).context("序列化校准备份失败")?;
+    std::fs::write(&bp, new_backup).context("写入校准备份文件失败")?;
+
+    let after = get_provider_summary(&db_path)?;
+
+    Ok(MigrationDiff {
+        before,
+        after,
+        changed_count: removed,
+    })
+}
+
+/// 获取指定线程的完整内容（含消息历史）。
+pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    let conn = Connection::open(&db_path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived
+         FROM threads WHERE id = ?1",
+    )?;
+    let thread = stmt.query_row(rusqlite::params![thread_id], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "title": row.get::<_, String>(1)?,
+            "model_provider": row.get::<_, String>(2)?,
+            "created_at_ms": row.get::<_, Option<i64>>(3)?,
+            "updated_at_ms": row.get::<_, Option<i64>>(4)?,
+            "archived": row.get::<_, i32>(5)? != 0,
+        }))
+    })?;
+
+    Ok(thread)
+}
+
+/// 永久删除指定线程。
+pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    let conn = Connection::open(&db_path)?;
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+
+    let affected = conn
+        .execute("DELETE FROM threads WHERE id = ?1", rusqlite::params![thread_id])
+        .context("删除线程失败")?;
+
+    if affected == 0 {
+        anyhow::bail!("未找到线程 {thread_id}");
+    }
+
+    // 同时从迁移备份中移除
+    let bp = backup_path(data_dir);
+    if bp.exists() {
+        if let Ok(json) = std::fs::read_to_string(&bp) {
+            if let Ok(mut originals) = serde_json::from_str::<Vec<(String, String)>>(&json) {
+                let before = originals.len();
+                originals.retain(|(id, _)| id != thread_id);
+                if originals.len() != before {
+                    let new_json =
+                        serde_json::to_string_pretty(&originals).context("序列化备份失败")?;
+                    std::fs::write(&bp, new_json).context("写入备份文件失败")?;
+                }
+            }
+        }
+    }
+
+    tracing::info!("已永久删除线程 {thread_id}");
+    Ok(())
+}
+
 // ── 内部函数 ──
 
 fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {

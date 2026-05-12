@@ -211,6 +211,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 balance_url: String::new(),
                 created_at: now_secs(),
                 updated_at: now_secs(),
+                context_window_override: None,
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
             accounts.push(migrated);
@@ -248,6 +249,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
+            context_window_override: None,
         };
         tracing::info!("创建默认 OpenRouter 空账号");
         accounts.push(default);
@@ -266,6 +268,16 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
     }
 
     store
+}
+
+/// 从账号存储中读取活跃账号的上下文窗口覆盖值。
+fn load_active_account_context_window(data_dir: &std::path::Path) -> Option<u32> {
+    let store = deecodex::accounts::load_accounts(data_dir);
+    store
+        .active_id
+        .as_ref()
+        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
+        .and_then(|a| a.context_window_override)
 }
 
 fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
@@ -415,7 +427,11 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject(port, &state.client_api_key.read().await);
+        deecodex::codex_config::inject(
+            port,
+            &state.client_api_key.read().await,
+            load_active_account_context_window(&args.data_dir),
+        );
     }
 
     let (tx, mut rx) = tokio::sync::watch::channel(());
@@ -728,7 +744,8 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     let ca_key = args.client_api_key.clone();
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject(port, &ca_key);
+        let cw = load_active_account_context_window(&args.data_dir);
+        deecodex::codex_config::inject(port, &ca_key, cw);
     } else {
         deecodex::codex_config::remove();
     }
@@ -962,6 +979,7 @@ pub async fn add_account(
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
+            context_window_override: None,
         }
     };
 
@@ -1098,6 +1116,11 @@ pub async fn switch_account(
 
         // 同步更新 account_store
         *app_state.account_store.write().await = store;
+
+        // 根据新账号的上下文窗口覆盖重新注入 codex config
+        let port = *manager.port.lock().await;
+        let client_api_key = app_state.client_api_key.read().await.clone();
+        deecodex::codex_config::inject(port, &client_api_key, target.context_window_override);
 
         tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
     }

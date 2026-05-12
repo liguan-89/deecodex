@@ -273,6 +273,8 @@ pub fn to_chat_request(
         }
     }
 
+    merge_system_messages(&mut messages);
+
     let dropped_tool_messages = sanitize_tool_messages(&mut messages);
     if dropped_tool_messages > 0 {
         info!(
@@ -371,6 +373,26 @@ pub fn to_chat_request(
             },
         },
         has_images,
+    }
+}
+
+/// 将多余的系统消息合并到第一条系统消息中。
+/// MiniMax 等严格 API 拒绝包含多条 system 消息的请求。
+fn merge_system_messages(messages: &mut Vec<ChatMessage>) {
+    let first_sys = match messages.iter().position(|m| m.role == "system") {
+        Some(idx) => idx,
+        None => return,
+    };
+    for i in (first_sys + 1..messages.len()).rev() {
+        if messages[i].role == "system" {
+            let removed = messages.remove(i);
+            if let Some(Value::String(s)) = removed.content {
+                if let Some(Value::String(ref mut target)) = messages[first_sys].content {
+                    target.push_str("\n\n");
+                    target.push_str(&s);
+                }
+            }
+        }
     }
 }
 

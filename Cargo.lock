@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex"
-version = "1.8.6"
+version = "1.8.8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex-gui"
-version = "1.8.6"
+version = "1.8.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -788,29 +788,19 @@ dependencies = [
 
 [[package]]
 name = "deecodex-private"
-version = "1.8.5"
+version = "1.8.8"
 dependencies = [
- "anyhow",
  "deecodex-shared",
- "futures-util",
- "reqwest 0.12.28",
- "rusqlite",
  "serde",
  "serde_json",
- "tokio",
- "tokio-tungstenite",
- "toml_edit 0.22.27",
- "tracing",
 ]
 
 [[package]]
 name = "deecodex-shared"
-version = "1.8.5"
+version = "1.8.8"
 dependencies = [
- "dashmap",
  "serde",
  "serde_json",
- "uuid",
 ]
 
 [[package]]

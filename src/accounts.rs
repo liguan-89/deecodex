@@ -31,6 +31,10 @@ pub struct Account {
     pub created_at: u64,
     #[serde(default)]
     pub updated_at: u64,
+    /// 覆盖 Codex 模型上下文窗口大小（token），None 表示不覆盖。
+    /// 注入 codex config 时写入 model_catalog_json。
+    #[serde(default)]
+    pub context_window_override: Option<u32>,
 }
 
 impl Account {

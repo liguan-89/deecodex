@@ -75,6 +75,7 @@ fn test_state() -> AppState {
                 balance_url: String::new(),
                 created_at: 0,
                 updated_at: 0,
+                context_window_override: None,
             }],
             active_id: Some("test-account".into()),
         })),
@@ -93,6 +94,7 @@ fn test_state() -> AppState {
             balance_url: String::new(),
             created_at: 0,
             updated_at: 0,
+            context_window_override: None,
         })),
     }
 }

@@ -504,6 +504,7 @@ async fn main() -> Result<()> {
         balance_url: String::new(),
         created_at: now_secs(),
         updated_at: now_secs(),
+        context_window_override: None,
     };
 
     let state = handlers::AppState {
@@ -657,7 +658,7 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject(args.port, &state.client_api_key.read().await);
+        codex_config::inject(args.port, &state.client_api_key.read().await, None);
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口

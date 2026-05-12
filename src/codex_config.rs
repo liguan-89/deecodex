@@ -1,7 +1,15 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use tracing::{info, warn};
+
+/// deecodex 管理的模型目录文件名
+const CATALOG_FILENAME: &str = "models_deecodex.json";
+
+fn codex_home_dir() -> Option<PathBuf> {
+    crate::config::home_dir().map(|home| home.join(".codex"))
+}
 
 /// 读取配置文件，自动处理 UTF-8 / UTF-16 LE / UTF-16 BE 编码。
 /// Windows 上 Codex 桌面版可能写入 UTF-16 编码的 config.toml。
@@ -112,14 +120,15 @@ fn codex_is_installed() -> bool {
 }
 
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
-pub fn inject(port: u16, client_api_key: &str) {
+/// `context_window_override`: Some(size) 时生成 models_deecodex.json 并设置 model_catalog_json，
+/// 同时按 90% 设置 model_auto_compact_token_limit。None 时清除相关配置。
+pub fn inject(port: u16, client_api_key: &str, context_window_override: Option<u32>) {
     let Some(path) = codex_config_path() else {
         info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
         return;
     };
     if !path.exists() {
         if codex_is_installed() {
-            // Codex 已安装但 config.toml 尚未创建（桌面版首次使用场景）
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -132,7 +141,15 @@ pub fn inject(port: u16, client_api_key: &str) {
         }
     }
 
-    match do_inject(&path, port, client_api_key) {
+    if let Some(cw) = context_window_override {
+        if let Err(e) = generate_context_catalog(cw) {
+            warn!("生成上下文模型目录失败: {e}");
+        }
+    } else {
+        clear_context_catalog();
+    }
+
+    match do_inject(&path, port, client_api_key, context_window_override) {
         Ok(true) => info!("已将 deecodex 配置注入 codex config.toml (port={port})"),
         Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新端口"),
         Err(e) => warn!("注入 codex 配置失败: {e}"),
@@ -155,7 +172,12 @@ pub fn remove() {
     }
 }
 
-fn do_inject(path: &std::path::Path, port: u16, client_api_key: &str) -> Result<bool> {
+fn do_inject(
+    path: &std::path::Path,
+    port: u16,
+    client_api_key: &str,
+    context_window_override: Option<u32>,
+) -> Result<bool> {
     let content = read_config_file(path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
 
@@ -172,6 +194,20 @@ fn do_inject(path: &std::path::Path, port: u16, client_api_key: &str) -> Result<
     doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value(client_api_key);
     doc["model_providers"]["deecodex"]["wire_api"] = toml_edit::value("responses");
 
+    // 大上下文窗口覆盖
+    if let Some(cw) = context_window_override {
+        if let Some(codex_home) = codex_home_dir() {
+            doc["model_catalog_json"] =
+                toml_edit::value(codex_home.join(CATALOG_FILENAME).to_string_lossy().to_string());
+        }
+        let compact_limit = (cw as u64 * 9 / 10).min(i64::MAX as u64) as i64;
+        doc["model_auto_compact_token_limit"] = toml_edit::value(compact_limit);
+        info!("已启用大上下文: context_window={cw}, auto_compact_token_limit={compact_limit}");
+    } else {
+        doc.remove("model_catalog_json");
+        doc.remove("model_auto_compact_token_limit");
+    }
+
     std::fs::write(path, doc.to_string())?;
     Ok(!already_exists)
 }
@@ -186,6 +222,15 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
         doc.remove("model_provider");
         removed = true;
     }
+
+    // 清理大上下文相关配置
+    if doc.remove("model_catalog_json").is_some() {
+        removed = true;
+    }
+    if doc.remove("model_auto_compact_token_limit").is_some() {
+        removed = true;
+    }
+    clear_context_catalog();
 
     // 尝试从常规 table 或 inline table 中移除 deecodex
     if let Some(providers) = doc.get_mut("model_providers") {
@@ -215,6 +260,61 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
         std::fs::write(path, doc.to_string())?;
     }
     Ok(removed)
+}
+
+/// 从 models_cache.json 生成带有覆盖上下文窗口的模型目录，
+/// 写入 ~/.codex/models_deecodex.json。
+fn generate_context_catalog(context_window: u32) -> Result<()> {
+    let Some(codex_home) = codex_home_dir() else {
+        return Err(anyhow!("无法确定 HOME 目录"));
+    };
+
+    let cache_path = codex_home.join("models_cache.json");
+    let catalog_path = codex_home.join(CATALOG_FILENAME);
+
+    let mut catalog: Value = if cache_path.exists() {
+        let content = std::fs::read_to_string(&cache_path)
+            .map_err(|e| anyhow!("读取 models_cache.json 失败: {e}"))?;
+        serde_json::from_str(&content)
+            .map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))?
+    } else {
+        return Err(anyhow!("models_cache.json 不存在，请先运行一次 Codex"));
+    };
+
+    let models = catalog
+        .get_mut("models")
+        .and_then(|m| m.as_array_mut())
+        .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
+
+    for model in models.iter_mut() {
+        model["context_window"] = serde_json::Value::from(context_window);
+        model["max_context_window"] = serde_json::Value::from(context_window);
+    }
+
+    // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段
+    let catalog_out = serde_json::json!({ "models": models });
+    let json = serde_json::to_string_pretty(&catalog_out)
+        .map_err(|e| anyhow!("序列化模型目录失败: {e}"))?;
+    std::fs::write(&catalog_path, json)
+        .map_err(|e| anyhow!("写入 models_deecodex.json 失败: {e}"))?;
+    info!(
+        "已生成大上下文模型目录: {} (context_window={})",
+        catalog_path.display(),
+        context_window
+    );
+    Ok(())
+}
+
+/// 清理 deecodex 管理的模型目录文件。
+fn clear_context_catalog() {
+    if let Some(codex_home) = codex_home_dir() {
+        let catalog_path = codex_home.join(CATALOG_FILENAME);
+        if catalog_path.exists() {
+            if let Err(e) = std::fs::remove_file(&catalog_path) {
+                warn!("删除 models_deecodex.json 失败: {e}");
+            }
+        }
+    }
 }
 
 /// 从 Codex 的 config.toml 中提取非 deecodex 的 provider 配置，
@@ -278,6 +378,7 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             balance_url: String::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
+            context_window_override: None,
         };
 
         tracing::info!(
