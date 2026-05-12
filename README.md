@@ -31,6 +31,23 @@ Codex CLI  →  /v1/responses
 | macOS 12+ | `deecodex_*.dmg` — 双击挂载，拖入 Applications |
 | Windows | `deecodex_*.msi` — 双击运行安装向导 |
 
+### 最新版 v1.8.10
+
+| 平台 | 下载 |
+|------|------|
+| macOS (Apple Silicon) | [deecodex_1.8.10_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_aarch64.dmg) |
+| Windows (MSI) | [deecodex_1.8.10_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_x64_zh-CN.msi) |
+| Windows (EXE) | [deecodex_1.8.10_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_x64-setup.exe) |
+
+### 兜底版本 v1.6.0
+
+如 v1.8.10 在 Windows 上遇到问题，可回退至稳定版：
+
+| 平台 | 下载 |
+|------|------|
+| Windows (MSI) | [deecodex_1.6.0_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.6.0/deecodex_1.6.0_x64_zh-CN.msi) |
+| Windows (EXE) | [deecodex_1.6.0_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.6.0/deecodex_1.6.0_x64-setup.exe) |
+
 ## 依赖要求
 
 | 依赖 | 用途 | 必需 |
