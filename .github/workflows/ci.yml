@@ -42,12 +42,6 @@ jobs:
         working-directory: deecodex-gui
         run: npx @tauri-apps/cli build
 
-      - name: Upload MSI installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: deecodex-gui-windows-msi
-          path: target/release/bundle/msi/*.msi
-
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
