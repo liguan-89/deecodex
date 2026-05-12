@@ -48,36 +48,55 @@ pub struct ThreadStatus {
 
 /// 查找 Codex 的 state SQLite 数据库。
 ///
-/// 优先找版本号最大的 `state_*.sqlite`（不含 -wal/-shm 后缀）。
+/// 依次搜索多个可能的 Codex 数据目录，优先找版本号最大的 `state_*.sqlite`（不含 -wal/-shm 后缀）。
 fn find_state_db(home: &Path) -> Option<PathBuf> {
-    let codex_dir = home.join(".codex");
-    if !codex_dir.is_dir() {
-        return None;
+    // 可能的 Codex 数据目录列表（按优先级）
+    #[allow(unused_mut)]
+    let mut search_dirs: Vec<PathBuf> = vec![home.join(".codex")];
+
+    // Windows：Codex Desktop 可能把数据放在 APPDATA 下
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            search_dirs.push(PathBuf::from(&appdata).join("Codex"));
+        }
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            search_dirs.push(PathBuf::from(&local_appdata).join("Codex"));
+        }
     }
 
-    let mut candidates: Vec<_> = std::fs::read_dir(&codex_dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("state_")
-                && name.ends_with(".sqlite")
-                && !name.ends_with("-wal")
-                && !name.ends_with("-shm")
-            {
-                let path = e.path();
-                let size = path.metadata().ok()?.len();
-                Some((path, size))
-            } else {
-                None
-            }
-        })
-        .collect();
+    for codex_dir in &search_dirs {
+        if !codex_dir.is_dir() {
+            continue;
+        }
 
-    // 取文件最大的（通常版本号最大）
-    candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
-    candidates.into_iter().next().map(|(p, _)| p)
+        let mut candidates: Vec<_> = std::fs::read_dir(codex_dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("state_")
+                    && name.ends_with(".sqlite")
+                    && !name.ends_with("-wal")
+                    && !name.ends_with("-shm")
+                {
+                    let path = e.path();
+                    let size = path.metadata().ok()?.len();
+                    Some((path, size))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !candidates.is_empty() {
+            candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
+            return candidates.into_iter().next().map(|(p, _)| p);
+        }
+    }
+
+    None
 }
 
 /// 备份文件路径（存在 deecodex data_dir 下）。
@@ -189,27 +208,73 @@ pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     })
 }
 
-/// 获取指定线程的完整内容（含消息历史）。
+/// 获取指定线程的完整内容（含元数据、摘要、工具）。
 #[allow(dead_code)]
 pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
     let conn = Connection::open(&db_path)?;
 
+    // 1. 线程元数据
     let mut stmt = conn.prepare(
-        "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived
+        "SELECT id, title, model_provider, model, reasoning_effort,
+                first_user_message, created_at_ms, updated_at_ms,
+                archived, cwd, git_sha, git_branch, agent_nickname, cli_version
          FROM threads WHERE id = ?1",
     )?;
-    let thread = stmt.query_row(rusqlite::params![thread_id], |row| {
+    let mut thread = stmt.query_row(rusqlite::params![thread_id], |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
             "title": row.get::<_, String>(1)?,
             "model_provider": row.get::<_, String>(2)?,
-            "created_at_ms": row.get::<_, Option<i64>>(3)?,
-            "updated_at_ms": row.get::<_, Option<i64>>(4)?,
-            "archived": row.get::<_, i32>(5)? != 0,
+            "model": row.get::<_, Option<String>>(3)?,
+            "reasoning_effort": row.get::<_, Option<String>>(4)?,
+            "first_user_message": row.get::<_, String>(5)?,
+            "created_at_ms": row.get::<_, Option<i64>>(6)?,
+            "updated_at_ms": row.get::<_, Option<i64>>(7)?,
+            "archived": row.get::<_, i32>(8)? != 0,
+            "cwd": row.get::<_, String>(9)?,
+            "git_sha": row.get::<_, Option<String>>(10)?,
+            "git_branch": row.get::<_, Option<String>>(11)?,
+            "agent_nickname": row.get::<_, Option<String>>(12)?,
+            "cli_version": row.get::<_, String>(13)?,
         }))
     })?;
+    drop(stmt);
+
+    // 2. stage1_outputs 摘要（可能包含 rollout summary）
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT rollout_summary, rollout_slug FROM stage1_outputs WHERE thread_id = ?1",
+    ) {
+        if let Ok((summary, slug)) = stmt.query_row(
+            rusqlite::params![thread_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            thread["rollout_summary"] = serde_json::Value::String(summary);
+            if let Some(s) = slug {
+                thread["rollout_slug"] = serde_json::Value::String(s);
+            }
+        }
+    }
+
+    // 3. 线程关联的工具
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT name, description FROM thread_dynamic_tools WHERE thread_id = ?1 ORDER BY position",
+    ) {
+        if let Ok(tools) = stmt
+            .query_map(rusqlite::params![thread_id], |row| {
+                Ok(serde_json::json!({
+                    "name": row.get::<_, String>(0)?,
+                    "description": row.get::<_, String>(1)?,
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            if !tools.is_empty() {
+                thread["tools"] = serde_json::Value::Array(tools);
+            }
+        }
+    }
 
     Ok(thread)
 }
