@@ -225,6 +225,7 @@ impl Args {
     }
 
     /// 将指定键值同步写入 .env 文件（按 main.rs 加载顺序查找）
+    #[allow(dead_code)]
     pub fn sync_to_env_file(data_dir: &std::path::Path, key: &str, value: &str) {
         let env_path = Self::find_env_file(data_dir);
         let path = match &env_path {
@@ -289,6 +290,7 @@ impl Args {
 
     /// 遮蔽 API key 等敏感字段：前4字符 + *** + 后4字符。
     /// 空字符串返回空字符串。
+    #[allow(dead_code)]
     pub fn mask_sensitive(value: &str) -> String {
         if value.is_empty() {
             return String::new();
@@ -302,6 +304,7 @@ impl Args {
     }
 
     /// 完全遮蔽敏感字段
+    #[allow(dead_code)]
     pub fn mask_full(value: &str) -> String {
         if value.is_empty() {
             String::new()

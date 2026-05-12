@@ -8,12 +8,14 @@ use uuid::Uuid;
 use crate::types::ChatMessage;
 
 /// 响应摘要信息
+#[allow(dead_code)]
 pub struct ResponseInfo {
     pub id: String,
     pub status: String,
 }
 
 /// 对话摘要信息
+#[allow(dead_code)]
 pub struct ConversationInfo {
     pub id: String,
     pub message_count: usize,
@@ -366,6 +368,7 @@ impl SessionStore {
     // ── 列表查询 ──────────────────────────────────────────────
 
     /// 列出所有响应及其状态
+    #[allow(dead_code)]
     pub fn list_responses(&self) -> Vec<ResponseInfo> {
         self.responses
             .iter()
@@ -385,6 +388,7 @@ impl SessionStore {
     }
 
     /// 列出所有对话及其消息数量
+    #[allow(dead_code)]
     pub fn list_conversations(&self) -> Vec<ConversationInfo> {
         self.conversations
             .iter()

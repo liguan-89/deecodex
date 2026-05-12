@@ -76,6 +76,7 @@ pub struct AccountStore {
 
 // ── 供应商预设 ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderPreset {
     pub slug: String,
@@ -86,6 +87,7 @@ pub struct ProviderPreset {
     pub default_api_key_env: String,
 }
 
+#[allow(dead_code)]
 pub fn get_provider_presets() -> Vec<ProviderPreset> {
     vec![
         ProviderPreset {
@@ -185,6 +187,7 @@ pub fn load_accounts(data_dir: &Path) -> AccountStore {
     }
 }
 
+#[allow(dead_code)]
 pub fn save_accounts(data_dir: &Path, store: &AccountStore) -> Result<()> {
     let path = accounts_file_path(data_dir);
     if let Some(parent) = path.parent() {

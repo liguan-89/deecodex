@@ -1591,6 +1591,12 @@ fn make_stream_args(
         custom_headers: std::collections::HashMap::new(),
         request_timeout_secs: None,
         max_retries: None,
+        request_history: Arc::new(
+            deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
+                .unwrap(),
+        ),
+        upstream_url: url.to_string(),
+        start: std::time::Instant::now(),
     }
 }
 
@@ -1636,6 +1642,12 @@ fn make_stream_args_custom(
         custom_headers: std::collections::HashMap::new(),
         request_timeout_secs: None,
         max_retries: None,
+        request_history: Arc::new(
+            deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
+                .unwrap(),
+        ),
+        upstream_url: url.to_string(),
+        start: std::time::Instant::now(),
     }
 }
 

@@ -701,6 +701,18 @@ body {
   font-size: 11px; text-align: center; padding: 20px;
 }
 
+/* ── Request History Table ── */
+.history-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 11px; }
+.history-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 500; white-space: nowrap; }
+.history-table td { padding: 6px 12px; border-bottom: 1px solid var(--border-dim); }
+.history-table tr:hover td { background: var(--hover); }
+.ht-time { white-space: nowrap; color: var(--text-muted); }
+.ht-model { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ht-tokens { text-align: right; font-variant-numeric: tabular-nums; }
+.ht-dur { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.ht-url { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted); }
+.history-loading { text-align: center; padding: 30px; color: var(--text-muted); }
+
 /* ── Accounts Panel ── */
 .accounts-toolbar {
   display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
@@ -1070,7 +1082,7 @@ body {
       </button>
 
       <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
-        <span class="icon">▤</span> 会话管理
+        <span class="icon">▤</span> 请求历史
       </button>
 
       <button class="nav-item" data-panel="threads" onclick="switchPanel('threads')">
@@ -1217,7 +1229,7 @@ function renderPanel(panelId) {
     case 'config': container.innerHTML = renderConfig(); break;
     case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
     case 'help': container.innerHTML = renderHelp(); break;
-    case 'sessions': container.innerHTML = renderSessions(); refreshSessions(); break;
+    case 'sessions': container.innerHTML = renderHistory(); refreshHistory(); break;
     case 'threads': container.innerHTML = renderThreads(); refreshThreads(); break;
     case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';

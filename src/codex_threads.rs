@@ -138,6 +138,7 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
 }
 
 /// 校准迁移备份：移除已删除的线程，追加新增的非 deecodex 线程。
+#[allow(dead_code)]
 pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
@@ -189,6 +190,7 @@ pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
 }
 
 /// 获取指定线程的完整内容（含消息历史）。
+#[allow(dead_code)]
 pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
@@ -213,6 +215,7 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
 }
 
 /// 永久删除指定线程。
+#[allow(dead_code)]
 pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;

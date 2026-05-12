@@ -35,6 +35,7 @@ use tracing::{debug, error, info, warn};
 
 const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_items";
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: SessionStore,
@@ -1650,9 +1651,10 @@ async fn handle_responses_inner(
             }
         }
 
+        let start = Instant::now();
         let sse = stream::translate_stream(stream::StreamArgs {
             client: state.client,
-            url,
+            url: url.clone(),
             api_key,
             chat_req,
             response_id,
@@ -1688,6 +1690,9 @@ async fn handle_responses_inner(
             custom_headers: state.custom_headers.read().await.clone(),
             request_timeout_secs: *state.request_timeout_secs.read().await,
             max_retries: state.active_account.read().await.max_retries,
+            request_history: state.request_history.clone(),
+            upstream_url: url,
+            start,
         });
         let mut resp = sse.into_response();
         if thinking_enabled {
@@ -2746,6 +2751,7 @@ async fn handle_vlm(args: VlmArgs) -> Response {
 }
 
 /// GET /api/tool-policy — 获取当前工具安全策略
+#[allow(dead_code)]
 pub async fn handle_get_tool_policy(State(state): State<AppState>) -> impl IntoResponse {
     let policy = state.tool_policy.read().await;
     Json(json!({
@@ -2755,6 +2761,7 @@ pub async fn handle_get_tool_policy(State(state): State<AppState>) -> impl IntoR
 }
 
 /// PUT /api/tool-policy — 更新工具安全策略（运行时可变）
+#[allow(dead_code)]
 pub async fn handle_put_tool_policy(
     State(state): State<AppState>,
     Json(body): Json<Value>,

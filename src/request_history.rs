@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[allow(dead_code)]
 #[derive(Clone, Serialize)]
 pub struct HistoryEntry {
     pub id: String,
@@ -70,6 +71,7 @@ impl RequestHistoryStore {
         );
     }
 
+    #[allow(dead_code)]
     pub async fn list(&self, limit: usize) -> Vec<HistoryEntry> {
         let db = self.db.lock().await;
         let mut stmt = match db.prepare(
@@ -99,6 +101,7 @@ impl RequestHistoryStore {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn clear(&self) -> Result<(), String> {
         let db = self.db.lock().await;
         db.execute("DELETE FROM request_history", [])
@@ -106,6 +109,7 @@ impl RequestHistoryStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn delete_older_than(&self, max_entries: usize) {
         let db = self.db.lock().await;
         let _ = db.execute(

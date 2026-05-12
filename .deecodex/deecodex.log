@@ -61,3 +61,15 @@
 [2m2026-05-12T06:09:00.270410Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.minimaxi.com/v1/coding_plan/remains → body keys: Some(["base_resp", "model_remains"])
 [2m2026-05-12T06:09:00.297024Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
 [2m2026-05-12T06:09:00.432087Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
+[2m2026-05-12T09:23:11.495585Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 加载已有账号文件: .deecodex/accounts.json
+[2m2026-05-12T09:23:11.500868Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已生成大上下文模型目录: /Users/liguan/.codex/models_deecodex.json (context_window=1052632)
+[2m2026-05-12T09:23:11.501144Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已启用大上下文: context_window=1052632, auto_compact_token_limit=947368
+[2m2026-05-12T09:23:11.501373Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已将 deecodex 配置注入 codex config.toml (port=4446)
+[2m2026-05-12T09:23:11.804135Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-12T09:24:30.893051Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 加载已有账号文件: .deecodex/accounts.json
+[2m2026-05-12T09:24:30.895621Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已生成大上下文模型目录: /Users/liguan/.codex/models_deecodex.json (context_window=1052632)
+[2m2026-05-12T09:24:30.895800Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m 已启用大上下文: context_window=1052632, auto_compact_token_limit=947368
+[2m2026-05-12T09:24:30.895902Z[0m [32m INFO[0m [2mdeecodex::codex_config[0m[2m:[0m codex config.toml 已包含 deecodex 配置，已更新端口
+[2m2026-05-12T09:24:31.198842Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 服务已启动 → http://127.0.0.1:4446
+[2m2026-05-12T09:25:00.316523Z[0m [32m INFO[0m [2mdeecodex::inject[0m[2m:[0m 未检测到 Codex CDP 调试端口 (优先端口 9222，扫描范围 9222–9230，已重试 30 次)，跳过注入。
+[2m2026-05-12T09:25:00.316588Z[0m [32m INFO[0m [2mdeecodex::inject[0m[2m:[0m 如需使用插件解锁和会话删除 UI，请以 --remote-debugging-port=9222 启动 Codex 桌面版，或在控制面板点击“启动 Codex CDP”。

@@ -17,6 +17,7 @@ use crate::{
         McpToolOutput,
     },
     metrics::Metrics,
+    request_history::RequestHistoryStore,
     session::SessionStore,
     token_anomaly::TokenTracker,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
@@ -51,6 +52,9 @@ pub struct StreamArgs {
     pub custom_headers: std::collections::HashMap<String, String>,
     pub request_timeout_secs: Option<u64>,
     pub max_retries: Option<u32>,
+    pub request_history: Arc<RequestHistoryStore>,
+    pub upstream_url: String,
+    pub start: std::time::Instant,
 }
 
 /// Arguments for replaying a cached response as SSE.
@@ -238,6 +242,9 @@ pub fn translate_stream(
         custom_headers,
         request_timeout_secs,
         max_retries: account_max_retries,
+        request_history,
+        upstream_url,
+        start,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let reasoning_item_id = format!("rsn_{}", uuid::Uuid::new_v4().simple());
@@ -343,6 +350,16 @@ pub fn translate_stream(
                         "response.failed",
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": body}}}),
                     );
+                    let _ = request_history.record(
+                        response_id,
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        model,
+                        "failed".into(),
+                        0, 0,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        format!("HTTP {}", status_code),
+                    ).await;
                     return;
                 }
                 Err(e) => {
@@ -371,6 +388,16 @@ pub fn translate_stream(
                         "response.failed",
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e.to_string()}}}),
                     );
+                    let _ = request_history.record(
+                        response_id,
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        model,
+                        "failed".into(),
+                        0, 0,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        e.to_string(),
+                    ).await;
                     return;
                 }
             }
@@ -511,6 +538,16 @@ pub fn translate_stream(
                 "response.failed",
                 json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
             );
+            let _ = request_history.record(
+                response_id,
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                model,
+                "failed".into(),
+                0, 0,
+                start.elapsed().as_millis() as u64,
+                upstream_url,
+                message,
+            ).await;
             return;
         }
 
@@ -843,6 +880,18 @@ pub fn translate_stream(
             c.insert(key, cached);
             }
         }
+
+        let _ = request_history.record(
+            response_id,
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            model,
+            "completed".into(),
+            completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+            completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+            start.elapsed().as_millis() as u64,
+            upstream_url,
+            String::new(),
+        ).await;
     };
 
     Sse::new(event_stream).keep_alive(KeepAlive::default())
