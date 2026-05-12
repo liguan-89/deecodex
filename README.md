@@ -36,7 +36,6 @@ Codex CLI  →  /v1/responses
 | 平台 | 下载 |
 |------|------|
 | macOS (Apple Silicon) | [deecodex_1.8.11_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_aarch64.dmg) |
-| Windows (MSI) | [deecodex_1.8.11_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_x64_zh-CN.msi) |
 | Windows (EXE) | [deecodex_1.8.11_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_x64-setup.exe) |
 
 ### 兜底版本 v1.6.0
@@ -45,7 +44,6 @@ Codex CLI  →  /v1/responses
 
 | 平台 | 下载 |
 |------|------|
-| Windows (MSI) | [deecodex_1.6.0_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.6.0/deecodex_1.6.0_x64_zh-CN.msi) |
 | Windows (EXE) | [deecodex_1.6.0_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.6.0/deecodex_1.6.0_x64-setup.exe) |
 
 ## 依赖要求
