@@ -31,17 +31,17 @@ Codex CLI  →  /v1/responses
 | macOS 12+ | `deecodex_*.dmg` — 双击挂载，拖入 Applications |
 | Windows | `deecodex_*.msi` — 双击运行安装向导 |
 
-### 最新版 v1.8.10
+### 最新版 v1.8.11
 
 | 平台 | 下载 |
 |------|------|
-| macOS (Apple Silicon) | [deecodex_1.8.10_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_aarch64.dmg) |
-| Windows (MSI) | [deecodex_1.8.10_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_x64_zh-CN.msi) |
-| Windows (EXE) | [deecodex_1.8.10_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.8.10/deecodex_1.8.10_x64-setup.exe) |
+| macOS (Apple Silicon) | [deecodex_1.8.11_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_aarch64.dmg) |
+| Windows (MSI) | [deecodex_1.8.11_x64_zh-CN.msi](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_x64_zh-CN.msi) |
+| Windows (EXE) | [deecodex_1.8.11_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_x64-setup.exe) |
 
 ### 兜底版本 v1.6.0
 
-如 v1.8.10 在 Windows 上遇到问题，可回退至稳定版：
+如 v1.8.11 在 Windows 上遇到问题，可回退至稳定版：
 
 | 平台 | 下载 |
 |------|------|
