@@ -104,3 +104,44 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 - **Error handling:** `anyhow` for internal errors. Custom error types in `files.rs`, `prompts.rs`, `vector_stores.rs` implement `IntoResponse`.
 - **Logging:** `tracing` with `tracing-subscriber` env-filter. Daemon mode writes to log file; foreground writes to stderr. Default filter: `deecodex=info`.
 - **Dynamic JSON:** `serde_json::Value` used extensively for API translation — fields are manipulated dynamically rather than through strict struct deserialization.
+
+## 功能分区与提交规范
+
+项目通过 git worktree 划分为 10 个功能分区，每个分区独立开发、独立提交。
+
+### 10 个功能分区
+
+| 分区 | 覆盖模块 | 导航片段 |
+|------|---------|---------|
+| 功能/服务概览 | `deecodex-gui/` Tauri 应用 | `gui/nav/01-服务概览.html` |
+| 功能/协议配置 | `translate.rs`, `stream.rs`, `handlers.rs`, `sse.rs`, `types.rs`, `utils.rs` | `gui/nav/02-协议配置.html` |
+| 功能/执行诊断 | `files.rs`, `vector_stores.rs`, `prompts.rs`, `executor.rs` | `gui/nav/03-执行诊断.html` |
+| 功能/账号管理 | `accounts.rs`, `config.rs`, `validate.rs`, `codex_config.rs`, `cdp.rs`, `inject.rs`, `session.rs`, `cache.rs`, `backup_store.rs`, `ratelimit.rs`, `metrics.rs`, `token_anomaly.rs` | `gui/nav/04-账号管理.html` |
+| 功能/请求历史 | `request_history.rs` | `gui/nav/05-请求历史.html` |
+| 功能/线程聚合 | `codex_threads.rs` | `gui/nav/06-线程聚合.html` |
+| 功能/插件管理 | `deecodex-plugins/` | `gui/nav/07-插件管理.html` |
+| 功能/使用帮助 | — | `gui/nav/08-使用帮助.html` |
+| 功能/DEX助手 | — | `gui/nav/09-DEX助手.html` |
+| 功能/个人中心 | — | `gui/nav/10-个人中心.html` |
+
+### 提交前缀
+
+- `feat:` — 新功能
+- `fix:` — 修复
+- `refactor:` — 重构
+- `docs:` — 文档
+- `chore:` — 杂项/构建
+- `release:` — 发版
+
+### 工作流
+
+1. 在对应 worktree 目录开发，只改自己分区覆盖的文件
+2. 提交使用中文，前缀 + 简短描述
+3. 推到自己的分支：`git push deecodex-new 功能/<分区名>`
+4. 回主工作区 `cd /Users/liguan/deecodex` 合入：`git merge 功能/<分区名>`
+5. 推送主干：`git push deecodex-new deecodex-gui`
+6. 同步其他 worktree：`for b in ...; do git -C "功能/$b" merge deecodex-gui; done`
+
+### 导航栏修改
+
+导航栏采用 `build.rs` 自动拼接 `gui/nav/*.html` 生成 `fragments.js`。每个分区只改自己的片段文件，合入时不冲突。不要修改其他分区的片段文件，不要修改 `index.html` 中的 `loadNav()` 逻辑。
