@@ -1,12 +1,14 @@
 mod commands;
 
 use std::io::Write;
+use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     Manager,
 };
 use tokio::sync::Mutex;
+use tracing;
 
 struct FlushWriter<W: Write>(W);
 
@@ -33,6 +35,8 @@ pub struct ServerManager {
     pub data_dir: Mutex<std::path::PathBuf>,
     /// 运行中的 AppState，供 switch_account 等命令更新热字段
     pub app_state: Mutex<Option<deecodex::handlers::AppState>>,
+    /// 插件管理器
+    pub plugin_manager: Mutex<Option<Arc<deecodex_plugin_host::PluginManager>>>,
 }
 
 impl ServerManager {
@@ -46,6 +50,7 @@ impl ServerManager {
             app_handle: Mutex::new(None),
             data_dir: Mutex::new(std::path::PathBuf::from(".deecodex")),
             app_state: Mutex::new(None),
+            plugin_manager: Mutex::new(None),
         }
     }
 
@@ -262,6 +267,23 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let data_dir = crate::commands::load_args().data_dir.clone();
             tauri::async_runtime::block_on(async {
+                // 初始化插件管理器
+                let pm = Arc::new(deecodex_plugin_host::PluginManager::new(
+                    data_dir.clone(),
+                    "http://127.0.0.1:4446".to_string(),
+                ));
+                tracing::info!("插件管理器已初始化");
+
+                // 自启动已安装的插件
+                let plugins = pm.list().await;
+                for p in &plugins {
+                    tracing::info!(plugin_id = %p.id, "自启动插件");
+                    if let Err(e) = pm.start(&p.id).await {
+                        tracing::warn!(plugin_id = %p.id, error = %e, "插件自启动失败");
+                    }
+                }
+
+                *manager.plugin_manager.lock().await = Some(pm);
                 *manager.tray.lock().await = Some(tray);
                 *manager.app_handle.lock().await = Some(app_handle);
                 *manager.data_dir.lock().await = data_dir;
@@ -303,6 +325,7 @@ pub fn run() {
             commands::undo_delete_session,
             commands::list_request_history,
             commands::clear_request_history,
+            commands::get_monthly_stats,
             commands::get_threads_status,
             commands::list_threads,
             commands::migrate_threads,
@@ -310,6 +333,16 @@ pub fn run() {
             commands::calibrate_threads,
             commands::get_thread_content,
             commands::delete_thread,
+            commands::browse_file,
+            commands::list_plugins,
+            commands::install_plugin,
+            commands::uninstall_plugin,
+            commands::start_plugin,
+            commands::stop_plugin,
+            commands::update_plugin_config,
+            commands::get_plugin_qrcode,
+            commands::plugin_login_cancel,
+            commands::query_plugin_status,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

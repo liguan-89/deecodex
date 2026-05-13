@@ -1859,6 +1859,27 @@ pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<
     Ok(json!({ "ok": true }))
 }
 
+#[tauri::command]
+pub async fn get_monthly_stats(
+    manager: State<'_, ServerManager>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    let guard = manager.app_state.lock().await;
+    let state = guard.as_ref().ok_or("服务未启动")?;
+    let stats = state.request_history.list_monthly_stats(limit.unwrap_or(6)).await;
+    Ok(serde_json::to_value(stats).unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn browse_file() -> Result<Option<String>, String> {
+    let path = rfd::AsyncFileDialog::new()
+        .add_filter("插件包", &["zip"])
+        .pick_file()
+        .await
+        .map(|f| f.path().to_string_lossy().to_string());
+    Ok(path)
+}
+
 // ── 插件管理 ──────────────────────────────────────────────────────────────
 
 async fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {

@@ -412,6 +412,7 @@ pub fn translate_stream(
         let mut source = upstream.bytes_stream().eventsource();
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
+        let mut in_think_tag = false;
 
         while let Some(ev) = source.next().await {
             match ev {
@@ -465,31 +466,132 @@ pub fn translate_stream(
                                 }
                                 let content = choice.delta.content.as_deref().unwrap_or("");
                                 if !content.is_empty() {
-                                    if !emitted_message_item {
-                                        let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
-                                        yield event_with_sequence(
-                                            &mut seq,
-                                            "response.output_item.added",
-                                            json!({
-                                                "type": "response.output_item.added",
-                                                "output_index": msg_oi,
-                                                "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
-                                            }),
-                                        );
-                                        emitted_message_item = true;
+                                    let mut remaining = content;
+                                    while !remaining.is_empty() {
+                                        if in_think_tag {
+                                            // 在 <think> 内部，找 </think> 结束标记
+                                            if let Some(end_pos) = remaining.find("</think>") {
+                                                let think_text = &remaining[..end_pos];
+                                                if !think_text.is_empty() {
+                                                    if !emitted_reasoning_item {
+                                                        yield event_with_sequence(
+                                                            &mut seq,
+                                                            "response.output_item.added",
+                                                            json!({
+                                                                "type": "response.output_item.added",
+                                                                "output_index": 0,
+                                                                "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
+                                                            }),
+                                                        );
+                                                        emitted_reasoning_item = true;
+                                                    }
+                                                    accumulated_reasoning.push_str(think_text);
+                                                    yield event_with_sequence(
+                                                        &mut seq,
+                                                        "response.reasoning_summary_text.delta",
+                                                        json!({
+                                                            "type": "response.reasoning_summary_text.delta",
+                                                            "item_id": &reasoning_item_id,
+                                                            "output_index": 0,
+                                                            "content_index": 0,
+                                                            "delta": think_text
+                                                        }),
+                                                    );
+                                                }
+                                                remaining = &remaining[end_pos + 8..];
+                                                in_think_tag = false;
+                                            } else {
+                                                // 整个 remaining 都是思考内容
+                                                if !emitted_reasoning_item {
+                                                    yield event_with_sequence(
+                                                        &mut seq,
+                                                        "response.output_item.added",
+                                                        json!({
+                                                            "type": "response.output_item.added",
+                                                            "output_index": 0,
+                                                            "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
+                                                        }),
+                                                    );
+                                                    emitted_reasoning_item = true;
+                                                }
+                                                accumulated_reasoning.push_str(remaining);
+                                                yield event_with_sequence(
+                                                    &mut seq,
+                                                    "response.reasoning_summary_text.delta",
+                                                    json!({
+                                                        "type": "response.reasoning_summary_text.delta",
+                                                        "item_id": &reasoning_item_id,
+                                                        "output_index": 0,
+                                                        "content_index": 0,
+                                                        "delta": remaining
+                                                    }),
+                                                );
+                                                remaining = "";
+                                            }
+                                        } else {
+                                            // 不在 <think> 内，找 <think> 开始标记
+                                            if let Some(start_pos) = remaining.find("<think>") {
+                                                if start_pos > 0 {
+                                                    let text_before = &remaining[..start_pos];
+                                                    if !emitted_message_item {
+                                                        let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
+                                                        yield event_with_sequence(
+                                                            &mut seq,
+                                                            "response.output_item.added",
+                                                            json!({
+                                                                "type": "response.output_item.added",
+                                                                "output_index": msg_oi,
+                                                                "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
+                                                            }),
+                                                        );
+                                                        emitted_message_item = true;
+                                                    }
+                                                    accumulated_text.push_str(text_before);
+                                                    yield event_with_sequence(
+                                                        &mut seq,
+                                                        "response.output_text.delta",
+                                                        json!({
+                                                            "type": "response.output_text.delta",
+                                                            "item_id": &msg_item_id,
+                                                            "output_index": if emitted_reasoning_item { 1 } else { 0 },
+                                                            "content_index": 0,
+                                                            "delta": text_before
+                                                        }),
+                                                    );
+                                                }
+                                                remaining = &remaining[start_pos + 7..];
+                                                in_think_tag = true;
+                                            } else {
+                                                // 无 <think>，整个 remaining 是普通文本
+                                                if !emitted_message_item {
+                                                    let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
+                                                    yield event_with_sequence(
+                                                        &mut seq,
+                                                        "response.output_item.added",
+                                                        json!({
+                                                            "type": "response.output_item.added",
+                                                            "output_index": msg_oi,
+                                                            "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
+                                                        }),
+                                                    );
+                                                    emitted_message_item = true;
+                                                }
+                                                accumulated_text.push_str(remaining);
+                                                yield event_with_sequence(
+                                                    &mut seq,
+                                                    "response.output_text.delta",
+                                                    json!({
+                                                        "type": "response.output_text.delta",
+                                                        "item_id": &msg_item_id,
+                                                        "output_index": if emitted_reasoning_item { 1 } else { 0 },
+                                                        "content_index": 0,
+                                                        "delta": remaining
+                                                    }),
+                                                );
+                                                remaining = "";
+                                            }
+                                        }
                                     }
-                                    accumulated_text.push_str(content);
-                                    yield event_with_sequence(
-                                        &mut seq,
-                                        "response.output_text.delta",
-                                        json!({
-                                            "type": "response.output_text.delta",
-                                            "item_id": &msg_item_id,
-                                            "output_index": if emitted_reasoning_item { 1 } else { 0 },
-                                            "content_index": 0,
-                                            "delta": content
-                                        }),
-                                    );
                                 }
                                 if let Some(delta_calls) = &choice.delta.tool_calls {
                                     for dc in delta_calls {
@@ -519,36 +621,39 @@ pub fn translate_stream(
         }
 
         if !stream_completed {
-            let message = stream_error.unwrap_or_else(|| "upstream stream ended before [DONE]".into());
-            error!("upstream stream incomplete: {message}");
-            if store_response {
-                let mut failed = json!({
-                    "id": &response_id,
-                    "object": "response",
-                    "status": "failed",
-                    "model": &model,
-                    "output": [],
-                    "error": {"code": "stream_incomplete", "message": message.clone()}
-                });
-                merge_response_extra(&mut failed, &response_extra);
-                sessions.save_response(response_id.clone(), failed);
+            if let Some(message) = stream_error {
+                error!("upstream stream incomplete: {message}");
+                if store_response {
+                    let mut failed = json!({
+                        "id": &response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "model": &model,
+                        "output": [],
+                        "error": {"code": "stream_incomplete", "message": message.clone()}
+                    });
+                    merge_response_extra(&mut failed, &response_extra);
+                    sessions.save_response(response_id.clone(), failed);
+                }
+                yield event_with_sequence(
+                    &mut seq,
+                    "response.failed",
+                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
+                );
+                let _ = request_history.record(
+                    response_id,
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                    model,
+                    "failed".into(),
+                    0, 0,
+                    start.elapsed().as_millis() as u64,
+                    upstream_url,
+                    message,
+                ).await;
+                return;
             }
-            yield event_with_sequence(
-                &mut seq,
-                "response.failed",
-                json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
-            );
-            let _ = request_history.record(
-                response_id,
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                model,
-                "failed".into(),
-                0, 0,
-                start.elapsed().as_millis() as u64,
-                upstream_url,
-                message,
-            ).await;
-            return;
+            // 上游未发送 [DONE] 但流干净结束（如 MiniMax），视为正常完成
+            stream_completed = true;
         }
 
         // Log streaming token usage

@@ -591,8 +591,27 @@ fn convert_tool(tool: &Value) -> Value {
     let typ = obj.get("type").and_then(Value::as_str).unwrap_or("");
 
     match typ {
-        // Already in the right format
-        _ if obj.contains_key("function") => tool.clone(),
+        // Already in the right format — ensure required fields are present
+        _ if obj.contains_key("function") => {
+            let mut t = tool.clone();
+            if let Some(func) = t.get_mut("function").and_then(|f| f.as_object_mut()) {
+                if !func.contains_key("parameters") {
+                    func.insert(
+                        "parameters".into(),
+                        json!({"type": "object", "properties": {}}),
+                    );
+                }
+                let name_empty = !func.contains_key("name")
+                    || func
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .is_none_or(|s| s.is_empty());
+                if name_empty {
+                    func.insert("name".into(), json!("unnamed_tool"));
+                }
+            }
+            t
+        }
 
         // Standard function type → nest under "function" key
         "function" => {
@@ -830,24 +849,24 @@ fn convert_tool(tool: &Value) -> Value {
             })
         }
 
-        // Unknown type → best-effort
+        // Unknown type → best-effort (e.g. image_generation, view_image)
         _ => {
             let mut func = serde_json::Map::new();
-            if let Some(v) = obj.get("name") {
-                func.insert("name".into(), v.clone());
-            }
+            func.insert(
+                "name".into(),
+                obj.get("name").cloned().unwrap_or(json!(typ)),
+            );
             if let Some(v) = obj.get("description") {
                 func.insert("description".into(), v.clone());
-            }
-            if let Some(v) = obj.get("parameters") {
-                func.insert("parameters".into(), v.clone());
-            }
-            if !func.contains_key("name") {
-                func.insert("name".into(), json!(typ));
-            }
-            if !func.contains_key("description") {
+            } else {
                 func.insert("description".into(), json!(format!("Codex tool: {}", typ)));
             }
+            func.insert(
+                "parameters".into(),
+                obj.get("parameters")
+                    .cloned()
+                    .unwrap_or(json!({"type": "object", "properties": {}})),
+            );
             json!({"type": "function", "function": func})
         }
     }

@@ -268,13 +268,12 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
 
     // 3. stage1_outputs 摘要
     let mut rollout_summary = None;
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT rollout_summary, rollout_slug FROM stage1_outputs WHERE thread_id = ?1",
-    ) {
-        if let Ok((summary, slug)) = stmt.query_row(
-            rusqlite::params![thread_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        ) {
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT rollout_summary, rollout_slug FROM stage1_outputs WHERE thread_id = ?1")
+    {
+        if let Ok((summary, slug)) = stmt.query_row(rusqlite::params![thread_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        }) {
             rollout_summary = Some(summary.clone());
             thread["rollout_summary"] = serde_json::Value::String(summary);
             if let Some(s) = slug {

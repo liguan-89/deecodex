@@ -1,6 +1,6 @@
 [package]
 name = "deecodex-gui"
-version = "1.9.2-beta"
+version = "1.9.3-beta"
 edition = "2021"
 description = "deecodex Desktop GUI"
 
@@ -25,3 +25,4 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 dashmap = "6"
 anyhow = "1"
 deecodex-plugin-host = { path = "../deecodex-plugins" }
+rfd = "0.15"

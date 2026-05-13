@@ -1,0 +1,12 @@
+import type { JsonRpcRequest, JsonRpcNotification, WeixinPluginConfig } from "./types.js";
+type RequestHandler = (req: JsonRpcRequest) => Promise<unknown>;
+type NotificationHandler = (notif: JsonRpcNotification) => void;
+export declare function startRpcServer(): void;
+export declare function sendRequest(method: string, params?: Record<string, unknown>): Promise<unknown>;
+export declare function sendNotification(method: string, params?: Record<string, unknown>): void;
+export declare function onRequest(method: string, handler: RequestHandler): void;
+export declare function onNotification(method: string, handler: NotificationHandler): void;
+export declare function getConfig(): WeixinPluginConfig;
+export declare function getLlmBaseUrl(): string;
+export declare function getDataDir(): string;
+export {};

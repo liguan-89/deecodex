@@ -1,0 +1,68 @@
+{
+  "id": "deecodex-weixin",
+  "name": "WeChat Channel",
+  "version": "1.0.0",
+  "description": "微信通道插件，通过 iLink Bot API 收发消息",
+  "author": "deecodex",
+  "entry": {
+    "runtime": "node",
+    "script": "dist/index.js",
+    "args": []
+  },
+  "permissions": [
+    "http",
+    "llm.call",
+    "media.download"
+  ],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "accounts": {
+        "type": "object",
+        "description": "微信账号配置，key 为 account_id"
+      },
+      "base_url": {
+        "type": "string",
+        "default": "https://ilinkai.weixin.qq.com",
+        "description": "iLink API 基础地址"
+      },
+      "cdn_base_url": {
+        "type": "string",
+        "default": "https://novac2c.cdn.weixin.qq.com/c2c",
+        "description": "CDN 基础地址"
+      },
+      "dm_policy": {
+        "type": "string",
+        "enum": [
+          "open",
+          "whitelist"
+        ],
+        "default": "whitelist",
+        "description": "私信授权策略"
+      },
+      "allowed_users": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "授权用户 OpenID 白名单"
+      },
+      "max_context_messages": {
+        "type": "integer",
+        "default": 50,
+        "description": "每段对话保留的最大历史消息数"
+      },
+      "bot_agent": {
+        "type": "string",
+        "default": "deecodex",
+        "description": "Bot Agent 标识"
+      },
+      "bot_type": {
+        "type": "string",
+        "default": "3",
+        "description": "Bot 类型"
+      }
+    }
+  },
+  "min_deecodex_version": "0.1.0"
+}

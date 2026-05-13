@@ -1,0 +1,24 @@
+[package]
+name = "deecodex-plugin-host"
+version = "0.1.0"
+edition = "2021"
+description = "deecodex 插件宿主运行时 —— 管理第三方插件的安装、生命周期、RPC 通信"
+license = "MIT"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "6"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+semver = "1"
+zip = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+anyhow = "1"
+futures-util = "0.3"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }

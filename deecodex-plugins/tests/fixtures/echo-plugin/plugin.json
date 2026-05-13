@@ -1,0 +1,23 @@
+{
+  "id": "echo-test",
+  "name": "Echo Test Plugin",
+  "version": "1.0.0",
+  "description": "测试用的 echo 插件，回显收到的消息并返回固定响应",
+  "author": "deecodex",
+  "entry": {
+    "runtime": "node",
+    "script": "index.js",
+    "args": []
+  },
+  "permissions": ["llm.call"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "echo_prefix": {
+        "type": "string",
+        "default": "ECHO:"
+      }
+    }
+  },
+  "min_deecodex_version": "0.1.0"
+}
