@@ -1353,6 +1353,7 @@ body {
 
 <div class="toast-container" id="toastContainer"></div>
 
+<script src="nav/fragments.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════
 // Tauri IPC
@@ -1439,7 +1440,7 @@ let upstreamModels = [];
 // 初始化
 // ═══════════════════════════════════════════════════════════════
 async function init() {
-  await loadNav();
+  loadNav();
   switchPanel('status');
   await Promise.all([loadStatus(), loadConfig()]);
   setInterval(async () => {
@@ -1450,24 +1451,13 @@ async function init() {
 // ═══════════════════════════════════════════════════════════════
 // 导航
 // ═══════════════════════════════════════════════════════════════
-async function loadNav() {
+function loadNav() {
   const nav = document.getElementById('sidebarNav');
   if (!nav) return;
   nav.innerHTML = '';
-  const fragments = [
-    '01-服务概览', '02-协议配置', '03-执行诊断', '04-账号管理',
-    '05-请求历史', '06-线程聚合', '07-插件管理', '08-使用帮助',
-    '09-DEX助手', '10-个人中心'
-  ];
-  for (const name of fragments) {
-    try {
-      const resp = await fetch(`nav/${name}.html`);
-      if (resp.ok) {
-        nav.insertAdjacentHTML('beforeend', await resp.text());
-      }
-    } catch (e) {
-      console.warn(`导航片段 ${name} 加载失败:`, e);
-    }
+  var fragments = window._navFragments || [];
+  for (var i = 0; i < fragments.length; i++) {
+    nav.insertAdjacentHTML('beforeend', fragments[i]);
   }
 }
 
