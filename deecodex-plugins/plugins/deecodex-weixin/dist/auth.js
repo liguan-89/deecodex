@@ -103,12 +103,7 @@ export async function startLogin(accountId) {
     const baseUrl = cfg.base_url || "https://ilinkai.weixin.qq.com";
     const account = cfg.accounts?.[accountId];
     if (!account) {
-        sendNotification("qr_code", {
-            account_id: accountId,
-            data_url: "",
-            error: "未找到账号配置",
-        });
-        return;
+        throw new Error(`未找到账号 "${accountId}" 的配置，请先在插件配置中添加该账号`);
     }
     const botType = account.bot_type || cfg.bot_type || "3";
     try {

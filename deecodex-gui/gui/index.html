@@ -1094,7 +1094,7 @@ body {
 /* ── 插件管理 ── */
 .plugin-install-bar {
   display: flex; align-items: center; gap: 8px;
-  margin-bottom: 12px; padding: 8px;
+  margin-bottom: 16px; padding: 8px;
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
 }
@@ -1111,44 +1111,178 @@ body {
 
 .plugin-controls {
   display: flex; align-items: center; gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
+/* 插件卡片 — 列表视图 */
 .plugin-card {
+  display: flex; align-items: flex-start; gap: 14px;
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px 14px;
-  margin-bottom: 10px; transition: border-color var(--transition);
+  border-radius: var(--radius); padding: 16px 18px;
+  margin-bottom: 8px; cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
+  position: relative; overflow: hidden;
 }
-.plugin-card.running { border-color: rgba(0,200,232,0.3); }
-
-.pc-header {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+.plugin-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  transform: scaleY(0); transition: transform 180ms ease;
 }
-.pc-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
-.pc-version { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-.pc-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-.pc-perms { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.plugin-card:hover {
+  border-color: var(--border-active);
+  background: var(--bg-elevated);
+}
+.plugin-card:hover::before { transform: scaleY(1); }
 
-.pc-accounts { margin: 4px 0; }
-.pc-account-row {
+/* 运行中状态 */
+.plugin-card.running {
+  border-color: rgba(0,200,232,0.25);
+  background: linear-gradient(135deg, rgba(0,200,232,0.03) 0%, rgba(0,200,232,0.01) 50%, transparent 100%);
+  box-shadow: 0 0 20px rgba(0,200,232,0.04), inset 0 0 20px rgba(0,200,232,0.02);
+}
+.plugin-card.running::before {
+  background: var(--accent);
+  transform: scaleY(1);
+  box-shadow: 0 0 10px rgba(0,200,232,0.4);
+}
+.plugin-card.running:hover {
+  border-color: var(--border-active);
+  box-shadow: 0 0 28px rgba(0,200,232,0.08), inset 0 0 20px rgba(0,200,232,0.03);
+}
+
+.plugin-card-status {
+  flex-shrink: 0; padding-top: 2px;
+}
+.plugin-card-body {
+  flex: 1; min-width: 0;
+}
+.plugin-card-row {
   display: flex; align-items: center; gap: 12px;
-  padding: 2px 0; font-size: 11px;
 }
-.pc-account-name { color: var(--text-secondary); min-width: 80px; }
-.pc-account-status { display: flex; align-items: center; gap: 4px; min-width: 70px; }
-.pc-account-actions { display: flex; gap: 4px; margin-left: auto; }
+.plugin-card-name {
+  font-weight: 600; font-size: 14px; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.plugin-card-version {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.plugin-card-desc {
+  font-size: 12px; color: var(--text-secondary);
+  margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 480px;
+}
+.plugin-card-actions {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-top: 1px;
+}
 
-.plugin-status-dot {
+/* 状态标签 */
+.plugin-state-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 12px;
+  letter-spacing: 0.03em;
+  white-space: nowrap; flex-shrink: 0;
+}
+.plugin-state-badge.on {
+  background: rgba(0,214,143,0.08); color: var(--green);
+  border: 1px solid rgba(0,214,143,0.18);
+}
+.plugin-state-badge.off {
+  background: rgba(107,127,168,0.05); color: var(--text-muted);
+  border: 1px solid rgba(107,127,168,0.10);
+}
+.plugin-state-badge .dot {
   display: inline-block; width: 6px; height: 6px;
-  border-radius: 50%;
+  border-radius: 50%; background: currentColor;
+}
+.plugin-state-badge.on .dot {
+  animation: dotPulse 2s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%, 100% { box-shadow: 0 0 3px currentColor; }
+  50% { box-shadow: 0 0 9px currentColor; }
 }
 
-.pc-actions {
-  display: flex; align-items: center; gap: 6px;
-  margin-top: 10px; flex-wrap: wrap;
+/* ── 插件详情页 ── */
+.plugin-detail-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+  cursor: pointer; padding: 4px 0; margin-bottom: 18px;
+  transition: color var(--transition); border: none; background: none;
 }
-.pc-qr { margin-top: 10px; text-align: center; }
+.plugin-detail-back:hover { color: var(--accent); }
+
+.plugin-detail-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px;
+}
+.plugin-detail-title { flex: 1; }
+.plugin-detail-title h2 {
+  font-size: 20px; font-weight: 700; color: var(--text-primary); margin: 0 0 4px;
+}
+.plugin-detail-title .meta {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  display: flex; gap: 12px; align-items: center;
+}
+.plugin-detail-section {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px; margin-bottom: 12px;
+}
+.plugin-detail-section h3 {
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px;
+}
+
+/* 权限标签 */
+.plugin-perm-tags {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.plugin-perm-tag {
+  font-family: var(--font-mono); font-size: 10px;
+  padding: 3px 8px; border-radius: var(--radius-sm);
+  background: var(--accent-dim); color: var(--accent);
+  border: 1px solid rgba(0,200,232,0.15);
+}
+
+/* 账号列表 — 详情页 */
+.pc-accounts { margin: 0; }
+.pc-account-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 0; border-bottom: 1px solid var(--border-subtle);
+}
+.pc-account-row:last-child { border-bottom: none; }
+.pc-account-name { color: var(--text-primary); font-weight: 500; min-width: 100px; font-size: 13px; }
+.pc-account-status {
+  display: flex; align-items: center; gap: 6px; min-width: 80px; font-size: 12px;
+}
+.pc-account-actions { display: flex; gap: 6px; margin-left: auto; }
+
+/* 添加账号行 */
+.pc-add-account {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.pc-add-account input {
+  flex: 1; padding: 7px 10px;
+  background: var(--bg-input); border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm); color: var(--text-primary);
+  font-size: 12px; font-family: var(--font-mono);
+  outline: none; transition: border-color var(--transition);
+}
+.pc-add-account input:focus { border-color: var(--accent); }
+
+.pc-qr { margin-top: 12px; text-align: center; }
 .pc-qr svg, .pc-qr canvas { border-radius: var(--radius); background: white; padding: 8px; }
+
+/* 危险操作区 */
+.plugin-danger-zone {
+  background: transparent; border: 1px solid rgba(255,60,92,0.15);
+  border-radius: var(--radius); padding: 14px 18px; margin-top: 14px;
+}
+.plugin-danger-zone h3 { color: var(--red); }
 
 .btn-apply {
   font-family: var(--font-mono); font-size: 11px; font-weight: 600;
@@ -1159,17 +1293,6 @@ body {
 }
 .btn-apply:hover { background: rgba(0,200,232,0.2); }
 .btn-apply:active { transform: scale(0.97); }
-
-.pc-actions input {
-  padding: 5px 10px;
-  background: var(--bg-input); border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm); color: var(--text-primary);
-  font-size: 11px; font-family: var(--font-mono);
-  outline: none; width: 140px;
-}
-.pc-actions input:focus { border-color: var(--accent); }
-.pc-actions input::placeholder { color: var(--text-muted); }
-
 
 /* ── QR 弹窗 ── */
 .qr-overlay {
@@ -3517,7 +3640,12 @@ var ACCOUNT_STATUS_COLOR = {
   error: 'var(--red)'
 };
 
+var _pluginDetailId = null;
+
 function renderPluginsPanel() {
+  // detail view
+  if (_pluginDetailId) return renderPluginDetail();
+  // list view
   return `<div class="page-header">
     <h2>插件管理</h2>
     <p>安装和管理第三方通道插件</p>
@@ -3544,64 +3672,141 @@ function renderPluginsPanel() {
 async function loadPluginsData() {
   try {
     _pluginsData = await invoke('list_plugins') || [];
-    renderPluginList();
+    if (_pluginDetailId) {
+      // detail view: re-render full panel to reflect updated data
+      document.getElementById('mainContent').innerHTML = renderPluginsPanel();
+    } else {
+      renderPluginList();
+    }
   } catch(e) {
-    document.getElementById('pluginList').innerHTML = '<div class="empty-state">加载失败: ' + esc(String(e)) + '</div>';
+    var el = document.getElementById('pluginList');
+    if (el) el.innerHTML = '<div class="empty-state">加载失败: ' + esc(String(e)) + '</div>';
   }
 }
 
 function renderPluginList() {
-  const el = document.getElementById('pluginList');
+  var el = document.getElementById('pluginList');
+  if (!el) return;
   if (!_pluginsData.length) { el.innerHTML = '<div class="empty-state">暂无已安装插件</div>'; return; }
   el.innerHTML = _pluginsData.map(p => renderPluginCard(p)).join('');
 }
 
+// 列表视图卡片 — 状态灯 + 名称版本/简介 + 启停按钮
 function renderPluginCard(p) {
-  const running = p.state === 'running';
-  const stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
-  const accounts = p.accounts || [];
-  const perms = (p.permissions || []).join('、');
+  var running = p.state === 'running';
+  var stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
+  var sc = running ? 'var(--green)' : 'var(--text-muted)';
 
-  let accountsHtml = '';
+  return `<div class="plugin-card${running ? ' running' : ''}" onclick="showPluginDetail('${escAttr(p.id)}')">
+    <span class="plugin-card-status">
+      <span class="plugin-status-dot${running ? ' live' : ''}" style="color:${sc};background:${sc}"></span>
+    </span>
+    <div class="plugin-card-body">
+      <div class="plugin-card-row">
+        <span class="plugin-card-name">${esc(p.name)}</span>
+        <span class="plugin-card-version">v${esc(p.version)}</span>
+        <span class="plugin-state-badge ${running ? 'on' : 'off'}"><span class="dot"></span>${stateLabel}</span>
+      </div>
+      ${p.description ? `<div class="plugin-card-desc">${esc(p.description)}</div>` : ''}
+    </div>
+    <div class="plugin-card-actions" onclick="event.stopPropagation()">
+      ${running
+        ? `<button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止</button>`
+        : `<button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动</button>`}
+    </div>
+  </div>`;
+}
+
+// ── 插件详情页 ──
+function showPluginDetail(id) {
+  _pluginDetailId = id;
+  switchPanel('plugins');
+}
+
+function backToPluginList() {
+  _pluginDetailId = null;
+  switchPanel('plugins');
+}
+
+function renderPluginDetail() {
+  var p = _pluginsData.find(p => p.id === _pluginDetailId);
+  if (!p) {
+    _pluginDetailId = null;
+    return renderPluginsPanel();
+  }
+  var running = p.state === 'running';
+  var stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
+  var sc = running ? 'var(--green)' : 'var(--text-muted)';
+  var perms = p.permissions || [];
+  var accounts = p.accounts || [];
+
+  var accountsHtml = '';
   if (accounts.length) {
-    accountsHtml = '<div class="pc-accounts">' +
-      accounts.map(a => {
-        const sc = ACCOUNT_STATUS_COLOR[a.status] || 'var(--text-muted)';
-        const isConnected = a.status === 'connected';
-        return `<div class="pc-account-row">
-          <span class="pc-account-name"><span style="color:var(--text-muted)">Bot</span> ${esc(a.name || a.account_id)}</span>
-          <span class="pc-account-status" style="color:${sc}"><span class="plugin-status-dot" style="background:${sc}"></span>${ACCOUNT_STATUS_LABEL[a.status] || a.status}</span>
-          <span class="pc-account-actions">
-            ${isConnected
-              ? `<button class="btn-apply" onclick="event.stopPropagation();stopPluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--red-dim);color:var(--red);border-color:var(--red);">停止网关</button>`
-              : `<button class="btn-apply" onclick="event.stopPropagation();scanAndStart('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;">启动网关</button>`}
-            <button class="btn-apply" onclick="event.stopPropagation();scanPluginQr('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--accent-dim);color:var(--accent);border-color:var(--accent);">扫码登录</button>
-            <button class="btn-apply" onclick="event.stopPropagation();deletePluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--red-dim);color:var(--red);border-color:var(--red);">删除</button>
-          </span>
-        </div>`;
-      }).join('') + '</div>';
+    accountsHtml = accounts.map(a => {
+      var asc = ACCOUNT_STATUS_COLOR[a.status] || 'var(--text-muted)';
+      var isConnected = a.status === 'connected';
+      return `<div class="pc-account-row">
+        <span class="pc-account-name">${esc(a.name || a.account_id)}</span>
+        <span class="pc-account-status" style="color:${asc}">
+          <span class="plugin-status-dot" style="color:${asc};background:${asc};box-shadow:0 0 5px ${asc}"></span>
+          ${ACCOUNT_STATUS_LABEL[a.status] || a.status}
+        </span>
+        <span class="pc-account-actions">
+          ${isConnected
+            ? `<button class="btn-apply" onclick="stopPluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止网关</button>`
+            : `<button class="btn-apply" onclick="scanAndStart('${escAttr(p.id)}','${escAttr(a.account_id)}')">启动网关</button>`}
+          <button class="btn-apply" onclick="scanPluginQr('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent);">扫码登录</button>
+          <button class="btn-apply" onclick="deletePluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">删除</button>
+        </span>
+      </div>`;
+    }).join('');
+  } else {
+    accountsHtml = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">暂无账号</div>';
   }
 
-  return `<div class="plugin-card${running ? ' running' : ''}">
-    <div class="pc-header">
-      <span class="pc-name">${esc(p.name)}</span>
-      <span class="pc-version">v${esc(p.version)}</span>
-      <span class="card-badge ${running ? 'on' : 'off'}">${stateLabel}</span>
+  return `<button class="plugin-detail-back" onclick="backToPluginList()">← 插件管理</button>
+
+  <div class="plugin-detail-header">
+    <div class="plugin-detail-title">
+      <h2>
+        <span class="plugin-status-dot" style="color:${sc};background:${sc};box-shadow:0 0 8px ${sc};vertical-align:middle;margin-right:8px;"></span>
+        ${esc(p.name)}
+        <span class="plugin-state-badge ${running ? 'on' : 'off'}" style="vertical-align:middle;margin-left:10px;"><span class="dot"></span>${stateLabel}</span>
+      </h2>
+      <div class="meta">
+        <span>版本 v${esc(p.version)}</span>
+        ${p.author ? `<span>作者 ${esc(p.author)}</span>` : ''}
+      </div>
     </div>
-    ${p.description ? `<div class="pc-desc">${esc(p.description)} · ${esc(p.author || '')}</div>` : ''}
-    ${perms ? `<div class="pc-perms">权限：${esc(perms)}</div>` : ''}
+    ${running
+      ? `<button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);flex-shrink:0;">停止插件</button>`
+      : `<button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')" style="flex-shrink:0;">启动插件</button>`}
+  </div>
+
+  ${p.description ? `<div class="plugin-detail-section">
+    <h3>简介</h3>
+    <p style="color:var(--text-secondary);font-size:13px;line-height:1.6;">${esc(p.description)}</p>
+  </div>` : ''}
+
+  ${perms.length ? `<div class="plugin-detail-section">
+    <h3>权限</h3>
+    <div class="plugin-perm-tags">${perms.map(perm => `<span class="plugin-perm-tag">${esc(perm)}</span>`).join('')}</div>
+  </div>` : ''}
+
+  <div class="plugin-detail-section">
+    <h3>账号</h3>
     ${accountsHtml}
-    <div class="pc-actions">
+    <div class="pc-add-account">
       <input id="addAccountId_${escAttr(p.id)}" placeholder="新 Account ID">
-      <button class="btn-apply" onclick="addPluginAccount('${escAttr(p.id)}')">+ 添加账号</button>
-      ${running ? `
-        <button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止插件</button>
-      ` : `
-        <button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动插件</button>
-      `}
-      <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载插件</button>
+      <button class="btn-apply" onclick="addPluginAccount('${escAttr(p.id)}')">添加账号</button>
     </div>
     <div id="qrContainer_${escAttr(p.id)}" class="pc-qr"></div>
+  </div>
+
+  <div class="plugin-danger-zone">
+    <h3>卸载插件</h3>
+    <p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">卸载后将删除插件所有文件，此操作不可恢复。</p>
+    <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载插件</button>
   </div>`;
 }
 
@@ -3759,13 +3964,34 @@ async function scanPluginQr(pluginId, accountId) {
   var oc = document.getElementById('qrOverlayContent');
   var oa = document.getElementById('qrOverlayAccount');
   oc.innerHTML = '<span style="color:var(--text-muted);">获取二维码中...</span>';
-  oa.textContent = '账号：' + accountId;
+  oa.textContent = '账号：' + accountId + '（扫码后自动启动网关）';
   showQrOverlay();
   try {
     var result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
     var url = result.qrcode_data_url || result.data_url || '';
     if (url) {
-      oc.innerHTML = `<img src="${esc(url)}" alt="QR"><p class="qr-hint">${esc(result.message || '请使用微信扫码')}</p>`;
+      oc.innerHTML = `<img src="${esc(url)}" alt="QR"><p class="qr-hint" style="color:var(--amber);">请使用微信扫码，扫码后网关将自动启动</p>`;
+      // 轮询登录状态，确认后自动启动网关
+      var pollCount = 0;
+      var pollTimer = setInterval(async () => {
+        pollCount++;
+        try {
+          var status = await invoke('query_plugin_status', { pluginId: pluginId, accountId: accountId });
+          if (status && status.status === 'connected') {
+            clearInterval(pollTimer);
+            oc.innerHTML = '<span style="color:var(--green);">登录成功，正在启动网关...</span>';
+            try {
+              await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
+              showToast('网关已启动', 'success');
+              closeQrOverlay();
+            } catch(e2) {
+              oc.innerHTML = '<span style="color:var(--red);">网关启动失败: ' + esc(String(e2)) + '</span>';
+            }
+            await loadPluginsData();
+          }
+        } catch(ee) {}
+        if (pollCount > 60) { clearInterval(pollTimer); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
+      }, 2000);
     } else {
       oc.innerHTML = '<span style="color:var(--red);">' + esc(JSON.stringify(result)) + '</span>';
     }

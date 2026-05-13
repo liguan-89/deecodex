@@ -11,7 +11,7 @@ onRequest("weixin.login", async (req) => {
         throw new Error("缺少 account_id");
     }
     const result = await startLogin(params.account_id);
-    return result || { ok: true, message: "QR 码已生成" };
+    return result;
 });
 onRequest("weixin.login_cancel", async (req) => {
     const params = req.params;
