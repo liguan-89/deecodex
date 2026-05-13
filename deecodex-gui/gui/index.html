@@ -1455,8 +1455,9 @@ async function loadNav() {
   if (!nav) return;
   nav.innerHTML = '';
   const fragments = [
-    '01-核心翻译', '02-桌面端', '03-本地能力', '04-账号管理',
-    '05-请求历史', '06-线程聚合', '07-插件管理', '08-使用帮助'
+    '01-服务概览', '02-协议配置', '03-执行诊断', '04-账号管理',
+    '05-请求历史', '06-线程聚合', '07-插件管理', '08-使用帮助',
+    '09-DEX助手', '10-个人中心'
   ];
   for (const name of fragments) {
     try {
@@ -1495,6 +1496,8 @@ function renderPanel(panelId) {
     case 'threads': container.innerHTML = renderThreads(); refreshThreads(); break;
     case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
     case 'plugins': container.innerHTML = renderPluginsPanel(); loadPluginsData(); break;
+    case 'dex-assistant': container.innerHTML = renderDexAssistant(); break;
+    case 'profile': container.innerHTML = renderProfile(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
 }
@@ -4004,6 +4007,27 @@ async function refreshPlugins() {
   showToast('已刷新');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// DEX助手
+// ═══════════════════════════════════════════════════════════════
+function renderDexAssistant() {
+  return `<div class="page-header">
+    <h2>DEX助手</h2>
+    <p>智能诊断与辅助工具</p>
+  </div>
+  <div class="empty-state">即将推出</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 个人中心
+// ═══════════════════════════════════════════════════════════════
+function renderProfile() {
+  return `<div class="page-header">
+    <h2>个人中心</h2>
+    <p>账户信息与偏好设置</p>
+  </div>
+  <div class="empty-state">即将推出</div>`;
+}
 
 
 // ═══════════════════════════════════════════════════════════════
