@@ -1335,47 +1335,7 @@ body {
       <span class="version" id="sidebarVersion">—</span>
     </div>
 
-    <nav class="sidebar-nav">
-      <span class="nav-section-label">导航</span>
-
-      <button class="nav-item active" data-panel="status" onclick="switchPanel('status')">
-        <span class="icon">◉</span> 服务概览
-      </button>
-
-      <button class="nav-item" data-panel="config" onclick="switchPanel('config')">
-        <span class="icon">⚙</span> 配置
-      </button>
-
-      <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
-        <span class="icon">◇</span> 诊断
-      </button>
-
-      <span class="nav-section-label">账号</span>
-
-      <button class="nav-item" data-panel="accounts" onclick="switchPanel('accounts')">
-        <span class="icon">▣</span> 账号管理
-      </button>
-
-      <button class="nav-item" data-panel="sessions" onclick="switchPanel('sessions')">
-        <span class="icon">▤</span> 请求历史
-      </button>
-
-      <button class="nav-item" data-panel="threads" onclick="switchPanel('threads')">
-        <span class="icon">⟐</span> 线程聚合
-      </button>
-
-      <span class="nav-section-label">插件</span>
-
-      <button class="nav-item" data-panel="plugins" onclick="switchPanel('plugins')">
-        <span class="icon">⬡</span> 插件管理
-      </button>
-
-      <span class="nav-section-label">帮助</span>
-
-      <button class="nav-item" data-panel="help" onclick="switchPanel('help')">
-        <span class="icon">?</span> 使用帮助
-      </button>
-    </nav>
+    <nav class="sidebar-nav" id="sidebarNav"></nav>
 
     <div class="sidebar-footer">
       <div class="status-bar" id="statusBar">
@@ -1479,6 +1439,7 @@ let upstreamModels = [];
 // 初始化
 // ═══════════════════════════════════════════════════════════════
 async function init() {
+  await loadNav();
   switchPanel('status');
   await Promise.all([loadStatus(), loadConfig()]);
   setInterval(async () => {
@@ -1489,6 +1450,26 @@ async function init() {
 // ═══════════════════════════════════════════════════════════════
 // 导航
 // ═══════════════════════════════════════════════════════════════
+async function loadNav() {
+  const nav = document.getElementById('sidebarNav');
+  if (!nav) return;
+  nav.innerHTML = '';
+  const fragments = [
+    '01-核心翻译', '02-桌面端', '03-本地能力', '04-账号管理',
+    '05-请求历史', '06-线程聚合', '07-插件管理', '08-使用帮助'
+  ];
+  for (const name of fragments) {
+    try {
+      const resp = await fetch(`nav/${name}.html`);
+      if (resp.ok) {
+        nav.insertAdjacentHTML('beforeend', await resp.text());
+      }
+    } catch (e) {
+      console.warn(`导航片段 ${name} 加载失败:`, e);
+    }
+  }
+}
+
 function switchPanel(panelId) {
   currentPanel = panelId;
   document.querySelectorAll('.nav-item').forEach(el => {
