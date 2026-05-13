@@ -388,6 +388,7 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             custom_headers: HashMap::new(),
             request_timeout_secs: None,
             max_retries: None,
+            translate_enabled: true,
         };
 
         tracing::info!(

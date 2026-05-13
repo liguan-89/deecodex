@@ -1091,6 +1091,12 @@ body {
 
       <span class="nav-section-label">帮助</span>
 
+      <button class="nav-item" data-panel="plugins" onclick="switchPanel('plugins')">
+        <span class="icon">⬡</span> 插件管理
+      </button>
+
+      <span class="nav-section-label">帮助</span>
+
       <button class="nav-item" data-panel="help" onclick="switchPanel('help')">
         <span class="icon">?</span> 使用帮助
       </button>
@@ -1232,6 +1238,7 @@ function renderPanel(panelId) {
     case 'sessions': container.innerHTML = renderHistory(); refreshHistory(); break;
     case 'threads': container.innerHTML = renderThreads(); refreshThreads(); break;
     case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
+    case 'plugins': container.innerHTML = renderPluginsPanel(); loadPluginsData(); break;
     default: container.innerHTML = '<div class="empty-state">未知面板</div>';
   }
 }
@@ -2582,6 +2589,14 @@ function renderAccountDetail() {
         <input type="text" id="edit_balance_url" value="${escAttr(a.balance_url || '')}" placeholder="留空则自动探测">
         <span class="hint">自定义余额/额度查询接口地址，例如 https://api.minimax.com/v1/account/info</span>
       </div>
+      <div class="config-field">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="edit_translate_enabled"
+            ${a.translate_enabled !== false ? 'checked' : ''}>
+          启用请求翻译（Responses → Chat Completions）
+        </label>
+        <span class="hint">关闭后请求将直接透传至上游 Responses API，适用于原生支持 Responses API 的上游（如 OpenAI）。DeepSeek 等仅支持 Chat Completions 的供应商需保持开启。</span>
+      </div>
     </div>
 
     <div class="section-sub-label">模型映射</div>
@@ -2866,6 +2881,7 @@ function addAccount(provider) {
     custom_headers: {},
     request_timeout_secs: null,
     max_retries: null,
+    translate_enabled: true,
   };
   accountsView = 'edit';
   renderMainContent();
@@ -2961,6 +2977,9 @@ async function saveAccount() {
   } else {
     a.max_retries = null;
   }
+
+  const translateEnabled = document.getElementById('edit_translate_enabled');
+  if (translateEnabled) a.translate_enabled = translateEnabled.checked;
 
   a.model_map = collectModelMap();
   a.updated_at = Math.floor(Date.now() / 1000);
@@ -3140,6 +3159,107 @@ document.addEventListener('keydown', e => {
     if (currentPanel === 'config') saveConfig();
   }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// 插件管理
+// ═══════════════════════════════════════════════════════════════
+let _pluginsData = [];
+
+function renderPluginsPanel() {
+  return `
+    <div class="page-header">
+      <h2>插件管理</h2>
+      <p>管理微信等通道插件</p>
+    </div>
+    <div class="mgmt-section">
+      <div class="mgmt-header">操作</div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <button class="save-btn" onclick="startPlugin('deecodex-weixin')">启动微信插件</button>
+        <button class="save-btn" onclick="stopPlugin('deecodex-weixin')" style="background:var(--danger);">停止微信插件</button>
+      </div>
+    </div>
+    <div class="mgmt-section">
+      <div class="mgmt-header">账号管理</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <input id="pluginAccountId" placeholder="Account ID (如 Bot2)" style="flex:1;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;color:var(--text-primary);">
+        <button class="save-btn" onclick="addPluginAccount()">添加账号</button>
+        <button class="save-btn" onclick="scanQrCode()" style="background:var(--accent);">扫码登录</button>
+      </div>
+      <div id="pluginQrContainer" style="margin-bottom:8px;"></div>
+    </div>
+    <div class="mgmt-section">
+      <div class="mgmt-header">插件列表</div>
+      <div id="pluginList"></div>
+    </div>`;
+}
+
+async function loadPluginsData() {
+  try {
+    _pluginsData = await invoke('list_plugins') || [];
+    renderPluginList();
+  } catch(e) {
+    document.getElementById('pluginList').innerHTML = '<div class="empty-state">加载插件列表失败: ' + esc(String(e)) + '</div>';
+  }
+}
+
+function renderPluginList() {
+  const el = document.getElementById('pluginList');
+  if (!_pluginsData.length) { el.innerHTML = '<div class="empty-state">暂无插件</div>'; return; }
+  el.innerHTML = _pluginsData.map(p => {
+    const stateCls = p.state === 'Running' ? 'card-badge on' : 'card-badge off';
+    const accounts = (p.accounts || []).map(a => `<span style="margin-right:8px;color:var(--text-secondary)">${esc(a.id)}: ${esc(a.status)}</span>`).join('');
+    return `<div style="padding:12px;margin-bottom:8px;background:var(--bg-surface);border-radius:8px;border:1px solid var(--border-subtle);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>${esc(p.name)}</strong> <span class="${stateCls}">${esc(p.state)}</span>
+      </div>
+      <div style="color:var(--text-secondary);font-size:13px;">${esc(p.id)} v${esc(p.version)}</div>
+      <div style="margin-top:4px;">${accounts}</div>
+    </div>`;
+  }).join('');
+}
+
+async function startPlugin(id) {
+  try {
+    await invoke('start_plugin', { pluginId: id });
+    showToast('插件已启动');
+    await loadPluginsData();
+  } catch(e) { showToast('启动失败: ' + esc(String(e))); }
+}
+
+async function stopPlugin(id) {
+  try {
+    await invoke('stop_plugin', { pluginId: id });
+    showToast('插件已停止');
+    await loadPluginsData();
+  } catch(e) { showToast('停止失败: ' + esc(String(e))); }
+}
+
+async function addPluginAccount() {
+  const accountId = document.getElementById('pluginAccountId').value.trim();
+  if (!accountId) { showToast('请输入 Account ID'); return; }
+  try {
+    // 更新插件配置添加账号
+    const cfg = { accounts: { [accountId]: { name: accountId, enabled: true } } };
+    await invoke('update_plugin_config', { pluginId: 'deecodex-weixin', config: cfg });
+    showToast('账号已添加');
+  } catch(e) { showToast('添加失败: ' + esc(String(e))); }
+}
+
+async function scanQrCode() {
+  const accountId = document.getElementById('pluginAccountId').value.trim();
+  if (!accountId) { showToast('请输入 Account ID'); return; }
+  const container = document.getElementById('pluginQrContainer');
+  container.innerHTML = '<span style="color:var(--text-secondary)">获取QR码中...</span>';
+  try {
+    const result = await invoke('get_plugin_qrcode', { pluginId: 'deecodex-weixin', accountId });
+    if (result.qrcode_data_url || result.data_url) {
+      const url = result.qrcode_data_url || result.data_url;
+      container.innerHTML = `<img src="${esc(url)}" style="max-width:200px;border-radius:8px;" alt="QR Code"><br><span style="color:var(--text-secondary);font-size:12px;">${esc(result.message || '请用微信扫码')}</span>`;
+    } else {
+      container.innerHTML = `<span style="color:var(--text-secondary)">QR码: ${esc(JSON.stringify(result))}</span>`;
+    }
+  } catch(e) { container.innerHTML = '<span style="color:var(--danger)">获取失败: ' + esc(String(e)) + '</span>'; }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 启动

@@ -1,6 +1,6 @@
 [package]
 name = "deecodex-gui"
-version = "1.8.10"
+version = "1.9.2-beta"
 edition = "2021"
 description = "deecodex Desktop GUI"
 
@@ -24,3 +24,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 dashmap = "6"
 anyhow = "1"
+deecodex-plugin-host = { path = "../deecodex-plugins" }

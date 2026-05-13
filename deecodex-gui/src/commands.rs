@@ -220,6 +220,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 custom_headers: HashMap::new(),
                 request_timeout_secs: None,
                 max_retries: None,
+                translate_enabled: true,
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
             accounts.push(migrated);
@@ -264,6 +265,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             custom_headers: HashMap::new(),
             request_timeout_secs: None,
             max_retries: None,
+            translate_enabled: true,
         };
         tracing::info!("创建默认 OpenRouter 空账号");
         accounts.push(default);
@@ -981,6 +983,7 @@ pub async fn add_account(
             custom_headers: HashMap::new(),
             request_timeout_secs: None,
             max_retries: None,
+            translate_enabled: true,
         }
     };
 
@@ -1698,6 +1701,7 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "custom_headers": a.custom_headers,
         "request_timeout_secs": a.request_timeout_secs,
         "max_retries": a.max_retries,
+        "translate_enabled": a.translate_enabled,
         "from_codex_config": a.from_codex_config,
         "balance_url": a.balance_url,
         "created_at": a.created_at,
@@ -1857,14 +1861,17 @@ pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<
 
 // ── 插件管理 ──────────────────────────────────────────────────────────────
 
-fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {
-    let guard = manager.plugin_manager.try_lock().map_err(|e| format!("锁获取失败: {e}"))?;
-    guard.as_ref().cloned().ok_or_else(|| "插件管理器未初始化".into())
+async fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {
+    let guard = manager.plugin_manager.lock().await;
+    guard
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "插件管理器未初始化".into())
 }
 
 #[tauri::command]
 pub async fn list_plugins(manager: State<'_, ServerManager>) -> Result<Vec<Value>, String> {
-    let pm = get_pm(&manager)?;
+    let pm = get_pm(&manager).await?;
     let plugins = pm.list().await;
     Ok(plugins
         .iter()
@@ -1877,8 +1884,11 @@ pub async fn install_plugin(
     manager: State<'_, ServerManager>,
     path: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
-    let manifest = pm.install(std::path::Path::new(&path)).await.map_err(|e| e.to_string())?;
+    let pm = get_pm(&manager).await?;
+    let manifest = pm
+        .install(std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(&manifest).unwrap_or_default())
 }
 
@@ -1887,7 +1897,7 @@ pub async fn uninstall_plugin(
     manager: State<'_, ServerManager>,
     plugin_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
+    let pm = get_pm(&manager).await?;
     pm.uninstall(&plugin_id).await.map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
@@ -1897,7 +1907,7 @@ pub async fn start_plugin(
     manager: State<'_, ServerManager>,
     plugin_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
+    let pm = get_pm(&manager).await?;
     pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
@@ -1907,7 +1917,7 @@ pub async fn stop_plugin(
     manager: State<'_, ServerManager>,
     plugin_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
+    let pm = get_pm(&manager).await?;
     pm.stop(&plugin_id).await.map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
@@ -1918,8 +1928,10 @@ pub async fn update_plugin_config(
     plugin_id: String,
     config: Value,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
-    pm.update_config(&plugin_id, config).await.map_err(|e| e.to_string())?;
+    let pm = get_pm(&manager).await?;
+    pm.update_config(&plugin_id, config)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true }))
 }
 
@@ -1929,13 +1941,17 @@ pub async fn get_plugin_qrcode(
     plugin_id: String,
     account_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
+    let pm = get_pm(&manager).await?;
     if !pm.is_running(&plugin_id) {
         pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
     }
-    pm.send_plugin_request(&plugin_id, "weixin.login", Some(json!({ "account_id": account_id })))
-        .await
-        .map_err(|e| e.to_string())
+    pm.send_request(
+        &plugin_id,
+        "weixin.login",
+        Some(json!({ "account_id": account_id })),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1944,10 +1960,14 @@ pub async fn plugin_login_cancel(
     plugin_id: String,
     account_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
-    pm.send_plugin_request(&plugin_id, "weixin.login_cancel", Some(json!({ "account_id": account_id })))
-        .await
-        .map_err(|e| e.to_string())
+    let pm = get_pm(&manager).await?;
+    pm.send_request(
+        &plugin_id,
+        "weixin.login_cancel",
+        Some(json!({ "account_id": account_id })),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1956,8 +1976,12 @@ pub async fn query_plugin_status(
     plugin_id: String,
     account_id: String,
 ) -> Result<Value, String> {
-    let pm = get_pm(&manager)?;
-    pm.send_plugin_request(&plugin_id, "weixin.status", Some(json!({ "account_id": account_id })))
-        .await
-        .map_err(|e| e.to_string())
+    let pm = get_pm(&manager).await?;
+    pm.send_request(
+        &plugin_id,
+        "weixin.status",
+        Some(json!({ "account_id": account_id })),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }

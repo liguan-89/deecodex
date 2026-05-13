@@ -100,6 +100,19 @@ struct BlockingArgs<'a> {
     start: Instant,
 }
 
+struct BypassArgs {
+    state: AppState,
+    body: axum::body::Bytes,
+    upstream_url: Url,
+    api_key: String,
+    custom_headers: HashMap<String, String>,
+    timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
+    response_id: String,
+    store_response: bool,
+    model: String,
+}
+
 struct VlmArgs {
     state: AppState,
     url: String,
@@ -1227,6 +1240,11 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         }
     }
 
+    // 翻译关闭时，直接透传至上游 Responses API
+    if !state.active_account.read().await.translate_enabled {
+        return handle_responses_bypass(state, req, body).await;
+    }
+
     if let Err(err) = state.files.resolve_request_files(&mut req) {
         return err.into_response();
     }
@@ -1304,6 +1322,376 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         .with_label_values(&["POST", &status])
         .inc();
     response
+}
+
+async fn handle_responses_bypass(
+    state: AppState,
+    req: ResponsesRequest,
+    body: axum::body::Bytes,
+) -> Response {
+    if req.previous_response_id.is_some() && req.conversation.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "previous_response_id and conversation cannot be used together",
+                    "type": "invalid_request_error",
+                    "param": "conversation",
+                    "code": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let account = state.active_account.read().await;
+    let upstream = account.upstream.clone();
+    let api_key = account.api_key.clone();
+    let custom_headers = account.custom_headers.clone();
+    let timeout_secs = account.request_timeout_secs;
+    let max_retries = account.max_retries;
+    let model = req.model.clone();
+    drop(account);
+
+    let upstream_url =
+        Url::parse(&upstream).unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+    let conversation_id = conversation_id_from_request(&req);
+    let store_response = req.store.unwrap_or(true);
+
+    if req.background == Some(true) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "background requests are not supported in bypass mode",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    // 存储 conversation items
+    if store_response {
+        if let Some(id) = conversation_id.as_deref() {
+            let mut items = state.sessions.get_conversation_items(id);
+            items.extend(response_input_items(&req));
+            state
+                .sessions
+                .save_conversation_items(id.to_string(), items);
+        }
+    }
+
+    let response_id = state.sessions.new_id();
+    let bypass = BypassArgs {
+        state: state.clone(),
+        body,
+        upstream_url,
+        api_key,
+        custom_headers,
+        timeout_secs,
+        max_retries,
+        response_id,
+        store_response,
+        model,
+    };
+
+    if req.stream {
+        bypass_stream_forward(bypass).await
+    } else {
+        bypass_send_request(bypass).await
+    }
+}
+
+async fn bypass_stream_forward(
+    BypassArgs {
+        state,
+        body,
+        upstream_url,
+        api_key,
+        custom_headers,
+        timeout_secs,
+        max_retries,
+        response_id,
+        store_response: _,
+        model,
+    }: BypassArgs,
+) -> Response {
+    let url = format!("{}responses", join_base(&upstream_url));
+    let start = std::time::Instant::now();
+
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json");
+
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
+    }
+
+    for (k, v) in &custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+
+    if let Some(secs) = timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let max_retries = max_retries.unwrap_or(3) as usize;
+    let mut attempt: usize = 0;
+    let mut delay_ms: u64 = 500;
+
+    let resp = loop {
+        match builder.try_clone().unwrap().body(body.clone()).send().await {
+            Err(e) => {
+                if attempt < max_retries {
+                    attempt += 1;
+                    warn!("bypass stream upstream error (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                    continue;
+                }
+                error!("bypass stream upstream exhausted retries: {e}");
+                let _ = state
+                    .request_history
+                    .record(
+                        response_id,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        model,
+                        "failed".into(),
+                        0,
+                        0,
+                        start.elapsed().as_millis() as u64,
+                        url,
+                        format!("connection error: {e}"),
+                    )
+                    .await;
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream connection error: {e}"),
+                )
+                    .into_response();
+            }
+            Ok(r) => break r,
+        }
+    };
+
+    let status = resp.status();
+    let x_request_id = resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
+    if !status.is_success() {
+        let error_body = resp.text().await.unwrap_or_default();
+        let _ = state
+            .request_history
+            .record(
+                response_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model,
+                "failed".into(),
+                0,
+                0,
+                start.elapsed().as_millis() as u64,
+                url,
+                format!("HTTP {}", status.as_u16()),
+            )
+            .await;
+        return (status, error_body).into_response();
+    }
+
+    let stream = resp.bytes_stream();
+    let body_stream = axum::body::Body::from_stream(stream);
+    let mut resp = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .body(body_stream)
+        .unwrap();
+    if let Some(req_id) = x_request_id {
+        if let Ok(v) = header::HeaderValue::from_str(&req_id) {
+            resp.headers_mut()
+                .insert(header::HeaderName::from_static("x-request-id"), v);
+        }
+    }
+    resp
+}
+
+async fn bypass_send_request(
+    BypassArgs {
+        state,
+        body,
+        upstream_url,
+        api_key,
+        custom_headers,
+        timeout_secs,
+        max_retries,
+        response_id,
+        store_response,
+        model,
+    }: BypassArgs,
+) -> Response {
+    let url = format!("{}responses", join_base(&upstream_url));
+    let start = std::time::Instant::now();
+
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json");
+
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
+    }
+
+    for (k, v) in &custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+
+    if let Some(secs) = timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let max_retries = max_retries.unwrap_or(3) as usize;
+    let mut attempt: usize = 0;
+    let mut delay_ms: u64 = 500;
+
+    let result = loop {
+        match builder.try_clone().unwrap().body(body.clone()).send().await {
+            Err(e) => {
+                if attempt < max_retries {
+                    attempt += 1;
+                    warn!("bypass non-stream upstream error (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                    continue;
+                }
+                break Err(e);
+            }
+            Ok(r) => break Ok(r),
+        }
+    };
+
+    match result {
+        Err(e) => {
+            error!("bypass non-stream upstream exhausted retries: {e}");
+            if store_response {
+                state.sessions.save_response(
+                    response_id.clone(),
+                    json!({
+                        "id": response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "error": {"code": "upstream_error", "message": format!("{e}")}
+                    }),
+                );
+            }
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    format!("connection error: {e}"),
+                )
+                .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("upstream connection error: {e}"),
+                        "type": "api_error",
+                        "code": "upstream_error"
+                    }
+                })),
+            )
+                .into_response()
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let response_body: Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("bypass non-stream JSON parse: {e}");
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({
+                            "error": {
+                                "message": format!("failed to parse upstream response: {e}"),
+                                "type": "api_error",
+                                "code": "invalid_response"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+
+            if store_response {
+                state
+                    .sessions
+                    .save_response(response_id.clone(), response_body.clone());
+            }
+
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model,
+                    if status.is_success() {
+                        "completed"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    String::new(),
+                )
+                .await;
+
+            (
+                if status.is_success() {
+                    StatusCode::OK
+                } else {
+                    status
+                },
+                Json(response_body),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn handle_responses_inner(

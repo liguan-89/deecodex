@@ -54,6 +54,14 @@ pub struct Account {
     /// 上游请求失败时的最大重试次数，None 使用默认值 3
     #[serde(default)]
     pub max_retries: Option<u32>,
+    /// 是否启用请求翻译（Responses → Chat Completions）。
+    /// 关闭时请求直接透传至上游 Responses API 端点。
+    #[serde(default = "default_translate_enabled")]
+    pub translate_enabled: bool,
+}
+
+fn default_translate_enabled() -> bool {
+    true
 }
 
 impl Account {
