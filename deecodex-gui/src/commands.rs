@@ -2006,3 +2006,35 @@ pub async fn query_plugin_status(
     .await
     .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn start_plugin_account(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager).await?;
+    pm.send_request(
+        &plugin_id,
+        "weixin.start",
+        Some(json!({ "account_id": account_id })),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn stop_plugin_account(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager).await?;
+    pm.send_request(
+        &plugin_id,
+        "weixin.stop",
+        Some(json!({ "account_id": account_id })),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}

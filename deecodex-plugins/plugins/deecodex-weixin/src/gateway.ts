@@ -105,8 +105,8 @@ async function pollLoop(state: GatewayState): Promise<void> {
     try {
       const resp = await getUpdates(state.token, state.getUpdatesBuf || undefined);
 
-      if (resp.ret !== 0 || resp.errcode) {
-        const errcode = resp.errcode || resp.ret;
+      if (resp.errcode) {
+        const errcode = resp.errcode;
         if (errcode === SESSION_EXPIRED_ERRCODE) {
           sendNotification("status", {
             account_id: state.accountId,

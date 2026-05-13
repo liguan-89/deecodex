@@ -53,19 +53,34 @@ function filterMarkdown(text) {
 }
 // ── 文本分块发送 ──
 const TEXT_CHUNK_LIMIT = 4000;
-async function sendTextReply(token, chatId, text) {
+async function sendTextReply(token, chatId, text, contextToken, botId) {
     const filtered = filterMarkdown(text);
+    sendNotification("log", {
+        level: "debug",
+        message: `[sendTextReply] chatId=${chatId} text_len=${filtered.length} ctx_token=${(contextToken || "").slice(0, 20)}...`,
+    });
+    const reqBody = { chat_id: chatId, msg_type: 1, content: filtered };
+    if (contextToken) reqBody.context_token = contextToken;
+    if (botId) reqBody.bot_id = botId;
     if (filtered.length <= TEXT_CHUNK_LIMIT) {
-        await sendMessage(token, { chat_id: chatId, msg_type: "text", content: filtered });
+        const result = await sendMessage(token, reqBody);
+        sendNotification("log", {
+            level: "debug",
+            message: `[sendMessage] 响应: ${JSON.stringify(result).slice(0, 200)}`,
+        });
     }
     else {
-        // 分块发送
         const chunks = [];
         for (let i = 0; i < filtered.length; i += TEXT_CHUNK_LIMIT) {
             chunks.push(filtered.slice(i, i + TEXT_CHUNK_LIMIT));
         }
         for (const chunk of chunks) {
-            await sendMessage(token, { chat_id: chatId, msg_type: "text", content: chunk });
+            const chunkBody = { ...reqBody, content: chunk };
+            const result = await sendMessage(token, chunkBody);
+            sendNotification("log", {
+                level: "debug",
+                message: `[sendMessage] 分块响应: ${JSON.stringify(result).slice(0, 200)}`,
+            });
         }
     }
 }
@@ -137,12 +152,13 @@ export async function processMessage(accountId, ctx, contextTokens) {
             account_id: accountId,
             messages: llmMessages,
             model: "auto",
+            system_prompt: "你是运行在 deecodex 智能网关上的 AI Agent。你可以调用各种工具帮助用户解决问题，包括但不限于：信息检索、代码编写、文件处理、联网搜索、知识问答等。请用简体中文与用户交流，回复专业、准确、有帮助。你可以自由使用工具来完成任务，主动为用户提供最佳解决方案。",
         });
         const responseObj = result;
         const responseText = responseObj?.content || "";
         if (responseText) {
             // 7. 发送回复
-            await sendTextReply(token, ctx.chat_id, responseText);
+            await sendTextReply(token, ctx.chat_id, responseText, ctx.context_token, ctx.bot_id);
             // 8. 更新上下文
             const assistantMsg = {
                 role: "assistant",
@@ -158,7 +174,7 @@ export async function processMessage(accountId, ctx, contextTokens) {
             message: `LLM 调用失败: ${String(err)}`,
         });
         // LLM 失败时发送错误提示
-        sendTextReply(token, ctx.chat_id, "抱歉，处理您的消息时出错了，请稍后再试。").catch(() => { });
+        sendTextReply(token, ctx.chat_id, "抱歉，处理您的消息时出错了，请稍后再试。", ctx.context_token, ctx.bot_id).catch(() => { });
     }
     // 9. 保存上下文
     saveContext(ctx.chat_id, messages.slice(-maxMessages));

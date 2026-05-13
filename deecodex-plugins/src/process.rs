@@ -328,6 +328,7 @@ async fn handle_request_from_plugin(
             let messages = params
                 .and_then(|p| p.get("messages").cloned())
                 .unwrap_or(Value::Null);
+            let msg_count = messages.as_array().map(|a| a.len()).unwrap_or(0);
             let model = match params.and_then(|p| p.get("model").and_then(|v| v.as_str())) {
                 Some(m) if !m.is_empty() && m != "auto" => m.to_string(),
                 _ => resolve_default_model(llm_base_url).await,
@@ -335,6 +336,15 @@ async fn handle_request_from_plugin(
             let system_prompt = params
                 .and_then(|p| p.get("system_prompt").and_then(|v| v.as_str()))
                 .map(|s| s.to_string());
+
+            tracing::info!(
+                plugin_id = %plugin_id,
+                request_id = %req.id,
+                model = %model,
+                msg_count = %msg_count,
+                llm_base_url = %llm_base_url,
+                "[llm.call] 收到 LLM 请求"
+            );
 
             let result = proxy_llm_call(
                 &messages,
@@ -345,6 +355,21 @@ async fn handle_request_from_plugin(
                 req.id,
             )
             .await;
+
+            match &result {
+                Ok(content) => tracing::info!(
+                    plugin_id = %plugin_id,
+                    request_id = %req.id,
+                    content_len = %content.len(),
+                    "[llm.call] LLM 调用成功"
+                ),
+                Err(err) => tracing::error!(
+                    plugin_id = %plugin_id,
+                    request_id = %req.id,
+                    error = %err,
+                    "[llm.call] LLM 调用失败"
+                ),
+            }
 
             let response = match result {
                 Ok(content) => JsonRpcResponse {
@@ -405,12 +430,15 @@ async fn proxy_llm_call(
     let mut payload = serde_json::json!({
         "model": model,
         "input": messages,
+        "stream": true,
     });
     if let Some(sp) = system_prompt {
         payload["instructions"] = serde_json::Value::String(sp.to_string());
     }
 
     let url = format!("{}/v1/responses", llm_base_url);
+    tracing::info!(%url, model = %model, msg_count = %messages.as_array().map(|a| a.len()).unwrap_or(0), "[proxy_llm_call] 发起 HTTP 请求");
+
     let client = reqwest::Client::new();
     let response = client
         .post(&url)
@@ -421,8 +449,10 @@ async fn proxy_llm_call(
         .with_context(|| format!("LLM 请求失败: {url}"))?;
 
     let status = response.status();
+    tracing::info!(%status, %url, "[proxy_llm_call] 收到响应");
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        tracing::error!(%status, %body, "[proxy_llm_call] deecodex 返回错误");
         anyhow::bail!("deecodex 返回错误 {status}: {body}");
     }
 

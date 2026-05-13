@@ -89,9 +89,11 @@ export interface WeixinMsgContext {
 
 export interface SendMessageReq {
   chat_id: string;
-  msg_type: string;
+  msg_type: string | number;
   content?: string;
   media?: WeixinMedia;
+  context_token?: string;
+  bot_id?: string;
 }
 
 export interface QrCodeResponse {

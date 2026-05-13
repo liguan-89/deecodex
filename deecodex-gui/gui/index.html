@@ -13,7 +13,9 @@
   --bg-root: #060b14;
   --bg-surface: #0b1120;
   --bg-elevated: #0f1729;
+  --bg-card: #0d1524;
   --bg-input: #0a1020;
+  --border: #1a2a45;
   --border-subtle: #131d33;
   --border-default: #1a2a45;
   --border-active: #00c8e8;
@@ -23,6 +25,7 @@
   --text-secondary: #6b7fa8;
   --text-muted: #3a4f72;
   --text-heading: #8ea4c8;
+  --fg: #c4d0e4;
 
   --accent: #00c8e8;
   --accent-dim: rgba(0, 200, 232, 0.10);
@@ -1131,8 +1134,9 @@ body {
   display: flex; align-items: center; gap: 12px;
   padding: 2px 0; font-size: 11px;
 }
-.pc-account-name { color: var(--text-secondary); }
-.pc-account-status { display: flex; align-items: center; gap: 4px; }
+.pc-account-name { color: var(--text-secondary); min-width: 80px; }
+.pc-account-status { display: flex; align-items: center; gap: 4px; min-width: 70px; }
+.pc-account-actions { display: flex; gap: 4px; margin-left: auto; }
 
 .plugin-status-dot {
   display: inline-block; width: 6px; height: 6px;
@@ -1165,6 +1169,35 @@ body {
 }
 .pc-actions input:focus { border-color: var(--accent); }
 .pc-actions input::placeholder { color: var(--text-muted); }
+
+
+/* ── QR 弹窗 ── */
+.qr-overlay {
+  display: none; position: fixed; z-index: 9999;
+  left: 0; top: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.7);
+  justify-content: center; align-items: center;
+}
+.qr-overlay.show { display: flex; }
+.qr-dialog {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 24px;
+  text-align: center; max-width: 360px; width: 90%;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.qr-dialog img {
+  max-width: 240px; background: white; padding: 12px;
+  border-radius: 8px; display: block; margin: 0 auto;
+}
+.qr-dialog .qr-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
+.qr-dialog .qr-hint { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+.qr-dialog .qr-account { font-size: 11px; color: var(--accent); margin-top: 4px; }
+.qr-dialog .qr-close {
+  margin-top: 14px; padding: 6px 24px;
+  background: var(--accent-dim); border: 1px solid rgba(0,200,232,0.3);
+  color: var(--accent); border-radius: var(--radius-sm);
+  cursor: pointer; font-family: var(--font-mono); font-size: 11px;
+}
 
 </style>
 </head>
@@ -2172,6 +2205,10 @@ function computerLabel(v) {
 		let _historyDisplayLimit = 50;
 		const _historyDisplayStep = 50;
 		let _historyMonthlyStats = [];
+let _pluginsData = [];
+let _pluginsRefreshTimer = null;
+let _pluginsRefreshMs = 0;
+let _pluginsAutoRefresh = true;
 
 		function renderHistory() {
 		  return `<div class="page-header">
@@ -3463,6 +3500,23 @@ function renderBalanceInfo(info) {
 // ═══════════════════════════════════════════════════════════════
 // 键盘快捷键
 
+// 插件状态常量
+var PLUGIN_STATE_LABEL = {
+  installed: '已安装', starting: '启动中', running: '运行中',
+  stopped: '已停止', error: '异常'
+};
+var ACCOUNT_STATUS_LABEL = {
+  disconnected: '未连接', connecting: '连接中', connected: '已连接',
+  login_expired: '登录过期', error: '异常'
+};
+var ACCOUNT_STATUS_COLOR = {
+  disconnected: 'var(--text-muted)',
+  connecting: 'var(--amber)',
+  connected: 'var(--green)',
+  login_expired: 'var(--red)',
+  error: 'var(--red)'
+};
+
 function renderPluginsPanel() {
   return `<div class="page-header">
     <h2>插件管理</h2>
@@ -3513,9 +3567,17 @@ function renderPluginCard(p) {
     accountsHtml = '<div class="pc-accounts">' +
       accounts.map(a => {
         const sc = ACCOUNT_STATUS_COLOR[a.status] || 'var(--text-muted)';
+        const isConnected = a.status === 'connected';
         return `<div class="pc-account-row">
           <span class="pc-account-name"><span style="color:var(--text-muted)">Bot</span> ${esc(a.name || a.account_id)}</span>
           <span class="pc-account-status" style="color:${sc}"><span class="plugin-status-dot" style="background:${sc}"></span>${ACCOUNT_STATUS_LABEL[a.status] || a.status}</span>
+          <span class="pc-account-actions">
+            ${isConnected
+              ? `<button class="btn-apply" onclick="event.stopPropagation();stopPluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--red-dim);color:var(--red);border-color:var(--red);">停止网关</button>`
+              : `<button class="btn-apply" onclick="event.stopPropagation();scanAndStart('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;">启动网关</button>`}
+            <button class="btn-apply" onclick="event.stopPropagation();scanPluginQr('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--accent-dim);color:var(--accent);border-color:var(--accent);">扫码登录</button>
+            <button class="btn-apply" onclick="event.stopPropagation();deletePluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="font-size:10px;padding:2px 8px;background:var(--red-dim);color:var(--red);border-color:var(--red);">删除</button>
+          </span>
         </div>`;
       }).join('') + '</div>';
   }
@@ -3530,15 +3592,14 @@ function renderPluginCard(p) {
     ${perms ? `<div class="pc-perms">权限：${esc(perms)}</div>` : ''}
     ${accountsHtml}
     <div class="pc-actions">
-      <input id="addAccountId_${escAttr(p.id)}" placeholder="Account ID">
+      <input id="addAccountId_${escAttr(p.id)}" placeholder="新 Account ID">
       <button class="btn-apply" onclick="addPluginAccount('${escAttr(p.id)}')">+ 添加账号</button>
       ${running ? `
-        <button class="btn-apply" onclick="scanPluginQr('${escAttr(p.id)}')" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent);">扫码登录</button>
-        <button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止</button>
+        <button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止插件</button>
       ` : `
-        <button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动</button>
+        <button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动插件</button>
       `}
-      <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载</button>
+      <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载插件</button>
     </div>
     <div id="qrContainer_${escAttr(p.id)}" class="pc-qr"></div>
   </div>`;
@@ -3591,6 +3652,90 @@ async function uninstallPlugin(id) {
   } catch(e) { showToast('卸载失败: ' + esc(String(e)), 'error'); }
 }
 
+async function startPluginAccount(pluginId, accountId) {
+  try {
+    await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
+    showToast('网关启动指令已发送', 'success');
+    await loadPluginsData();
+  } catch(e) { showToast('启动网关失败: ' + esc(String(e)), 'error'); }
+}
+
+async function stopPluginAccount(pluginId, accountId) {
+  try {
+    await invoke('stop_plugin_account', { pluginId: pluginId, accountId: accountId });
+    showToast('网关已停止', 'success');
+    await loadPluginsData();
+  } catch(e) { showToast('停止网关失败: ' + esc(String(e)), 'error'); }
+}
+
+async function scanAndStart(pluginId, accountId) {
+  // 先尝试直接启动网关
+  try {
+    const r = await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
+    showToast('网关已启动', 'success');
+    await loadPluginsData();
+    return;
+  } catch(e) {
+    // 如果未登录，自动触发扫码流程
+    if (String(e).includes('bot_token') || String(e).includes('扫码') || String(e).includes('登录')) {
+      showToast('需要先登录，正在获取二维码...');
+    } else {
+      showToast('启动失败: ' + esc(String(e)), 'error');
+      return;
+    }
+  }
+  // 扫码登录
+  var oc = document.getElementById('qrOverlayContent');
+  var oa = document.getElementById('qrOverlayAccount');
+  oc.innerHTML = '<span style="color:var(--text-muted);">获取二维码中...</span>';
+  oa.textContent = '账号：' + accountId + '（扫码后自动启动网关）';
+  showQrOverlay();
+  try {
+    var result2 = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
+    var url2 = result2.qrcode_data_url || result2.data_url || '';
+    if (url2) {
+      oc.innerHTML = `<img src="${esc(url2)}" alt="QR"><p class="qr-hint" style="color:var(--amber);">请使用微信扫码，扫码后网关将自动启动</p>`;
+      // 轮询状态，连接成功后自动启动网关
+      var pollCount = 0;
+      var pollTimer = setInterval(async () => {
+        pollCount++;
+        try {
+          var status = await invoke('query_plugin_status', { pluginId: pluginId, accountId: accountId });
+          if (status && status.status === 'connected') {
+            clearInterval(pollTimer);
+            oc.innerHTML = '<span style="color:var(--green);">登录成功，正在启动网关...</span>';
+            try {
+              await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
+              showToast('网关已启动', 'success');
+              closeQrOverlay();
+            } catch(e2) {
+              oc.innerHTML = '<span style="color:var(--red);">网关启动失败: ' + esc(String(e2)) + '</span>';
+            }
+            await loadPluginsData();
+          }
+        } catch(ee) {}
+        if (pollCount > 60) { clearInterval(pollTimer); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
+      }, 2000);
+    } else {
+      oc.innerHTML = '<span style="color:var(--red);">' + esc(JSON.stringify(result2)) + '</span>';
+    }
+  } catch(e2) {
+    oc.innerHTML = '<span style="color:var(--red);">获取二维码失败: ' + esc(String(e2)) + '</span>';
+  }
+}
+
+async function deletePluginAccount(pluginId, accountId) {
+  showToast('正在删除账号 ' + esc(accountId) + '...');
+  try {
+    var p = _pluginsData.find(p => p.id === pluginId);
+    var accounts = (p && p.config && p.config.accounts) || {};
+    delete accounts[accountId];
+    await invoke('update_plugin_config', { pluginId: pluginId, config: { accounts: accounts } });
+    showToast('账号已删除', 'success');
+    await loadPluginsData();
+  } catch(e) { showToast('删除失败: ' + esc(String(e)), 'error'); }
+}
+
 async function addPluginAccount(pluginId) {
   const input = document.getElementById('addAccountId_' + pluginId);
   const accountId = (input && input.value || '').trim();
@@ -3606,21 +3751,25 @@ async function addPluginAccount(pluginId) {
   } catch(e) { showToast('添加失败: ' + esc(String(e)), 'error'); }
 }
 
-async function scanPluginQr(pluginId) {
-  const container = document.getElementById('qrContainer_' + pluginId);
-  const input = document.getElementById('addAccountId_' + pluginId);
-  const accountId = (input && input.value || '').trim();
-  if (!accountId) { showToast('请先在左侧输入 Account ID'); return; }
-  container.innerHTML = '<span style="color:var(--text-muted);font-size:11px;">获取二维码中...</span>';
+function showQrOverlay() { document.getElementById('qrOverlay').classList.add('show'); }
+function closeQrOverlay() { document.getElementById('qrOverlay').classList.remove('show'); }
+
+async function scanPluginQr(pluginId, accountId) {
+  if (!accountId) { showToast('请先添加账号'); return; }
+  var oc = document.getElementById('qrOverlayContent');
+  var oa = document.getElementById('qrOverlayAccount');
+  oc.innerHTML = '<span style="color:var(--text-muted);">获取二维码中...</span>';
+  oa.textContent = '账号：' + accountId;
+  showQrOverlay();
   try {
-    const result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
-    const url = result.qrcode_data_url || result.data_url || '';
+    var result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
+    var url = result.qrcode_data_url || result.data_url || '';
     if (url) {
-      container.innerHTML = `<img src="${esc(url)}" alt="QR"><br><span style="color:var(--text-muted);font-size:10px;">${esc(result.message || '请使用微信扫码')}</span>`;
+      oc.innerHTML = `<img src="${esc(url)}" alt="QR"><p class="qr-hint">${esc(result.message || '请使用微信扫码')}</p>`;
     } else {
-      container.innerHTML = `<span style="color:var(--text-muted);font-size:11px;">${esc(JSON.stringify(result))}</span>`;
+      oc.innerHTML = '<span style="color:var(--red);">' + esc(JSON.stringify(result)) + '</span>';
     }
-  } catch(e) { container.innerHTML = '<span style="color:var(--red);font-size:11px;">获取失败: ' + esc(String(e)) + '</span>'; }
+  } catch(e) { oc.innerHTML = '<span style="color:var(--red);">获取失败: ' + esc(String(e)) + '</span>'; }
 }
 
 function togglePluginAutoRefresh() {
@@ -3655,6 +3804,16 @@ async function refreshPlugins() {
 // ═══════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', init);
 </script>
+
+
+<div id="qrOverlay" class="qr-overlay" onclick="if(event.target===this)closeQrOverlay()">
+  <div class="qr-dialog">
+    <div class="qr-title">微信扫码登录</div>
+    <div id="qrOverlayContent"></div>
+    <div class="qr-account" id="qrOverlayAccount"></div>
+    <button class="qr-close" onclick="closeQrOverlay()">关闭</button>
+  </div>
+</div>
 
 </body>
 </html>

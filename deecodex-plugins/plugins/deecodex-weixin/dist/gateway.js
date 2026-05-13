@@ -77,8 +77,8 @@ async function pollLoop(state) {
     while (state.running) {
         try {
             const resp = await getUpdates(state.token, state.getUpdatesBuf || undefined);
-            if (resp.ret !== 0 || resp.errcode) {
-                const errcode = resp.errcode || resp.ret;
+            if (resp.errcode) {
+                const errcode = resp.errcode;
                 if (errcode === SESSION_EXPIRED_ERRCODE) {
                     sendNotification("status", {
                         account_id: state.accountId,
@@ -116,6 +116,11 @@ async function pollLoop(state) {
                     level: "info",
                     message: `收到 ${msgCount} 条新消息`,
                 });
+                // 调试：打印第一条消息的完整结构
+                sendNotification("log", {
+                    level: "debug",
+                    message: `[MSG_RAW] ${JSON.stringify(resp.msgs[0])}`,
+                });
                 for (const msg of resp.msgs) {
                     await handleIncomingMessage(state, msg);
                 }
@@ -145,9 +150,12 @@ async function handleIncomingMessage(state, msg) {
         msg_id: String(msg.message_id),
         chat_id: chatId,
         sender_id: msg.from_user_id,
+        bot_id: msg.to_user_id || "",
         text,
         timestamp: msg.create_time_ms,
         is_group: !!msg.group_id,
+        context_token: msg.context_token || "",
+        session_id: msg.session_id || "",
     };
     // 媒体消息：下载并转码
     const mediaItem = msg.item_list?.find(it => it.type !== 1 && it.media_item);

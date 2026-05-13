@@ -21,6 +21,7 @@ function buildBaseInfo() {
   return {
     channel_version: "1.0.0",
     bot_agent: cfg.bot_agent || "deecodex",
+    bot_type: cfg.bot_type || "3",
   };
 }
 
@@ -102,12 +103,21 @@ export async function getUpdates(token: string, buf?: string): Promise<{
 }
 
 export async function sendMessage(token: string, req: SendMessageReq): Promise<{ ret: number; msg_id?: string }> {
-  return apiPost("ilink/bot/sendmessage", {
-    chat_id: req.chat_id,
-    msg_type: req.msg_type,
-    ...(req.content ? { content: req.content } : {}),
+  // 使用 apiPost 附加 base_info（含 bot_type），让平台根据 bot 类型授权
+  const body: Record<string, unknown> = {
+    to_user_id: req.chat_id,
+    from_user_id: req.bot_id || "",
+    message_type: req.msg_type,
+    ...(req.content ? { item_list: [{ type: 1, text_item: { text: req.content }, is_completed: true }] } : {}),
     ...(req.media ? { media: req.media } : {}),
-  }, token, 15_000);
+    ...(req.context_token ? { context_token: req.context_token } : {}),
+  };
+
+  const result = await apiPost("ilink/bot/sendmessage", body, token, 15_000);
+  if (result.ret !== undefined && result.ret !== 0) {
+    throw new Error(`iLink sendmessage 返回 ret=${result.ret}${result.errcode ? " errcode=" + result.errcode : ""}`);
+  }
+  return result as { ret: number; msg_id?: string };
 }
 
 export async function sendTyping(token: string, chatId: string): Promise<void> {

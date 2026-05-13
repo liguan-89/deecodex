@@ -274,6 +274,41 @@ pub fn run() {
                 ));
                 tracing::info!("插件管理器已初始化");
 
+                // 自动安装内置微信插件
+                let mut weixin_paths: Vec<std::path::PathBuf> = vec![
+                    // 开发环境 — 项目树内
+                    std::path::PathBuf::from("../deecodex-plugins/plugins/deecodex-weixin"),
+                    std::path::PathBuf::from("deecodex-plugins/plugins/deecodex-weixin"),
+                    // macOS 开发机绝对路径
+                    std::path::PathBuf::from(
+                        "/Users/liguan/projects/deecodex-gui-worktree/deecodex-plugins/plugins/deecodex-weixin",
+                    ),
+                ];
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(dir) = exe.parent() {
+                        weixin_paths.push(dir.join("deecodex-weixin"));
+                        weixin_paths.push(dir.join("../Resources/deecodex-weixin"));
+                    }
+                }
+                let weixin_id = "deecodex-weixin";
+                let already_installed = pm.list().await.iter().any(|p| p.id == weixin_id);
+                if !already_installed {
+                    for p in &weixin_paths {
+                        if p.join("plugin.json").exists() {
+                            tracing::info!(path = %p.display(), "发现内置微信插件，自动安装");
+                            match pm.install(p).await {
+                                Ok(manifest) => {
+                                    tracing::info!(id = %manifest.id, version = %manifest.version, "内置微信插件安装成功");
+                                    break;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(path = %p.display(), error = %e, "内置微信插件安装失败");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 自启动已安装的插件
                 let plugins = pm.list().await;
                 for p in &plugins {
@@ -343,6 +378,8 @@ pub fn run() {
             commands::get_plugin_qrcode,
             commands::plugin_login_cancel,
             commands::query_plugin_status,
+            commands::start_plugin_account,
+            commands::stop_plugin_account,
         ])
         .run(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败");

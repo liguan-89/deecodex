@@ -131,6 +131,8 @@ export async function startLogin(accountId) {
         });
         // 开始轮询
         startPolling(accountId, baseUrl, botType);
+        // 返回 QR 数据 URL 给 RPC 调用方
+        return { qrcode_data_url: qrResult.qrcode_data_url, qrcode_id: qrResult.qrcode_id, message: "请使用微信扫码" };
     }
     catch (err) {
         sendNotification("status", {
@@ -138,6 +140,7 @@ export async function startLogin(accountId) {
             status: "error",
             detail: String(err),
         });
+        throw err;
     }
 }
 async function startPolling(accountId, baseUrl, botType) {

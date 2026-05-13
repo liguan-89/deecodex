@@ -1,4 +1,4 @@
-import { getConfig } from "./rpc-client.js";
+import { getConfig, sendNotification } from "./rpc-client.js";
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 const DEFAULT_TIMEOUT_MS = 35_000;
 function buildHeaders(token) {
@@ -16,6 +16,7 @@ function buildBaseInfo() {
     return {
         channel_version: "1.0.0",
         bot_agent: cfg.bot_agent || "deecodex",
+        bot_type: cfg.bot_type || "3",
     };
 }
 async function apiPost(path, body, token, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -70,13 +71,39 @@ export async function getUpdates(token, buf) {
         ...(buf ? { get_updates_buf: buf } : {}),
     }, token);
 }
+function generateClientId() {
+    const ts = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 10);
+    return `${ts}-${rand}-weixin`;
+}
+
 export async function sendMessage(token, req) {
-    return apiPost("ilink/bot/sendmessage", {
-        chat_id: req.chat_id,
-        msg_type: req.msg_type,
-        ...(req.content ? { content: req.content } : {}),
+    // 参考 BytePioneer-AI/weixin-agent-gateway：消息体嵌套在 msg 字段中，
+    // message_type=2 (BOT), message_state=2 (FINISH), from_user_id 留空
+    const msg = {
+        from_user_id: "",
+        to_user_id: req.chat_id || "",
+        client_id: generateClientId(),
+        message_type: 2,  // BOT
+        message_state: 2, // FINISH
+        ...(req.content ? { item_list: [{ type: 1, text_item: { text: req.content } }] } : {}),
         ...(req.media ? { media: req.media } : {}),
-    }, token, 15_000);
+        ...(req.context_token ? { context_token: req.context_token } : {}),
+    };
+    const body = { msg };
+    sendNotification("log", {
+        level: "debug",
+        message: `[iLink sendmessage] body=${JSON.stringify(body).slice(0, 400)}`,
+    });
+    const result = await apiPost("ilink/bot/sendmessage", body, token, 15_000);
+    sendNotification("log", {
+        level: "debug",
+        message: `[iLink sendmessage] resp=${JSON.stringify(result).slice(0, 300)}`,
+    });
+    if (result.ret !== undefined && result.ret !== 0) {
+        throw new Error(`iLink sendmessage 返回 ret=${result.ret}${result.errcode ? " errcode=" + result.errcode : ""}`);
+    }
+    return result;
 }
 export async function sendTyping(token, chatId) {
     await apiPost("ilink/bot/sendtyping", { chat_id: chatId }, token, 10_000).catch(() => { });
@@ -108,10 +135,23 @@ export async function uploadToCdn(url, buffer, mimeType) {
 }
 // ── 鉴权 ──
 export async function notifyStart(token) {
-    await apiPost("ilink/bot/msg/notifystart", {}, token, 10_000).catch(() => { });
+    try {
+        const result = await apiPost("ilink/bot/msg/notifystart", {}, token, 10_000);
+        sendNotification("log", { level: "debug", message: `[notifyStart] 响应: ${JSON.stringify(result)}` });
+        return result;
+    } catch (err) {
+        sendNotification("log", { level: "error", message: `[notifyStart] 失败: ${String(err)}` });
+        throw err;
+    }
 }
 export async function notifyStop(token) {
-    await apiPost("ilink/bot/msg/notifystop", {}, token, 10_000).catch(() => { });
+    try {
+        const result = await apiPost("ilink/bot/msg/notifystop", {}, token, 10_000);
+        sendNotification("log", { level: "debug", message: `[notifyStop] 响应: ${JSON.stringify(result)}` });
+        return result;
+    } catch (err) {
+        sendNotification("log", { level: "error", message: `[notifyStop] 失败: ${String(err)}` });
+    }
 }
 // ── 配置 ──
 export async function getConfig_ilink(token) {
