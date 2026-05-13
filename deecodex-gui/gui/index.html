@@ -1336,21 +1336,25 @@ body {
     </div>
 
     <nav class="sidebar-nav">
-      <span class="nav-section-label">导航</span>
+      <span class="nav-section-label">核心翻译</span>
+
+      <button class="nav-item" data-panel="config" onclick="switchPanel('config')">
+        <span class="icon">⚙</span> 协议配置
+      </button>
+
+      <span class="nav-section-label">桌面端</span>
 
       <button class="nav-item active" data-panel="status" onclick="switchPanel('status')">
         <span class="icon">◉</span> 服务概览
       </button>
 
-      <button class="nav-item" data-panel="config" onclick="switchPanel('config')">
-        <span class="icon">⚙</span> 配置
-      </button>
+      <span class="nav-section-label">本地能力</span>
 
       <button class="nav-item" data-panel="diagnostics" onclick="switchPanel('diagnostics')">
-        <span class="icon">◇</span> 诊断
+        <span class="icon">◇</span> 执行诊断
       </button>
 
-      <span class="nav-section-label">账号</span>
+      <span class="nav-section-label">集成与会话</span>
 
       <button class="nav-item" data-panel="accounts" onclick="switchPanel('accounts')">
         <span class="icon">▣</span> 账号管理
@@ -1364,7 +1368,7 @@ body {
         <span class="icon">⟐</span> 线程聚合
       </button>
 
-      <span class="nav-section-label">插件</span>
+      <span class="nav-section-label">插件系统</span>
 
       <button class="nav-item" data-panel="plugins" onclick="switchPanel('plugins')">
         <span class="icon">⬡</span> 插件管理
