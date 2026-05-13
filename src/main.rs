@@ -703,11 +703,13 @@ async fn main() -> Result<()> {
     }
 
     // 尝试 CDP 注入（插件解锁 + 会话删除 UI），异步执行，不阻塞服务启动
-    let inject_state = state.clone();
-    let cdp_port = args.cdp_port;
-    tokio::spawn(async move {
-        inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
-    });
+    if args.codex_launch_with_cdp {
+        let inject_state = state.clone();
+        let cdp_port = args.cdp_port;
+        tokio::spawn(async move {
+            inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
+        });
+    }
 
     #[cfg(unix)]
     async fn shutdown_signal() {
