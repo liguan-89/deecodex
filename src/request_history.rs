@@ -69,6 +69,13 @@ impl RequestHistoryStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![id, created_at, model, status, input_tokens, output_tokens, total, duration_ms, upstream_url, error_msg],
         );
+        // 保留最近 500 条，自动清理旧记录
+        let _ = db.execute(
+            "DELETE FROM request_history WHERE id NOT IN (
+                SELECT id FROM request_history ORDER BY created_at DESC LIMIT 500
+            )",
+            [],
+        );
     }
 
     #[allow(dead_code)]

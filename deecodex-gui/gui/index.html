@@ -701,17 +701,55 @@ body {
   font-size: 11px; text-align: center; padding: 20px;
 }
 
-/* ── Request History Table ── */
-.history-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 11px; }
-.history-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 500; white-space: nowrap; }
-.history-table td { padding: 6px 12px; border-bottom: 1px solid var(--border-dim); }
-.history-table tr:hover td { background: var(--hover); }
-.ht-time { white-space: nowrap; color: var(--text-muted); }
-.ht-model { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ht-tokens { text-align: right; font-variant-numeric: tabular-nums; }
-.ht-dur { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
-.ht-url { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted); }
+/* ── Request History ── */
 .history-loading { text-align: center; padding: 30px; color: var(--text-muted); }
+
+/* Stats bar */
+.history-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.history-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; text-align: center; }
+.history-stat .stat-value { font-family: var(--font-mono); font-size: 20px; font-weight: 600; color: var(--fg); }
+.history-stat .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.history-stat.accent .stat-value { color: var(--accent); }
+.history-stat.green .stat-value { color: var(--green); }
+.history-stat.red .stat-value { color: var(--red); }
+
+/* Chart */
+.history-chart { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 16px; }
+.history-chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.history-chart-header h4 { margin: 0; font-size: 13px; font-weight: 500; }
+.chart-tabs { display: flex; gap: 2px; background: var(--bg-root); border-radius: var(--radius-sm); padding: 2px; }
+.chart-tab { padding: 3px 10px; font-size: 11px; border: none; background: transparent; color: var(--text-muted); border-radius: 3px; cursor: pointer; }
+.chart-tab.active { background: var(--accent); color: #000; font-weight: 600; }
+.history-chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 90px; padding: 0 4px; }
+.history-chart-col { display: flex; flex-direction: column; align-items: center; flex: 1; max-width: 36px; min-width: 20px; height: 100%; justify-content: flex-end; }
+.history-chart-val { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; }
+.history-chart-bar-wrap { width: 100%; max-width: 10px; flex: 1; min-height: 2px; background: var(--bg-root); border-radius: 2px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.history-chart-bar { width: 100%; border-radius: 2px; background: var(--accent); min-height: 2px; transition: height 0.3s; }
+.history-chart-label { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-top: 4px; white-space: nowrap; }
+
+/* Controls */
+.history-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.history-select { font-size: 11px; padding: 3px 6px; background: var(--bg-card); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.history-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.history-toggle .toggle-dot { width: 28px; height: 16px; border-radius: 8px; background: var(--border); transition: background 0.2s; position: relative; }
+.history-toggle .toggle-dot::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform 0.2s; }
+.history-toggle.on .toggle-dot { background: var(--accent); }
+.history-toggle.on .toggle-dot::after { transform: translateX(12px); }
+
+/* Cards */
+.history-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 6px; }
+.history-card.failed { border-left: 3px solid var(--red); }
+.history-card .hc-row { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.history-card .hc-time { font-family: var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.history-card .hc-model { flex: 1; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-dur { font-family: var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.history-card .hc-tokens { display: flex; gap: 8px; margin-top: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.history-card .hc-token-bar { flex: 1; height: 4px; background: var(--bg-root); border-radius: 2px; overflow: hidden; margin-top: 4px; display: flex; }
+.history-card .hc-token-in { height: 100%; background: var(--accent); }
+.history-card .hc-token-out { height: 100%; background: var(--green); }
+.history-card .hc-url { font-size: 10px; color: var(--text-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-error { font-size: 11px; color: var(--red); margin-top: 4px; cursor: pointer; }
+.hidden { display: none; }
 
 /* ── Accounts Panel ── */
 .accounts-toolbar {
@@ -2043,25 +2081,214 @@ function computerLabel(v) {
 		// 请求历史
 		// ═══════════════════════════════════════════════════════════════
 
+		// ── 请求历史 ──
+
+		let _historyEntries = [];
+		let _historyRefreshTimer = null;
+		let _historyRefreshMs = 0;
+		let _historyChartPeriod = 'hourly';
+		let _historyStatusFilter = 'all';
+
 		function renderHistory() {
 		  return `<div class="page-header">
 		    <h2>请求历史</h2>
 		    <p>持久化的 API 请求记录（模型、Token 用量、耗时）</p>
 		  </div>
-		  <div class="session-toolbar">
+		  <div id="historyStats" class="history-stats">
+		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">总请求数</div></div>
+		    <div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div>
+		    <div class="history-stat accent"><div class="stat-value">—</div><div class="stat-label">Token 消耗</div></div>
+		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div>
+		  </div>
+		  <div class="history-chart">
+		    <div class="history-chart-header">
+		      <h4>Token 用量趋势</h4>
+		      <div class="chart-tabs">
+		        <button class="chart-tab active" onclick="setChartPeriod('hourly')">1h</button>
+		        <button class="chart-tab" onclick="setChartPeriod('daily')">1d</button>
+		        <button class="chart-tab" onclick="setChartPeriod('monthly')">1m</button>
+		      </div>
+		    </div>
+		    <div id="historyChartBars" class="history-chart-bars"></div>
+		  </div>
+		  <div class="history-controls">
+		    <select class="history-select" onchange="setStatusFilter(this.value)">
+		      <option value="all">全部状态</option>
+		      <option value="completed">仅成功</option>
+		      <option value="failed">仅失败</option>
+		    </select>
+		    <label class="history-toggle" id="historyAutoToggle" onclick="toggleAutoRefresh()">
+		      <div class="toggle-dot"></div> 自动刷新
+		    </label>
+		    <select class="history-select" id="historyIntervalSel" onchange="setRefreshInterval(this.value)" style="display:none;">
+		      <option value="5000">5s</option>
+		      <option value="10000" selected>10s</option>
+		      <option value="30000">30s</option>
+		      <option value="60000">60s</option>
+		    </select>
+		    <span style="flex:1"></span>
 		    <button class="btn btn-primary" onclick="refreshHistory()">⟳ 刷新</button>
 		    <button class="btn btn-ghost" onclick="clearHistory()">✕ 清空历史</button>
 		  </div>
-		  <div id="historyTableContainer">
+		  <div id="historyCardsContainer">
 		    <div class="history-loading">加载中...</div>
 		  </div>`;
+		}
+
+		function computeStats(entries) {
+		  const total = entries.length;
+		  const completed = entries.filter(e => e.status === 'completed').length;
+		  const totalTokens = entries.reduce((s, e) => s + (e.total_tokens || 0), 0);
+		  const totalMs = entries.reduce((s, e) => s + (e.duration_ms || 0), 0);
+		  return {
+		    total,
+		    successRate: total > 0 ? Math.round(completed / total * 100) : 0,
+		    totalTokens,
+		    avgMs: total > 0 ? Math.round(totalMs / total) : 0
+		  };
+		}
+
+		function updateStats(stats) {
+		  document.querySelector('#historyStats .history-stat:nth-child(1) .stat-value').textContent = stats.total;
+		  document.querySelector('#historyStats .history-stat:nth-child(2) .stat-value').textContent = stats.successRate + '%';
+		  document.querySelector('#historyStats .history-stat:nth-child(3) .stat-value').textContent = fmtTokens(stats.totalTokens);
+		  document.querySelector('#historyStats .history-stat:nth-child(4) .stat-value').textContent = fmtDuration(stats.avgMs);
+		}
+
+		function renderHistoryCards(entries) {
+		  const filtered = _historyStatusFilter === 'all' ? entries : entries.filter(e => e.status === _historyStatusFilter);
+		  if (!filtered.length) return '<div class="session-empty">无匹配的请求记录</div>';
+		  let html = '';
+		  for (const e of filtered) {
+		    const inputRatio = e.total_tokens > 0 ? Math.round((e.input_tokens || 0) / e.total_tokens * 100) : 50;
+		    html += `<div class="history-card${e.status === 'failed' ? ' failed' : ''}">
+		      <div class="hc-row">
+		        <span class="hc-time">${fmtTime(e.created_at)}</span>
+		        <span class="hc-model">${esc(e.model)}</span>
+		        ${statusBadge(e.status)}
+		        <span class="hc-dur">${fmtDuration(e.duration_ms)}</span>
+		      </div>
+		      <div class="hc-tokens">
+		        <span>入:${fmtTokens(e.input_tokens)}</span>
+		        <span>出:${fmtTokens(e.output_tokens)}</span>
+		        <span>总计:${fmtTokens(e.total_tokens)}</span>
+		      </div>
+		      <div class="hc-token-bar"><div class="hc-token-in" style="width:${inputRatio}%"></div><div class="hc-token-out" style="width:${100 - inputRatio}%"></div></div>
+		      <div class="hc-url" title="${escAttr(e.upstream_url)}">${esc(trunc(e.upstream_url, 50))}</div>
+		      ${e.error_msg ? `<div class="hc-error" onclick="this.nextElementSibling?.classList.toggle('hidden')">▸ 错误详情</div><div class="hc-error hidden" style="margin-top:2px;">${esc(e.error_msg)}</div>` : ''}
+		    </div>`;
+		  }
+		  return html;
+		}
+
+		function renderTrendChart(entries) {
+		  const now = Date.now() / 1000;
+		  let buckets = [];
+		  if (_historyChartPeriod === 'hourly') {
+		    for (let i = 23; i >= 0; i--) {
+		      const slot = Math.floor(now / 3600) - i;
+		      const d = new Date(slot * 3600 * 1000);
+		      buckets.push({ label: d.getHours() + '时', start: slot * 3600, end: (slot + 1) * 3600, tokens: 0 });
+		    }
+		  } else if (_historyChartPeriod === 'daily') {
+		    for (let i = 6; i >= 0; i--) {
+		      const dayStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - i);
+		      const start = Math.floor(dayStart.getTime() / 1000);
+		      const end = start + 86400;
+		      buckets.push({ label: (dayStart.getMonth() + 1) + '/' + dayStart.getDate(), start, end, tokens: 0 });
+		    }
+		  } else {
+		    for (let i = 5; i >= 0; i--) {
+		      const d = new Date();
+		      d.setDate(1);
+		      d.setMonth(d.getMonth() - i);
+		      const start = Math.floor(d.getTime() / 1000);
+		      const endMonth = new Date(d);
+		      endMonth.setMonth(endMonth.getMonth() + 1);
+		      const end = Math.floor(endMonth.getTime() / 1000);
+		      buckets.push({ label: (d.getMonth() + 1) + '月', start, end, tokens: 0 });
+		    }
+		  }
+		  for (const e of entries) {
+		    for (const b of buckets) {
+		      if (e.created_at >= b.start && e.created_at < b.end) { b.tokens += e.total_tokens || 0; break; }
+		    }
+		  }
+		  const maxTokens = Math.max(...buckets.map(b => b.tokens), 1);
+		  let html = '';
+		  for (const b of buckets) {
+		    const pct = Math.round(b.tokens / maxTokens * 100);
+		    html += '<div class="history-chart-col">';
+		    html += '<span class="history-chart-val">' + fmtTokens(b.tokens) + '</span>';
+		    html += '<div class="history-chart-bar-wrap"><div class="history-chart-bar" style="height:' + pct + '%"></div></div>';
+		    html += '<span class="history-chart-label">' + b.label + '</span>';
+		    html += '</div>';
+		  }
+		  return html;
+		}
+
+		function setChartPeriod(period) {
+		  _historyChartPeriod = period;
+		  document.querySelectorAll('.chart-tab').forEach(t => {
+		    const txt = t.textContent.trim();
+		    t.classList.toggle('active', (period === 'hourly' && txt === '1h') || (period === 'daily' && txt === '1d') || (period === 'monthly' && txt === '1m'));
+		  });
+		  const bars = document.getElementById('historyChartBars');
+		  if (bars && _historyEntries.length) bars.innerHTML = renderTrendChart(_historyEntries);
+		}
+
+		function toggleAutoRefresh() {
+		  if (_historyRefreshTimer) {
+		    clearInterval(_historyRefreshTimer);
+		    _historyRefreshTimer = null;
+		    _historyRefreshMs = 0;
+		    document.getElementById('historyAutoToggle').classList.remove('on');
+		    document.getElementById('historyIntervalSel').style.display = 'none';
+		  } else {
+		    _historyRefreshMs = parseInt(document.getElementById('historyIntervalSel').value) || 10000;
+		    _historyRefreshTimer = setInterval(refreshHistory, _historyRefreshMs);
+		    document.getElementById('historyAutoToggle').classList.add('on');
+		    document.getElementById('historyIntervalSel').style.display = '';
+		  }
+		}
+
+		function setRefreshInterval(val) {
+		  _historyRefreshMs = parseInt(val);
+		  if (_historyRefreshTimer) { clearInterval(_historyRefreshTimer); _historyRefreshTimer = setInterval(refreshHistory, _historyRefreshMs); }
+		}
+
+		function setStatusFilter(filter) {
+		  _historyStatusFilter = filter;
+		  const container = document.getElementById('historyCardsContainer');
+		  if (container && _historyEntries.length) container.innerHTML = renderHistoryCards(_historyEntries);
+		}
+
+		async function refreshHistory() {
+		  const statsEl = document.getElementById('historyStats');
+		  const barsEl = document.getElementById('historyChartBars');
+		  const cardsEl = document.getElementById('historyCardsContainer');
+		  try {
+		    const entries = await invoke('list_request_history', { limit: 200 });
+		    _historyEntries = entries || [];
+		    if (_historyEntries.length) {
+		      if (statsEl) updateStats(computeStats(_historyEntries));
+		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
+		      if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
+		    } else {
+		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">总请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div>';
+		      if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">暂无数据</div>';
+		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
+		    }
+		  } catch (e) {
+		    if (cardsEl) cardsEl.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
+		  }
 		}
 
 		function fmtTime(unixSecs) {
 		  if (!unixSecs) return '—';
 		  const d = new Date(unixSecs * 1000);
 		  const pad = n => String(n).padStart(2, '0');
-		  return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+		  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 		}
 
 		function fmtTokens(n) {
@@ -2083,45 +2310,12 @@ function computerLabel(v) {
 		  return `<span style="color:${color};font-weight:500;">${label}</span>`;
 		}
 
-		async function refreshHistory() {
-		  const container = document.getElementById('historyTableContainer');
-		  if (!container) return;
-		  try {
-		    const entries = await invoke('list_request_history', { limit: 200 });
-		    if (!entries || !entries.length) {
-		      container.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
-		      return;
-		    }
-		    let html = `<table class="history-table">
-		      <thead><tr>
-		        <th>时间</th><th>模型</th><th>状态</th><th>输入 Token</th><th>输出 Token</th><th>耗时</th><th>上游</th>
-		      </tr></thead><tbody>`;
-		    for (const e of entries) {
-		      html += `<tr>
-		        <td class="ht-time">${fmtTime(e.created_at)}</td>
-		        <td class="ht-model">${esc(e.model)}</td>
-		        <td>${statusBadge(e.status)}</td>
-		        <td class="ht-tokens">${fmtTokens(e.input_tokens)}</td>
-		        <td class="ht-tokens">${fmtTokens(e.output_tokens)}</td>
-		        <td class="ht-dur">${fmtDuration(e.duration_ms)}</td>
-		        <td class="ht-url" title="${escAttr(e.upstream_url)}">${esc(trunc(e.upstream_url, 30))}</td>
-		      </tr>`;
-		      if (e.error_msg) {
-		        html += `<tr><td></td><td colspan="6" style="color:var(--red);font-size:11px;padding:2px 8px;">${esc(e.error_msg)}</td></tr>`;
-		      }
-		    }
-		    html += '</tbody></table>';
-		    container.innerHTML = html;
-		  } catch (e) {
-		    container.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
-		  }
-		}
-
 		async function clearHistory() {
 		  if (!confirm('确定要清空所有请求历史吗？此操作不可恢复。')) return;
 		  try {
 		    await invoke('clear_request_history');
 		    showToast('请求历史已清空', 'success');
+		    _historyEntries = [];
 		    refreshHistory();
 		  } catch (e) {
 		    showToast('清空失败: ' + e, 'error');
@@ -3165,32 +3359,26 @@ document.addEventListener('keydown', e => {
 // ═══════════════════════════════════════════════════════════════
 let _pluginsData = [];
 
+const PLUGIN_STATUS_LABEL = {
+  'Connected': '已连接', 'Connecting': '连接中', 'LoginExpired': '登录过期',
+  'Error': '错误', 'Disconnected': '未连接'
+};
+
 function renderPluginsPanel() {
   return `
     <div class="page-header">
       <h2>插件管理</h2>
-      <p>管理微信等通道插件</p>
+      <p>安装和管理第三方通道插件</p>
     </div>
     <div class="mgmt-section">
-      <div class="mgmt-header">操作</div>
-      <div style="display:flex;gap:8px;margin-bottom:16px;">
-        <button class="save-btn" onclick="startPlugin('deecodex-weixin')">启动微信插件</button>
-        <button class="save-btn" onclick="stopPlugin('deecodex-weixin')" style="background:var(--danger);">停止微信插件</button>
+      <div class="mgmt-header">安装</div>
+      <div style="display:flex;gap:8px;">
+        <input id="pluginZipPath" placeholder="Zip 文件路径（选目录可手动输入）" style="flex:1;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;color:var(--text-primary);">
+        <button class="btn btn-ghost" onclick="browsePluginZip()">浏览</button>
+        <button class="btn btn-primary" onclick="installPluginFromPath()">安装</button>
       </div>
     </div>
-    <div class="mgmt-section">
-      <div class="mgmt-header">账号管理</div>
-      <div style="display:flex;gap:8px;margin-bottom:8px;">
-        <input id="pluginAccountId" placeholder="Account ID (如 Bot2)" style="flex:1;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;color:var(--text-primary);">
-        <button class="save-btn" onclick="addPluginAccount()">添加账号</button>
-        <button class="save-btn" onclick="scanQrCode()" style="background:var(--accent);">扫码登录</button>
-      </div>
-      <div id="pluginQrContainer" style="margin-bottom:8px;"></div>
-    </div>
-    <div class="mgmt-section">
-      <div class="mgmt-header">插件列表</div>
-      <div id="pluginList"></div>
-    </div>`;
+    <div id="pluginList" style="margin-top:16px;"></div>`;
 }
 
 async function loadPluginsData() {
@@ -3205,17 +3393,221 @@ async function loadPluginsData() {
 function renderPluginList() {
   const el = document.getElementById('pluginList');
   if (!_pluginsData.length) { el.innerHTML = '<div class="empty-state">暂无插件</div>'; return; }
-  el.innerHTML = _pluginsData.map(p => {
-    const stateCls = p.state === 'Running' ? 'card-badge on' : 'card-badge off';
-    const accounts = (p.accounts || []).map(a => `<span style="margin-right:8px;color:var(--text-secondary)">${esc(a.id)}: ${esc(a.status)}</span>`).join('');
-    return `<div style="padding:12px;margin-bottom:8px;background:var(--bg-surface);border-radius:8px;border:1px solid var(--border-subtle);">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>${esc(p.name)}</strong> <span class="${stateCls}">${esc(p.state)}</span>
+  el.innerHTML = _pluginsData.map(p => renderPluginCard(p)).join('');
+}
+
+function renderPluginCard(p) {
+  const running = p.state === 'Running';
+  const badgeCls = running ? 'card-badge on' : 'card-badge off';
+  const badgeLabel = running ? '运行中' : '已停止';
+  const accounts = p.accounts || [];
+  const perms = (p.permissions || []).join(', ');
+
+  let accountsHtml = '';
+  if (accounts.length) {
+    accountsHtml = `<div style="margin:8px 0;">
+      <div style="color:var(--text-secondary);font-size:11px;margin-bottom:4px;">账号</div>` +
+      accounts.map(a => {
+        const sc = a.status === 'Connected' ? 'var(--green)' : a.status === 'Connecting' ? 'var(--accent)' : 'var(--text-secondary)';
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;margin:2px 0;background:var(--bg-surface);border-radius:4px;">
+          <span><span style="color:var(--text-secondary);font-size:11px;">Bot </span>${esc(a.name || a.account_id)}</span>
+          <span style="font-size:11px;color:${sc}">${PLUGIN_STATUS_LABEL[a.status] || a.status}</span>
+        </div>`;
+      }).join('') + `</div>`;
+  }
+
+  return `<div class="account-card" style="margin-bottom:12px;${running ? 'border-color:rgba(0,200,232,0.2);' : ''}">
+    <div class="account-card-header">
+      <span style="font-weight:600;">${esc(p.name)}</span>
+      <span style="color:var(--text-secondary);font-size:12px;margin-left:6px;">v${esc(p.version)}</span>
+      <span class="${badgeCls}">${badgeLabel}</span>
+    </div>
+    ${p.description ? `<div style="color:var(--text-secondary);font-size:12px;margin:4px 0;">${esc(p.description)} · ${esc(p.author || '')}</div>` : ''}
+    ${perms ? `<div style="color:var(--text-muted);font-size:11px;margin:4px 0;">权限：${esc(perms)}</div>` : ''}
+    ${accountsHtml}
+    <div class="card-actions-row" style="align-items:center;flex-wrap:wrap;gap:4px;">
+      <input id="addAccountId_${escAttr(p.id)}" placeholder="Account ID" style="width:90px;padding:4px 8px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:4px;color:var(--text-primary);font-size:12px;">
+      <button class="btn-apply" onclick="addPluginAccount('${escAttr(p.id)}')" style="font-size:12px;padding:4px 10px;">+ 添加账号</button>
+      ${running ? `
+        <button onclick="scanPluginQr('${escAttr(p.id)}')" style="font-size:12px;padding:4px 10px;border:1px solid var(--accent);color:var(--accent);background:var(--accent-dim);">扫码登录</button>
+        <button onclick="stopPlugin('${escAttr(p.id)}')" class="danger" style="font-size:12px;padding:4px 10px;">停止</button>
+      ` : `
+        <button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')" style="font-size:12px;padding:4px 10px;">启动</button>
+      `}
+      <button onclick="refreshPlugins()" class="btn-refresh" style="font-size:12px;" title="刷新">↻</button>
+      <button onclick="uninstallPlugin('${escAttr(p.id)}')" class="danger" style="font-size:12px;padding:4px 10px;">卸载</button>
+    </div>
+    <div id="qrContainer_${escAttr(p.id)}" style="margin-top:8px;"></div>
+  </div>`;
+}
+
+async function installPluginFromPath() {
+  const path = document.getElementById('pluginZipPath').value.trim();
+  if (!path) { showToast('请输入插件包路径'); return; }
+  try {
+    await invoke('install_plugin', { archivePath: path });
+    showToast('插件已安装');
+    await loadPluginsData();
+  } catch(e) { showToast('安装失败: ' + esc(String(e))); }
+}
+
+function browsePluginZip() { showToast('浏览功能需在 Tauri 2.0+ 使用 file dialog API'); }
+
+async function refreshPlugins() { await loadPluginsData(); showToast('已刷新'); }
+
+async function startPlugin(id) {
+  try {
+    await invoke('start_plugin', { pluginId: id });
+    showToast('插件已启动');
+    await loadPluginsData();
+  } catch(e) { showToast('启动失败: ' + esc(String(e))); }
+}
+
+async function stopPlugin(id) {
+  try {
+    await invoke('stop_plugin', { pluginId: id });
+    showToast('插件已停止');
+    await loadPluginsData();
+  } catch(e) { showToast('停止失败: ' + esc(String(e))); }
+}
+
+async function uninstallPlugin(id) {
+  if (!confirm(`确定要卸载插件 "${id}" 吗？`)) return;
+  try {
+    await invoke('uninstall_plugin', { pluginId: id });
+    showToast('插件已卸载');
+    await loadPluginsData();
+  } catch(e) { showToast('卸载失败: ' + esc(String(e))); }
+}
+
+async function addPluginAccount(pluginId) {
+  const input = document.getElementById('addAccountId_' + pluginId);
+  const accountId = (input && input.value || '').trim();
+  if (!accountId) { showToast('请输入 Account ID'); return; }
+  try {
+    const p = _pluginsData.find(p => p.id === pluginId);
+    const existingAccounts = (p && p.config && p.config.accounts) || {};
+    existingAccounts[accountId] = { name: accountId, enabled: true };
+    await invoke('update_plugin_config', { pluginId: pluginId, config: { accounts: existingAccounts } });
+    showToast('账号已添加');
+    if (input) input.value = '';
+    await loadPluginsData();
+  } catch(e) { showToast('添加失败: ' + esc(String(e))); }
+}
+
+async function scanPluginQr(pluginId) {
+  const container = document.getElementById('qrContainer_' + pluginId);
+  const input = document.getElementById('addAccountId_' + pluginId);
+  const accountId = (input && input.value || '').trim();
+  if (!accountId) { showToast('请先在左侧输入 Account ID'); return; }
+  container.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">获取QR码中...</span>';
+  try {
+    const result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
+    const url = result.qrcode_data_url || result.data_url || '';
+    if (url) {
+      container.innerHTML = `<div style="margin-top:8px;"><img src="${esc(url)}" style="max-width:200px;border-radius:8px;" alt="QR"><br><span style="color:var(--text-secondary);font-size:11px;">${esc(result.message || '请使用微信扫码')}</span></div>`;
+    } else {
+      container.innerHTML = `<span style="color:var(--text-secondary);font-size:12px;">QR码: ${esc(JSON.stringify(result))}</span>`;
+    }
+  } catch(e) { container.innerHTML = '<span style="color:var(--red);font-size:12px;">获取失败: ' + esc(String(e)) + '</span>'; }
+}
+
+function renderPluginsPanel() {
+  return `
+    <div class="page-header">
+      <h2>插件管理</h2>
+      <p>安装和管理第三方通道插件</p>
+    </div>
+    <div class="mgmt-section">
+      <div class="mgmt-header">安装</div>
+      <div style="display:flex;gap:8px;margin-bottom:4px;">
+        <input id="pluginZipPath" placeholder="Zip 文件路径（选目录可手动输入）" style="flex:1;padding:6px 10px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;color:var(--text-primary);">
+        <button class="save-btn" onclick="browsePluginZip()" style="background:var(--accent-dim);">浏览</button>
+        <button class="save-btn" onclick="installPluginFromPath()">安装</button>
       </div>
-      <div style="color:var(--text-secondary);font-size:13px;">${esc(p.id)} v${esc(p.version)}</div>
-      <div style="margin-top:4px;">${accounts}</div>
+    </div>
+    <div id="pluginList"></div>`;
+}
+
+async function loadPluginsData() {
+  try {
+    _pluginsData = await invoke('list_plugins') || [];
+    renderPluginList();
+  } catch(e) {
+    document.getElementById('pluginList').innerHTML = '<div class="empty-state">加载插件列表失败: ' + esc(String(e)) + '</div>';
+  }
+}
+
+function renderPluginList() {
+  const el = document.getElementById('pluginList');
+  if (!_pluginsData.length) { el.innerHTML = '<div class="empty-state">暂无插件</div>'; return; }
+  el.innerHTML = _pluginsData.map(p => renderPluginCard(p)).join('');
+}
+
+function renderPluginCard(p) {
+  const running = p.state === 'Running';
+  const stateCls = running ? 'card-badge on' : 'card-badge off';
+  const accounts = p.accounts || [];
+  const perms = (p.permissions || []).join(', ');
+
+  const accountRows = accounts.map(a => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;margin:2px 0;background:var(--bg);border-radius:4px;">
+      <span><span style="color:var(--text-secondary);font-size:12px;">Bot</span> ${esc(a.name || a.account_id)}</span>
+      <span style="font-size:12px;color:${a.status === 'Connected' ? 'var(--success)' : a.status === 'Connecting' ? 'var(--accent)' : 'var(--text-secondary)'}">${PLUGIN_STATUS_LABEL[a.status] || a.status}</span>
+    </div>
+  `).join('');
+
+  return `
+    <div class="mgmt-section" style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <div>
+          <strong style="font-size:15px;">${esc(p.name)}</strong>
+          <span style="color:var(--text-secondary);font-size:12px;margin-left:8px;">v${esc(p.version)}</span>
+        </div>
+        <span class="${stateCls}">${running ? '运行中' : '已停止'}</span>
+      </div>
+      ${p.description ? `<div style="color:var(--text-secondary);font-size:12px;margin-bottom:4px;">${esc(p.description)} · ${esc(p.author || '')}</div>` : ''}
+      ${perms ? `<div style="color:var(--text-secondary);font-size:11px;margin-bottom:6px;">权限：${esc(perms)}</div>` : ''}
+
+      ${accounts.length ? `
+      <div style="margin-bottom:8px;">
+        <div style="color:var(--text-secondary);font-size:11px;margin-bottom:4px;">账号</div>
+        ${accountRows}
+      </div>` : ''}
+
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <div style="display:flex;gap:4px;align-items:center;margin-right:8px;">
+          <input id="addAccountId_${esc(p.id)}" placeholder="Account ID" style="width:100px;padding:4px 8px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:4px;color:var(--text-primary);font-size:12px;">
+          <button class="save-btn" onclick="addPluginAccount('${esc(p.id)}')" style="font-size:12px;padding:4px 10px;">+ 添加账号</button>
+        </div>
+        ${running ? `
+          <button class="save-btn" onclick="scanPluginQr('${esc(p.id)}')" style="font-size:12px;padding:4px 10px;background:var(--accent);">扫码登录</button>
+          <button class="save-btn" onclick="stopPlugin('${esc(p.id)}')" style="font-size:12px;padding:4px 10px;background:var(--danger);">停止</button>
+        ` : `
+          <button class="save-btn" onclick="startPlugin('${esc(p.id)}')" style="font-size:12px;padding:4px 10px;">启动</button>
+        `}
+        <button class="save-btn" onclick="refreshPlugins()" style="font-size:12px;padding:4px 10px;background:var(--accent-dim);">刷新</button>
+        <button class="save-btn" onclick="uninstallPlugin('${esc(p.id)}')" style="font-size:12px;padding:4px 10px;background:var(--danger);">卸载</button>
+      </div>
+      <div id="qrContainer_${esc(p.id)}" style="margin-top:8px;"></div>
     </div>`;
-  }).join('');
+}
+
+async function installPluginFromPath() {
+  const path = document.getElementById('pluginZipPath').value.trim();
+  if (!path) { showToast('请输入插件包路径'); return; }
+  try {
+    await invoke('install_plugin', { archivePath: path });
+    showToast('插件已安装');
+    await loadPluginsData();
+  } catch(e) { showToast('安装失败: ' + esc(String(e))); }
+}
+
+function browsePluginZip() { showToast('浏览功能需在 Tauri 2.0+ 使用 file dialog API'); }
+
+async function refreshPlugins() {
+  await loadPluginsData();
+  showToast('已刷新');
 }
 
 async function startPlugin(id) {
@@ -3234,31 +3626,46 @@ async function stopPlugin(id) {
   } catch(e) { showToast('停止失败: ' + esc(String(e))); }
 }
 
-async function addPluginAccount() {
-  const accountId = document.getElementById('pluginAccountId').value.trim();
+async function uninstallPlugin(id) {
+  if (!confirm(`确定要卸载插件 "${id}" 吗？`)) return;
+  try {
+    await invoke('uninstall_plugin', { pluginId: id });
+    showToast('插件已卸载');
+    await loadPluginsData();
+  } catch(e) { showToast('卸载失败: ' + esc(String(e))); }
+}
+
+async function addPluginAccount(pluginId) {
+  const input = document.getElementById('addAccountId_' + pluginId);
+  const accountId = (input && input.value || '').trim();
   if (!accountId) { showToast('请输入 Account ID'); return; }
   try {
-    // 更新插件配置添加账号
-    const cfg = { accounts: { [accountId]: { name: accountId, enabled: true } } };
-    await invoke('update_plugin_config', { pluginId: 'deecodex-weixin', config: cfg });
+    // 先获取当前配置，合并账号
+    const p = _pluginsData.find(p => p.id === pluginId);
+    const existingAccounts = (p && p.config && p.config.accounts) || {};
+    existingAccounts[accountId] = { name: accountId, enabled: true };
+    await invoke('update_plugin_config', { pluginId: pluginId, config: { accounts: existingAccounts } });
     showToast('账号已添加');
+    if (input) input.value = '';
+    await loadPluginsData();
   } catch(e) { showToast('添加失败: ' + esc(String(e))); }
 }
 
-async function scanQrCode() {
-  const accountId = document.getElementById('pluginAccountId').value.trim();
-  if (!accountId) { showToast('请输入 Account ID'); return; }
-  const container = document.getElementById('pluginQrContainer');
-  container.innerHTML = '<span style="color:var(--text-secondary)">获取QR码中...</span>';
+async function scanPluginQr(pluginId) {
+  const container = document.getElementById('qrContainer_' + pluginId);
+  const input = document.getElementById('addAccountId_' + pluginId);
+  const accountId = (input && input.value || '').trim();
+  if (!accountId) { showToast('请先在左侧输入 Account ID'); return; }
+  container.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">获取QR码中...</span>';
   try {
-    const result = await invoke('get_plugin_qrcode', { pluginId: 'deecodex-weixin', accountId });
-    if (result.qrcode_data_url || result.data_url) {
-      const url = result.qrcode_data_url || result.data_url;
-      container.innerHTML = `<img src="${esc(url)}" style="max-width:200px;border-radius:8px;" alt="QR Code"><br><span style="color:var(--text-secondary);font-size:12px;">${esc(result.message || '请用微信扫码')}</span>`;
+    const result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
+    const url = result.qrcode_data_url || result.data_url || '';
+    if (url) {
+      container.innerHTML = `<div style="margin-top:8px;"><img src="${esc(url)}" style="max-width:200px;border-radius:8px;" alt="QR"><br><span style="color:var(--text-secondary);font-size:11px;">${esc(result.message || '请使用微信扫码')}</span></div>`;
     } else {
-      container.innerHTML = `<span style="color:var(--text-secondary)">QR码: ${esc(JSON.stringify(result))}</span>`;
+      container.innerHTML = `<span style="color:var(--text-secondary);font-size:12px;">QR码: ${esc(JSON.stringify(result))}</span>`;
     }
-  } catch(e) { container.innerHTML = '<span style="color:var(--danger)">获取失败: ' + esc(String(e)) + '</span>'; }
+  } catch(e) { container.innerHTML = '<span style="color:var(--danger);font-size:12px;">获取失败: ' + esc(String(e)) + '</span>'; }
 }
 
 // ═══════════════════════════════════════════════════════════════
