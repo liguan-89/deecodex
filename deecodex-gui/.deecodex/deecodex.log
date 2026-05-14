@@ -22,18 +22,22 @@
 [2m2026-05-12T06:23:09.389915Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/v1/api/openplatform/coding_plan/remains
 [2m2026-05-12T06:23:09.461859Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测 HTTP 404: https://api.deepseek.com/v1/api/openplatform/coding_plan/remains
 [2m2026-05-12T06:23:09.543895Z[0m [32m INFO[0m [2mdeecodex_gui_lib::commands[0m[2m:[0m 余额探测成功: https://api.deepseek.com/v1/user/balance → body keys: Some(["balance_infos", "is_available"])
-[2m2026-05-13T18:50:20.506615Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 插件管理器已初始化
-[2m2026-05-13T18:50:20.507028Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 发现内置微信插件，自动安装 [3mpath[0m[2m=[0m../deecodex-plugins/plugins/deecodex-weixin
-[2m2026-05-13T18:50:20.614650Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件安装完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:50:20.614682Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 内置微信插件安装成功 [3mid[0m[2m=[0mdeecodex-weixin [3mversion[0m[2m=[0m1.0.0
-[2m2026-05-13T18:50:20.614722Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 自启动插件 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:50:20.655574Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] deecodex-weixin 插件启动中... [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:50:20.656036Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件启动完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:50:20.656147Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] 微信通道插件已就绪 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:50:20.656202Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] [auto-restore] dataDir=/Users/liguan/deecodex/功能/协议配置/deecodex-gui/.deecodex accountsDir=/Users/liguan/deecodex/功能/协议配置/deecodex-gui/.deecodex/weixin_accounts [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:51:49.929926Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 插件管理器已初始化
-[2m2026-05-13T18:51:49.930020Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 自启动插件 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:51:49.965422Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] deecodex-weixin 插件启动中... [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:51:49.965951Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件启动完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:51:49.966089Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] 微信通道插件已就绪 [3mplugin_id[0m[2m=[0mdeecodex-weixin
-[2m2026-05-13T18:51:49.966177Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] [auto-restore] dataDir=/Users/liguan/deecodex/功能/协议配置/deecodex-gui/.deecodex accountsDir=/Users/liguan/deecodex/功能/协议配置/deecodex-gui/.deecodex/weixin_accounts [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.532179Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 插件管理器已初始化
+[2m2026-05-14T05:46:27.532444Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 发现内置微信插件，自动安装 [3mpath[0m[2m=[0m../deecodex-plugins/plugins/deecodex-weixin
+[2m2026-05-14T05:46:27.644996Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件安装完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.645028Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 内置微信插件安装成功 [3mid[0m[2m=[0mdeecodex-weixin [3mversion[0m[2m=[0m1.0.0
+[2m2026-05-14T05:46:27.645068Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 自启动插件 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.687445Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] deecodex-weixin 插件启动中... [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.687911Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件启动完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.688016Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] 微信通道插件已就绪 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:46:27.688089Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] [auto-restore] dataDir=/Users/liguan/deecodex/功能/执行诊断/deecodex-gui/.deecodex accountsDir=/Users/liguan/deecodex/功能/执行诊断/deecodex-gui/.deecodex/weixin_accounts [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:51:29.894656Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 插件管理器已初始化
+[2m2026-05-14T05:51:29.895100Z[0m [32m INFO[0m [2mdeecodex_gui_lib[0m[2m:[0m 自启动插件 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:51:29.937007Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] deecodex-weixin 插件启动中... [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:51:29.937464Z[0m [32m INFO[0m [2mdeecodex_plugin_host::manager[0m[2m:[0m 插件启动完成 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:51:29.937575Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] 微信通道插件已就绪 [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:51:29.937634Z[0m [32m INFO[0m [2mdeecodex_plugin_host::process[0m[2m:[0m [plugin] [auto-restore] dataDir=/Users/liguan/deecodex/功能/执行诊断/deecodex-gui/.deecodex accountsDir=/Users/liguan/deecodex/功能/执行诊断/deecodex-gui/.deecodex/weixin_accounts [3mplugin_id[0m[2m=[0mdeecodex-weixin
+[2m2026-05-14T05:55:16.639290Z[0m [32m INFO[0m [2mdeecodex::codex_threads[0m[2m:[0m 找到 Codex state 数据库 [3mdb[0m[2m=[0m/Users/liguan/.codex/state_5.sqlite
+[2m2026-05-14T05:55:16.639290Z[0m [32m INFO[0m [2mdeecodex::codex_threads[0m[2m:[0m 找到 Codex state 数据库 [3mdb[0m[2m=[0m/Users/liguan/.codex/state_5.sqlite
+[2m2026-05-14T05:55:19.888347Z[0m [32m INFO[0m [2mdeecodex::codex_threads[0m[2m:[0m 找到 Codex state 数据库 [3mdb[0m[2m=[0m/Users/liguan/.codex/state_5.sqlite
+[2m2026-05-14T05:55:19.888424Z[0m [32m INFO[0m [2mdeecodex::codex_threads[0m[2m:[0m 找到 Codex state 数据库 [3mdb[0m[2m=[0m/Users/liguan/.codex/state_5.sqlite
