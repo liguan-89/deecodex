@@ -443,6 +443,8 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     // 将 AppState 存储到 ServerManager，供 switch_account 等命令使用
     *manager.app_state.lock().await = Some(state.clone());
+    // 请求历史数据库独立保存，服务停止后仍可读取
+    *manager.request_history.lock().await = Some(state.request_history.clone());
 
     let app = handlers::build_router(state.clone()).layer(axum::extract::DefaultBodyLimit::max(
         args.max_body_mb * 1024 * 1024,
@@ -2065,6 +2067,12 @@ pub async fn list_request_history(
     manager: State<'_, ServerManager>,
     limit: Option<usize>,
 ) -> Result<Value, String> {
+    let rh = manager.request_history.lock().await;
+    if let Some(store) = rh.as_ref() {
+        let entries = store.list(limit.unwrap_or(3000)).await;
+        return Ok(serde_json::to_value(entries).unwrap_or_default());
+    }
+    drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
     let entries = state.request_history.list(limit.unwrap_or(100)).await;
@@ -2073,6 +2081,12 @@ pub async fn list_request_history(
 
 #[tauri::command]
 pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let rh = manager.request_history.lock().await;
+    if let Some(store) = rh.as_ref() {
+        store.clear().await?;
+        return Ok(json!({ "ok": true }));
+    }
+    drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
     state.request_history.clear().await?;
@@ -2084,6 +2098,12 @@ pub async fn get_monthly_stats(
     manager: State<'_, ServerManager>,
     limit: Option<usize>,
 ) -> Result<Value, String> {
+    let rh = manager.request_history.lock().await;
+    if let Some(store) = rh.as_ref() {
+        let stats = store.list_monthly_stats(limit.unwrap_or(6)).await;
+        return Ok(serde_json::to_value(stats).unwrap_or_default());
+    }
+    drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
     let stats = state
