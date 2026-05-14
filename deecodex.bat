@@ -369,23 +369,25 @@ if exist "%TEMP_DIR%\deecodex.bat" (
 )
 
 
-echo ÐÐ¾·×ÀÃæÓ¦ÓÃ...
+echo ï¿½Ð¾ï¿½ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½ï¿½...
 curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex-gui.exe" -o "%TEMP_DIR%\deecodex-gui.exe"
 if exist "%TEMP_DIR%\deecodex-gui.exe" (
     move /y "%TEMP_DIR%\deecodex-gui.exe" "%PROJECT_DIR%deecodex-gui.exe" >nul
-    echo ÒÑ¸üÐÂ: %PROJECT_DIR%deecodex-gui.exe
+    echo ï¿½Ñ¸ï¿½ï¿½ï¿½: %PROJECT_DIR%deecodex-gui.exe
 )
 
-echo ¸üÐÂÒÀÀµ¿â...
-curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/WebView2Loader.dll" -o "%TEMP_DIR%\WebView2Loader.dll"
+echo ä¸‹è½½ WebView2Loader.dllï¼ˆTauri v1 å…¼å®¹æ€§å¤‡ç”¨ï¼Œç¼ºå¤±ä¸æŠ¥é”™ï¼‰...
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/WebView2Loader.dll" -o "%TEMP_DIR%\WebView2Loader.dll" 2>nul
 if exist "%TEMP_DIR%\WebView2Loader.dll" (
     move /y "%TEMP_DIR%\WebView2Loader.dll" "%PROJECT_DIR%WebView2Loader.dll" >nul
-    echo ÒÑ¸üÐÂ: %PROJECT_DIR%WebView2Loader.dll
+    echo ï¿½Ñ¸ï¿½ï¿½ï¿½: %PROJECT_DIR%WebView2Loader.dll
+) else (
+    echo WebView2Loader.dll ä¸å­˜åœ¨ï¼Œè·³è¿‡ï¼ˆTauri v2 ä¸éœ€è¦ï¼‰
 )
 curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/icon.ico" -o "%TEMP_DIR%\icon.ico"
 if exist "%TEMP_DIR%\icon.ico" (
     move /y "%TEMP_DIR%\icon.ico" "%PROJECT_DIR%icon.ico" >nul
-    echo ÒÑ¸üÐÂ: %PROJECT_DIR%icon.ico
+    echo ï¿½Ñ¸ï¿½ï¿½ï¿½: %PROJECT_DIR%icon.ico
 )
 rem sync .env.example when missing
 if not exist "%ENV_FILE%" (
