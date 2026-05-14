@@ -46,6 +46,8 @@
   --radius-lg: 8px;
   --sidebar-w: 268px;
   --transition: 160ms ease;
+
+  color-scheme: dark;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1034,6 +1036,24 @@ body {
   border-color: var(--accent); color: var(--accent); background: var(--accent-dim);
 }
 
+.model-autocomplete { position: relative; flex: 1; }
+.model-suggestions {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
+  max-height: 200px; overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.model-suggestions .suggestion-item {
+  padding: 6px 10px; font-size: 12px; font-family: var(--font-mono);
+  color: var(--text-primary); cursor: pointer;
+}
+.model-suggestions .suggestion-item:hover,
+.model-suggestions .suggestion-item.active {
+  background: var(--accent-dim); color: var(--accent);
+}
+
 /* Account Detail Form */
 .account-form {
   max-width: 680px;
@@ -1413,6 +1433,8 @@ body {
   --green-dim: rgba(45, 138, 92, 0.10);
   --red: #d94f3a;
   --red-dim: rgba(217, 79, 58, 0.10);
+
+  color-scheme: light;
 }
 
 /* ── 亮色模式下覆盖硬编码深色值 ── */
@@ -3961,18 +3983,21 @@ function renderModelMappingRows(knownModels) {
   }
   // 优先使用从上游获取的模型列表，否则用预设列表
   const modelSource = upstreamModels.length > 0 ? upstreamModels : (knownModels || []);
-  const datalistId = 'dl_' + Math.random().toString(36).slice(2, 8);
-  const datalistOptions = modelSource.map(m => `<option value="${escAttr(m)}">`).join('');
-  const datalistHtml = `<datalist id="${datalistId}">${datalistOptions}</datalist>`;
+  const suggestionsJson = escAttr(JSON.stringify(modelSource));
 
-  return datalistHtml + rows.map((r, i) => {
+  return rows.map((r, i) => {
     const labelExtra = r.readonly ? '' : ' (自定义)';
     return `<div class="model-row">
       <div class="model-label codex">${esc(r.codexModel)}${labelExtra}</div>
       <div class="model-value">
-        <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)" list="${datalistId}"
-          data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
-          onchange="onModelMapChange(this)">
+        <div class="model-autocomplete">
+          <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)"
+            data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
+            onchange="onModelMapChange(this)"
+            onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)"
+            autocomplete="off">
+          <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+        </div>
         <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
       </div>
     </div>`;
@@ -3986,7 +4011,7 @@ async function loadAccountsData() {
     const result = await invoke('list_accounts');
     accountsData = result;
     if (!providerPresets.length) await loadProviderPresets();
-    if (accountsView !== 'add' && currentPanel === 'accounts') renderMainContent();
+    if (accountsView === 'list' && currentPanel === 'accounts') renderMainContent();
     // 异步加载余额（不阻塞渲染）
     if (accountsView === 'list') {
       (accountsData.accounts || []).forEach(a => fetchBalanceForCard(a));
@@ -4027,22 +4052,70 @@ function removeModelMapRow(btn) {
   row.remove();
 }
 
+function showSuggestions(input) {
+  const wrap = input.closest('.model-autocomplete');
+  if (!wrap) return;
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (!dropdown) return;
+  const suggestions = JSON.parse(dropdown.dataset.suggestions || '[]');
+  renderSuggestionsDropdown(input, dropdown, suggestions);
+  dropdown.style.display = 'block';
+}
+
+function filterSuggestions(input) {
+  const wrap = input.closest('.model-autocomplete');
+  if (!wrap) return;
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (!dropdown) return;
+  const suggestions = JSON.parse(dropdown.dataset.suggestions || '[]');
+  const q = input.value.toLowerCase();
+  const filtered = suggestions.filter(s => s.toLowerCase().includes(q));
+  renderSuggestionsDropdown(input, dropdown, filtered);
+  dropdown.style.display = 'block';
+}
+
+function hideSuggestions(input) {
+  setTimeout(() => {
+    const wrap = input.closest('.model-autocomplete');
+    if (!wrap) return;
+    const dropdown = wrap.querySelector('.model-suggestions');
+    if (dropdown) dropdown.style.display = 'none';
+  }, 150);
+}
+
+function renderSuggestionsDropdown(input, dropdown, items) {
+  if (items.length === 0) { dropdown.innerHTML = ''; return; }
+  dropdown.innerHTML = items.map(s =>
+    `<div class="suggestion-item" onmousedown="event.preventDefault();selectSuggestion(this)">${esc(s)}</div>`
+  ).join('');
+}
+
+function selectSuggestion(item) {
+  const wrap = item.closest('.model-autocomplete');
+  if (!wrap) return;
+  const input = wrap.querySelector('input');
+  if (input) {
+    input.value = item.textContent;
+    input.focus();
+  }
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (dropdown) dropdown.style.display = 'none';
+}
+
 function addModelRow(containerId, knownModelsJson) {
   const knownModels = JSON.parse(knownModelsJson);
-  const datalistId = 'dl_custom_' + Math.random().toString(36).slice(2, 8);
-  const datalistOptions = knownModels.map(m => `<option value="${escAttr(m)}">`).join('');
+  const suggestionsJson = escAttr(JSON.stringify(knownModels));
 
   const container = document.getElementById(containerId);
-  const datalist = document.createElement('datalist');
-  datalist.id = datalistId;
-  datalist.innerHTML = datalistOptions;
-  container.appendChild(datalist);
-
   const row = document.createElement('div');
   row.className = 'model-row';
   row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名" style="width:100%;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--radius-sm);color:var(--text-primary);padding:7px 10px;font-size:12px;font-family:var(--font-mono);outline:none;"></div>
     <div class="model-value">
-      <input type="text" placeholder="上游模型名" list="${datalistId}">
+      <div class="model-autocomplete">
+        <input type="text" placeholder="上游模型名" autocomplete="off"
+          onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)">
+        <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+      </div>
       <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
     </div>`;
   container.appendChild(row);
