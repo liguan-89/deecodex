@@ -25,6 +25,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `src/token_anomaly.rs` — Token 异常检测
 - `gui/nav/04-账号管理.html` — 导航栏片段
 
+**如需修改前端展示：** 在 `deecodex-gui/gui/index.html` 中「账号管理」面板区域修改。
+
 **禁止修改其他分区的文件和其他分区的导航片段。**
 
 **验证方式：**
@@ -37,12 +39,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 cargo build
 cargo build --release
-cargo test --all-targets
+cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
 Run a specific test: `cargo test <test_name>`
+
+**并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。
 
 ## Architecture
 
