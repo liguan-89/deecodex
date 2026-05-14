@@ -11,16 +11,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 你正在 **功能/DEX助手** 分区工作，负责智能诊断与辅助工具面板。
 
 **只修改这些文件：**
+- `deecodex-gui/gui/js/placeholder-pages.js` — DEX助手占位
 - `gui/nav/09-DEX助手.html` — 导航栏片段
 
-**注意：** 本分区无核心 Rust 模块，主要维护前端面板和导航片段。如需修改前端展示内容，在 `deecodex-gui/gui/index.html` 中 `renderDexAssistant()` 函数区域修改。
+**注意：** 本分区无核心 Rust 模块，主要维护前端面板和导航片段。
 
 **排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
 **验证方式：**
 - 编译: `cargo build`
 - 前端变更无需编译，刷新 Tauri 窗口即可看到效果
-
 ## Build & Test
 
 ```
@@ -31,7 +31,6 @@ cargo fmt --check
 ```
 
 **注意：** 本分区无核心 Rust 模块，通常只需改 HTML。`cargo build` 用于确认改动不破坏编译。
-
 ## Architecture
 
 deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** requests into **Chat Completions API** calls for DeepSeek/OpenRouter. The core translation is two-way:
