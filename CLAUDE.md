@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 当前分区
 
-你正在 **deecodex-gui 父区** 工作。你可以修改任意文件，并负责：
+你正在 **deecodex-gui 父区** 工作。你可以修改任意文件。排查 bug 时通读全项目代码。负责：
 
 - **合入功能分支：** `git merge 功能/<分区名>`
 - **同步 worktree：** `for b in ...; do git -C "功能/$b" merge deecodex-gui; done`
