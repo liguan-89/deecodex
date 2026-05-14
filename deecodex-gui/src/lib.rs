@@ -37,6 +37,8 @@ pub struct ServerManager {
     pub app_state: Mutex<Option<deecodex::handlers::AppState>>,
     /// 插件管理器
     pub plugin_manager: Mutex<Option<Arc<deecodex_plugin_host::PluginManager>>>,
+    /// 请求历史数据库（独立于 AppState，服务停止后仍可读取）
+    pub request_history: Mutex<Option<Arc<deecodex::request_history::RequestHistoryStore>>>,
 }
 
 impl ServerManager {
@@ -51,6 +53,7 @@ impl ServerManager {
             data_dir: Mutex::new(std::path::PathBuf::from(".deecodex")),
             app_state: Mutex::new(None),
             plugin_manager: Mutex::new(None),
+            request_history: Mutex::new(None),
         }
     }
 
