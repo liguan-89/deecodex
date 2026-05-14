@@ -2302,6 +2302,9 @@ function computerLabel(v) {
 		let _historyDisplayLimit = 50;
 		const _historyDisplayStep = 50;
 		let _historyMonthlyStats = [];
+		let _historyOffline = false;
+		let _historyReconnectTimer = null;
+		const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 let _pluginsData = [];
 let _pluginsRefreshTimer = null;
 let _pluginsRefreshMs = 0;
@@ -2520,6 +2523,10 @@ let _pluginsAutoRefresh = true;
 		    ]);
 		    _historyEntries = entries || [];
 		    _historyMonthlyStats = monthlyStats || [];
+		    _historyOffline = false;
+		    stopReconnectPolling();
+		    hideHistoryOfflineBanner();
+		    try { localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify({ entries: _historyEntries, monthlyStats: _historyMonthlyStats, ts: Date.now() })); } catch (_) {}
 		    if (_historyEntries.length) {
 		      if (statsEl) updateStats(computeStats(_historyEntries));
 		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
@@ -2530,8 +2537,68 @@ let _pluginsAutoRefresh = true;
 		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
 		    }
 		  } catch (e) {
-		    if (cardsEl) cardsEl.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
+		    const cached = loadHistoryCache();
+		    if (cached) {
+		      _historyEntries = cached.entries || [];
+		      _historyMonthlyStats = cached.monthlyStats || [];
+		      _historyOffline = true;
+		      showHistoryOfflineBanner();
+		      startReconnectPolling();
+		      if (_historyEntries.length) {
+		        if (statsEl) updateStats(computeStats(_historyEntries));
+		        if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
+		        if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
+		      } else {
+		        if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无缓存数据，服务启动后将自动刷新</div>';
+		      }
+		    } else {
+		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
+		    }
 		  }
+		}
+
+		function loadHistoryCache() {
+		  try {
+		    const raw = localStorage.getItem(HISTORY_CACHE_KEY);
+		    if (!raw) return null;
+		    const data = JSON.parse(raw);
+		    if (!data || !data.entries) return null;
+		    return data;
+		  } catch (_) { return null; }
+		}
+
+		function showHistoryOfflineBanner() {
+		  const existing = document.getElementById('historyOfflineBanner');
+		  if (existing) { existing.style.display = ''; return; }
+		  const statsEl = document.getElementById('historyStats');
+		  if (!statsEl) return;
+		  const div = document.createElement('div');
+		  div.id = 'historyOfflineBanner';
+		  div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;margin-bottom:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--yellow,#b45309);';
+		  div.innerHTML = '<span>⚠ 服务未启动，当前显示的是本地缓存数据</span><button class="btn btn-sm btn-primary" onclick="refreshHistory()" style="font-size:11px;padding:4px 10px;">⟳ 尝试重连</button>';
+		  statsEl.parentNode.insertBefore(div, statsEl);
+		}
+
+		function hideHistoryOfflineBanner() {
+		  const banner = document.getElementById('historyOfflineBanner');
+		  if (banner) banner.style.display = 'none';
+		}
+
+		function startReconnectPolling() {
+		  if (_historyReconnectTimer) return;
+		  _historyReconnectTimer = setInterval(async () => {
+		    try {
+		      const status = await invoke('get_service_status');
+		      if (status && status.running) {
+		        stopReconnectPolling();
+		        refreshHistory();
+		      }
+		    } catch (_) {}
+		  }, 3000);
+		}
+
+		function stopReconnectPolling() {
+		  if (_historyReconnectTimer) { clearInterval(_historyReconnectTimer); _historyReconnectTimer = null; }
 		}
 
 		function fmtTime(unixSecs) {
