@@ -368,6 +368,25 @@ if exist "%TEMP_DIR%\deecodex.bat" (
     echo 锟窖革拷锟斤拷: %PROJECT_DIR%deecodex.bat
 )
 
+
+echo 行痉桌面应用...
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/deecodex-gui.exe" -o "%TEMP_DIR%\deecodex-gui.exe"
+if exist "%TEMP_DIR%\deecodex-gui.exe" (
+    move /y "%TEMP_DIR%\deecodex-gui.exe" "%PROJECT_DIR%deecodex-gui.exe" >nul
+    echo 已更新: %PROJECT_DIR%deecodex-gui.exe
+)
+
+echo 更新依赖库...
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/WebView2Loader.dll" -o "%TEMP_DIR%\WebView2Loader.dll"
+if exist "%TEMP_DIR%\WebView2Loader.dll" (
+    move /y "%TEMP_DIR%\WebView2Loader.dll" "%PROJECT_DIR%WebView2Loader.dll" >nul
+    echo 已更新: %PROJECT_DIR%WebView2Loader.dll
+)
+curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/icon.ico" -o "%TEMP_DIR%\icon.ico"
+if exist "%TEMP_DIR%\icon.ico" (
+    move /y "%TEMP_DIR%\icon.ico" "%PROJECT_DIR%icon.ico" >nul
+    echo 已更新: %PROJECT_DIR%icon.ico
+)
 rem sync .env.example when missing
 if not exist "%ENV_FILE%" (
     curl -fsSL "https://github.com/%GH_REPO%/releases/download/!TAG!/env.example" -o "%PROJECT_DIR%\.env.example"
