@@ -6,6 +6,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
 
+## 当前分区
+
+你正在 **功能/账号管理** 分区工作，负责多账号、配置、会话、缓存、速率限制等基础设施。
+
+**只修改这些文件：**
+- `src/accounts.rs` — 多账号管理
+- `src/config.rs` — 配置系统（Args、合并逻辑）
+- `src/validate.rs` — 诊断引擎
+- `src/codex_config.rs` — Codex 配置注入
+- `src/cdp.rs` — CDP 注入
+- `src/inject.rs` — 注入逻辑
+- `src/session.rs` — 会话存储
+- `src/cache.rs` — 请求缓存
+- `src/backup_store.rs` — 备份存储
+- `src/ratelimit.rs` — 速率限制
+- `src/metrics.rs` — Prometheus 指标
+- `src/token_anomaly.rs` — Token 异常检测
+- `gui/nav/04-账号管理.html` — 导航栏片段
+
+**禁止修改其他分区的文件和其他分区的导航片段。**
+
+**验证方式：**
+- 编译: `cargo build`
+- 测试: `cargo test`
+- 代码检查: `cargo clippy -- -D warnings`
+
 ## Build & Test
 
 ```
