@@ -1833,8 +1833,8 @@ async function init() {
     (async () => {
       try {
         await tauriEvent.listen('account-switched', () => {
-          loadStatus();
-          loadAccountsData();
+          if (currentPanel === 'status') loadStatus();
+          if (currentPanel === 'accounts' && accountsView === 'list') loadAccountsData();
         });
         console.log('[deecodex] 已注册 account-switched 事件监听');
       } catch (e) {
@@ -1847,7 +1847,7 @@ async function init() {
 
   setInterval(async () => {
     if (currentPanel === 'status') await loadStatus();
-    else if (currentPanel === 'accounts') await loadAccountsData();
+    else if (currentPanel === 'accounts' && accountsView === 'list') await loadAccountsData();
   }, 10000);
 }
 
