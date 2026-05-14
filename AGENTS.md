@@ -18,6 +18,8 @@ cargo fmt --check
 
 Run a specific test: `cargo test <test_name>`
 
+**并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。
+
 ## Architecture
 
 deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** requests into **Chat Completions API** calls for DeepSeek/OpenRouter. The core translation is two-way:
@@ -27,80 +29,110 @@ deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** request
 
 ### Crate structure
 
-- `src/lib.rs` — Library crate root. Exposes all public modules (`handlers`, `translate`, `stream`, `session`, `cache`, `files`, `prompts`, `vector_stores`, `executor`, `types`, `utils`, `sse`, `ratelimit`, `metrics`, `token_anomaly`). Integration tests import from `deecodex::`.
-- `src/main.rs` — Separate binary crate. Owns: service management (start/stop/restart/status/logs subcommands), daemonization, tracing init, `.env` loading, TUI launch, Codex config injection. Has its own `mod` declarations that include lib.rs modules plus `codex_config`, `config`, and `tui`.
-
-Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
+- `src/lib.rs` — Library crate root. Exposes all public modules.
+- `src/main.rs` — Binary crate. Service management, daemonization, tracing init, `.env` loading, TUI launch, Codex config injection.
+- `deecodex-gui/` — Tauri 2 desktop GUI crate. Tray, IPC commands, webview frontend.
+- `deecodex-plugins/` — Plugin host crate. Install/uninstall/enable/disable, subprocess management, JSON-RPC communication.
 
 ### Request flow
 
-1. `main.rs` builds `AppState` (monolithic shared state via `Arc`), calls `handlers::build_router()`, serves via axum.
+1. `main.rs` builds `AppState`, calls `handlers::build_router()`, serves via axum.
 2. `handlers.rs` (`/v1/responses` POST) validates auth, checks cache, calls `translate::to_chat_request()`.
-3. For streaming: `stream::translate_stream()` spawns a tokio task that reads upstream SSE, emits Responses SSE events through a `tokio::sync::mpsc::Sender`.
+3. For streaming: `stream::translate_stream()` spawns a tokio task that reads upstream SSE, emits Responses SSE events.
 4. Non-streaming: collects all events, returns JSON response.
-5. Vision requests (images) are optionally routed to a separate upstream.
+5. Vision requests are optionally routed to a separate upstream.
 
-### State management
+### Key modules
 
-- `AppState` in `handlers.rs` holds everything: sessions, upstream URL, API keys, model map, cache, vision config, files, vector stores, prompts, rate limiter, metrics, token tracker, tool policy, background tasks.
-- Caches use `Arc<DashMap<K, V>>` for concurrent access.
-- Sessions/reasoning are in-memory only (lost on restart; Codex replays full conversation).
-- `EvictingMap` pattern: `Arc<Mutex<VecDeque<K>>>` for bounded LRU eviction.
-- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio and computer execution are default-disabled, run only when configured/allowed, and return `mcp_tool_call_output` / `computer_call_output` instead of surfacing executor failures as HTTP 500.
+| Module | Purpose |
+|--------|---------|
+| `handlers` | Axum router, all HTTP handlers, `AppState`, middleware |
+| `translate` | Request direction: Responses → Chat translation |
+| `stream` | Response direction: SSE stream translation |
+| `files` | Local Files API with search index |
+| `vector_stores` | Local Vector Store API |
+| `prompts` | Hosted prompts registry |
+| `sse` | SSE event builder helpers |
+| `session` | In-memory session/conversation store |
+| `types` | Request/response types |
+| `cache` | LRU request cache |
+| `utils` | Merge/truncation helpers |
+| `token_anomaly` | Token usage anomaly detection |
+| `config` | Args struct, config persistence, merge logic |
+| `executor` | Local computer/MCP executor config |
+| `metrics` | Prometheus metrics |
+| `codex_config` | Codex config.toml injection/removal |
+| `ratelimit` | Sliding-window rate limiter |
+| `accounts` | Multi-account management |
+| `validate` | 15-item diagnostics engine |
+| `cdp` | Chrome DevTools Protocol client |
+| `inject` | CDP page injection |
+| `codex_threads` | Codex thread aggregation, migration |
+| `request_history` | Request history store |
 
-### Key modules (largest → smallest)
+## deecodex-gui 前端规则
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `handlers` | 2,561 | Axum router, all HTTP handlers, `AppState`, middleware |
-| `translate` | 1,580 | Request direction: Responses → Chat translation |
-| `stream` | 1,477 | Response direction: SSE stream translation |
-| `files` | 1,203 | Local Files API with search index |
-| `tui` | 1,160 | Terminal UI config menu (ratatui) |
-| `vector_stores` | 761 | Local Vector Store API |
-| `prompts` | 711 | Hosted prompts registry |
-| `sse` | 676 | SSE event builder helpers |
-| `session` | 644 | In-memory session/conversation store |
-| `types` | 545 | Request/response types |
-| `cache` | 418 | LRU request cache |
-| `utils` | 224 | Merge/truncation helpers |
-| `token_anomaly` | 205 | Token usage anomaly detection |
-| `config` | 204 | Args struct, config persistence, merge logic |
-| `executor` | ~650 | Local computer/MCP executor config, Playwright action adapter, and stdio MCP JSON-RPC tool execution |
-| `metrics` | 180 | Prometheus metrics |
-| `codex_config` | 106 | Codex config.toml injection/removal |
-| `ratelimit` | 90 | Sliding-window rate limiter |
+**deecodex-gui 是 Tauri 桌面应用，不支持将 `gui/index.html` 当作独立网页使用。**
+
+真实功能测试必须使用：
+
+```bash
+cd /Users/liguan/deecodex
+cargo tauri dev
+```
+
+### 前端结构
+
+```
+gui/
+  index.html              # 页面骨架和资源加载
+  css/app.css             # 全局样式
+  js/
+    tauri-api.js          # Tauri IPC 边界
+    ui-core.js            # toast、confirm、deeStorage
+    app-shell.js          # 初始化、loadNav()、renderPanel()
+    service-management.js # 服务启停
+    log-viewer.js         # 日志弹窗
+    panels-core.js        # 状态、配置、诊断、帮助
+    request-history.js    # 请求历史
+    threads.js            # 线程聚合
+    accounts.js           # 账号管理
+    plugins.js            # 插件管理
+    placeholder-pages.js  # DEX助手、个人中心
+```
+
+### 前端约定
+
+- **不把大段 JS/CSS 写回 `index.html`**
+- **不直接调用 `window.__TAURI__`**，统一走 `DeeCodexTauri.invoke(name, args)`
+- **不直接访问 `localStorage`**，统一走 `deeStorage`
+- **不为 `file://` 预览模式做兜底或假数据**
+- **非 Tauri 环境直接显示阻断页**
+- **改完 GUI 代码必须启动实测**，编译通过不算完成
 
 ## Configuration System
 
-Three config sources, merged at startup:
-
-1. **Environment variables** — `DEECODEX_*` (backward compat `CODEX_RELAY_*` → `DEECODEX_*` mapping in main.rs)
-2. **CLI args** — via clap derive (`Args` in `config.rs`)
-3. **`config.json`** — persisted to `~/.deecodex/config.json`
-
-Merge rule: CLI/env values override file values only when they differ from hardcoded defaults (see `pick()`, `pick_str()`, `pick_f64()` in `config.rs`). `.env` is loaded from CWD, `~/.deecodex/`, or exe directory.
-
-Service management subcommands (`start`, `stop`, `restart`, `status`, `logs`) are handled before tracing init and before config merge. They fork the process as a daemon, write a PID file to the data dir, and manage the Codex config injection lifecycle.
-
-## Codex Config Injection
-
-On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route Codex through deecodex:
-- Sets `model_provider = "custom"` and `[model_providers.custom]` section with `base_url = http://127.0.0.1:{port}/v1`
-- Uses `toml_edit` for non-destructive TOML editing (preserves other config).
-- On shutdown/SIGTERM/SIGINT, `codex_config::remove()` cleans up the injected section.
-
-## Testing Conventions
-
-- Integration tests in `tests/integration.rs` (3,235 lines): Build the Axum router via `build_router()`, send requests with `tower::ServiceExt::oneshot`, mock upstreams with raw `tokio::net::TcpListener` + `tokio::io` write.
-- Unit tests inline in source modules (e.g., `ratelimit.rs`).
-- No mocking framework — raw TCP sockets simulate upstream responses.
-- Test helper `test_state()` constructs a fully wired `AppState`.
-- `tests/compat_deepseek_v4_pro.rs` requires `DEEPSEEK_API_KEY` env var to run.
+Three config sources merged at startup: environment variables (`DEECODEX_*`), CLI args, and `~/.deecodex/config.json`. CLI/env override file values only when they differ from hardcoded defaults.
 
 ## Conventions
 
-- **Concurrency:** `DashMap` for shared maps, `Arc<Mutex<VecDeque>>` for bounded queues. Tokio async runtime.
-- **Error handling:** `anyhow` for internal errors. Custom error types in `files.rs`, `prompts.rs`, `vector_stores.rs` implement `IntoResponse`.
-- **Logging:** `tracing` with `tracing-subscriber` env-filter. Daemon mode writes to log file; foreground writes to stderr. Default filter: `deecodex=info`.
-- **Dynamic JSON:** `serde_json::Value` used extensively for API translation — fields are manipulated dynamically rather than through strict struct deserialization.
+- **Concurrency:** `DashMap` for shared maps, `Arc<Mutex<VecDeque>>` for bounded queues.
+- **Error handling:** `anyhow` for internal errors. Custom error types implement `IntoResponse`.
+- **Logging:** `tracing` with `tracing-subscriber` env-filter. Default filter: `deecodex=info`.
+- **Dynamic JSON:** `serde_json::Value` used extensively for API translation.
+- **路径绝对化：** `data_dir` 等目录配置在使用前必须转为绝对路径。
+- **静默失败加日志：** 关键分支返回空结果时要打 `tracing::warn!`，不静默跳过。
+- **跨目录启动测试：** 编译后从不同目录启动二进制验证路径解析是否正常。
+
+## 功能分区
+
+项目通过 git worktree 划分为 11 个功能分区，每个分区独立开发、独立提交。详细分区定义和 GUI 共享层规则见 `CLAUDE.md`。
+
+### 提交前缀
+
+- `feat:` — 新功能
+- `fix:` — 修复
+- `refactor:` — 重构
+- `docs:` — 文档
+- `chore:` — 杂项/构建
+- `release:` — 发版
