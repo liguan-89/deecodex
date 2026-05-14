@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::manifest::PluginManifest;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginStore {
     #[serde(default)]
     pub plugins: Vec<PluginRecord>,
@@ -96,13 +96,5 @@ impl PluginStore {
 
     fn store_path(data_dir: &Path) -> PathBuf {
         data_dir.join("plugins.json")
-    }
-}
-
-impl Default for PluginStore {
-    fn default() -> Self {
-        Self {
-            plugins: Vec::new(),
-        }
     }
 }
