@@ -989,9 +989,8 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
 }
 
 #[tauri::command]
-pub fn check_upgrade() -> Result<Value, String> {
+pub async fn check_upgrade() -> Result<Value, String> {
     let args = load_args();
-    // 读取当前版本（多级回退：data_dir → 上级目录 → 编译时常量）
     let version_path = args.data_dir.join("VERSION");
     let current = std::fs::read_to_string(&version_path)
         .or_else(|_| std::fs::read_to_string("../VERSION"))
@@ -999,43 +998,33 @@ pub fn check_upgrade() -> Result<Value, String> {
         .trim()
         .to_string();
 
-    // 获取 origin 远程标签，提取最新版本
-    let output = std::process::Command::new("git")
-        .args(["ls-remote", "--tags", "origin"])
-        .output()
-        .map_err(|e| format!("获取远程标签失败: {e}"))?;
+    let client = reqwest::Client::builder()
+        .user_agent("deecodex")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut latest_tag = String::new();
-    let mut latest_ver = (0u32, 0u32, 0u32);
+    let resp = client
+        .get("https://api.github.com/repos/liguan-89/deecodex/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| format!("获取最新版本失败: {e}"))?;
 
-    for line in stdout.lines() {
-        if let Some(tag) = line.split("refs/tags/").nth(1) {
-            let tag = tag.trim_end_matches("^{}");
-            if let Some(v) = parse_version(tag) {
-                if v > latest_ver {
-                    latest_ver = v;
-                    latest_tag = tag.to_string();
-                }
-            }
-        }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API 返回: {}", resp.status()));
     }
 
+    let body: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+    let latest_tag = body["tag_name"].as_str().unwrap_or("").to_string();
+    let release_body = body["body"].as_str().unwrap_or("").to_string();
+
     let cur_ver = parse_version(&current).unwrap_or((0, 0, 0));
+    let latest_ver = parse_version(&latest_tag).unwrap_or((0, 0, 0));
     let has_update = latest_ver > cur_ver;
 
-    // 获取更新日志（先 fetch 标签再取 log）
     let changelog = if has_update {
-        let _ = std::process::Command::new("git")
-            .args(["fetch", "origin", "tag", &latest_tag, "--no-tags"])
-            .output();
-        std::process::Command::new("git")
-            .args(["log", &format!("{}..{}", current, latest_tag), "--oneline", "--no-merges"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default()
+        release_body.lines().take(20).collect::<Vec<_>>().join("\n")
     } else {
         String::new()
     };
@@ -1066,7 +1055,12 @@ pub fn run_upgrade() -> Result<String, String> {
     } else {
         "deecodex.sh"
     };
-    let script = args.data_dir.join(script_name);
+    // 从 exe 所在目录找脚本（安装目录），回退到 data_dir
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| args.data_dir.clone());
+    let script = exe_dir.join(script_name);
     if !script.exists() {
         return Err(format!("管理脚本 {} 不存在，请先运行安装脚本", script_name));
     }

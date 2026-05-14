@@ -245,40 +245,36 @@ Write-Host "       版本: $Tag"
 
 $ProgressPreference = 'SilentlyContinue'
 $ReleaseUrl = "https://github.com/$Repo/releases/download/$Tag"
+$TagNoV = $Tag -replace '^v', ''
+$SetupExe = "deecodex-$TagNoV-setup.exe"
+$SetupPath = "$env:TEMP\$SetupExe"
 
-# 下载二进制
-Write-Host "       下载 deecodex.exe..."
+# 下载一键安装包
+Write-Host "       下载一键安装包..."
 try {
-    Invoke-WebRequest -Uri "$ReleaseUrl/deecodex.exe" -OutFile "$InstallDir\deecodex.exe"
-    Write-Ok "deecodex.exe → $InstallDir\deecodex.exe"
+    Invoke-WebRequest -Uri "$ReleaseUrl/$SetupExe" -OutFile $SetupPath
+    Write-Ok "$SetupExe 下载完成"
 } catch {
-    Write-Err "二进制下载失败: $_"
-    if (-not $RustOk) {
-        Write-Host "       请确认 Release 中包含 Windows 二进制，或安装 Rust 后从源码编译"
-        exit 1
+    Write-Err "下载失败: $_"
+    Write-Host "       请检查网络连接或访问 $ReleaseUrl 手动下载"
+    exit 1
+}
+
+# 静默安装
+Write-Host "       正在安装..."
+$installArgs = "/S /D=$InstallDir"
+try {
+    $proc = Start-Process -FilePath $SetupPath -ArgumentList $installArgs -Wait -PassThru
+    if ($proc.ExitCode -eq 0) {
+        Write-Ok "安装完成 → $InstallDir"
+    } else {
+        Write-Warn "安装程序退出码: $($proc.ExitCode)，请尝试手动运行 $SetupPath"
     }
-}
-
-# 下载管理脚本
-Write-Host "       下载管理脚本..."
-try {
-    Invoke-WebRequest -Uri "$ReleaseUrl/deecodex.bat" -OutFile "$InstallDir\deecodex.bat"
-    Write-Ok "deecodex.bat → $InstallDir\deecodex.bat"
 } catch {
-    Write-Warn "管理脚本下载失败"
+    Write-Err "安装失败: $_"
+    exit 1
 }
-
-# 添加到用户 PATH
-Write-Host "       配置 PATH..."
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User"); if (-not $userPath) { $userPath = "" }
-$paths = $userPath -split ";" | Where-Object { $_ }
-if ($paths -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
-    $env:Path = "$env:Path;$InstallDir"
-    Write-Ok "已添加 $InstallDir 到用户 PATH"
-} else {
-    Write-Ok "PATH 已包含安装目录"
-}
+Remove-Item $SetupPath -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 
@@ -288,45 +284,16 @@ Write-Step 5 "启动服务"
 $Started = $false
 
 if (Confirm-Prompt "是否现在启动 deecodex？") {
-    # 检测端口是否被占用
-    $portInUse = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($portInUse) {
-        Write-Warn "端口 $Port 已被占用"
-        if (Confirm-Prompt "是否终止占用进程并继续？") {
-            $proc = Get-Process -Id $portInUse.OwningProcess -ErrorAction SilentlyContinue
-            if ($proc) { Stop-Process -Id $portInUse.OwningProcess -Force }
-            Start-Sleep -Seconds 1
-        } else {
-            Write-Host "       请修改 $EnvFile 中的 DEECODEX_PORT 后手动启动"
-        }
-    }
-
     Write-Host "       启动中..."
     try {
-        $proc = Start-Process -FilePath "$InstallDir\deecodex.bat" -ArgumentList "start" -WorkingDirectory $InstallDir -WindowStyle Hidden -PassThru
-        Write-Ok "deecodex 已启动"
-
-        # 等待服务就绪
-        Write-Host "       等待服务就绪..."
-        for ($i = 1; $i -le 15; $i++) {
-            try {
-                $null = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 2 -UseBasicParsing
-                Write-Ok "服务就绪"
-                $Started = $true
-                break
-            } catch {
-                Start-Sleep -Seconds 1
-            }
-        }
-
-        if (-not $Started) {
-            Write-Warn "服务可能启动较慢，请稍后检查"
-        }
+        Start-Process -FilePath "$InstallDir\deecodex-gui.exe" -WorkingDirectory $InstallDir
+        Write-Ok "deecodex 已启动（系统托盘）"
+        $Started = $true
     } catch {
         Write-Err "启动失败: $_"
     }
 } else {
-    Write-Ok "跳过启动（可稍后手动启动）"
+    Write-Ok "跳过启动（可稍后从开始菜单或桌面快捷方式启动）"
 }
 
 Write-Host ""
@@ -334,33 +301,24 @@ Write-Host ""
 # ===== Phase 6: 完成安装 =====
 Write-Step 6 "完成安装"
 
-$PanelUrl = "http://127.0.0.1:$Port"
-
-if ($Started) {
-    if (Confirm-Prompt "是否打开 Web 配置面板？") {
-        Start-Process $PanelUrl
-    }
-}
-
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Green
 Write-Host "║         🎉 deecodex 安装完成！            ║" -ForegroundColor Green
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
-Write-Host "  管理命令（在 $InstallDir 目录下执行）:" -ForegroundColor White
+Write-Host "  桌面应用：开始菜单 → deecodex 控制台" -ForegroundColor White
+Write-Host "           （系统托盘图标 + Web 控制面板）" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  命令行管理：" -ForegroundColor White
 Write-Host "    deecodex.bat start     启动服务" -ForegroundColor Cyan
 Write-Host "    deecodex.bat stop      停止服务" -ForegroundColor Cyan
 Write-Host "    deecodex.bat restart   重启服务" -ForegroundColor Cyan
 Write-Host "    deecodex.bat status    查看状态" -ForegroundColor Cyan
 Write-Host "    deecodex.bat logs      查看日志" -ForegroundColor Cyan
-Write-Host "    deecodex.bat health    健康检查" -ForegroundColor Cyan
 Write-Host "    deecodex.bat update    一键升级" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  配置面板: " -NoNewline -ForegroundColor White
-Write-Host $PanelUrl -ForegroundColor Cyan
 Write-Host "  配置文件: $EnvFile"
 Write-Host "  安装目录: $InstallDir"
 Write-Host ""
-Write-Host "  提醒：如修改了 .env，需重启服务生效" -ForegroundColor Yellow
-Write-Host "        deecodex.bat restart" -ForegroundColor Cyan
+Write-Host "  修改 .env 后需重启服务生效" -ForegroundColor Yellow
 Write-Host ""
