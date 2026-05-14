@@ -8,7 +8,6 @@ use tauri::{
     Manager,
 };
 use tokio::sync::Mutex;
-use tracing;
 
 struct FlushWriter<W: Write>(W);
 
@@ -139,8 +138,7 @@ fn build_account_submenu(
         } else {
             format!("  {} · {}", acc.name, acc.provider)
         };
-        let item = MenuItemBuilder::with_id(format!("switch_to_{}", acc.id), label)
-            .build(app)?;
+        let item = MenuItemBuilder::with_id(format!("switch_to_{}", acc.id), label).build(app)?;
         submenu = submenu.item(&item);
     }
     Ok(Some(submenu.build()?))
@@ -210,7 +208,10 @@ pub fn run() {
                 .filter(|l| !l.is_empty())
                 .collect();
             if pids.len() > 1 || (pids.len() == 1 && pids[0] != current_pid.to_string()) {
-                eprintln!("deecodex-gui 已在运行中 (pid: {}), 本次启动取消", pids.join(", "));
+                eprintln!(
+                    "deecodex-gui 已在运行中 (pid: {}), 本次启动取消",
+                    pids.join(", ")
+                );
                 std::process::exit(1);
             }
         }

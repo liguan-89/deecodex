@@ -73,12 +73,16 @@ pub struct DiagnosticReport {
 pub struct DiagnosticContext {
     pub data_dir: PathBuf,
     pub port: u16,
+    #[allow(dead_code)]
     pub upstream: String,
+    #[allow(dead_code)]
     pub api_key: String,
     pub model_map: String,
     pub codex_auto_inject: bool,
     pub codex_persistent_inject: bool,
+    #[allow(dead_code)]
     pub codex_launch_with_cdp: bool,
+    #[allow(dead_code)]
     pub cdp_port: u16,
 }
 

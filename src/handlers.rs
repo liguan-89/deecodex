@@ -16,7 +16,6 @@ use axum::{
     extract::{Multipart, Path, Query, Request, State},
     http::header,
     http::StatusCode,
-
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -1177,7 +1176,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     }
     if let Some(ref limiter) = state.rate_limiter {
         let key = "rl_default";
-        if !limiter.check(&key) {
+        if !limiter.check(key) {
             state
                 .metrics
                 .rate_limit_hits_total

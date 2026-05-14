@@ -20,6 +20,9 @@ logs/
 
 # Rust build
 target/
+target-mac/
+target-win/
+target-linux/
 pyproject.toml
 douyin-notes.md
 编译二进制/

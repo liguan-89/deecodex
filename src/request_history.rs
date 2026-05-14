@@ -19,6 +19,7 @@ pub struct HistoryEntry {
     pub error_msg: String,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Serialize)]
 pub struct MonthlyStats {
     pub year_month: String,
@@ -156,6 +157,7 @@ impl RequestHistoryStore {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn list_monthly_stats(&self, limit: usize) -> Vec<MonthlyStats> {
         let db = self.db.lock().await;
         let mut stmt = match db.prepare(
