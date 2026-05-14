@@ -858,7 +858,77 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
 }
 
 #[tauri::command]
-pub fn update_service() -> Result<String, String> {
+pub fn check_upgrade() -> Result<Value, String> {
+    let args = load_args();
+    // 读取当前版本（多级回退：data_dir → 上级目录 → 编译时常量）
+    let version_path = args.data_dir.join("VERSION");
+    let current = std::fs::read_to_string(&version_path)
+        .or_else(|_| std::fs::read_to_string("../VERSION"))
+        .unwrap_or_else(|_| format!("v{}", env!("CARGO_PKG_VERSION")))
+        .trim()
+        .to_string();
+
+    // 获取 origin 远程标签，提取最新版本
+    let output = std::process::Command::new("git")
+        .args(["ls-remote", "--tags", "origin"])
+        .output()
+        .map_err(|e| format!("获取远程标签失败: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut latest_tag = String::new();
+    let mut latest_ver = (0u32, 0u32, 0u32);
+
+    for line in stdout.lines() {
+        if let Some(tag) = line.split("refs/tags/").nth(1) {
+            let tag = tag.trim_end_matches("^{}");
+            if let Some(v) = parse_version(tag) {
+                if v > latest_ver {
+                    latest_ver = v;
+                    latest_tag = tag.to_string();
+                }
+            }
+        }
+    }
+
+    let cur_ver = parse_version(&current).unwrap_or((0, 0, 0));
+    let has_update = latest_ver > cur_ver;
+
+    // 获取更新日志（先 fetch 标签再取 log）
+    let changelog = if has_update {
+        let _ = std::process::Command::new("git")
+            .args(["fetch", "origin", "tag", &latest_tag, "--no-tags"])
+            .output();
+        std::process::Command::new("git")
+            .args(["log", &format!("{}..{}", current, latest_tag), "--oneline", "--no-merges"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Ok(json!({
+        "current": current,
+        "latest": latest_tag,
+        "has_update": has_update,
+        "changelog": changelog,
+    }))
+}
+
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let s = s.trim_start_matches('v');
+    let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() >= 3 {
+        Some((parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+pub fn run_upgrade() -> Result<String, String> {
     let args = load_args();
     let script_name = if cfg!(windows) {
         "deecodex.bat"

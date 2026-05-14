@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>deecodex · 控制台</title>
+<script src="nav/fragments.js"></script>
 <style>
 /* ============================================================
    deecodex 控制台 — Precision Instrument 设计系统
@@ -127,6 +128,27 @@ body {
   font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);
   padding: 2px 7px; border-radius: var(--radius-sm);
+  position: relative;
+}
+.sidebar-brand .version .update-dot {
+  display: inline-block; width: 5px; height: 5px;
+  background: var(--amber); border-radius: 50%;
+  margin-right: 3px; vertical-align: middle;
+  box-shadow: 0 0 4px var(--amber);
+}
+/* 有更新时 logo 变橙色 */
+.sidebar-brand .logo.update-available::before {
+  background: var(--amber) !important;
+  box-shadow: 0 0 10px var(--amber), 0 0 22px rgba(240,144,64,0.25) !important;
+}
+@keyframes logo-pulse-amber {
+  0%, 100% { box-shadow: 0 0 10px var(--amber), 0 0 22px rgba(240,144,64,0.25); opacity: 1; }
+  50% { box-shadow: 0 0 4px var(--amber), 0 0 10px rgba(240,144,64,0.25); opacity: 0.7; }
+}
+/* 引导条亮色慢闪 */
+@keyframes wzPulse {
+  0%, 100% { border-color: var(--accent); box-shadow: 0 2px 12px rgba(0,200,232,0.2); }
+  50% { border-color: rgba(0,200,232,0.5); box-shadow: 0 2px 24px rgba(0,200,232,0.4); }
 }
 
 /* ── Sidebar Nav ── */
@@ -241,7 +263,7 @@ body {
   background: var(--bg-surface); border: 1px solid var(--border-subtle);
   border-radius: var(--radius); padding: 12px 14px;
   display: flex; flex-direction: column;
-  min-height: 90px;
+  min-height: 120px;
   position: relative;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
@@ -536,9 +558,9 @@ body {
   align-items: flex-start;
 }
 .log-entry:last-child { border-bottom: none; }
-.log-time { flex-shrink: 0; width: 62px; color: var(--text-muted); font-size: 10px; }
+.log-time { flex-shrink: 0; width: 64px; color: var(--text-muted); font-size: 10px; }
 .log-level-badge {
-  flex-shrink: 0; min-width: 44px; text-align: center;
+  flex-shrink: 0; width: 48px; text-align: center;
   font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em;
   padding: 1px 5px; border-radius: 2px; text-transform: uppercase;
 }
@@ -549,7 +571,7 @@ body {
 .log-level-unknown { color: var(--text-muted); background: transparent; }
 
 .log-target {
-  flex-shrink: 0; max-width: 170px; color: var(--text-muted);
+  flex-shrink: 0; width: 160px; color: var(--text-muted);
   font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .log-msg { flex: 1; color: var(--text-primary); word-break: break-word; min-width: 0; }
@@ -1442,7 +1464,15 @@ let upstreamModels = [];
 async function init() {
   loadNav();
   switchPanel('status');
-  await Promise.all([loadStatus(), loadConfig()]);
+  await Promise.all([loadStatus(), loadConfig(), loadAccountsData()]);
+  if (currentPanel === 'status') renderPanel('status');
+
+  // 每日自动检查更新
+  autoCheckUpgrade();
+
+  // 首次安装 / 更新后配置引导（异步，不阻塞）
+  checkSetupWizard();
+
   setInterval(async () => {
     if (currentPanel === 'status') await loadStatus();
   }, 10000);
@@ -1502,6 +1532,36 @@ function renderStatus() {
     ? '<span class="card-badge on">启用</span>'
     : '<span class="card-badge off">未启用</span>';
 
+  // 激活账号（与账号管理页面字段一致，优化排版对齐）
+  const activeAcc = (accountsData.accounts || []).find(a => a.id === accountsData.active_id);
+  const hasAccount = !!activeAcc;
+
+  // 构建 extra 标签行
+  let extraTags = [];
+  if (activeAcc?.context_window_override) extraTags.push('<span style="font-size:9px;color:var(--text-muted);">⇄ ' + activeAcc.context_window_override.toLocaleString() + ' tokens</span>');
+  if (activeAcc?.vision_enabled) extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 多模态</span>');
+  if (activeAcc?.reasoning_effort_override) extraTags.push('<span style="font-size:9px;color:var(--amber);">🧠 ' + esc(activeAcc.reasoning_effort_override) + '</span>');
+
+  const accHtml = hasAccount
+    ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+         <span class="${providerBadgeClass(activeAcc.provider)}" style="font-size:10px;">${esc(activeAcc.provider)}</span>
+         <span class="card-badge on" style="margin-top:0;">活跃</span>
+       </div>
+       <div class="card-value" style="font-size:13px;margin-bottom:4px;">${esc(activeAcc.name)}</div>
+       <div class="card-upstream" style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;" title="${escAttr(activeAcc.upstream)}">${esc(trunc(activeAcc.upstream, 36))}</div>
+       <div class="card-balance" id="balance-${escAttr(activeAcc.id)}" style="margin-bottom:4px;">
+         <span class="balance-loading" style="font-size:10px;color:var(--text-muted)">—</span>
+       </div>
+       ${extraTags.length ? '<div style="display:flex;align-items:center;gap:8px;">' + extraTags.join('') + '</div>' : ''}`
+    : `<div class="card-icon">▣ 未配置</div>
+       <div class="card-value" style="cursor:pointer;color:var(--accent)" onclick="event.stopPropagation();switchPanel(\'accounts\')">← 第一步请配置账号</div>
+       <div class="card-label">点击跳转到账号管理</div>
+       <span class="card-badge off">待配置</span>`;
+  const accOnClick = hasAccount ? 'onclick="switchPanel(\'accounts\')" style="cursor:pointer;"' : '';
+
+  const port = v(s.port, '—');
+  const addr = port !== '—' ? `http://127.0.0.1:${port}` : '—';
+
   return `
     <div class="page-header">
       <h2>服务概览</h2>
@@ -1509,52 +1569,19 @@ function renderStatus() {
     </div>
     <div class="status-grid">
       <div class="status-card">
-        <div class="card-icon">◉ 版本</div>
-        <div class="card-value small">${esc(v(s.version, '—'))}</div>
-        <div class="card-label">服务版本</div>
-        <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
-      <div class="status-card">
         <div class="card-icon">◷ 运行时长</div>
         <div class="card-value small">${esc(fmtUptime(s.uptime_secs))}</div>
         <div class="card-label">自启动以来</div>
         <span class="card-badge" style="visibility:hidden">—</span>
       </div>
+      <div class="status-card" ${accOnClick}>
+        ${accHtml}
+      </div>
       <div class="status-card">
-        <div class="card-icon">⬡ 端口</div>
-        <div class="card-value">${esc(v(s.port, '—'))}</div>
-        <div class="card-label">监听端口</div>
+        <div class="card-icon">⬡ 服务端口</div>
+        <div class="card-value">${esc(port)}</div>
+        <div class="card-label">${esc(addr)}</div>
         <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
-      <div class="status-card">
-        <div class="card-icon">→ 上游</div>
-        <div class="card-value small">${esc(trunc(v(s.upstream, '—'), 42))}</div>
-        <div class="card-label">API 上游地址</div>
-        <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
-      <div class="status-card">
-        <div class="card-icon">◎ Vision</div>
-        <div class="card-value small">${esc(s.vision_enabled ? '已连接' : '未配置')}</div>
-        <div class="card-label">视觉路由状态</div>
-        ${badge(s.vision_enabled)}
-      </div>
-      <div class="status-card">
-        <div class="card-icon">▷ Computer</div>
-        <div class="card-value small">${esc(computerLabel(s.computer_executor))}</div>
-        <div class="card-label">Computer Executor</div>
-        ${badge(s.computer_executor && s.computer_executor !== 'disabled')}
-      </div>
-      <div class="status-card">
-        <div class="card-icon">◈ 思考</div>
-        <div class="card-value small">${esc(v(s.chinese_thinking, false) ? '中文' : '默认')}</div>
-        <div class="card-label">思考模式</div>
-        ${badge(s.chinese_thinking)}
-      </div>
-      <div class="status-card">
-        <div class="card-icon">⬡ 认证</div>
-        <div class="card-value small">${esc(s.client_auth_enabled ? '需要密钥' : '开放访问')}</div>
-        <div class="card-label">客户端认证</div>
-        ${badge(s.client_auth_enabled)}
       </div>
       <div class="status-card">
         <div class="card-icon">⬢ CDP 注入</div>
@@ -1569,7 +1596,7 @@ function renderStatus() {
       <div class="mgmt-actions">
         <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${s.running ? '◼ 停止服务' : '▶ 启动服务'}</button>
         <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex" style="border-color:rgba(0,200,232,0.35);color:var(--accent)">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
-        <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart" ${!s.running ? 'disabled' : ''}>⟳ 重启服务</button>
+        <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart">⟳ 重启服务</button>
         <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
         <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
       </div>
@@ -1897,9 +1924,12 @@ async function loadStatus() {
       invoke('get_config').catch(() => null),
     ]);
 
-    // 更新侧边栏版本号
+    // 更新侧边栏版本号（保留黄点更新指示器）
     if (status?.version) {
-      document.getElementById('sidebarVersion').textContent = 'v' + status.version;
+      const verEl = document.getElementById('sidebarVersion');
+      const dot = verEl.querySelector('.update-dot');
+      verEl.textContent = 'v' + status.version;
+      if (dot) verEl.insertBefore(dot, verEl.firstChild);
     }
 
     window._statusData = {
@@ -2105,6 +2135,241 @@ async function mgmtToggle() {
   if (btn) btn.disabled = false;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 配置引导（首次安装/更新后显示，顶栏按顺序跟随页面）
+// ═══════════════════════════════════════════════════════════════
+const WIZARD_STEPS = [
+  { id: 'wz1', icon: '▣', title: '添加账号', desc: '点「+ 添加账号」选择供应商', panel: 'accounts', quick: '' },
+  { id: 'wz2', icon: '🔑', title: '填写 API Key 和上游地址', desc: '保存后点「应用」激活', panel: 'accounts', quick: '' },
+  { id: 'wz3', icon: '⬇', title: '获取在线模型列表', desc: '拉取上游可用模型', panel: 'accounts', quick: 'fetchUpstreamModels' },
+  { id: 'wz4', icon: '⚙', title: '预设 GPT 模型映射', desc: '账号管理→模板预设 OpenAI→上游对照', panel: 'accounts', quick: 'presetModelMap' },
+  { id: 'wz5', icon: '💾', title: '保存配置', desc: '账号管理→模板预设→保存配置', panel: 'accounts', quick: 'saveConfig' },
+  { id: 'wz6', icon: '⚠', title: '重要提醒', desc: '先启 deecodex → 再开 Codex，不配第三方代理', panel: '', quick: '' },
+  { id: 'wz7', icon: '▶', title: '启动服务', desc: '确认状态变绿后再开 Codex', panel: 'status', quick: 'startService' },
+  { id: 'wz8', icon: '◇', title: '运行诊断', desc: '验证上游连通与模型可用', panel: 'diagnostics', quick: '' },
+];
+let wizardIdx = 0;
+let wizardVer = '';
+
+async function checkSetupWizard() {
+  // 从服务状态获取版本，失败则从 get_config 侧面获取，再失败用已知版本
+  let ver = (window._statusData && window._statusData.version) || '';
+  if (ver === '—' || ver === '0.0.0' || !ver) {
+    try { const st = await invoke('get_service_status'); ver = st.version; } catch (_) {}
+  }
+  if (!ver || ver === '0.0.0') return;
+  const completedVer = localStorage.getItem('setupCompletedVersion');
+  if (!completedVer || completedVer !== ver) {
+    wizardVer = ver;
+    wizardIdx = 0;
+    showWizardBar();
+  }
+}
+
+function showWizardBar() {
+  const existing = document.getElementById('setupWizard');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'setupWizard';
+  bar.style.cssText = 'position:fixed;top:0;left:268px;right:0;z-index:100;'
+    + 'background:rgba(255,255,255,0.95);'
+    + 'border-bottom:2px solid var(--accent);'
+    + 'padding:7px 20px;display:flex;align-items:center;gap:14px;'
+    + 'font-family:var(--font-mono);font-size:11px;'
+    + 'box-shadow:0 2px 12px rgba(0,200,232,0.2);'
+    + 'animation:wzPulse 3s ease-in-out infinite;'
+    + 'color:#1a1a2e;';
+  document.body.appendChild(bar);
+  // 主内容区下移避免遮挡
+  const main = document.getElementById('mainContent');
+  if (main) main.style.paddingTop = '40px';
+  renderWizardBar(bar);
+
+  // 第一步强提醒：弹出一个醒目的 toast
+  if (wizardIdx === 0) {
+    showToast('✦ 欢迎！跟随顶部引导完成首次配置', 'info');
+  }
+
+  // 监听面板切换
+  const origSwitch = switchPanel;
+  switchPanel = function(panelId) {
+    origSwitch(panelId);
+    autoWizardStep(panelId);
+  };
+}
+
+function autoWizardStep(panelId) {
+  // 根据当前面板自动定位到相关步骤
+  const bar = document.getElementById('setupWizard');
+  if (!bar) return;
+  let found = -1;
+  for (let i = 0; i < WIZARD_STEPS.length; i++) {
+    if (WIZARD_STEPS[i].panel === panelId) { found = i; break; }
+  }
+  if (found >= 0) { wizardIdx = found; renderWizardBar(bar); }
+}
+
+function renderWizardBar(bar) {
+  const s = WIZARD_STEPS[wizardIdx];
+  const isFirst = wizardIdx === 0;
+  const isLast = wizardIdx === WIZARD_STEPS.length - 1;
+  const pct = Math.round((wizardIdx + 1) / WIZARD_STEPS.length * 100);
+
+  let btnHtml = '';
+  if (s.quick) {
+    btnHtml = '<button id="wzAct" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+      + 'background:var(--accent-dim);border:1px solid rgba(0,200,232,0.25);color:var(--accent);font-family:var(--font-mono);">执行</button>';
+  }
+
+  // 白底用暗色文字
+  const tc = '#1a1a2e'; const tc2 = '#4a5568'; const tc3 = '#718096';
+  bar.innerHTML = ''
+    + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + s.icon + '</span>'
+    + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
+    + '<div style="flex-shrink:0;width:60px;height:2px;background:#e2e8f0;border-radius:1px;">'
+    +   '<div style="width:' + pct + '%;height:100%;background:var(--accent);border-radius:1px;transition:width 300ms;"></div>'
+    + '</div>'
+    + '<b style="flex-shrink:0;color:' + tc + ';">' + s.title + '</b>'
+    + '<span style="flex:1;color:' + tc2 + ';min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.desc + '</span>'
+    + btnHtml
+    + (!isFirst ? '<button id="wzPrev" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+      + 'background:#e2e8f0;border:1px solid #cbd5e0;color:' + tc2 + ';font-family:var(--font-mono);">←</button>' : '')
+    + (!isLast ? '<button id="wzNext" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+      + 'background:var(--accent);border:1px solid var(--accent);color:#fff;font-family:var(--font-mono);">→</button>'
+      : '<button id="wzDone" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+      + 'background:var(--green);border:1px solid var(--green);color:#fff;font-family:var(--font-mono);">完成</button>')
+    + '<button id="wzClose" style="flex-shrink:0;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px;">×</button>';
+
+  // 事件绑定
+  document.getElementById('wzClose').onclick = () => { bar.remove(); const m = document.getElementById('mainContent'); if (m) m.style.paddingTop = ''; };
+  document.getElementById('wzPrev')?.addEventListener('click', () => { if (wizardIdx > 0) { wizardIdx--; goWizardStep(); } });
+  document.getElementById('wzNext')?.addEventListener('click', () => { if (wizardIdx < WIZARD_STEPS.length - 1) { wizardIdx++; wizardCheer(); goWizardStep(); } });
+  document.getElementById('wzDone')?.addEventListener('click', () => {
+    localStorage.setItem('setupCompletedVersion', wizardVer);
+    bar.remove(); const m = document.getElementById('mainContent'); if (m) m.style.paddingTop = '';
+  });
+
+  const actBtn = document.getElementById('wzAct');
+  if (actBtn) {
+    actBtn.onclick = async () => {
+      actBtn.disabled = true; actBtn.textContent = '...';
+      try {
+        if (s.quick === 'fetchUpstreamModels') {
+          await invoke('fetch_upstream_models', { provider: null });
+        } else if (s.quick === 'presetModelMap') {
+          await presetModelMapping();
+        } else if (s.quick === 'saveConfig') {
+          await invoke('save_config', { config: currentConfig });
+        } else if (s.quick === 'startService') {
+          const st = await invoke('get_service_status');
+          if (!st.running) await invoke('start_service');
+          for (let j = 0; j < 30; j++) {
+            await new Promise(r => setTimeout(r, 500));
+            if ((await invoke('get_service_status')).running) break;
+          }
+          await loadStatus(); renderPanel('status');
+        }
+        actBtn.textContent = '✓'; actBtn.style.color = 'var(--green)'; actBtn.style.borderColor = 'var(--green)';
+        wizardCheer();
+      } catch (e) {
+        actBtn.textContent = '✗'; actBtn.style.color = 'var(--red)'; actBtn.style.borderColor = 'var(--red)';
+        actBtn.title = String(e);
+        setTimeout(() => { actBtn.textContent = '重试'; actBtn.style.color = ''; actBtn.style.borderColor = ''; actBtn.disabled = false; }, 3000);
+      }
+    };
+  }
+}
+
+function wizardCheer() {
+  const cheers = ['做得不错！', '很好，继续！', '太棒了！', '又完成一步！', '厉害！', '加油，快完成了！', '完美！'];
+  const msg = cheers[wizardIdx % cheers.length];
+  // 短时绿色闪烁
+  const bar = document.getElementById('setupWizard');
+  if (bar) {
+    bar.style.transition = 'background 0.3s';
+    bar.style.background = 'rgba(0,214,143,0.3)';
+    setTimeout(() => { bar.style.background = 'rgba(255,255,255,0.95)'; }, 600);
+  }
+  showToast('✓ ' + msg, 'success');
+}
+
+function goWizardStep() {
+  const s = WIZARD_STEPS[wizardIdx];
+  if (s.panel && s.panel !== currentPanel) switchPanel(s.panel);
+  else renderWizardBar(document.getElementById('setupWizard'));
+}
+
+/* end wizard */
+
+async function presetModelMapping() {
+  // 预设 OpenAI → 上游模型映射
+  const cfg = await invoke('get_config').catch(() => ({}));
+  let map = {};
+  try { map = JSON.parse(cfg.model_map || '{}'); } catch (_) {}
+  const defaults = {
+    'gpt-5.5': 'deepseek-v4-pro',
+    'gpt-5': 'deepseek-v4-pro',
+    'gpt-4o': 'deepseek-v4-pro',
+    'gpt-4o-mini': 'deepseek-v4-pro',
+    'gpt-4.1': 'deepseek-v4-pro',
+    'o3-model': 'deepseek-v4-pro',
+    'o4-model': 'deepseek-v4-pro',
+  };
+  let changed = false;
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!map[k]) { map[k] = v; changed = true; }
+  }
+  if (changed) {
+    await invoke('save_config', { config: { ...cfg, model_map: JSON.stringify(map) } });
+  }
+}
+
+async function autoCheckUpgrade() {
+  const last = localStorage.getItem('lastUpgradeCheck');
+  const today = new Date().toISOString().slice(0, 10);
+  if (last === today) {
+    // 今天已检查过，从缓存恢复指示状态
+    applyUpdateIndicator(!!localStorage.getItem('updateAvailable'));
+    return;
+  }
+
+  localStorage.setItem('lastUpgradeCheck', today);
+  try {
+    const info = await invoke('check_upgrade');
+    if (info.has_update) {
+      window._updateInfo = info;
+      localStorage.setItem('updateAvailable', '1');
+      applyUpdateIndicator(true);
+    } else {
+      window._updateInfo = null;
+      localStorage.removeItem('updateAvailable');
+      applyUpdateIndicator(false);
+    }
+  } catch (_) { /* 静默失败 */ }
+}
+
+function applyUpdateIndicator(hasUpdate) {
+  const logo = document.querySelector('.sidebar-brand .logo');
+  const ver = document.getElementById('sidebarVersion');
+  const btn = document.getElementById('btnUpdate');
+  if (hasUpdate) {
+    if (logo) { logo.classList.add('update-available'); logo.style.animation = 'logo-pulse-amber 3s ease-in-out infinite'; }
+    if (ver && !ver.querySelector('.update-dot')) {
+      const dot = document.createElement('span');
+      dot.className = 'update-dot';
+      ver.insertBefore(dot, ver.firstChild);
+    }
+    if (btn && !btn.querySelector('.update-dot')) {
+      btn.insertAdjacentHTML('afterbegin', '<span class="update-dot" style="vertical-align:middle;margin-right:3px;"></span>');
+    }
+  } else {
+    if (logo) { logo.classList.remove('update-available'); logo.style.animation = ''; }
+    const dot = ver?.querySelector('.update-dot'); if (dot) dot.remove();
+    const btnDot = btn?.querySelector('.update-dot'); if (btnDot) btnDot.remove();
+  }
+}
+
 async function mgmtRestart() {
   if (!await showConfirm('确定要重启 deecodex 服务吗？')) return;
 
@@ -2127,17 +2392,68 @@ async function mgmtRestart() {
 }
 
 async function mgmtUpdate() {
-  if (!await showConfirm('确定要升级 deecodex 到最新版本吗？\n\n升级将下载最新 Release，完成后请手动重启服务。')) return;
-
   const btn = document.getElementById('btnUpdate');
   if (btn) btn.disabled = true;
-  showToast('正在启动升级...', 'info');
+  showToast('正在检查更新...', 'info');
 
   try {
-    const msg = await invoke('update_service');
-    showToast(msg, 'success');
+    const info = await invoke('check_upgrade');
+    if (!info.has_update) {
+      showToast('已是最新版本 (' + info.current + ')', 'success');
+      window._updateInfo = null;
+      localStorage.removeItem('updateAvailable');
+      applyUpdateIndicator(false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    // 有更新，更新持久化状态
+    window._updateInfo = info;
+    localStorage.setItem('updateAvailable', '1');
+    applyUpdateIndicator(true);
+
+    // 有更新，显示更新日志弹窗
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'upgradeModal';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:640px;">
+        <div class="modal-header">
+          <h3>⇡ 发现新版本</h3>
+          <button class="modal-close" onclick="document.getElementById('upgradeModal').remove()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom:16px;font-family:var(--font-mono);">
+            <p style="color:var(--text-secondary);margin-bottom:4px;">当前版本</p>
+            <p style="font-size:16px;color:var(--amber);margin-bottom:12px;">${esc(info.current)}</p>
+            <p style="color:var(--text-secondary);margin-bottom:4px;">最新版本</p>
+            <p style="font-size:18px;color:var(--green);margin-bottom:12px;">${esc(info.latest)}</p>
+          </div>
+          ${info.changelog ? '<div style="border-top:1px solid var(--border-subtle);padding-top:12px;"><p style="color:var(--text-secondary);margin-bottom:8px;">更新日志</p><pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-primary);max-height:200px;overflow-y:auto;white-space:pre-wrap;">' + esc(info.changelog) + '</pre></div>' : ''}
+        </div>
+        <div style="padding:12px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border-subtle);">
+          <button class="btn btn-ghost" onclick="document.getElementById('upgradeModal').remove()">取消</button>
+          <button class="btn btn-primary" id="btnConfirmUpgrade">⇡ 立即升级</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+
+    document.getElementById('btnConfirmUpgrade').addEventListener('click', async () => {
+      overlay.remove();
+      const btn2 = document.getElementById('btnUpdate');
+      if (btn2) btn2.disabled = true;
+      showToast('正在启动升级...', 'info');
+      try {
+        const msg = await invoke('run_upgrade');
+        showToast(msg, 'success');
+      } catch (err) {
+        showToast('升级失败: ' + err, 'error');
+      }
+      if (btn2) btn2.disabled = false;
+    });
+
   } catch (err) {
-    showToast('升级失败: ' + err, 'error');
+    showToast('检查更新失败: ' + err, 'error');
   }
 
   if (btn) btn.disabled = false;
@@ -2146,45 +2462,67 @@ async function mgmtUpdate() {
 async function mgmtLogs() {
   // 移除已存在的日志弹窗
   const existing = document.getElementById('logModal');
-  if (existing) existing.remove();
+  if (existing) { clearInterval(window._logAutoRefresh); existing.remove(); }
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'logModal';
 
+  const autoRefresh = localStorage.getItem('logAutoRefresh') === 'true';
   overlay.innerHTML = `
     <div class="modal-box" style="max-width:940px;">
       <div class="modal-header">
         <h3>☰ 服务日志</h3>
-        <button class="modal-close" onclick="document.getElementById('logModal').remove()">✕</button>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <label style="font-size:11px;color:var(--text-secondary);cursor:pointer;display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" id="logAutoRefreshChk" ${autoRefresh ? 'checked' : ''} onchange="toggleLogAutoRefresh(this.checked)"> 自动刷新
+          </label>
+          <button class="modal-close" onclick="document.getElementById('logModal').remove();clearInterval(window._logAutoRefresh)">✕</button>
+        </div>
       </div>
       <div class="modal-body">
         <div id="logContent">加载中...</div>
       </div>
     </div>`;
 
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) { clearInterval(window._logAutoRefresh); overlay.remove(); } });
   document.body.appendChild(overlay);
 
+  await refreshLogs();
+  if (autoRefresh) window._logAutoRefresh = setInterval(refreshLogs, 5000);
+}
+
+function toggleLogAutoRefresh(on) {
+  localStorage.setItem('logAutoRefresh', on);
+  if (on) {
+    if (!window._logAutoRefresh) window._logAutoRefresh = setInterval(refreshLogs, 5000);
+  } else {
+    clearInterval(window._logAutoRefresh);
+    window._logAutoRefresh = null;
+  }
+}
+
+async function refreshLogs() {
   try {
     const lines = await invoke('get_logs');
     const container = document.getElementById('logContent');
+    if (!container) return;
 
     if (!lines || lines.length === 0) {
       container.innerHTML = '<div class="log-empty">暂无日志</div>';
       return;
     }
 
-    // 过滤掉空行和占位符
     const filtered = lines.filter(l => l && l !== '(暂无日志)');
     if (filtered.length === 0) {
       container.innerHTML = '<div class="log-empty">暂无日志</div>';
       return;
     }
 
+    // 反转：最新日志在前
     let html = '';
-    for (const line of filtered) {
-      const parsed = parseLogLine(line);
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      const parsed = parseLogLine(filtered[i]);
       html += '<div class="log-entry">' +
         '<span class="log-time">' + esc(parsed.time || '') + '</span>' +
         '<span class="log-level-badge log-level-' + (parsed.level || 'unknown') + '">' + esc((parsed.level || '?').toUpperCase()) + '</span>' +
@@ -2194,7 +2532,8 @@ async function mgmtLogs() {
     }
     container.innerHTML = html || '<div class="log-empty">无匹配日志条目</div>';
   } catch (err) {
-    document.getElementById('logContent').innerHTML = '<div class="log-empty">无法加载日志: ' + esc(String(err)) + '</div>';
+    const container = document.getElementById('logContent');
+    if (container) container.innerHTML = '<div class="log-empty">无法加载日志: ' + esc(String(err)) + '</div>';
   }
 }
 
