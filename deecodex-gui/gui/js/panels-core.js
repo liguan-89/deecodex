@@ -280,21 +280,21 @@ function renderHelp() {
       <h3>Codex 配置</h3>
       <p><strong>Codex 桌面版</strong> — 编辑 <code>~/.codex/config.toml</code>：</p>
       <div class="code-block"><pre><span class="comment"># ~/.codex/config.toml</span>
-<span class="key">model</span> = <span class="str">"deepseek-v4-pro"</span>
+<span class="key">model</span> = <span class="str">"gpt-5.5"</span>
 <span class="key">model_provider</span> = <span class="str">"custom"</span>
 <span class="key">model_reasoning_effort</span> = <span class="str">"medium"</span>
 
 <span class="key">[model_providers.custom]</span>
 <span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/v1"</span>
 <span class="key">name</span> = <span class="str">"custom"</span>
-<span class="key">requires_openai_auth</span> = <span class="val">true</span>
+<span class="key">requires_openai_auth</span> = <span class="val">false</span>
 <span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
       <p style="font-size:11px; color:var(--text-muted);">⚠ base_url 末尾不要加 /，端口须与 deecodex 监听端口一致。</p>
 
       <p style="margin-top:16px;"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
       <ul>
         <li>API 请求地址：<strong>http://127.0.0.1:4446/v1</strong></li>
-        <li>API Key：任意值（若 deecodex 未开启客户端认证）</li>
+        <li>API Key：任意值（若 deecodex 未开启客户端认证）。如需使用 CC Switch，请关闭高级设置中的「自动注入」和「持久注入」，避免两个工具同时修改配置文件路由导致冲突。</li>
       </ul>
     </div>
 
@@ -302,11 +302,13 @@ function renderHelp() {
       <h3>模型映射</h3>
       <p>模型映射定义了 <strong>Codex 使用的模型名 → DeepSeek 实际模型名</strong> 的对应关系。</p>
       <p>默认映射：</p>
-      <div class="code-block"><pre><span class="key">"GPT-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5.4"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"gpt-5.4-mini"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"codex-auto-review"</span>: <span class="str">"deepseek-v4-flash"</span></pre></div>
+      <div class="code-block"><pre><span class="key">"gpt-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-5"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-4o"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-4o-mini"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-4.1"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"o3-model"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"o4-model"</span>: <span class="str">"deepseek-v4-pro"</span></pre></div>
       <p>键名<strong>大小写敏感</strong>。新模型发布后需更新此映射表。</p>
     </div>
 
@@ -321,8 +323,8 @@ function renderHelp() {
           <tr><td>重启</td><td><code>./deecodex.sh restart</code></td><td><code>deecodex.bat restart</code></td></tr>
           <tr><td>状态</td><td><code>./deecodex.sh status</code></td><td><code>deecodex.bat status</code></td></tr>
           <tr><td>日志</td><td><code>./deecodex.sh logs</code></td><td><code>deecodex.bat logs</code></td></tr>
-          <tr><td>健康检查</td><td><code>./deecodex.sh health</code></td><td><code>deecodex.bat health</code></td></tr>
-          <tr><td>升级</td><td><code>./deecodex.sh update</code></td><td><code>deecodex.bat update</code></td></tr>
+          <tr><td>修复配置</td><td><code>./deecodex.sh fix-config</code></td><td><code>deecodex.bat fix-config</code></td></tr>
+          <tr><td>诊断</td><td><code>./deecodex.sh diagnose</code></td><td><code>deecodex.bat diagnose</code></td></tr>
         </tbody>
       </table>
       <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>

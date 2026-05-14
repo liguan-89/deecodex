@@ -6,17 +6,13 @@
 
 ## 当前分区
 
-你正在 **功能/账号管理** 分区工作，负责多账号、配置、会话、缓存、速率限制等基础设施。
+你正在 **功能/使用帮助** 分区工作，负责使用帮助文档。
 
 **只修改这些文件：**
-- `src/accounts.rs` — 多账号管理
-- `src/config.rs` — 配置系统
-- `src/validate.rs` — 诊断引擎
-- `src/codex_config.rs` / `src/cdp.rs` / `src/inject.rs` — Codex/CDP 注入
-- `src/session.rs` / `src/cache.rs` / `src/backup_store.rs` — 会话/缓存
-- `src/ratelimit.rs` / `src/metrics.rs` / `src/token_anomaly.rs` — 限流/指标
-- `deecodex-gui/gui/js/accounts.js` — 账号管理面板
-- `gui/nav/04-账号管理.html` — 导航栏片段
+- `deecodex-gui/gui/js/panels-core.js` — 帮助面板渲染
+- `gui/nav/08-使用帮助.html` — 导航栏片段
+
+本分区无核心 Rust 模块。
 
 排查 bug 时可以阅读任何分区代码。修改仅限本分区文件。
 
@@ -24,12 +20,10 @@
 
 ```
 cargo build
-cargo build --release
-cargo test
-cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
+本分区通常只需改 HTML。`cargo build` 用于确认不破坏编译。
 
 ## 前端规则
 
