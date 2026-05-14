@@ -2355,3 +2355,34 @@ pub async fn stop_plugin_account(
     .await
     .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    #[test]
+    fn test_clear_logs_logic() {
+        let dir = std::env::temp_dir().join("deecodex_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_clear.log");
+        std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(&[0xEF, 0xBB, 0xBF]).unwrap();
+        drop(f);
+
+        let mut buf = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut buf)
+            .unwrap();
+        assert_eq!(buf, &[0xEF, 0xBB, 0xBF]);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+}

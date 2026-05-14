@@ -85,6 +85,46 @@ Write-Banner
 # ===== Phase 1: 环境检测 =====
 Write-Step 1 "检测安装环境"
 
+# WebView2 Runtime 检测（Tauri 桌面应用必需）
+$WebView2Key = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+$WebView2Ok = $false
+if (Test-Path $WebView2Key) {
+    Write-Ok "WebView2 Runtime 已安装"
+    $WebView2Ok = $true
+} elseif (Test-Path "C:\Program Files (x86)\Microsoft\EdgeWebView\Application\*\msedgewebview2.exe") {
+    Write-Ok "WebView2 Runtime 已安装"
+    $WebView2Ok = $true
+} elseif (Get-AppxPackage -Name "Microsoft.WebView2" -ErrorAction SilentlyContinue) {
+    Write-Ok "WebView2 Runtime 已安装"
+    $WebView2Ok = $true
+}
+
+if (-not $WebView2Ok) {
+    Write-Warn "WebView2 Runtime 未安装（Tauri 桌面界面必需）"
+    Write-Host "         安装: winget install Microsoft.EdgeWebView2Runtime" -ForegroundColor Yellow
+    Write-Url "https://developer.microsoft.com/microsoft-edge/webview2/"
+    Write-Host ""
+    if (Confirm-Prompt "是否现在自动安装 WebView2 Runtime？") {
+        try {
+            winget install Microsoft.EdgeWebView2Runtime --silent --accept-package-agreements --accept-source-agreements
+            Write-Ok "WebView2 Runtime 安装完成"
+        } catch {
+            Write-Err "自动安装失败，请手动下载安装"
+        }
+    }
+}
+
+# 下载 WebView2Loader.dll（Tauri v1 兼容性备用）
+$WebView2Loader = Join-Path $InstallDir "WebView2Loader.dll"
+if (-not (Test-Path $WebView2Loader)) {
+    try {
+        Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest/download/WebView2Loader.dll" -OutFile $WebView2Loader -ErrorAction SilentlyContinue
+        if (Test-Path $WebView2Loader) {
+            Write-Ok "WebView2Loader.dll 已下载（兼容性备用）"
+        }
+    } catch {}
+}
+
 $GitOk = Test-Command "git"
 if (-not $GitOk) {
     Write-Host "         安装 Git: winget install Git.Git" -ForegroundColor Yellow
