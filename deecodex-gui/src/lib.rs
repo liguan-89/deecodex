@@ -432,6 +432,7 @@ pub fn run() {
             commands::save_config,
             commands::logs::get_logs,
             commands::logs::clear_logs,
+            commands::logs::debug_gui_state,
             commands::validate_config,
             commands::check_upgrade,
             commands::run_upgrade,

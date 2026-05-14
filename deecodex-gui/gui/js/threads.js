@@ -27,13 +27,6 @@ function renderThreads() {
 }
 
 async function refreshThreads() {
-  if (!window.DeeCodexTauri?.hasTauri) {
-    const tbody = document.getElementById('threadsTableBody');
-    if (tbody) {
-      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">预览模式下不加载本地线程数据</td></tr>';
-    }
-    return;
-  }
   try {
     const [status, list] = await Promise.all([
       invoke('get_threads_status'),

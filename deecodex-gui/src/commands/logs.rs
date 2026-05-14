@@ -1,4 +1,34 @@
 use super::load_args;
+use serde_json::json;
+
+#[tauri::command]
+pub fn debug_gui_state() -> serde_json::Value {
+    let args = load_args();
+    let log_path = args.data_dir.join("deecodex.log");
+    let (exists, size, modified) = match std::fs::metadata(&log_path) {
+        Ok(m) => (
+            true,
+            m.len(),
+            m.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        ),
+        Err(_) => (false, 0, 0),
+    };
+    json!({
+        "data_dir": args.data_dir.to_string_lossy(),
+        "log_path": log_path.to_string_lossy(),
+        "log_exists": exists,
+        "log_size": size,
+        "log_modified": modified,
+        "runtime": {
+            "hasTauri": true,
+            "invoke_available": true
+        }
+    })
+}
 
 fn recent_log_lines(content: &str, max_lines: usize) -> Vec<String> {
     let lines: Vec<String> = content

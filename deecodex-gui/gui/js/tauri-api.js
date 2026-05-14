@@ -15,8 +15,17 @@
     return;
   }
 
+  // 统一 trace 包装 — 所有 IPC 调用自动记录
   async function invoke(cmd, args) {
-    return invokeFn(cmd, args);
+    console.debug('[ipc:start]', cmd, args || {});
+    try {
+      var result = await invokeFn(cmd, args);
+      console.debug('[ipc:ok]', cmd, typeof result === 'string' ? result.slice(0, 100) : '…');
+      return result;
+    } catch (error) {
+      console.error('[ipc:error]', cmd, error);
+      throw error;
+    }
   }
 
   document.documentElement.dataset.runtime = 'tauri';

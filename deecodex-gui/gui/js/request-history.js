@@ -221,11 +221,6 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  const statsEl = document.getElementById('historyStats');
 		  const barsEl = document.getElementById('historyChartBars');
 		  const cardsEl = document.getElementById('historyCardsContainer');
-		  if (!window.DeeCodexTauri?.hasTauri) {
-		    if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">预览模式下不加载请求历史</div>';
-		    if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">真实请求历史需要在桌面 GUI 中查看</div>';
-		    return;
-		  }
 		  try {
 		    const [entries, monthlyStats] = await Promise.all([
 		      invoke('list_request_history', { limit: 3000 }),
