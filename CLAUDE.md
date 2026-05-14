@@ -132,7 +132,7 @@ gui/
 
 - **不把大段 JS/CSS 写回 `index.html`**，放到 `gui/js/<feature>.js` 或 `gui/css/app.css`
 - **不直接调用 `window.__TAURI__`**，统一走 `DeeCodexTauri.invoke(name, args)`
-- **不直接访问 `localStorage`**，统一走 `deeStorage`（浏览器安全策略下自动降级为内存存储）
+- **不直接访问 `localStorage`**，统一走 `window.deeStorage`（Tauri WebView 中映射到 `window.localStorage`）
 - **不为 `file://` 预览模式牺牲正式 Tauri GUI 逻辑**
 - **非 Tauri 环境直接显示阻断页**，不做假数据或静默降级
 - **新增 Tauri command 优先拆到 `src/commands/<feature>.rs`**（已有 `logs.rs`）
@@ -170,6 +170,40 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 - **Concurrency:** `DashMap` for shared maps, `Arc<Mutex<VecDeque>>` for bounded queues. Tokio async runtime.
 - **Error handling:** `anyhow` for internal errors. Custom error types in `files.rs`, `prompts.rs`, `vector_stores.rs` implement `IntoResponse`.
 - **Logging:** `tracing` with `tracing-subscriber` env-filter. Daemon mode writes to log file; foreground writes to stderr. Default filter: `deecodex=info`.
+
+## GUI Bug 定位流程
+
+遇到 GUI 按钮、弹窗、状态刷新、Tauri command 不生效时，**必须按以下顺序逐层排除**，禁止跳步猜测：
+
+### 1. 确认运行环境
+- 是否在 Tauri WebView 中？`file://` 打开不能作为功能测试依据
+- 启动 GUI：`/Users/liguan/deecodex/target-mac/debug/deecodex-gui`
+- 排查工具：调用 `invoke('debug_gui_state')` 查看 data_dir、log_path、log_size
+
+### 2. 确认前端事件
+- 按钮是否存在？事件是否绑定？点击后是否进入 handler？
+- 查看浏览器控制台（`cargo tauri dev` 可看到 console.debug/error）
+- 所有 IPC 调用已自动 trace：`[ipc:start]` / `[ipc:ok]` / `[ipc:error]`
+
+### 3. 确认 IPC 调用
+- command 名称是否和 `generate_handler!` 注册一致？
+- 参数名是否和 Rust 函数参数一致？
+- 前端 catch 是否吞掉错误？
+
+### 4. 确认 Rust command
+- 是否被 `#[tauri::command]` 标注？
+- 是否在 `tauri::generate_handler![]` 注册？
+- 函数是否返回 `Result<T, String>` 并暴露真实错误？
+
+### 5. 确认副作用
+- 文件是否真的改了？状态是否真的写入？
+- 是否被后续逻辑重新写回？（如清空日志后又 `tracing::info!` 写回）
+- 是否有缓存、自动刷新、轮询覆盖结果？
+
+### 6. 确认展示逻辑
+- 后端返回值是否正确？
+- 前端过滤/解析是否误判？（如 BOM-only 文件被当作有内容）
+- 空状态是否正确显示？
 - **Dynamic JSON:** `serde_json::Value` used extensively for API translation — fields are manipulated dynamically rather than through strict struct deserialization.
 - **路径绝对化：** `data_dir` 等所有目录配置在使用前必须转为绝对路径。clap `default_value` 可能产生相对路径（如 `.deecodex`），不同启动目录下指向不同位置，导致账号/配置/日志静默分离。`load_args()` 中统一用 `config::home_dir()` 转换。
 - **静默失败加日志：** 关键分支（如托盘菜单构建、账号加载、文件读取）返回空结果时要打 `tracing::warn!`，不静默跳过。
