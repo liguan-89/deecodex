@@ -157,12 +157,7 @@ body {
   display: flex; flex-direction: column; gap: 2px;
 }
 
-.nav-section-label {
-  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
-  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em;
-  padding: 16px 10px 6px;
-}
-.nav-section-label:first-child { padding-top: 4px; }
+.nav-section-label { display: none; }
 
 .nav-item {
   display: flex; align-items: center; gap: 10px;
@@ -1350,6 +1345,280 @@ body {
   cursor: pointer; font-family: var(--font-mono); font-size: 11px;
 }
 
+/* ══════════════════════════════════════════════════════════════
+   亮色主题 — Daylight Instrument
+   ══════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --bg-root: #eeede9;
+  --bg-surface: #e7e6e2;
+  --bg-elevated: #dfdfda;
+  --bg-card: #ebebe7;
+  --bg-input: #f7f7f4;
+
+  --border: #d0cdc6;
+  --border-subtle: #dbd8d2;
+  --border-default: #d0cdc6;
+  --border-active: #d94f3a;
+  --border-glow: rgba(217, 79, 58, 0.15);
+
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b6b6b;
+  --text-muted: #9e9e9e;
+  --text-heading: #333333;
+  --fg: #1a1a1a;
+
+  --accent: #d94f3a;
+  --accent-dim: rgba(217, 79, 58, 0.07);
+  --accent-soft: rgba(217, 79, 58, 0.13);
+  --amber: #c77820;
+  --amber-dim: rgba(199, 120, 32, 0.10);
+  --green: #2d8a5c;
+  --green-dim: rgba(45, 138, 92, 0.10);
+  --red: #d94f3a;
+  --red-dim: rgba(217, 79, 58, 0.10);
+}
+
+/* ── 亮色模式下覆盖硬编码深色值 ── */
+
+[data-theme="light"] .app::after {
+  background:
+    linear-gradient(rgba(0,0,0,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+[data-theme="light"] .sidebar::before {
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.015) 2px, rgba(0,0,0,0.015) 4px);
+}
+
+[data-theme="light"] .btn-primary {
+  background: var(--accent-soft);
+  border-color: rgba(217, 79, 58, 0.28);
+  color: var(--accent);
+}
+[data-theme="light"] .btn-primary:hover {
+  background: rgba(217, 79, 58, 0.18);
+  box-shadow: 0 0 16px rgba(217, 79, 58, 0.08);
+}
+
+[data-theme="light"] .btn-ghost {
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+[data-theme="light"] .btn-ghost:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .btn-danger {
+  background: var(--red-dim);
+  border-color: rgba(217, 79, 58, 0.25);
+  color: var(--red);
+}
+[data-theme="light"] .btn-danger:hover {
+  background: rgba(217, 79, 58, 0.18);
+  box-shadow: 0 0 16px rgba(217, 79, 58, 0.08);
+}
+
+[data-theme="light"] .btn-warning {
+  background: var(--amber-dim);
+  color: var(--amber);
+  border: 1px solid rgba(199, 120, 32, 0.22);
+}
+[data-theme="light"] .btn-warning:hover {
+  background: rgba(199, 120, 32, 0.18);
+  box-shadow: 0 0 16px rgba(199, 120, 32, 0.10);
+}
+
+[data-theme="light"] .btn {
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .modal-overlay {
+  background: rgba(0,0,0,0.30);
+}
+
+[data-theme="light"] .card-badge.on {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid rgba(45, 138, 92, 0.18);
+}
+[data-theme="light"] .card-badge.off {
+  background: rgba(0,0,0,0.03);
+  color: var(--text-muted);
+  border: 1px solid rgba(0,0,0,0.07);
+}
+
+[data-theme="light"] .status-card {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+}
+[data-theme="light"] .status-card:hover {
+  border-color: var(--border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+}
+
+[data-theme="light"] .status-card::after {
+  background: var(--accent);
+}
+
+[data-theme="light"] .session-card {
+  background: var(--bg-root);
+  border-color: var(--border-subtle);
+}
+[data-theme="light"] .session-card:hover {
+  border-color: var(--border);
+}
+
+[data-theme="light"] .threads-table td {
+  border-bottom-color: var(--border-subtle);
+}
+[data-theme="light"] .threads-table th {
+  border-bottom-color: var(--border);
+}
+
+[data-theme="light"] .log-entry {
+  border-bottom-color: var(--border-subtle);
+}
+
+[data-theme="light"] .config-section-header {
+  border-bottom-color: var(--border-subtle);
+}
+[data-theme="light"] .config-actions {
+  border-top-color: var(--border-subtle);
+}
+
+[data-theme="light"] .history-stat,
+[data-theme="light"] .history-chart,
+[data-theme="light"] .threads-stat {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+
+[data-theme="light"] .qr-dialog img {
+  background: #fdfdfc;
+}
+[data-theme="light"] .qr-dialog {
+  box-shadow: 0 16px 48px rgba(0,0,0,0.10);
+}
+
+[data-theme="light"] .tag-current {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid rgba(45, 138, 92, 0.15);
+}
+[data-theme="light"] .tag-other {
+  background: var(--amber-dim);
+  color: var(--amber);
+  border: 1px solid rgba(199, 120, 32, 0.15);
+}
+
+[data-theme="light"] .plugin-state-badge.on {
+  background: rgba(45, 138, 92, 0.06);
+  border: 1px solid rgba(45, 138, 92, 0.12);
+}
+[data-theme="light"] .plugin-state-badge.off {
+  background: rgba(0,0,0,0.02);
+  border: 1px solid rgba(0,0,0,0.05);
+}
+
+[data-theme="light"] .main::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+[data-theme="light"] .sidebar::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+[data-theme="light"] .toast {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+
+[data-theme="light"] .diag-item {
+  background: var(--bg-card);
+}
+
+[data-theme="light"] .threads-toggle-track {
+  background: var(--bg-card);
+}
+[data-theme="light"] .threads-toggle-knob {
+  background: var(--text-primary);
+}
+
+/* 亮色导航激活项 — 朱红强调 */
+[data-theme="light"] .nav-item.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+[data-theme="light"] .nav-item.active::before {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+[data-theme="light"] .nav-item:hover {
+  background: var(--accent-dim);
+}
+
+/* 亮色侧边栏 footer 按钮 */
+[data-theme="light"] .sidebar-footer .save-btn {
+  background: var(--accent-soft);
+  border-color: rgba(217, 79, 58, 0.30);
+  color: var(--accent);
+}
+[data-theme="light"] .sidebar-footer .save-btn:hover {
+  background: rgba(217, 79, 58, 0.20);
+  box-shadow: 0 0 16px rgba(217, 79, 58, 0.08);
+}
+
+/* 亮色 mgmt-header */
+[data-theme="light"] .mgmt-section .mgmt-header::before {
+  color: var(--accent);
+}
+
+/* 亮色 sidebar-brand logo 动画 */
+[data-theme="light"] .sidebar-brand .logo::before {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent), 0 0 22px var(--border-glow);
+}
+
+[data-theme="light"] .sidebar-brand .logo.update-available::before {
+  background: var(--amber) !important;
+  box-shadow: 0 0 10px var(--amber), 0 0 22px rgba(199, 120, 32, 0.20) !important;
+}
+
+/* 亮色更新提示 */
+[data-theme="light"] .sidebar-brand .version .update-dot {
+  background: var(--amber);
+  box-shadow: 0 0 4px var(--amber);
+}
+
+/* 主题切换按钮 */
+.theme-toggle {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-muted); cursor: pointer;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 4px; width: 100%;
+  position: relative; z-index: 2;
+  transition: border-color var(--transition);
+}
+.theme-toggle:hover {
+  border-color: var(--border-default);
+}
+.theme-toggle-btn {
+  flex: 1; text-align: center; padding: 5px 0;
+  border-radius: 3px; cursor: pointer; transition: all var(--transition);
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.03em;
+  border: none; background: transparent;
+  color: var(--text-muted);
+}
+.theme-toggle-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.theme-toggle-btn:hover:not(.active) {
+  color: var(--text-secondary);
+}
+
 </style>
 </head>
 <body>
@@ -1369,6 +1638,11 @@ body {
       <div class="status-bar" id="statusBar">
         <span class="indicator ok" id="connDot"></span>
         <span id="connLabel">服务运行中</span>
+      </div>
+      <div class="theme-toggle" id="themeToggle">
+        <button class="theme-toggle-btn active" data-theme="dark" title="深色模式">◉</button>
+        <button class="theme-toggle-btn" data-theme="light" title="亮色模式">◎</button>
+        <button class="theme-toggle-btn" data-theme="auto" title="自动切换">◐</button>
       </div>
       <button class="save-btn" id="sidebarSaveBtn" onclick="saveConfig()">保存配置</button>
       <div class="sidebar-status" id="sidebarMsg"></div>
@@ -1390,6 +1664,56 @@ const invoke = window.__TAURI__?.core?.invoke || (async (cmd, args) => {
   console.warn('Tauri API 不可用，命令未执行:', cmd, args);
   throw new Error('Tauri API 不可用');
 });
+
+// ═══════════════════════════════════════════════════════════════
+// 主题管理
+// ═══════════════════════════════════════════════════════════════
+const THEME_KEY = 'deecodex.theme';
+
+function getStoredTheme() {
+  return localStorage.getItem(THEME_KEY) || 'auto';
+}
+
+function getAutoTheme() {
+  const h = new Date().getHours();
+  return h >= 6 && h < 18 ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  const effective = theme === 'auto' ? getAutoTheme() : theme;
+  document.documentElement.setAttribute('data-theme', effective);
+  localStorage.setItem(THEME_KEY, theme);
+
+  // 更新切换按钮激活状态
+  const btns = document.querySelectorAll('.theme-toggle-btn');
+  btns.forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
+}
+
+function initTheme() {
+  const saved = getStoredTheme();
+  applyTheme(saved);
+
+  // 点击事件
+  document.getElementById('themeToggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('.theme-toggle-btn');
+    if (!btn) return;
+    applyTheme(btn.dataset.theme);
+  });
+
+  // 自动模式下每小时重新评估
+  setInterval(() => {
+    if (getStoredTheme() === 'auto') {
+      applyTheme('auto');
+    }
+  }, 3600000);
+}
+
+// 尽早初始化主题（DOM 就绪前设置 data-theme 属性，减少闪烁）
+(function() {
+  const saved = localStorage.getItem(THEME_KEY) || 'auto';
+  const effective = saved === 'auto' ? getAutoTheme() : saved;
+  document.documentElement.setAttribute('data-theme', effective);
+})();
 
 // ═══════════════════════════════════════════════════════════════
 // 数据定义（与 GuiConfig 对应）
@@ -1455,6 +1779,7 @@ let upstreamModels = [];
 // 初始化
 // ═══════════════════════════════════════════════════════════════
 async function init() {
+  initTheme();
   loadNav();
   switchPanel('status');
   await Promise.all([loadStatus(), loadConfig(), loadAccountsData()]);
@@ -1466,8 +1791,31 @@ async function init() {
   // 首次安装 / 更新后配置引导（异步，不阻塞）
   checkSetupWizard();
 
+  // 监听托盘账号切换事件，自动刷新
+  const tauriEvent = window.__TAURI__?.event;
+  if (tauriEvent?.listen) {
+    (async () => {
+      try {
+        await tauriEvent.listen('account-switched', () => {
+          loadStatus();
+          loadAccountsData();
+        });
+        console.log('[deecodex] 已注册 account-switched 事件监听');
+      } catch (e) {
+        console.warn('[deecodex] 事件监听注册失败:', e);
+      }
+    })();
+  } else {
+    console.warn('[deecodex] __TAURI__.event 不可用，托盘切换后需手动刷新');
+  }
+
   setInterval(async () => {
-    if (currentPanel === 'status') await loadStatus();
+    if (currentPanel === 'status') {
+      await loadStatus();
+      await loadAccountsData();
+    } else if (currentPanel === 'accounts') {
+      await loadAccountsData();
+    }
   }, 10000);
 }
 
@@ -1496,6 +1844,16 @@ function switchPanel(panelId) {
   const sidebarMsg = document.getElementById('sidebarMsg');
   if (sidebarMsg) { sidebarMsg.textContent = ''; sidebarMsg.className = 'sidebar-status'; }
   renderPanel(panelId);
+}
+
+function goToConfig(sectionId) {
+  switchPanel('config');
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const el = document.getElementById('cfg-' + sectionId);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
 }
 
 function renderPanel(panelId) {
@@ -1554,6 +1912,25 @@ function renderStatus() {
 
   const port = v(s.port, '—');
   const addr = port !== '—' ? `http://127.0.0.1:${port}` : '—';
+  const running = s.running;
+
+  // 运行时长卡片
+  const statusDot = running
+    ? '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green);margin-right:6px;flex-shrink:0;"></span>'
+    : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:6px;flex-shrink:0;"></span>';
+  const uptimeCard = running
+    ? `<div class="status-card">
+         <div class="card-icon">◷ 运行时长</div>
+         <div style="display:flex;align-items:center;">${statusDot}<span class="card-value small">${esc(fmtUptime(s.uptime_secs))}</span></div>
+         <div class="card-label">自启动以来</div>
+         <span class="card-badge on">运行中</span>
+       </div>`
+    : `<div class="status-card" onclick="mgmtToggle()" style="cursor:pointer;">
+         <div class="card-icon">◷ 运行时长</div>
+         <div style="display:flex;align-items:center;">${statusDot}<span class="card-value small" style="color:var(--text-muted);">服务未启动</span></div>
+         <div class="card-label">点击启动服务</div>
+         <span class="card-badge off">已停止</span>
+       </div>`;
 
   return `
     <div class="page-header">
@@ -1561,46 +1938,23 @@ function renderStatus() {
       <p>实时监控 deecodex 运行状态与连接信息</p>
     </div>
     <div class="status-grid">
-      <div class="status-card">
-        <div class="card-icon">◷ 运行时长</div>
-        <div class="card-value small">${esc(fmtUptime(s.uptime_secs))}</div>
-        <div class="card-label">自启动以来</div>
-        <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
+      ${uptimeCard}
       <div class="status-card" ${accOnClick}>
         ${accHtml}
       </div>
-      <div class="status-card">
+      <div class="status-card" onclick="goToConfig('basic')" style="cursor:pointer;">
         <div class="card-icon">⬡ 服务端口</div>
         <div class="card-value">${esc(port)}</div>
         <div class="card-label">${esc(addr)}</div>
         <span class="card-badge" style="visibility:hidden">—</span>
       </div>
-      <div class="status-card">
-        <div class="card-icon">→ 上游</div>
-        <div class="card-value small">${esc(trunc(v(s.upstream, '—'), 42))}</div>
-        <div class="card-label">API 上游地址</div>
-        <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
-      <div class="status-card">
-        <div class="card-icon">◎ Vision</div>
-        <div class="card-value small">${esc(s.vision_enabled ? '已连接' : '未配置')}</div>
-        <div class="card-label">视觉路由状态</div>
-        ${badge(s.vision_enabled)}
-      </div>
-      <div class="status-card">
-        <div class="card-icon">▷ Computer</div>
-        <div class="card-value small">${esc(computerLabel(s.computer_executor))}</div>
-        <div class="card-label">Computer Executor</div>
-        ${badge(s.computer_executor && s.computer_executor !== 'disabled')}
-      </div>
-      <div class="status-card">
+      <div class="status-card" onclick="goToConfig('basic')" style="cursor:pointer;">
         <div class="card-icon">◈ 思考</div>
         <div class="card-value small">${esc(v(s.chinese_thinking, false) ? '中文' : '默认')}</div>
         <div class="card-label">思考模式</div>
         ${badge(s.chinese_thinking)}
       </div>
-      <div class="status-card">
+      <div class="status-card" onclick="mgmtLaunchCodex()" style="cursor:pointer;">
         <div class="card-icon">⬢ CDP 注入</div>
         <div class="card-value small">端口 ${esc(v(s.cdp_port, '—'))}</div>
         <div class="card-label">Codex 远程调试</div>
@@ -1633,7 +1987,7 @@ function renderConfig() {
 
   for (const sec of CONFIG_SECTIONS) {
     html += `
-    <div class="config-section">
+    <div class="config-section" id="cfg-${sec.id}">
       <div class="config-section-header">
         <span class="section-icon">${sec.icon}</span>
         <h3>${sec.label}</h3>
@@ -2188,14 +2542,15 @@ function showWizardBar() {
 
   const bar = document.createElement('div');
   bar.id = 'setupWizard';
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   bar.style.cssText = 'position:fixed;top:0;left:268px;right:0;z-index:100;'
-    + 'background:rgba(255,255,255,0.95);'
+    + (isLight ? 'background:rgba(255,255,255,0.95);' : 'background:var(--bg-elevated);')
     + 'border-bottom:2px solid var(--accent);'
     + 'padding:7px 20px;display:flex;align-items:center;gap:14px;'
     + 'font-family:var(--font-mono);font-size:11px;'
-    + 'box-shadow:0 2px 12px rgba(0,200,232,0.2);'
+    + 'box-shadow:0 2px 12px ' + (isLight ? 'rgba(217,79,58,0.15)' : 'rgba(0,200,232,0.2)') + ';'
     + 'animation:wzPulse 3s ease-in-out infinite;'
-    + 'color:#1a1a2e;';
+    + (isLight ? 'color:#1a1a2e;' : 'color:var(--text-primary);');
   document.body.appendChild(bar);
   // 主内容区下移避免遮挡
   const main = document.getElementById('mainContent');
@@ -2231,26 +2586,32 @@ function renderWizardBar(bar) {
   const isFirst = wizardIdx === 0;
   const isLast = wizardIdx === WIZARD_STEPS.length - 1;
   const pct = Math.round((wizardIdx + 1) / WIZARD_STEPS.length * 100);
+  const isLightWz = document.documentElement.getAttribute('data-theme') === 'light';
+  const tc = isLightWz ? '#1a1a2e' : 'var(--text-primary)';
+  const tc2 = isLightWz ? '#4a5568' : 'var(--text-secondary)';
+  const tc3 = isLightWz ? '#718096' : 'var(--text-muted)';
+  const progBg = isLightWz ? '#e2e8f0' : 'var(--border-subtle)';
+  const prevBg = isLightWz ? '#e2e8f0' : 'var(--bg-input)';
+  const prevBorder = isLightWz ? '#cbd5e0' : 'var(--border-default)';
+  const accentHex = isLightWz ? 'rgba(217,79,58,0.25)' : 'rgba(0,200,232,0.25)';
 
   let btnHtml = '';
   if (s.quick) {
     btnHtml = '<button id="wzAct" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:var(--accent-dim);border:1px solid rgba(0,200,232,0.25);color:var(--accent);font-family:var(--font-mono);">执行</button>';
+      + 'background:var(--accent-dim);border:1px solid ' + accentHex + ';color:var(--accent);font-family:var(--font-mono);">执行</button>';
   }
 
-  // 白底用暗色文字
-  const tc = '#1a1a2e'; const tc2 = '#4a5568'; const tc3 = '#718096';
   bar.innerHTML = ''
     + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + s.icon + '</span>'
     + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
-    + '<div style="flex-shrink:0;width:60px;height:2px;background:#e2e8f0;border-radius:1px;">'
+    + '<div style="flex-shrink:0;width:60px;height:2px;background:' + progBg + ';border-radius:1px;">'
     +   '<div style="width:' + pct + '%;height:100%;background:var(--accent);border-radius:1px;transition:width 300ms;"></div>'
     + '</div>'
     + '<b style="flex-shrink:0;color:' + tc + ';">' + s.title + '</b>'
     + '<span style="flex:1;color:' + tc2 + ';min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.desc + '</span>'
     + btnHtml
     + (!isFirst ? '<button id="wzPrev" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:#e2e8f0;border:1px solid #cbd5e0;color:' + tc2 + ';font-family:var(--font-mono);">←</button>' : '')
+      + 'background:' + prevBg + ';border:1px solid ' + prevBorder + ';color:' + tc2 + ';font-family:var(--font-mono);">←</button>' : '')
     + (!isLast ? '<button id="wzNext" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
       + 'background:var(--accent);border:1px solid var(--accent);color:#fff;font-family:var(--font-mono);">→</button>'
       : '<button id="wzDone" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
@@ -3879,17 +4240,17 @@ async function testUpstreamConnectivity() {
     const result = await invoke('test_upstream_connectivity', { upstream, apiKey });
     if (result.ok) {
       const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
-      if (resultEl) resultEl.innerHTML = `<span style="color:#22c55e;">✓ 连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--green);">✓ 连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
       showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
     } else if (result.error) {
-      if (resultEl) resultEl.innerHTML = `<span style="color:#ef4444;">✗ ${esc(result.error)}</span>`;
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">✗ ${esc(result.error)}</span>`;
       showToast('连通失败: ' + result.error, 'error');
     } else {
-      if (resultEl) resultEl.innerHTML = `<span style="color:#f59e0b;">⚠ HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--amber);">⚠ HTTP ${result.status} (${result.latency_ms}ms)</span>`;
       showToast(`上游返回 HTTP ${result.status}`, 'error');
     }
   } catch (e) {
-    if (resultEl) resultEl.innerHTML = `<span style="color:#ef4444;">✗ ${esc(String(e))}</span>`;
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">✗ ${esc(String(e))}</span>`;
     showToast('连通测试异常: ' + e, 'error');
   }
 }

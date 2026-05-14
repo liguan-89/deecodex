@@ -3,7 +3,7 @@ mod commands;
 use std::io::Write;
 use std::sync::Arc;
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::TrayIconBuilder,
     Manager,
 };
@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 use tracing;
 
 struct FlushWriter<W: Write>(W);
+
+use tauri::{Emitter, RunEvent};
 
 impl<W: Write> Write for FlushWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -68,7 +70,8 @@ impl ServerManager {
         let app_guard = self.app_handle.lock().await;
         let tray_guard = self.tray.lock().await;
         if let (Some(app), Some(tray)) = (app_guard.as_ref(), tray_guard.as_ref()) {
-            if let Ok(menu) = build_tray_menu(app, running) {
+            let data_dir = self.data_dir.lock().await;
+            if let Ok(menu) = build_tray_menu(app, running, &data_dir) {
                 let _ = tray.set_menu(Some(menu));
             }
             let _ = tray.set_tooltip(Some(&format!("deecodex · {label}")));
@@ -79,6 +82,7 @@ impl ServerManager {
 fn build_tray_menu(
     app: &tauri::AppHandle,
     running: bool,
+    data_dir: &std::path::Path,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let label = if running { "运行中" } else { "已停止" };
     let status_item = MenuItemBuilder::with_id("status", format!("deecodex · {label}"))
@@ -93,17 +97,48 @@ fn build_tray_menu(
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
 
-    let menu = MenuBuilder::new(app)
+    // 构建账号切换子菜单
+    let account_submenu = build_account_submenu(app, data_dir)?;
+
+    let mut menu_builder = MenuBuilder::new(app)
         .item(&status_item)
         .separator()
         .item(&start_item)
         .item(&stop_item)
         .separator()
-        .item(&open_item)
-        .item(&quit_item)
-        .build()?;
+        .item(&open_item);
+
+    // 插入账号切换子菜单（如果有账号）
+    if let Some(sub) = account_submenu {
+        menu_builder = menu_builder.separator().item(&sub);
+    }
+
+    let menu = menu_builder.item(&quit_item).build()?;
 
     Ok(menu)
+}
+
+fn build_account_submenu(
+    app: &tauri::AppHandle,
+    data_dir: &std::path::Path,
+) -> Result<Option<tauri::menu::Submenu<tauri::Wry>>, tauri::Error> {
+    let store = deecodex::accounts::load_accounts(data_dir);
+    if store.accounts.is_empty() {
+        return Ok(None);
+    }
+
+    let mut submenu = SubmenuBuilder::new(app, "切换账号");
+    for acc in &store.accounts {
+        let label = if Some(&acc.id) == store.active_id.as_ref() {
+            format!("✓ {} · {}", acc.name, acc.provider)
+        } else {
+            format!("  {} · {}", acc.name, acc.provider)
+        };
+        let item = MenuItemBuilder::with_id(format!("switch_to_{}", acc.id), label)
+            .build(app)?;
+        submenu = submenu.item(&item);
+    }
+    Ok(Some(submenu.build()?))
 }
 
 fn find_env_file() -> Option<std::path::PathBuf> {
@@ -206,7 +241,8 @@ pub fn run() {
         .setup(|app| {
             // 保留 Dock 图标，用户可在 Dock 看到运行状态
 
-            let menu = build_tray_menu(app.handle(), false)?;
+            let args = crate::commands::load_args();
+            let menu = build_tray_menu(app.handle(), false, &args.data_dir)?;
 
             let icon = {
                 // 生成 48x48 青色菱形托盘图标（RGBA），高分辨率让形状更清晰
@@ -272,6 +308,25 @@ pub fn run() {
                                 let manager = handle.state::<ServerManager>();
                                 let _ = commands::stop_service_inner(&manager).await;
                                 handle.exit(0);
+                            });
+                        }
+                        id if id.starts_with("switch_to_") => {
+                            let account_id = id.strip_prefix("switch_to_").unwrap_or("").to_string();
+                            let handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let manager = handle.state::<ServerManager>();
+                                match commands::switch_account_inner(&manager, account_id).await {
+                                    Ok(v) => {
+                                        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                                        tracing::info!(name = %name, "托盘切换账号成功");
+                                        // 通知前端刷新
+                                        let _ = handle.emit("account-switched", &v);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "托盘切换账号失败");
+                                    }
+                                }
+                                manager.update_tray().await;
                             });
                         }
                         _ => {}
@@ -406,6 +461,14 @@ pub fn run() {
             commands::start_plugin_account,
             commands::stop_plugin_account,
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 deecodex GUI 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 deecodex GUI 失败")
+        .run(|app_handle, event| {
+            if let RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
