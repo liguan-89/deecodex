@@ -466,10 +466,7 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject(
-            port,
-            load_active_account_context_window(&args.data_dir),
-        );
+        deecodex::codex_config::inject(port, load_active_account_context_window(&args.data_dir));
     }
 
     let (tx, mut rx) = tokio::sync::watch::channel(());
@@ -1015,7 +1012,10 @@ pub async fn check_upgrade() -> Result<Value, String> {
         return Err(format!("GitHub API 返回: {}", resp.status()));
     }
 
-    let body: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {e}"))?;
     let latest_tag = body["tag_name"].as_str().unwrap_or("").to_string();
     let release_body = body["body"].as_str().unwrap_or("").to_string();
 
@@ -1105,7 +1105,10 @@ fn find_or_download_script(script_name: &str, args: &Args) -> Result<std::path::
     download_script(script_name, deecodex_dir)
 }
 
-fn download_script(script_name: &str, dest_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+fn download_script(
+    script_name: &str,
+    dest_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let url = format!(
         "https://github.com/liguan-89/deecodex/releases/latest/download/{}",
         script_name
@@ -1999,14 +2002,14 @@ pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Val
 pub async fn list_threads() -> Result<Value, String> {
     let threads =
         deecodex::codex_threads::list_all().map_err(|e| format!("获取线程列表失败: {e}"))?;
-    Ok(serde_json::to_value(threads).map_err(|e| format!("序列化失败: {e}"))?)
+    serde_json::to_value(threads).map_err(|e| format!("序列化失败: {e}"))
 }
 
 #[tauri::command]
 pub async fn migrate_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
     let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("迁移失败: {e}"))?;
-    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
 }
 
 #[tauri::command]
@@ -2017,7 +2020,7 @@ pub async fn restore_threads(manager: State<'_, ServerManager>) -> Result<Value,
     if !manager.is_running().await {
         deecodex::codex_config::remove();
     }
-    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
 }
 
 #[tauri::command]
@@ -2025,7 +2028,7 @@ pub async fn calibrate_threads(manager: State<'_, ServerManager>) -> Result<Valu
     let data_dir = manager.data_dir.lock().await.clone();
     let diff =
         deecodex::codex_threads::calibrate(&data_dir).map_err(|e| format!("校准失败: {e}"))?;
-    Ok(serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))?)
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
 }
 
 #[tauri::command]

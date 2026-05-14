@@ -65,7 +65,11 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             search_dirs.push(PathBuf::from(&local_appdata).join("Codex"));
             search_dirs.push(PathBuf::from(&local_appdata).join("codex"));
-            search_dirs.push(PathBuf::from(&local_appdata).join("anthropic").join("Codex"));
+            search_dirs.push(
+                PathBuf::from(&local_appdata)
+                    .join("anthropic")
+                    .join("Codex"),
+            );
         }
     }
 
