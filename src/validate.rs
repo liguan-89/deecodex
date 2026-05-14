@@ -221,50 +221,31 @@ impl DiagnosticReport {
 // ── 1. 检查服务是否运行 ──────────────────────────────────────────────────────
 
 fn check_service_running(ctx: &DiagnosticContext) -> DiagnosticItem {
-    let pid_path = ctx.data_dir.join("deecodex.pid");
-
-    let pid_from_file = std::fs::read_to_string(&pid_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok());
-
-    let pid_running = pid_from_file
-        .filter(|&p| process_is_running(p))
-        .or_else(find_daemon_pid);
-
-    match pid_running {
-        Some(pid) => DiagnosticItem {
+    if deecodex_is_running(ctx) {
+        let pid_path = ctx.data_dir.join("deecodex.pid");
+        let pid = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .or_else(find_daemon_pid)
+            .unwrap_or(0);
+        DiagnosticItem {
             status: Status::Pass,
             check_name: "服务运行状态".into(),
-            message: format!("deecodex 守护进程正在运行 (PID: {})", pid),
+            message: format!("deecodex 服务正在运行 (PID: {})", pid),
             detail: Some(format!(
                 "端口: {}, PID 文件: {}",
                 ctx.port,
                 pid_path.display()
             )),
             suggestion: None,
-        },
-        None => {
-            // 检查是否端口正在监听（可能进程名不匹配）
-            if port_is_listening(ctx.port) {
-                DiagnosticItem {
-                    status: Status::Warn,
-                    check_name: "服务运行状态".into(),
-                    message: format!("端口 {} 正在被占用但未检测到 deecodex 进程", ctx.port),
-                    detail: Some("端口处于监听状态但进程 ID 不可识别".into()),
-                    suggestion: Some(
-                        "请检查是否有其他程序占用了 deecodex 端口，或使用 deecodex start 启动服务"
-                            .into(),
-                    ),
-                }
-            } else {
-                DiagnosticItem {
-                    status: Status::Fail,
-                    check_name: "服务运行状态".into(),
-                    message: "deecodex 服务未运行".into(),
-                    detail: None,
-                    suggestion: Some("请运行 deecodex start 或在控制面板中启动服务".into()),
-                }
-            }
+        }
+    } else {
+        DiagnosticItem {
+            status: Status::Fail,
+            check_name: "服务运行状态".into(),
+            message: "deecodex 服务未运行".into(),
+            detail: None,
+            suggestion: Some("请运行 deecodex start 或在控制面板中启动服务".into()),
         }
     }
 }
@@ -298,8 +279,14 @@ fn find_daemon_pid() -> Option<u32> {
     }
 }
 
-fn port_is_listening(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+fn deecodex_is_running(ctx: &DiagnosticContext) -> bool {
+    let pid_path = ctx.data_dir.join("deecodex.pid");
+    std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|&p| process_is_running(p))
+        .or_else(find_daemon_pid)
+        .is_some()
 }
 
 // ── 2. 账号模型连通性（同步占位） ────────────────────────────────────────────
@@ -562,25 +549,6 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
     }
 }
 
-// ── 5. GPT 预设模型映射缺失检查 ──────────────────────────────────────────────
-
-/// 常见模型名称（Codex 侧）
-const COMMON_MODELS: &[&str] = &[
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4.1",
-    "gpt-5",
-    "o3",
-    "o4-mini",
-    "o3-mini",
-    "claude-sonnet-4-5",
-    "claude-opus-4-5",
-    "claude-haiku-4-5",
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-];
 
 fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
     let raw = ctx.model_map.trim();
@@ -621,7 +589,7 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
     };
 
     let mut missing: Vec<&str> = Vec::new();
-    for model in COMMON_MODELS {
+    for model in accounts::CODEX_MODEL_LIST {
         if !map_obj.contains_key(*model) {
             missing.push(model);
         }
@@ -631,7 +599,7 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
         DiagnosticItem {
             status: Status::Pass,
             check_name: "模型映射".into(),
-            message: format!("模型映射完整（已覆盖 {} 个常见模型）", COMMON_MODELS.len()),
+            message: format!("模型映射完整（已覆盖 {} 个 Codex 模型）", accounts::CODEX_MODEL_LIST.len()),
             detail: Some(format!("映射条目总数: {}", map_obj.len())),
             suggestion: None,
         }
@@ -931,18 +899,23 @@ fn check_accounts_config(ctx: &DiagnosticContext) -> DiagnosticItem {
 
 fn check_port_conflict(ctx: &DiagnosticContext) -> DiagnosticItem {
     match std::net::TcpListener::bind(("127.0.0.1", ctx.port)) {
-        Ok(_) => {
-            // 端口可用
-            DiagnosticItem {
-                status: Status::Pass,
-                check_name: "端口冲突".into(),
-                message: format!("端口 {} 未被占用", ctx.port),
-                detail: None,
-                suggestion: None,
-            }
-        }
+        Ok(_) => DiagnosticItem {
+            status: Status::Pass,
+            check_name: "端口冲突".into(),
+            message: format!("端口 {} 未被占用", ctx.port),
+            detail: None,
+            suggestion: None,
+        },
         Err(_) => {
-            // 端口被占用，尝试找出占用者
+            if deecodex_is_running(ctx) {
+                return DiagnosticItem {
+                    status: Status::Pass,
+                    check_name: "端口冲突".into(),
+                    message: format!("端口 {} 由 deecodex 自身占用，无冲突", ctx.port),
+                    detail: None,
+                    suggestion: None,
+                };
+            }
             let occupant = find_port_occupant(ctx.port);
             DiagnosticItem {
                 status: Status::Warn,
@@ -1268,15 +1241,7 @@ fn check_codex_startup_order(ctx: &DiagnosticContext) -> DiagnosticItem {
     }
 
     // 检查 deecodex 是否在运行
-    let deecodex_running = {
-        let pid_path = ctx.data_dir.join("deecodex.pid");
-        std::fs::read_to_string(&pid_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .filter(|&p| process_is_running(p))
-            .or_else(find_daemon_pid)
-            .is_some()
-    };
+    let deecodex_running = deecodex_is_running(ctx);
 
     if !deecodex_running {
         return DiagnosticItem {
@@ -1384,11 +1349,11 @@ fn check_config_backups(ctx: &DiagnosticContext) -> DiagnosticItem {
 
     if backups.is_empty() {
         DiagnosticItem {
-            status: Status::Info,
+            status: Status::Pass,
             check_name: "配置备份".into(),
-            message: "未发现配置文件备份".into(),
+            message: "暂无配置备份（正常状态）".into(),
             detail: None,
-            suggestion: Some("如需恢复误操作，可在控制台中手动备份配置".into()),
+            suggestion: None,
         }
     } else {
         DiagnosticItem {
@@ -2276,7 +2241,7 @@ mod tests {
     fn model_map_with_all_models_is_pass() {
         let mut ctx = test_context();
         let mut map = serde_json::Map::new();
-        for model in COMMON_MODELS {
+        for model in accounts::CODEX_MODEL_LIST {
             map.insert(model.to_string(), format!("openai/{}", model).into());
         }
         ctx.model_map = serde_json::to_string(&map).unwrap();
@@ -2288,14 +2253,14 @@ mod tests {
     fn model_map_missing_some_is_warn() {
         let mut ctx = test_context();
         let map = serde_json::json!({
-            "gpt-4o": "openai/gpt-4o",
-            "gpt-4o-mini": "openai/gpt-4o-mini"
+            "gpt-5.5": "openai/gpt-5.5",
+            "gpt-5.4": "openai/gpt-5.4"
         });
         ctx.model_map = serde_json::to_string(&map).unwrap();
         let item = check_model_mapping(&ctx);
         assert_eq!(item.status, Status::Warn);
         let detail = item.detail.unwrap();
-        assert!(detail.contains("claude-sonnet-4-5") || detail.contains("deepseek-chat"));
+        assert!(detail.contains("gpt-5.4-mini") || detail.contains("gpt-5.3-codex"));
     }
 
     #[test]
