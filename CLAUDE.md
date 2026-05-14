@@ -32,12 +32,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 cargo build
 cargo build --release
-cargo test --all-targets
+cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
 Run a specific test: `cargo test <test_name>`
+
+**并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。
 
 ## Architecture
 
