@@ -126,6 +126,7 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 | 功能/使用帮助 | — | `gui/nav/08-使用帮助.html` |
 | 功能/DEX助手 | — | `gui/nav/09-DEX助手.html` |
 | 功能/个人中心 | — | `gui/nav/10-个人中心.html` |
+| 功能/Windows兼容 | `deecodex.bat`, `install.ps1`, `tauri.conf.json` 等 | 无（跨平台底层修复） |
 
 ### 提交前缀
 

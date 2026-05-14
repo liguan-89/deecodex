@@ -36,7 +36,8 @@
 │   ├── 插件管理/          ← 功能/插件管理（原插件系统）
 │   ├── 使用帮助/          ← 功能/使用帮助（原帮助）
 │   ├── DEX助手/           ← 功能/DEX助手
-│   └── 个人中心/          ← 功能/个人中心
+│   ├── 个人中心/          ← 功能/个人中心
+│   └── Windows兼容/       ← 功能/Windows兼容（跨平台修复）
 │
 └── 编译二进制/
     ├── 编译-mac/          ← macOS 编译
@@ -289,6 +290,30 @@ cargo build
 cargo test
 ```
 
+### 11. 功能/Windows兼容
+
+**覆盖模块：** 跨平台兼容性修复 — 图标、打包脚本、路径、编码等 Windows 特有问题
+
+**导航片段：** 无（跨平台底层修复，不涉及前端面板）
+
+**职责：** Windows 平台特有的编译兼容性问题、安装脚本修复、图标兼容性、路径处理、编码转换。
+
+**特殊规则：** 本分区可能修改共享文件（如 `deecodex.bat`、`install.ps1`、`tauri.conf.json` 等）。优先用 `#[cfg(target_os = "windows")]` 在源码中隔离，避免影响其他平台。
+
+**编译：**
+```bash
+cd 功能/Windows兼容
+cargo build
+cargo build -p deecodex-gui
+```
+
+**推送：**
+```bash
+cd 功能/Windows兼容
+git commit -m "<描述>"
+git push deecodex-new 功能/Windows兼容
+```
+
 ---
 
 ## 二、编译工作区
@@ -409,7 +434,7 @@ git push deecodex-new deecodex-gui
 合入一个功能分支后，立即同步其他 worktree 到最新主干：
 
 ```bash
-for b in 服务概览 协议配置 执行诊断 账号管理 请求历史 线程聚合 插件管理 使用帮助 DEX助手 个人中心; do
+for b in 服务概览 协议配置 执行诊断 账号管理 请求历史 线程聚合 插件管理 使用帮助 DEX助手 个人中心 Windows兼容; do
   git -C "功能/$b" merge deecodex-gui -m "merge: 同步 deecodex-gui"
 done
 git push deecodex-new 功能/服务概览 功能/协议配置 ...  # 同步后的分支也要推送
