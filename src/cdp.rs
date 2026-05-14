@@ -61,6 +61,20 @@ impl CdpClient {
         self.wait_response(id).await
     }
 
+    /// 注册脚本到所有新页面（Page.addScriptToEvaluateOnNewDocument）。
+    /// 确保 SPA 导航/页面重载后注入脚本仍然生效。
+    pub async fn add_script_to_new_documents(&mut self, script: &str) -> Result<()> {
+        let id = self.next_id();
+        let payload = serde_json::json!({
+            "id": id,
+            "method": "Page.addScriptToEvaluateOnNewDocument",
+            "params": { "source": script }
+        });
+        self.send(&payload).await?;
+        self.wait_response(id).await?;
+        Ok(())
+    }
+
     /// 注册 Runtime.addBinding（用于 JS → Rust 通信）。
     pub async fn add_binding(&mut self, name: &str) -> Result<()> {
         let id = self.next_id();

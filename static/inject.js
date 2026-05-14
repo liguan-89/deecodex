@@ -57,38 +57,41 @@
     }
 
     function pluginEntryButton() {
-        return document.querySelector(
+        const byIcon = document.querySelector(
             'nav[role="navigation"] button.h-token-nav-row.w-full svg path[d^="M7.94562 14.0277"]'
         )?.closest("button");
+        if (byIcon) return byIcon;
+        return Array.from(document.querySelectorAll('nav[role="navigation"] button.h-token-nav-row.w-full')).find(function (btn) {
+            var text = (btn.textContent || "").trim();
+            return /^(插件|Plugins)(\s+-\s+.*)?$/i.test(text);
+        }) || null;
     }
 
     function enablePluginEntry() {
         if (!getSettings().pluginUnlock) return;
         const btn = pluginEntryButton();
-        if (!btn || btn.disabled === false) return;
-        // 仅启用 DOM 按钮，不修改全局 authMethod（避免模型加载器卡住）
+        if (!btn) return;
+
+        // 注入时立即切换 authMethod，与 codex-plugin-unlocker 行为一致
+        spoofChatGPTAuthMethod(btn);
+
         btn.disabled = false;
         btn.removeAttribute("disabled");
-        const reactKey = Object.keys(btn).find((k) => k.startsWith("__reactProps"));
+        btn.style.display = "";
+        btn.querySelectorAll("*").forEach(function (node) {
+            node.style.display = "";
+        });
+        const reactKey = Object.keys(btn).find(function (k) { return k.startsWith("__reactProps"); });
         if (reactKey && btn[reactKey]) {
             btn[reactKey].disabled = false;
         }
-        // 点击时临时切换 auth 以绕过插件入口的内部权限检查
-        btn.addEventListener("click", () => {
-            const auth = authContextValueFrom(btn);
-            if (auth && auth.authMethod !== "chatgpt") {
-                auth.setAuthMethod("chatgpt");
-                // 1 秒后恢复，避免影响模型加载等全局行为
-                setTimeout(() => {
-                    try { auth.setAuthMethod("api_key"); } catch (_) {}
-                }, 1000);
-            }
-        }, { once: true });
-        const label = btn.querySelector("span");
-        if (label) {
-            const text = label.textContent || "";
-            label.textContent = text.includes("插件") ? "插件 (已解锁)" : text.includes("Plugins") ? "Plugins - Unlocked" : text;
-        }
+
+        if (btn.dataset.codexPluginUnlockerEnabled === "true") return;
+        btn.dataset.codexPluginUnlockerEnabled = "true";
+        // 捕获阶段拦截，确保在 React 事件系统之前处理
+        btn.addEventListener("click", function () {
+            spoofChatGPTAuthMethod(btn);
+        }, true);
     }
 
     function pluginInstallCandidates() {
@@ -99,10 +102,12 @@
         btn.disabled = false;
         btn.removeAttribute("disabled");
         btn.removeAttribute("aria-disabled");
-        btn.classList.remove("opacity-50", "cursor-not-allowed", "pointer-events-none");
+        btn.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
+        btn.style.pointerEvents = "auto";
         btn.style.opacity = "";
         btn.style.cursor = "";
-        btn.querySelectorAll("*").forEach((c) => {
+        btn.tabIndex = 0;
+        btn.querySelectorAll("*").forEach(function (c) {
             c.style.opacity = "";
             c.style.pointerEvents = "";
         });

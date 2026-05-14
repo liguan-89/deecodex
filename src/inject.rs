@@ -79,15 +79,19 @@ pub async fn try_inject_with_port(state: Arc<AppState>, priority_port: u16) {
 
 /// 执行注入流程。
 async fn do_inject(client: &mut CdpClient, state: Arc<AppState>) -> anyhow::Result<()> {
-    // 1. 注册 CDP 绑定（创建 window.deecodexBridge() 函数）
-    client.add_binding(BRIDGE_NAME).await?;
-
-    // 2. 注入桥接垫片 + 主脚本（一起执行，顺序依赖）
     let inject_js = include_str!("../static/inject.js");
     let combined = format!("{}\n{}", BRIDGE_SHIM_JS, inject_js);
+
+    // 1. 注册脚本到所有新页面（SPA 导航/重载后自动重新注入）
+    client.add_script_to_new_documents(&combined).await?;
+
+    // 2. 注册 CDP 绑定（创建 window.deecodexBridge() 函数）
+    client.add_binding(BRIDGE_NAME).await?;
+
+    // 3. 在当前页面立即执行
     client.evaluate(&combined).await?;
 
-    // 3. 取走 WebSocket，启动后台桥接循环
+    // 4. 取走 WebSocket，启动后台桥接循环
     let ws = client.take_ws()?;
     tokio::spawn(async move {
         run_bridge_loop(ws, state).await;
