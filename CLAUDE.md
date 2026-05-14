@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
 
+## 当前分区
+
+你正在 **功能/请求历史** 分区工作，负责请求历史记录与月度统计。
+
+**只修改这些文件：**
+- `src/request_history.rs` — 请求历史存储与查询
+- `gui/nav/05-请求历史.html` — 导航栏片段
+
+**禁止修改其他分区的文件和其他分区的导航片段。**
+
+**验证方式：**
+- 编译: `cargo build`
+- 测试: `cargo test`
+- 代码检查: `cargo clippy -- -D warnings`
+
 ## Build & Test
 
 ```
