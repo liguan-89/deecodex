@@ -27,6 +27,10 @@ fn main() {
 
         let out = nav_dir.join("fragments.js");
         fs::write(&out, js).unwrap();
-        println!("cargo:warning=nav fragments: {} 文件 → {}", files.len(), out.display());
+        println!(
+            "cargo:warning=nav fragments: {} 文件 → {}",
+            files.len(),
+            out.display()
+        );
     }
 }
