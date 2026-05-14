@@ -50,11 +50,6 @@ function renderPluginsPanel() {
 }
 
 async function loadPluginsData() {
-  if (!window.DeeCodexTauri?.hasTauri) {
-    _pluginsData = [];
-    renderPluginList();
-    return;
-  }
   try {
     _pluginsData = await invoke('list_plugins') || [];
     if (_pluginDetailId) {

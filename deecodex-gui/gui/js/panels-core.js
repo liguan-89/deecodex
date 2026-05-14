@@ -431,11 +431,6 @@ function collectFormData() {
 // Tauri IPC 调用
 // ═══════════════════════════════════════════════════════════════
 async function loadConfig() {
-  if (!window.DeeCodexTauri?.hasTauri) {
-    currentConfig = currentConfig || {};
-    if (currentPanel === 'config') renderPanel('config');
-    return;
-  }
   try {
     currentConfig = await invoke('get_config');
     if (currentPanel === 'config') renderPanel('config');
@@ -445,26 +440,6 @@ async function loadConfig() {
 }
 
 async function loadStatus() {
-  if (!window.DeeCodexTauri?.hasTauri) {
-    window._statusData = {
-      running: false,
-      port: '—',
-      uptime_secs: 0,
-      version: '—',
-      upstream: '—',
-      vision_enabled: false,
-      computer_executor: 'disabled',
-      chinese_thinking: false,
-      cdp_port: 9222,
-      codex_launch_with_cdp: false,
-    };
-    const dot = document.getElementById('connDot');
-    const label = document.getElementById('connLabel');
-    if (dot) dot.className = 'indicator err';
-    if (label) label.textContent = '预览模式';
-    if (currentPanel === 'status') renderPanel('status');
-    return;
-  }
   try {
     const [status, cfg] = await Promise.all([
       invoke('get_service_status').catch(() => null),

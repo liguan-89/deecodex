@@ -235,8 +235,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    _historyMonthlyStats = monthlyStats || [];
 		    _historyOffline = false;
 		    stopReconnectPolling();
-		    hideHistoryOfflineBanner();
-		    try { deeStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify({ entries: _historyEntries, monthlyStats: _historyMonthlyStats, ts: Date.now() })); } catch (_) {}
+		    hideHistoryOfflineBanner();;
 		    if (_historyEntries.length) {
 		      if (statsEl) updateStats(computeStats(_historyEntries));
 		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
@@ -295,8 +294,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		}
 
 		function startReconnectPolling() {
-		  if (!window.DeeCodexTauri?.hasTauri) return;
-		  if (_historyReconnectTimer) return;
+				  if (_historyReconnectTimer) return;
 		  _historyReconnectTimer = setInterval(async () => {
 		    try {
 		      const status = await invoke('get_service_status');
@@ -339,8 +337,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		}
 
 		async function clearHistory() {
-		  if (!window.DeeCodexTauri?.requireTauri?.('清空请求历史')) return;
-		  if (!confirm('确定要清空所有请求历史吗？此操作不可恢复。')) return;
+				  if (!confirm('确定要清空所有请求历史吗？此操作不可恢复。')) return;
 		  try {
 		    await invoke('clear_request_history');
 		    showToast('请求历史已清空', 'success');

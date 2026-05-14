@@ -12,7 +12,6 @@ let wizardIdx = 0;
 let wizardVer = '';
 
 async function checkSetupWizard() {
-  if (!window.DeeCodexTauri?.hasTauri) return;
   // 从服务状态获取版本，失败则从 get_config 侧面获取，再失败用已知版本
   let ver = (window._statusData && window._statusData.version) || '';
   if (ver === '—' || ver === '0.0.0' || !ver) {

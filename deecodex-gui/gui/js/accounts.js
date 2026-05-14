@@ -310,12 +310,6 @@ function renderModelMappingRows(knownModels) {
 // ── 数据加载 ──
 
 async function loadAccountsData() {
-  if (!window.DeeCodexTauri?.hasTauri) {
-    accountsData = { accounts: [], active_id: null };
-    providerPresets = providerPresets.length ? providerPresets : [];
-    if (accountsView === 'list' && currentPanel === 'accounts') renderMainContent();
-    return;
-  }
   try {
     const result = await invoke('list_accounts');
     accountsData = result;

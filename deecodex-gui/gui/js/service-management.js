@@ -83,10 +83,6 @@
   }
 
   async function autoCheckUpgrade() {
-    if (!window.DeeCodexTauri?.hasTauri) {
-      applyUpdateIndicator(false);
-      return;
-    }
     const last = deeStorage.getItem('lastUpgradeCheck');
     const today = new Date().toISOString().slice(0, 10);
     if (last === today) {

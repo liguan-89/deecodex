@@ -106,7 +106,6 @@ async function refreshThreads() {
 }
 
 async function doMigrate() {
-  if (!window.DeeCodexTauri?.requireTauri?.('聚合线程')) return;
   if (!await showConfirm('确定要聚合所有线程吗？\n\n所有线程将统一到当前活跃 provider，Codex 侧边栏将聚合显示所有会话。\n迁移前会自动备份，可随时还原。')) return;
 
   const btn = document.getElementById('btnMigrate');
@@ -125,7 +124,6 @@ async function doMigrate() {
 }
 
 async function doRestore() {
-  if (!window.DeeCodexTauri?.requireTauri?.('还原线程')) return;
   if (!await showConfirm('确定要切换到隔离模式吗？\n\n所有线程将还原到各自的原始 provider。\n\n还原后备份将被删除。')) return;
 
   const btn = document.getElementById('btnRestore');
@@ -144,7 +142,6 @@ async function doRestore() {
 }
 
 async function doCalibrate() {
-  if (!window.DeeCodexTauri?.requireTauri?.('校准线程')) return;
   const activeProvider = (_threadsData && _threadsData.status && _threadsData.status.active_provider) || '';
   if (!await showConfirm(`检测到活跃 provider 已变更，需要重新校准。\n\n将还原原始 provider 后重新聚合到「${activeProvider}」。`)) return;
 
@@ -168,7 +165,6 @@ async function doCalibrate() {
 let _currentThreadId = null;
 
 function openThread(threadId) {
-  if (!window.DeeCodexTauri?.requireTauri?.('查看线程内容')) return;
   _currentThreadId = threadId;
   const container = document.getElementById('mainContent');
   if (!container) return;
@@ -244,7 +240,6 @@ function renderMessage(msg) {
 }
 
 async function deleteThreadFromDetail(threadId) {
-  if (!window.DeeCodexTauri?.requireTauri?.('删除线程')) return;
   if (!await showConfirm('确定要永久删除此线程吗？\n\n此操作不可恢复，线程将从 SQLite、会话文件和迁移备份中同时移除。')) return;
   try {
     await invoke('delete_thread', { threadId });
@@ -256,7 +251,6 @@ async function deleteThreadFromDetail(threadId) {
 }
 
 async function deleteThreadRow(threadId) {
-  if (!window.DeeCodexTauri?.requireTauri?.('删除线程')) return;
   if (!await showConfirm('确定要永久删除此线程吗？\n\n此操作不可恢复，线程将从 SQLite、会话文件和迁移备份中同时移除。')) return;
   try {
     await invoke('delete_thread', { threadId });

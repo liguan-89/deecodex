@@ -84,7 +84,6 @@
   }
 
   async function clearLogs(btn) {
-    if (!window.DeeCodexTauri?.requireTauri?.('清空日志')) return;
     if (btn && btn.dataset.confirmed !== 'true') {
       btn.dataset.confirmed = 'true';
       btn.textContent = '再次点击确认';
