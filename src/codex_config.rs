@@ -7,13 +7,13 @@ use tracing::{info, warn};
 /// deecodex 管理的模型目录文件名
 const CATALOG_FILENAME: &str = "models_deecodex.json";
 
-fn codex_home_dir() -> Option<PathBuf> {
+pub(crate) fn codex_home_dir() -> Option<PathBuf> {
     crate::config::home_dir().map(|home| home.join(".codex"))
 }
 
 /// 读取配置文件，自动处理 UTF-8 / UTF-16 LE / UTF-16 BE 编码。
 /// Windows 上 Codex 桌面版可能写入 UTF-16 编码的 config.toml。
-fn read_config_file(path: &std::path::Path) -> Result<String> {
+pub(crate) fn read_config_file(path: &std::path::Path) -> Result<String> {
     let bytes = std::fs::read(path)?;
     if bytes.is_empty() {
         return Ok(String::new());
@@ -57,11 +57,11 @@ fn read_config_file(path: &std::path::Path) -> Result<String> {
     }
 }
 
-fn codex_config_path() -> Option<PathBuf> {
+pub(crate) fn codex_config_path() -> Option<PathBuf> {
     crate::config::home_dir().map(|home| home.join(".codex").join("config.toml"))
 }
 
-fn find_in_path(name: &str) -> bool {
+pub(crate) fn find_in_path(name: &str) -> bool {
     if let Ok(paths) = std::env::var("PATH") {
         for dir in std::env::split_paths(&paths) {
             let exe = dir.join(name);
@@ -79,7 +79,7 @@ fn find_in_path(name: &str) -> bool {
     false
 }
 
-fn codex_is_installed() -> bool {
+pub(crate) fn codex_is_installed() -> bool {
     // 1. ~/.codex 目录存在（CLI 或桌面版都可能创建）
     if let Some(home) = crate::config::home_dir() {
         if home.join(".codex").exists() {

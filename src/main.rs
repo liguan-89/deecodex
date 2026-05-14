@@ -254,6 +254,66 @@ fn start_service_daemon(args: &Args) -> Result<()> {
     Ok(())
 }
 
+// ── CLI 诊断输出 ─────────────────────────────────────────────────────────────
+
+fn print_diagnostics_cli(args: &crate::config::Args) {
+    use crate::validate::{DiagnosticContext, Status};
+
+    let ctx = DiagnosticContext::from(args);
+    let report = crate::validate::run_diagnostics_sync(&ctx);
+
+    println!(
+        "══════════════════════════════════════\n  deecodex 执行诊断  v{}\n══════════════════════════════════════\n",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    for group in &report.groups {
+        let icon = match group.health {
+            crate::validate::GroupHealth::Healthy => "✅",
+            crate::validate::GroupHealth::Degraded => "⚠️ ",
+            crate::validate::GroupHealth::Broken => "❌",
+        };
+        println!("[{}] {} {}", group.name, icon, {
+            match group.health {
+                crate::validate::GroupHealth::Healthy => "healthy",
+                crate::validate::GroupHealth::Degraded => "degraded",
+                crate::validate::GroupHealth::Broken => "broken",
+            }
+        });
+
+        for item in &group.items {
+            let icon = match item.status {
+                Status::Pass => "  ✅",
+                Status::Warn => "  ⚠️ ",
+                Status::Fail => "  ❌",
+                Status::Info => "  ℹ️ ",
+            };
+            println!("{} {}", icon, item.message);
+
+            if let Some(ref detail) = item.detail {
+                println!("     详情: {}", detail);
+            }
+            if let Some(ref suggestion) = item.suggestion {
+                println!("     建议: {}", suggestion);
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "══════════════════════════════════════\n 总计: {} 通过 | {} 警告 | {} 失败 | {} 提示\n 健康状态: {}\n══════════════════════════════════════",
+        report.summary.pass,
+        report.summary.warn,
+        report.summary.fail,
+        report.summary.info,
+        match report.summary.health {
+            crate::validate::GroupHealth::Healthy => "healthy",
+            crate::validate::GroupHealth::Degraded => "degraded",
+            crate::validate::GroupHealth::Broken => "broken",
+        }
+    );
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -392,6 +452,10 @@ async fn main() -> Result<()> {
             } else {
                 println!("Codex config.toml 未发现已知问题");
             }
+            return Ok(());
+        }
+        Some(Commands::Diagnose) => {
+            print_diagnostics_cli(&args);
             return Ok(());
         }
         _ => {}

@@ -200,6 +200,8 @@ pub enum Commands {
     Logs,
     /// 检测并修复 Codex config.toml 中的已知错误值
     FixConfig,
+    /// 运行全链路执行诊断
+    Diagnose,
 }
 
 impl Args {

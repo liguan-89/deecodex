@@ -341,6 +341,8 @@ pub fn run() {
             commands::save_config,
             commands::get_logs,
             commands::validate_config,
+            commands::run_diagnostics,
+            commands::run_full_diagnostics,
             commands::update_service,
             commands::launch_codex_cdp,
             commands::stop_codex_cdp,
