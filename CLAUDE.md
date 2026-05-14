@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **如需修改前端展示：** 在 `deecodex-gui/gui/index.html` 中「账号管理」面板区域修改。
 
-**禁止修改其他分区的文件和其他分区的导航片段。**
+**排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
 **验证方式：**
 - 编译: `cargo build`
