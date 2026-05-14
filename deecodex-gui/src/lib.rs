@@ -284,6 +284,14 @@ pub fn run() {
                 .icon_as_template(true)
                 .menu(&menu)
                 .tooltip("deecodex · 已停止")
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| {
                     let id = event.id().as_ref();
                     match id {
@@ -468,5 +476,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败")
-        .run(|_app_handle, _event| {});
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }

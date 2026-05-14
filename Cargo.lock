@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex"
-version = "1.9.6"
+version = "1.9.8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex-gui"
-version = "1.9.6"
+version = "1.9.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -1523,6 +1523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -3568,6 +3569,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
