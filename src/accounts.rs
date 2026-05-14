@@ -170,7 +170,6 @@ pub fn get_provider_presets() -> Vec<ProviderPreset> {
 }
 
 /// Codex 端可能请求的模型名列表（映射表左侧）
-#[allow(dead_code)]
 pub const CODEX_MODEL_LIST: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
