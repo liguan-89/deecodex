@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
 
+## 当前分区
+
+你正在 **deecodex-gui 父区** 工作。你可以修改任意文件，并负责：
+
+- **合入功能分支：** `git merge 功能/<分区名>`
+- **同步 worktree：** `for b in ...; do git -C "功能/$b" merge deecodex-gui; done`
+- **版本号管理：** 升级 `Cargo.toml`、`deecodex-gui/Cargo.toml`、`tauri.conf.json`、`VERSION` 四处版本号
+- **打 tag 发版：** `git tag v<版本号> && git push deecodex-new deecodex-gui && git push origin v<版本号>`
+
 ## Build & Test
 
 ```
@@ -17,6 +26,8 @@ cargo fmt --check
 ```
 
 Run a specific test: `cargo test <test_name>`
+
+**并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。`~/.cargo/registry/` 和 `~/.cargo/git/` 是全机共享的，并发构建会抢锁失败。
 
 ## Architecture
 
