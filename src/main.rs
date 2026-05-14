@@ -588,7 +588,6 @@ async fn main() -> Result<()> {
             .build()?,
         upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
         api_key: Arc::new(tokio::sync::RwLock::new(args.api_key.clone())),
-        client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key)),
         model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
         vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
         vision_api_key: Arc::new(tokio::sync::RwLock::new(args.vision_api_key.clone())),
@@ -722,11 +721,6 @@ async fn main() -> Result<()> {
     } else {
         info!("MCP executor: disabled (no configured servers)");
     }
-    if state.client_api_key.read().await.is_empty() {
-        tracing::warn!("client auth disabled: client_api_key is empty");
-    } else {
-        info!("client auth enabled for /v1 API routes");
-    }
 
     let max_bytes = args.max_body_mb * 1024 * 1024;
     let body_limit = axum::extract::DefaultBodyLimit::max(max_bytes);
@@ -746,7 +740,7 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject(args.port, &state.client_api_key.read().await, None);
+        codex_config::inject(args.port, None);
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口
@@ -767,11 +761,13 @@ async fn main() -> Result<()> {
     }
 
     // 尝试 CDP 注入（插件解锁 + 会话删除 UI），异步执行，不阻塞服务启动
-    let inject_state = state.clone();
-    let cdp_port = args.cdp_port;
-    tokio::spawn(async move {
-        inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
-    });
+    if args.codex_launch_with_cdp {
+        let inject_state = state.clone();
+        let cdp_port = args.cdp_port;
+        tokio::spawn(async move {
+            inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
+        });
+    }
 
     #[cfg(unix)]
     async fn shutdown_signal() {
