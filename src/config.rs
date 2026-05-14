@@ -340,12 +340,19 @@ impl Args {
                     "v1/coding_plan/vlm",
                     &file.vision_endpoint,
                 ),
-                chinese_thinking: self.chinese_thinking || file.chinese_thinking,
-                codex_auto_inject: self.codex_auto_inject && file.codex_auto_inject,
-                codex_persistent_inject: self.codex_persistent_inject
-                    || file.codex_persistent_inject,
-                codex_launch_with_cdp: self.codex_launch_with_cdp || file.codex_launch_with_cdp,
-                cdp_port: pick(self.cdp_port, file.cdp_port, 9222),
+                chinese_thinking: pick(self.chinese_thinking, false, file.chinese_thinking),
+                codex_auto_inject: pick(self.codex_auto_inject, true, file.codex_auto_inject),
+                codex_persistent_inject: pick(
+                    self.codex_persistent_inject,
+                    false,
+                    file.codex_persistent_inject,
+                ),
+                codex_launch_with_cdp: pick(
+                    self.codex_launch_with_cdp,
+                    false,
+                    file.codex_launch_with_cdp,
+                ),
+                cdp_port: pick(self.cdp_port, 9222, file.cdp_port),
                 prompts_dir: if self.prompts_dir.as_path() == std::path::Path::new("prompts") {
                     file.prompts_dir
                 } else {
@@ -459,6 +466,43 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    fn test_args(data_dir: PathBuf) -> Args {
+        Args {
+            command: None,
+            config: None,
+            port: 4446,
+            upstream: "https://openrouter.ai/api/v1".into(),
+            api_key: String::new(),
+            model_map: "{}".into(),
+            max_body_mb: 100,
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: "MiniMax-M1".into(),
+            vision_endpoint: "v1/coding_plan/vlm".into(),
+            chinese_thinking: false,
+            codex_auto_inject: true,
+            codex_persistent_inject: false,
+            codex_launch_with_cdp: false,
+            cdp_port: 9222,
+            prompts_dir: PathBuf::from("prompts"),
+            data_dir,
+            token_anomaly_prompt_max: 200000,
+            token_anomaly_spike_ratio: 5.0,
+            token_anomaly_burn_window: 120,
+            token_anomaly_burn_rate: 500000,
+            allowed_mcp_servers: String::new(),
+            allowed_computer_displays: String::new(),
+            computer_executor: "disabled".into(),
+            computer_executor_timeout_secs: 30,
+            mcp_executor_config: String::new(),
+            mcp_executor_timeout_secs: 30,
+            playwright_state_dir: String::new(),
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
+            daemon: false,
+        }
+    }
+
     #[test]
     fn config_merge_loads_tool_policy_from_file_when_cli_is_default() {
         let dir = std::env::temp_dir().join(format!("deecodex-config-{}", Uuid::new_v4().simple()));
@@ -545,6 +589,60 @@ mod tests {
         assert!(merged.mcp_executor_config.contains("mcp-filesystem"));
         assert_eq!(merged.mcp_executor_timeout_secs, 12);
         assert_eq!(merged.port, 5555);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_merge_loads_checkbox_values_from_file_when_cli_is_default() {
+        let dir = std::env::temp_dir().join(format!("deecodex-config-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.json");
+        let mut file_args = test_args(dir.clone());
+        file_args.chinese_thinking = true;
+        file_args.codex_auto_inject = false;
+        file_args.codex_persistent_inject = true;
+        file_args.codex_launch_with_cdp = true;
+        file_args.cdp_port = 9333;
+        file_args.save_to_file(&config_path).unwrap();
+
+        let mut cli_args = test_args(PathBuf::from(".deecodex"));
+        cli_args.config = Some(config_path.to_string_lossy().to_string());
+
+        let merged = cli_args.merge_with_file();
+
+        assert!(merged.chinese_thinking);
+        assert!(!merged.codex_auto_inject);
+        assert!(merged.codex_persistent_inject);
+        assert!(merged.codex_launch_with_cdp);
+        assert_eq!(merged.cdp_port, 9333);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_merge_keeps_explicit_checkbox_over_file_value() {
+        let dir = std::env::temp_dir().join(format!("deecodex-config-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.json");
+        let mut file_args = test_args(dir.clone());
+        file_args.chinese_thinking = false;
+        file_args.codex_auto_inject = true;
+        file_args.codex_persistent_inject = false;
+        file_args.codex_launch_with_cdp = false;
+        file_args.save_to_file(&config_path).unwrap();
+
+        let mut cli_args = test_args(PathBuf::from(".deecodex"));
+        cli_args.config = Some(config_path.to_string_lossy().to_string());
+        cli_args.chinese_thinking = true;
+        cli_args.codex_auto_inject = false;
+        cli_args.codex_persistent_inject = true;
+        cli_args.codex_launch_with_cdp = true;
+
+        let merged = cli_args.merge_with_file();
+
+        assert!(merged.chinese_thinking);
+        assert!(!merged.codex_auto_inject);
+        assert!(merged.codex_persistent_inject);
+        assert!(merged.codex_launch_with_cdp);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
