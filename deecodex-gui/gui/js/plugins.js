@@ -229,7 +229,8 @@ async function stopPlugin(id) {
 }
 
 async function uninstallPlugin(id) {
-  if (!confirm('确定要卸载该插件吗？此操作不可恢复。')) return;
+  var ok = await showConfirm('确定要卸载该插件吗？此操作不可恢复。');
+        if (!ok) return;
   try {
     await invoke('uninstall_plugin', { pluginId: id });
     showToast('插件已卸载', 'success');
