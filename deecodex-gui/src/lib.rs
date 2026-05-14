@@ -12,7 +12,7 @@ use tracing;
 
 struct FlushWriter<W: Write>(W);
 
-use tauri::{Emitter, RunEvent};
+use tauri::Emitter;
 
 impl<W: Write> Write for FlushWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -468,12 +468,5 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败")
-        .run(|app_handle, event| {
-            if let RunEvent::Reopen { .. } = event {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
-        });
+        .run(|_app_handle, _event| {});
 }
