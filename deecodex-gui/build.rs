@@ -26,6 +26,10 @@ fn main() {
         js.push_str("];\n");
 
         let out = nav_dir.join("fragments.js");
+        // 内容未变则跳过写入，避免触发 Tauri 文件监听器无限重建
+        if fs::read_to_string(&out).map(|e| e == js).unwrap_or(false) {
+            return;
+        }
         fs::write(&out, js).unwrap();
         println!("cargo:warning=nav fragments: {} 文件 → {}", files.len(), out.display());
     }
