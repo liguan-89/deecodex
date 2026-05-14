@@ -167,10 +167,7 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
     DiagnosticReport::new(vec![
         DiagnosticGroup {
             name: "服务状态".into(),
-            items: vec![
-                check_service_running(ctx),
-                check_port_conflict(ctx),
-            ],
+            items: vec![check_service_running(ctx), check_port_conflict(ctx)],
             health: GroupHealth::Healthy, // 下面会重新计算
         },
         DiagnosticGroup {
@@ -197,17 +194,12 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
         },
         DiagnosticGroup {
             name: "注入状态".into(),
-            items: vec![
-                check_injection_status(ctx),
-                check_models_cache(),
-            ],
+            items: vec![check_injection_status(ctx), check_models_cache()],
             health: GroupHealth::Healthy,
         },
         DiagnosticGroup {
             name: "运行环境".into(),
-            items: vec![
-                check_disk_space(ctx),
-            ],
+            items: vec![check_disk_space(ctx)],
             health: GroupHealth::Healthy,
         },
     ])
@@ -235,14 +227,18 @@ fn check_service_running(ctx: &DiagnosticContext) -> DiagnosticItem {
 
     let pid_running = pid_from_file
         .filter(|&p| process_is_running(p))
-        .or_else(|| find_daemon_pid());
+        .or_else(find_daemon_pid);
 
     match pid_running {
         Some(pid) => DiagnosticItem {
             status: Status::Pass,
             check_name: "服务运行状态".into(),
             message: format!("deecodex 守护进程正在运行 (PID: {})", pid),
-            detail: Some(format!("端口: {}, PID 文件: {}", ctx.port, pid_path.display())),
+            detail: Some(format!(
+                "端口: {}, PID 文件: {}",
+                ctx.port,
+                pid_path.display()
+            )),
             suggestion: None,
         },
         None => {
@@ -253,7 +249,10 @@ fn check_service_running(ctx: &DiagnosticContext) -> DiagnosticItem {
                     check_name: "服务运行状态".into(),
                     message: format!("端口 {} 正在被占用但未检测到 deecodex 进程", ctx.port),
                     detail: Some("端口处于监听状态但进程 ID 不可识别".into()),
-                    suggestion: Some("请检查是否有其他程序占用了 deecodex 端口，或使用 deecodex start 启动服务".into()),
+                    suggestion: Some(
+                        "请检查是否有其他程序占用了 deecodex 端口，或使用 deecodex start 启动服务"
+                            .into(),
+                    ),
                 }
             } else {
                 DiagnosticItem {
@@ -314,6 +313,7 @@ fn check_upstream_connectivity_sync(_: &DiagnosticContext) -> DiagnosticItem {
 }
 
 /// 异步连通性检测结果，由调用方在 GUI/CLI 中异步获取后回填。
+#[allow(dead_code)]
 pub fn connectivity_check_result(
     ok: bool,
     status_code: u16,
@@ -414,10 +414,10 @@ fn check_codex_third_party_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
                 .to_string();
 
             // 跳过本地 deecodex 地址
-            if base_url.contains("127.0.0.1") || base_url.contains("localhost") {
-                if base_url == deecodex_base {
-                    continue;
-                }
+            if (base_url.contains("127.0.0.1") || base_url.contains("localhost"))
+                && base_url == deecodex_base
+            {
+                continue;
             }
 
             let is_local = base_url.contains("127.0.0.1") || base_url.contains("localhost");
@@ -446,7 +446,9 @@ fn check_codex_third_party_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
                 third_parties.len()
             ),
             detail: Some(names.join("; ")),
-            suggestion: Some("请关闭第三方路由工具，确保 Codex 仅通过 deecodex 代理访问上游 API".into()),
+            suggestion: Some(
+                "请关闭第三方路由工具，确保 Codex 仅通过 deecodex 代理访问上游 API".into(),
+            ),
         }
     }
 }
@@ -522,9 +524,14 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
         DiagnosticItem {
             status: Status::Fail,
             check_name: "deecodex 路由".into(),
-            message: format!("Codex 未路由到 deecodex，当前 provider 为: {}", model_provider),
+            message: format!(
+                "Codex 未路由到 deecodex，当前 provider 为: {}",
+                model_provider
+            ),
             detail: None,
-            suggestion: Some("请在 deecodex 控制面板中点击「注入配置」，将 Codex 路由至 deecodex".into()),
+            suggestion: Some(
+                "请在 deecodex 控制面板中点击「注入配置」，将 Codex 路由至 deecodex".into(),
+            ),
         }
     } else if !has_deecodex_section {
         DiagnosticItem {
@@ -539,10 +546,7 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
             status: Status::Warn,
             check_name: "deecodex 路由".into(),
             message: "deecodex 路由已配置但端口不匹配".into(),
-            detail: Some(format!(
-                "期望: {}, 实际: {}",
-                expected_base, actual_base
-            )),
+            detail: Some(format!("期望: {}, 实际: {}", expected_base, actual_base)),
             suggestion: Some("请在 deecodex 控制面板中点击「注入配置」以更新端口".into()),
         }
     } else {
@@ -695,7 +699,9 @@ fn check_injection_status(ctx: &DiagnosticContext) -> DiagnosticItem {
                 check_name: "注入状态".into(),
                 message: "持久注入已启用但 Codex 配置未正确指向 deecodex".into(),
                 detail: Some("deecodex 不会自动管理 Codex 配置，请手动注入".into()),
-                suggestion: Some("请在控制面板中点击「注入配置」或关闭持久注入以启用自动管理".into()),
+                suggestion: Some(
+                    "请在控制面板中点击「注入配置」或关闭持久注入以启用自动管理".into(),
+                ),
             }
         }
     } else if auto {
@@ -797,7 +803,10 @@ fn check_deecodex_config(ctx: &DiagnosticContext) -> DiagnosticItem {
             detail: Some(format!(
                 "路径: {}, 端口: {}",
                 config_path.display(),
-                config.get("port").and_then(|v| v.as_u64()).unwrap_or(ctx.port as u64)
+                config
+                    .get("port")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(ctx.port as u64)
             )),
             suggestion: None,
         }
@@ -938,7 +947,9 @@ fn check_port_conflict(ctx: &DiagnosticContext) -> DiagnosticItem {
                 check_name: "端口冲突".into(),
                 message: format!("端口 {} 已被占用", ctx.port),
                 detail: occupant.map(|p| format!("占用进程: {}", p)),
-                suggestion: Some("如果占用者是 deecodex 自身则正常，否则请关闭占用进程或更换端口".into()),
+                suggestion: Some(
+                    "如果占用者是 deecodex 自身则正常，否则请关闭占用进程或更换端口".into(),
+                ),
             }
         }
     }
@@ -1088,7 +1099,9 @@ fn check_codex_config_consistency(_ctx: &DiagnosticContext) -> DiagnosticItem {
             check_name: "Codex 配置一致性".into(),
             message: format!("Codex 配置存在 {} 处不一致", issues.len()),
             detail: Some(issues.join("; ")),
-            suggestion: Some("请在控制面板中点击「注入配置」修复，或运行 deecodex fix-config".into()),
+            suggestion: Some(
+                "请在控制面板中点击「注入配置」修复，或运行 deecodex fix-config".into(),
+            ),
         }
     }
 }
@@ -1099,33 +1112,31 @@ fn check_models_cache() -> DiagnosticItem {
     let cache_path = codex_config::codex_home_dir().map(|h| h.join("models_cache.json"));
 
     match cache_path {
-        Some(path) if path.exists() => {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
-                    let model_count = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("models"))
-                        .and_then(|m| m.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
-                    DiagnosticItem {
-                        status: Status::Pass,
-                        check_name: "模型缓存".into(),
-                        message: format!("Codex 模型缓存可用（{} 个模型）", model_count),
-                        detail: Some(format!("路径: {}", path.display())),
-                        suggestion: None,
-                    }
-                }
-                Err(e) => DiagnosticItem {
-                    status: Status::Warn,
+        Some(path) if path.exists() => match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let parsed = serde_json::from_str::<serde_json::Value>(&content).ok();
+                let model_count = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("models"))
+                    .and_then(|m| m.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                DiagnosticItem {
+                    status: Status::Pass,
                     check_name: "模型缓存".into(),
-                    message: "无法读取 Codex 模型缓存".into(),
-                    detail: Some(format!("路径: {}, 错误: {}", path.display(), e)),
-                    suggestion: Some("请运行一次 Codex 以重新生成模型缓存".into()),
-                },
+                    message: format!("Codex 模型缓存可用（{} 个模型）", model_count),
+                    detail: Some(format!("路径: {}", path.display())),
+                    suggestion: None,
+                }
             }
-        }
+            Err(e) => DiagnosticItem {
+                status: Status::Warn,
+                check_name: "模型缓存".into(),
+                message: "无法读取 Codex 模型缓存".into(),
+                detail: Some(format!("路径: {}, 错误: {}", path.display(), e)),
+                suggestion: Some("请运行一次 Codex 以重新生成模型缓存".into()),
+            },
+        },
         Some(path) => DiagnosticItem {
             status: Status::Info,
             check_name: "模型缓存".into(),
@@ -1330,10 +1341,7 @@ fn check_config_backups(ctx: &DiagnosticContext) -> DiagnosticItem {
                                 .as_secs()
                                 - dur.as_secs())
                                 / 86400;
-                            backups.push(format!(
-                                "Codex: config.toml.{} ({} 天前)",
-                                ext, days_ago
-                            ));
+                            backups.push(format!("Codex: config.toml.{} ({} 天前)", ext, days_ago));
                         }
                     }
                 }
@@ -1354,11 +1362,7 @@ fn check_config_backups(ctx: &DiagnosticContext) -> DiagnosticItem {
                             .as_secs()
                             - dur.as_secs())
                             / 86400;
-                        backups.push(format!(
-                            "deecodex: config.json.{} ({} 天前)",
-                            ext,
-                            days_ago
-                        ));
+                        backups.push(format!("deecodex: config.json.{} ({} 天前)", ext, days_ago));
                     }
                 }
             }
@@ -1368,14 +1372,11 @@ fn check_config_backups(ctx: &DiagnosticContext) -> DiagnosticItem {
     // 检查 backups 目录
     let backup_dir = ctx.data_dir.join("backups");
     if backup_dir.exists() {
-        match std::fs::read_dir(&backup_dir) {
-            Ok(entries) => {
-                let count = entries.flatten().count();
-                if count > 0 {
-                    backups.push(format!("会话备份: {} 条记录", count));
-                }
+        if let Ok(entries) = std::fs::read_dir(&backup_dir) {
+            let count = entries.flatten().count();
+            if count > 0 {
+                backups.push(format!("会话备份: {} 条记录", count));
             }
-            Err(_) => {}
         }
     }
 
@@ -1603,17 +1604,15 @@ fn check_browser_use_bridge(_args: &Args, diags: &mut Vec<Diagnostic>) {
         return;
     }
 
-    if !url.is_empty() {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            diags.push(Diagnostic {
-                severity: Severity::Warn,
-                category: "computer_executor",
-                message: format!(
-                    "browser-use bridge URL '{}' 不以 http:// 或 https:// 开头，可能不是有效的 HTTP 地址",
-                    url
-                ),
-            });
-        }
+    if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+        diags.push(Diagnostic {
+            severity: Severity::Warn,
+            category: "computer_executor",
+            message: format!(
+                "browser-use bridge URL '{}' 不以 http:// 或 https:// 开头，可能不是有效的 HTTP 地址",
+                url
+            ),
+        });
     }
 
     if !command.is_empty() {
@@ -2323,49 +2322,61 @@ mod tests {
 
     #[test]
     fn connectivity_check_result_ok() {
-        let item = connectivity_check_result(true, 200, 150, Some(42), "https://api.example.com/models", None);
+        let item = connectivity_check_result(
+            true,
+            200,
+            150,
+            Some(42),
+            "https://api.example.com/models",
+            None,
+        );
         assert_eq!(item.status, Status::Pass);
         assert!(item.message.contains("150ms"));
     }
 
     #[test]
     fn connectivity_check_result_fail() {
-        let item = connectivity_check_result(false, 0, 5000, None, "https://api.example.com/models", Some("timeout"));
+        let item = connectivity_check_result(
+            false,
+            0,
+            5000,
+            None,
+            "https://api.example.com/models",
+            Some("timeout"),
+        );
         assert_eq!(item.status, Status::Fail);
         assert!(item.message.contains("5000ms"));
     }
 
     #[test]
     fn report_computes_summary_correctly() {
-        let groups = vec![
-            DiagnosticGroup {
-                name: "测试组".into(),
-                health: GroupHealth::Healthy,
-                items: vec![
-                    DiagnosticItem {
-                        status: Status::Pass,
-                        check_name: "项A".into(),
-                        message: "ok".into(),
-                        detail: None,
-                        suggestion: None,
-                    },
-                    DiagnosticItem {
-                        status: Status::Warn,
-                        check_name: "项B".into(),
-                        message: "warn".into(),
-                        detail: None,
-                        suggestion: None,
-                    },
-                    DiagnosticItem {
-                        status: Status::Fail,
-                        check_name: "项C".into(),
-                        message: "fail".into(),
-                        detail: None,
-                        suggestion: None,
-                    },
-                ],
-            },
-        ];
+        let groups = vec![DiagnosticGroup {
+            name: "测试组".into(),
+            health: GroupHealth::Healthy,
+            items: vec![
+                DiagnosticItem {
+                    status: Status::Pass,
+                    check_name: "项A".into(),
+                    message: "ok".into(),
+                    detail: None,
+                    suggestion: None,
+                },
+                DiagnosticItem {
+                    status: Status::Warn,
+                    check_name: "项B".into(),
+                    message: "warn".into(),
+                    detail: None,
+                    suggestion: None,
+                },
+                DiagnosticItem {
+                    status: Status::Fail,
+                    check_name: "项C".into(),
+                    message: "fail".into(),
+                    detail: None,
+                    suggestion: None,
+                },
+            ],
+        }];
         let report = DiagnosticReport::new(groups).with_computed_health();
         assert_eq!(report.summary.total, 3);
         assert_eq!(report.summary.pass, 1);

@@ -359,30 +359,66 @@ body {
 
 /* ── Diagnostics ── */
 .diag-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-.diag-results { display: flex; flex-direction: column; gap: 8px; }
+.diag-summary {
+  display: flex; gap: 16px; padding: 14px 18px; border-radius: var(--radius-sm);
+  background: var(--bg-surface); margin-bottom: 18px; align-items: center;
+  font-family: var(--font-mono); font-size: 13px;
+}
+.diag-summary-bar { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+.diag-summary .stat { display: flex; align-items: center; gap: 6px; }
+.diag-summary .stat .n { font-weight: 700; font-size: 18px; }
+.diag-summary .stat .l { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
+.diag-summary .stat.pass .n { color: var(--green); }
+.diag-summary .stat.warn .n { color: var(--amber); }
+.diag-summary .stat.fail .n { color: var(--red); }
+.diag-summary .stat.info .n { color: var(--text-muted); }
+.diag-summary .health-badge {
+  padding: 4px 12px; border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  margin-left: auto;
+}
+.diag-summary .health-badge.healthy { background: var(--green-dim); color: var(--green); }
+.diag-summary .health-badge.degraded { background: var(--amber-dim); color: var(--amber); }
+.diag-summary .health-badge.broken { background: var(--red-dim); color: var(--red); }
+
+.diag-group {
+  margin-bottom: 20px; border-radius: var(--radius-sm); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.diag-group-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; font-size: 13px; font-weight: 600;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+}
+.diag-group-header .group-icon { font-size: 14px; }
+.diag-group-header.healthy { color: var(--green); }
+.diag-group-header.degraded { color: var(--amber); }
+.diag-group-header.broken { color: var(--red); }
 
 .diag-item {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 12px 16px; border-radius: var(--radius-sm); border-left: 3px solid;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
   background: var(--bg-surface);
 }
-.diag-item.error { border-left-color: var(--red); }
-.diag-item.warn  { border-left-color: var(--amber); }
-
-.diag-item .diag-sev {
-  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 2px 8px; border-radius: var(--radius-sm);
-  white-space: nowrap; flex-shrink: 0;
+.diag-item:last-child { border-bottom: none; }
+.diag-item .item-icon { font-size: 14px; flex-shrink: 0; padding-top: 1px; }
+.diag-item .item-icon.pass { color: var(--green); }
+.diag-item .item-icon.warn { color: var(--amber); }
+.diag-item .item-icon.fail { color: var(--red); }
+.diag-item .item-icon.info { color: var(--text-muted); }
+.diag-item .item-body { flex: 1; min-width: 0; }
+.diag-item .item-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+.diag-item .item-msg { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.diag-item .item-detail {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  margin-top: 4px; padding: 6px 10px; background: var(--bg-deeper); border-radius: var(--radius-sm);
+  word-break: break-all;
 }
-.diag-item.error .diag-sev { background: var(--red-dim); color: var(--red); }
-.diag-item.warn  .diag-sev { background: var(--amber-dim); color: var(--amber); }
-
-.diag-item .diag-cat {
-  font-family: var(--font-mono); font-size: 11px;
-  color: var(--text-muted); white-space: nowrap; flex-shrink: 0;
+.diag-item .item-suggestion {
+  font-size: 11px; color: var(--amber); margin-top: 4px;
+  padding-left: 10px; border-left: 2px solid var(--amber-dim);
 }
-.diag-item .diag-msg { font-size: 13px; color: var(--text-primary); font-family: var(--font-mono); line-height: 1.5; }
+
 .diag-empty {
   color: var(--text-muted); font-family: var(--font-mono);
   font-size: 12px; text-align: center; padding: 32px; letter-spacing: 0.04em;
@@ -1663,24 +1699,51 @@ function renderField(f) {
 // 诊断面板
 // ═══════════════════════════════════════════════════════════════
 function renderDiagnostics() {
-  const diag = window._diagData || [];
+  const report = window._diagData;
   let body = '';
-  if (diag.length === 0) {
+  if (!report || !report.groups) {
     body = '<div class="diag-empty">尚未运行诊断。点击下方按钮验证当前配置。</div>';
   } else {
-    body = '<div class="diag-results">' + diag.map(d => `
-      <div class="diag-item ${d.severity === 'error' ? 'error' : 'warn'}">
-        <span class="diag-sev">${d.severity === 'error' ? '错误' : '警告'}</span>
-        <span class="diag-cat">${esc(d.category || '—')}</span>
-        <span class="diag-msg">${esc(d.message)}</span>
+    const s = report.summary;
+    const hlabels = { healthy: '正常', degraded: '降级', broken: '异常' };
+    body = `
+      <div class="diag-summary">
+        <div class="diag-summary-bar">
+          <span class="stat pass"><span class="n">${s.pass}</span><span class="l">通过</span></span>
+          <span class="stat warn"><span class="n">${s.warn}</span><span class="l">警告</span></span>
+          <span class="stat fail"><span class="n">${s.fail}</span><span class="l">失败</span></span>
+          <span class="stat info"><span class="n">${s.info}</span><span class="l">提示</span></span>
+        </div>
+        <span class="health-badge ${s.health}">${hlabels[s.health] || s.health}</span>
       </div>
-    `).join('') + '</div>';
+      ${report.groups.map(g => {
+        const gicons = { healthy: '&#x2705;', degraded: '&#x26A0;', broken: '&#x274C;' };
+        const sitems = { pass: '&#x2705;', warn: '&#x26A0;', fail: '&#x274C;', info: '&#x2139;' };
+        return `
+        <div class="diag-group">
+          <div class="diag-group-header ${g.health}">
+            <span class="group-icon">${gicons[g.health] || ''}</span> ${esc(g.name)}
+          </div>
+          ${g.items.map(it => `
+            <div class="diag-item">
+              <span class="item-icon ${it.status}">${sitems[it.status] || ''}</span>
+              <div class="item-body">
+                <div class="item-name">${esc(it.check_name)}</div>
+                <div class="item-msg">${esc(it.message)}</div>
+                ${it.detail ? '<div class="item-detail">' + esc(it.detail) + '</div>' : ''}
+                ${it.suggestion ? '<div class="item-suggestion">' + esc(it.suggestion) + '</div>' : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+      }).join('')}
+    `;
   }
 
   return `
     <div class="page-header">
-      <h2>配置诊断</h2>
-      <p>检测当前配置的潜在问题，保存配置时也会自动执行</p>
+      <h2>执行诊断</h2>
+      <p>全链路运行时诊断，涵盖服务状态、账号连通、Codex 路由、注入状态、运行环境</p>
     </div>
     <div class="diag-header">
       <button class="btn btn-primary" id="btnValidateDiag" onclick="validateConfig()">运行诊断</button>
@@ -1974,16 +2037,16 @@ async function validateConfig() {
   const configMsg = document.getElementById('configMsg');
   const mainBtn = document.getElementById('btnValidate') || document.getElementById('btnValidateDiag');
 
-  if (mainBtn) mainBtn.disabled = true;
-  if (sidebarMsg) { sidebarMsg.textContent = '验证中...'; sidebarMsg.className = 'sidebar-status loading'; }
+  if (mainBtn) { mainBtn.disabled = true; mainBtn.textContent = '诊断中...'; }
+  if (sidebarMsg) { sidebarMsg.textContent = '诊断中...'; sidebarMsg.className = 'sidebar-status loading'; }
 
   try {
     // 配置面板未渲染时（如从诊断面板调用），使用已加载的配置
     const data = document.getElementById('field_port')
       ? collectFormData()
       : currentConfig;
-    const result = await invoke('validate_config', { config: data });
-    window._diagData = result || [];
+    const result = await invoke('run_full_diagnostics', { config: data });
+    window._diagData = result;
 
     if (currentPanel !== 'diagnostics') {
       switchPanel('diagnostics');
@@ -1991,25 +2054,23 @@ async function validateConfig() {
       renderPanel('diagnostics');
     }
 
-    const diags = result || [];
-    const errs = diags.filter(d => d.severity === 'error').length;
-    const warns = diags.filter(d => d.severity !== 'error').length;
-
-    if (diags.length === 0) {
-      if (sidebarMsg) { sidebarMsg.textContent = '验证通过'; sidebarMsg.className = 'sidebar-status success'; }
-      showToast('验证通过，配置无异常', 'success');
+    const s = result.summary;
+    const hlabels = { healthy: '正常', degraded: '降级', broken: '异常' };
+    if (s.fail > 0) {
+      if (sidebarMsg) { sidebarMsg.textContent = s.fail + ' 失败 · ' + s.warn + ' 警告'; sidebarMsg.className = 'sidebar-status error'; }
+      showToast(s.fail + ' 项失败，' + s.warn + ' 项警告 — 健康状态: ' + (hlabels[s.health] || s.health), 'error');
+    } else if (s.warn > 0) {
+      if (sidebarMsg) { sidebarMsg.textContent = s.warn + ' 个警告'; sidebarMsg.className = 'sidebar-status loading'; }
+      showToast(s.warn + ' 项警告 — 健康状态: ' + (hlabels[s.health] || s.health), 'info');
     } else {
-      const parts = [];
-      if (errs) parts.push(errs + ' 个错误');
-      if (warns) parts.push(warns + ' 个警告');
-      if (sidebarMsg) { sidebarMsg.textContent = parts.join('，'); sidebarMsg.className = errs ? 'sidebar-status error' : 'sidebar-status loading'; }
-      showToast('发现 ' + parts.join('、'), errs ? 'error' : 'info');
+      if (sidebarMsg) { sidebarMsg.textContent = '全部通过'; sidebarMsg.className = 'sidebar-status success'; }
+      showToast('诊断完成，所有检查项通过', 'success');
     }
   } catch (err) {
-    if (sidebarMsg) { sidebarMsg.textContent = '验证失败'; sidebarMsg.className = 'sidebar-status error'; }
-    showToast('验证请求失败: ' + err, 'error');
+    if (sidebarMsg) { sidebarMsg.textContent = '诊断失败'; sidebarMsg.className = 'sidebar-status error'; }
+    showToast('诊断请求失败: ' + err, 'error');
   } finally {
-    if (mainBtn) mainBtn.disabled = false;
+    if (mainBtn) { mainBtn.disabled = false; mainBtn.textContent = '运行诊断'; }
     if (sidebarMsg && sidebarMsg.className === 'sidebar-status loading') {
       sidebarMsg.textContent = ''; sidebarMsg.className = 'sidebar-status';
     }

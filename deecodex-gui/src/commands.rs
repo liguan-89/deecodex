@@ -946,25 +946,32 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
     // 异步检测上游连通性
     let connectivity = do_test_connectivity(&config.upstream, &config.api_key).await;
     let conn_item = match connectivity {
-        Ok(result) => {
-            deecodex::validate::connectivity_check_result(
-                result.ok,
-                result.status_code,
-                result.latency_ms,
-                result.model_count,
-                &result.endpoint,
-                result.error.as_deref(),
-            )
-        }
+        Ok(result) => deecodex::validate::connectivity_check_result(
+            result.ok,
+            result.status_code,
+            result.latency_ms,
+            result.model_count,
+            &result.endpoint,
+            result.error.as_deref(),
+        ),
         Err(e) => deecodex::validate::connectivity_check_result(
-            false, 0, 0, None, &config.upstream, Some(&e),
+            false,
+            0,
+            0,
+            None,
+            &config.upstream,
+            Some(&e),
         ),
     };
 
     // 替换「账号连通」分组中的连通性检查项
     for group in &mut report.groups {
         if group.name == "账号连通" {
-            if let Some(item) = group.items.iter_mut().find(|i| i.check_name == "账号连通性") {
+            if let Some(item) = group
+                .items
+                .iter_mut()
+                .find(|i| i.check_name == "账号连通性")
+            {
                 *item = conn_item;
             }
             group.health = deecodex::validate::DiagnosticReport::compute_group_health(&group.items);
@@ -2010,7 +2017,10 @@ pub async fn get_monthly_stats(
 ) -> Result<Value, String> {
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    let stats = state.request_history.list_monthly_stats(limit.unwrap_or(6)).await;
+    let stats = state
+        .request_history
+        .list_monthly_stats(limit.unwrap_or(6))
+        .await;
     Ok(serde_json::to_value(stats).unwrap_or_default())
 }
 
