@@ -1055,15 +1055,8 @@ pub fn run_upgrade() -> Result<String, String> {
     } else {
         "deecodex.sh"
     };
-    // 从 exe 所在目录找脚本（安装目录），回退到 data_dir
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| args.data_dir.clone());
-    let script = exe_dir.join(script_name);
-    if !script.exists() {
-        return Err(format!("管理脚本 {} 不存在，请先运行安装脚本", script_name));
-    }
+
+    let script = find_or_download_script(script_name, &args)?;
 
     #[cfg(windows)]
     {
@@ -1090,6 +1083,64 @@ pub fn run_upgrade() -> Result<String, String> {
     }
 
     Ok("升级已启动，完成后请重启服务".to_string())
+}
+
+fn find_or_download_script(script_name: &str, args: &Args) -> Result<std::path::PathBuf, String> {
+    // 1. exe 所在目录（CLI .pkg 安装场景）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(script_name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+    // 2. ~/.deecodex/（install.sh 场景）
+    let deecodex_dir = &args.data_dir;
+    let candidate = deecodex_dir.join(script_name);
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+    // 3. 自动下载到 ~/.deecodex/
+    download_script(script_name, deecodex_dir)
+}
+
+fn download_script(script_name: &str, dest_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let url = format!(
+        "https://github.com/liguan-89/deecodex/releases/latest/download/{}",
+        script_name
+    );
+    let dest = dest_dir.join(script_name);
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("deecodex")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("下载 {} 失败: {e}", script_name))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("下载 {} 失败，HTTP {}", script_name, resp.status()));
+    }
+
+    let bytes = resp.bytes().map_err(|e| format!("读取响应失败: {e}"))?;
+    std::fs::write(&dest, &bytes).map_err(|e| format!("写入 {} 失败: {e}", script_name))?;
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .map_err(|e| format!("读取权限失败: {e}"))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).map_err(|e| format!("设置权限失败: {e}"))?;
+    }
+
+    Ok(dest)
 }
 
 // ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 [package]
 name = "deecodex-gui"
-version = "1.9.6"
+version = "1.9.8"
 edition = "2021"
 description = "deecodex Desktop GUI"
 
@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 dashmap = "6"
 anyhow = "1"
 deecodex-plugin-host = { path = "../deecodex-plugins" }
