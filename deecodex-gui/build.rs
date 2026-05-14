@@ -31,6 +31,10 @@ fn main() {
             return;
         }
         fs::write(&out, js).unwrap();
-        println!("cargo:warning=nav fragments: {} 文件 → {}", files.len(), out.display());
+        println!(
+            "cargo:warning=nav fragments: {} 文件 → {}",
+            files.len(),
+            out.display()
+        );
     }
 }

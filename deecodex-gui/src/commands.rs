@@ -940,25 +940,32 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
     // 异步检测上游连通性
     let connectivity = do_test_connectivity(&config.upstream, &config.api_key).await;
     let conn_item = match connectivity {
-        Ok(result) => {
-            deecodex::validate::connectivity_check_result(
-                result.ok,
-                result.status_code,
-                result.latency_ms,
-                result.model_count,
-                &result.endpoint,
-                result.error.as_deref(),
-            )
-        }
+        Ok(result) => deecodex::validate::connectivity_check_result(
+            result.ok,
+            result.status_code,
+            result.latency_ms,
+            result.model_count,
+            &result.endpoint,
+            result.error.as_deref(),
+        ),
         Err(e) => deecodex::validate::connectivity_check_result(
-            false, 0, 0, None, &config.upstream, Some(&e),
+            false,
+            0,
+            0,
+            None,
+            &config.upstream,
+            Some(&e),
         ),
     };
 
     // 替换「账号连通」分组中的连通性检查项
     for group in &mut report.groups {
         if group.name == "账号连通" {
-            if let Some(item) = group.items.iter_mut().find(|i| i.check_name == "账号连通性") {
+            if let Some(item) = group
+                .items
+                .iter_mut()
+                .find(|i| i.check_name == "账号连通性")
+            {
                 *item = conn_item;
             }
             group.health = deecodex::validate::DiagnosticReport::compute_group_health(&group.items);
@@ -1258,8 +1265,8 @@ pub async fn delete_account(
 
 /// 切换活跃账号，同步更新运行中服务的上游/Key/模型映射等热字段
 #[tauri::command]
-pub async fn switch_account(
-    manager: State<'_, ServerManager>,
+pub(crate) async fn switch_account_inner(
+    manager: &ServerManager,
     id: String,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
@@ -1272,12 +1279,10 @@ pub async fn switch_account(
         .ok_or_else(|| format!("账号不存在: {id}"))?
         .clone();
 
-    store.active_id = Some(id);
+    store.active_id = Some(id.clone());
 
-    deecodex::accounts::save_accounts(&data_dir, &store)
-        .map_err(|e| format!("保存账号失败: {e}"))?;
-
-    // 如果服务在运行，同步更新 AppState 热字段
+    // 如果服务在运行，先同步更新 AppState 热字段，再写文件
+    // 避免文件已切但 AppState 更新失败导致的不一致
     if let Some(app_state) = manager.app_state.lock().await.as_ref() {
         // 更新上游 URL
         let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
@@ -1310,13 +1315,12 @@ pub async fn switch_account(
         *app_state.thinking_tokens.write().await = target.thinking_tokens;
         *app_state.custom_headers.write().await = target.custom_headers.clone();
         *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
-        // max_retries 通过 active_account 直接读取，无需单独同步
 
         // 更新 active_account
         *app_state.active_account.write().await = target.clone();
 
         // 同步更新 account_store
-        *app_state.account_store.write().await = store;
+        *app_state.account_store.write().await = store.clone();
 
         // 根据新账号的上下文窗口覆盖重新注入 codex config
         let port = *manager.port.lock().await;
@@ -1325,7 +1329,19 @@ pub async fn switch_account(
         tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
     }
 
+    // 持久化到文件（无论服务是否运行）
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
     Ok(account_to_value(&target))
+}
+
+#[tauri::command]
+pub async fn switch_account(
+    manager: State<'_, ServerManager>,
+    id: String,
+) -> Result<Value, String> {
+    switch_account_inner(&manager, id).await
 }
 
 /// 从 Codex 的 config.toml 导入账号
@@ -2090,7 +2106,10 @@ pub async fn get_monthly_stats(
     drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    let stats = state.request_history.list_monthly_stats(limit.unwrap_or(6)).await;
+    let stats = state
+        .request_history
+        .list_monthly_stats(limit.unwrap_or(6))
+        .await;
     Ok(serde_json::to_value(stats).unwrap_or_default())
 }
 
