@@ -250,29 +250,29 @@ pub fn run() {
             let menu = build_tray_menu(app.handle(), false, &args.data_dir)?;
 
             let icon = {
-                // 生成 48x48 青色菱形托盘图标（RGBA），高分辨率让形状更清晰
+                // macOS 模板图标：纯黑菱形 + 透明度 → 系统自动适配亮暗模式
                 let w = 48u32;
                 let h = 48u32;
                 let center = 24.0;
-                let outer_r = 22.0; // 外层菱形半对角线
-                let inner_r = 7.0; // 内层挖空半对角线（接近 CSS logo 比例）
-                let feather = 1.2; // 边缘羽化
+                let outer_r = 22.0;
+                let inner_r = 7.0;
+                let feather = 1.2;
                 let mut rgba = Vec::with_capacity((w * h * 4) as usize);
                 for y in 0..h {
                     for x in 0..w {
                         let dx = (x as f32 - center + 0.5).abs();
                         let dy = (y as f32 - center + 0.5).abs();
-                        let d = dx + dy; // 曼哈顿距离 → 菱形
+                        let d = dx + dy;
                         if d <= inner_r || d >= outer_r + feather {
                             rgba.extend_from_slice(&[0, 0, 0, 0]);
                         } else if d >= outer_r {
                             let a = (255.0 * (1.0 - (d - outer_r) / feather)) as u8;
-                            rgba.extend_from_slice(&[0, 200, 232, a]);
+                            rgba.extend_from_slice(&[0, 0, 0, a]);
                         } else if d <= inner_r + feather {
                             let a = (255.0 * ((d - inner_r) / feather)) as u8;
-                            rgba.extend_from_slice(&[0, 200, 232, a]);
+                            rgba.extend_from_slice(&[0, 0, 0, a]);
                         } else {
-                            rgba.extend_from_slice(&[0, 200, 232, 255]);
+                            rgba.extend_from_slice(&[0, 0, 0, 255]);
                         }
                     }
                 }
@@ -281,7 +281,7 @@ pub fn run() {
 
             let tray = TrayIconBuilder::new()
                 .icon(icon)
-                .icon_as_template(false)
+                .icon_as_template(true)
                 .menu(&menu)
                 .tooltip("deecodex · 已停止")
                 .on_menu_event(|app, event| {
