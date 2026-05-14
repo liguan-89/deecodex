@@ -355,6 +355,23 @@ git merge 功能/<功能名>
 git push deecodex-new deecodex-gui
 ```
 
+### 同步其他工作区
+
+合入一个功能分支后，立即同步其他 worktree 到最新主干：
+
+```bash
+for b in 服务概览 协议配置 执行诊断 账号管理 请求历史 线程聚合 插件管理 使用帮助 DEX助手 个人中心; do
+  git -C "功能/$b" merge deecodex-gui -m "merge: 同步 deecodex-gui"
+done
+git push deecodex-new 功能/服务概览 功能/协议配置 ...  # 同步后的分支也要推送
+```
+
+### 冲突预防三原则
+
+1. **严格按分区改文件** — 每个分区只改 WORKTREES.md 中列出的模块和导航片段。需要改共享模块（如 `config.rs`、`main.rs`）时，去对应的 worktree 改，或先合入一个再 rebase 另一个。
+2. **跨分区改动先合** — 动了共享结构体/接口（如 `Args`、`AppState`、`GuiConfig`）的改动优先合入主干，其他分支 rebase 到主干后再继续开发。
+3. **勤同步，逐个合** — 不要等所有分支改完一起合。每合完一个分支马上同步其他 worktree，冲突摊到每次，避免最后一次性爆发。
+
 ### 查看所有工作区
 
 ```bash

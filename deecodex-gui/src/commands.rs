@@ -32,7 +32,6 @@ pub struct GuiConfig {
     pub port: u16,
     pub upstream: String,
     pub api_key: String,
-    pub client_api_key: String,
     pub model_map: String,
     pub chinese_thinking: bool,
     pub codex_auto_inject: bool,
@@ -67,7 +66,6 @@ impl From<Args> for GuiConfig {
             port: a.port,
             upstream: a.upstream,
             api_key: a.api_key,
-            client_api_key: a.client_api_key,
             model_map: a.model_map,
             chinese_thinking: a.chinese_thinking,
             codex_auto_inject: a.codex_auto_inject,
@@ -122,7 +120,6 @@ pub(crate) fn load_args() -> Args {
                     port: 4446,
                     upstream: "https://openrouter.ai/api/v1".into(),
                     api_key: String::new(),
-                    client_api_key: String::new(),
                     model_map: "{}".into(),
                     max_body_mb: 100,
                     vision_upstream: String::new(),
@@ -378,7 +375,6 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
             .build()?,
         upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
         api_key: Arc::new(tokio::sync::RwLock::new(active_account.api_key.clone())),
-        client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key.clone())),
         model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
         vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
         vision_api_key: Arc::new(tokio::sync::RwLock::new(vision_api_key)),
@@ -463,7 +459,6 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         deecodex::codex_config::fix();
         deecodex::codex_config::inject(
             port,
-            &state.client_api_key.read().await,
             load_active_account_context_window(&args.data_dir),
         );
     }
@@ -699,33 +694,35 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     let config_path = Args::default_config_path(&data_dir);
     let existing = Args::load_from_file(&config_path);
 
-    // 掩码保护：若前端传回掩码值，保留原有明文 Key
-    let api_key = if config.api_key.contains("****") || config.api_key == "********" {
-        existing
-            .as_ref()
-            .map(|a| a.api_key.clone())
-            .unwrap_or_default()
-    } else {
-        config.api_key.clone()
-    };
-    let client_api_key =
-        if config.client_api_key.contains("****") || config.client_api_key == "********" {
-            existing
-                .as_ref()
-                .map(|a| a.client_api_key.clone())
-                .unwrap_or_default()
-        } else {
-            config.client_api_key.clone()
-        };
-    let vision_api_key =
-        if config.vision_api_key.contains("****") || config.vision_api_key == "********" {
-            existing
-                .as_ref()
-                .map(|a| a.vision_api_key.clone())
-                .unwrap_or_default()
-        } else {
-            config.vision_api_key.clone()
-        };
+    // 账号管理的字段始终保留已有配置值（这些字段不在高级设置页面中展示）
+    let upstream = existing
+        .as_ref()
+        .map(|a| a.upstream.clone())
+        .unwrap_or_default();
+    let api_key = existing
+        .as_ref()
+        .map(|a| a.api_key.clone())
+        .unwrap_or_default();
+    let model_map = existing
+        .as_ref()
+        .map(|a| a.model_map.clone())
+        .unwrap_or_default();
+    let vision_upstream = existing
+        .as_ref()
+        .map(|a| a.vision_upstream.clone())
+        .unwrap_or_default();
+    let vision_api_key = existing
+        .as_ref()
+        .map(|a| a.vision_api_key.clone())
+        .unwrap_or_default();
+    let vision_model = existing
+        .as_ref()
+        .map(|a| a.vision_model.clone())
+        .unwrap_or_default();
+    let vision_endpoint = existing
+        .as_ref()
+        .map(|a| a.vision_endpoint.clone())
+        .unwrap_or_default();
 
     // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
@@ -737,15 +734,14 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         command: None,
         config: None,
         port: config.port,
-        upstream: config.upstream,
+        upstream,
         api_key,
-        client_api_key,
-        model_map: config.model_map,
+        model_map,
         max_body_mb: config.max_body_mb as usize,
-        vision_upstream: config.vision_upstream,
+        vision_upstream,
         vision_api_key,
-        vision_model: config.vision_model,
-        vision_endpoint: config.vision_endpoint,
+        vision_model,
+        vision_endpoint,
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
@@ -775,11 +771,10 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
 
     // 根据更新后的 Codex 注入开关立即应用/移除 Codex config.toml 修改
     let port = args.port;
-    let ca_key = args.client_api_key.clone();
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject(port, &ca_key, cw);
+        deecodex::codex_config::inject(port, cw);
     } else {
         deecodex::codex_config::remove();
     }
@@ -814,7 +809,6 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         port: config.port,
         upstream: config.upstream,
         api_key: config.api_key,
-        client_api_key: config.client_api_key,
         model_map: config.model_map,
         max_body_mb: config.max_body_mb as usize,
         vision_upstream: config.vision_upstream,
@@ -859,8 +853,197 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         .collect()
 }
 
+/// 运行完整诊断（同步，含 14 项检查；连通性检测标记为 Info 待后续异步补全）
 #[tauri::command]
-pub fn update_service() -> Result<String, String> {
+pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
+    let args = Args {
+        command: None,
+        config: None,
+        port: config.port,
+        upstream: config.upstream,
+        api_key: config.api_key,
+        model_map: config.model_map,
+        max_body_mb: config.max_body_mb as usize,
+        vision_upstream: config.vision_upstream,
+        vision_api_key: config.vision_api_key,
+        vision_model: config.vision_model,
+        vision_endpoint: config.vision_endpoint,
+        chinese_thinking: config.chinese_thinking,
+        codex_auto_inject: config.codex_auto_inject,
+        codex_persistent_inject: config.codex_persistent_inject,
+        prompts_dir: config.prompts_dir.into(),
+        data_dir: config.data_dir.into(),
+        token_anomaly_prompt_max: config.token_anomaly_prompt_max,
+        token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
+        token_anomaly_burn_window: config.token_anomaly_burn_window,
+        token_anomaly_burn_rate: config.token_anomaly_burn_rate,
+        allowed_mcp_servers: config.allowed_mcp_servers,
+        allowed_computer_displays: config.allowed_computer_displays,
+        computer_executor: config.computer_executor,
+        computer_executor_timeout_secs: config.computer_executor_timeout_secs,
+        mcp_executor_config: config.mcp_executor_config,
+        mcp_executor_timeout_secs: config.mcp_executor_timeout_secs,
+        playwright_state_dir: config.playwright_state_dir,
+        browser_use_bridge_url: config.browser_use_bridge_url,
+        browser_use_bridge_command: config.browser_use_bridge_command,
+        daemon: false,
+        codex_launch_with_cdp: config.codex_launch_with_cdp,
+        cdp_port: config.cdp_port,
+    };
+
+    let ctx = deecodex::validate::DiagnosticContext::from(&args);
+    let report = deecodex::validate::run_diagnostics_sync(&ctx);
+    serde_json::to_value(report).unwrap_or_default()
+}
+
+/// 运行完整诊断（异步，包含上游 API 连通性检测）
+#[tauri::command]
+pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value, String> {
+    let args = Args {
+        command: None,
+        config: None,
+        port: config.port,
+        upstream: config.upstream.clone(),
+        api_key: config.api_key.clone(),
+        model_map: config.model_map,
+        max_body_mb: config.max_body_mb as usize,
+        vision_upstream: config.vision_upstream,
+        vision_api_key: config.vision_api_key,
+        vision_model: config.vision_model,
+        vision_endpoint: config.vision_endpoint,
+        chinese_thinking: config.chinese_thinking,
+        codex_auto_inject: config.codex_auto_inject,
+        codex_persistent_inject: config.codex_persistent_inject,
+        prompts_dir: config.prompts_dir.into(),
+        data_dir: config.data_dir.into(),
+        token_anomaly_prompt_max: config.token_anomaly_prompt_max,
+        token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
+        token_anomaly_burn_window: config.token_anomaly_burn_window,
+        token_anomaly_burn_rate: config.token_anomaly_burn_rate,
+        allowed_mcp_servers: config.allowed_mcp_servers,
+        allowed_computer_displays: config.allowed_computer_displays,
+        computer_executor: config.computer_executor,
+        computer_executor_timeout_secs: config.computer_executor_timeout_secs,
+        mcp_executor_config: config.mcp_executor_config,
+        mcp_executor_timeout_secs: config.mcp_executor_timeout_secs,
+        playwright_state_dir: config.playwright_state_dir,
+        browser_use_bridge_url: config.browser_use_bridge_url,
+        browser_use_bridge_command: config.browser_use_bridge_command,
+        daemon: false,
+        codex_launch_with_cdp: config.codex_launch_with_cdp,
+        cdp_port: config.cdp_port,
+    };
+
+    let ctx = deecodex::validate::DiagnosticContext::from(&args);
+    let mut report = deecodex::validate::run_diagnostics_sync(&ctx);
+
+    // 异步检测上游连通性
+    let connectivity = do_test_connectivity(&config.upstream, &config.api_key).await;
+    let conn_item = match connectivity {
+        Ok(result) => {
+            deecodex::validate::connectivity_check_result(
+                result.ok,
+                result.status_code,
+                result.latency_ms,
+                result.model_count,
+                &result.endpoint,
+                result.error.as_deref(),
+            )
+        }
+        Err(e) => deecodex::validate::connectivity_check_result(
+            false, 0, 0, None, &config.upstream, Some(&e),
+        ),
+    };
+
+    // 替换「账号连通」分组中的连通性检查项
+    for group in &mut report.groups {
+        if group.name == "账号连通" {
+            if let Some(item) = group.items.iter_mut().find(|i| i.check_name == "账号连通性") {
+                *item = conn_item;
+            }
+            group.health = deecodex::validate::DiagnosticReport::compute_group_health(&group.items);
+            break;
+        }
+    }
+
+    // 重新计算摘要
+    report.summary = deecodex::validate::DiagnosticReport::compute_summary(&report.groups);
+
+    Ok(serde_json::to_value(report).unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn check_upgrade() -> Result<Value, String> {
+    let args = load_args();
+    // 读取当前版本（多级回退：data_dir → 上级目录 → 编译时常量）
+    let version_path = args.data_dir.join("VERSION");
+    let current = std::fs::read_to_string(&version_path)
+        .or_else(|_| std::fs::read_to_string("../VERSION"))
+        .unwrap_or_else(|_| format!("v{}", env!("CARGO_PKG_VERSION")))
+        .trim()
+        .to_string();
+
+    // 获取 origin 远程标签，提取最新版本
+    let output = std::process::Command::new("git")
+        .args(["ls-remote", "--tags", "origin"])
+        .output()
+        .map_err(|e| format!("获取远程标签失败: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut latest_tag = String::new();
+    let mut latest_ver = (0u32, 0u32, 0u32);
+
+    for line in stdout.lines() {
+        if let Some(tag) = line.split("refs/tags/").nth(1) {
+            let tag = tag.trim_end_matches("^{}");
+            if let Some(v) = parse_version(tag) {
+                if v > latest_ver {
+                    latest_ver = v;
+                    latest_tag = tag.to_string();
+                }
+            }
+        }
+    }
+
+    let cur_ver = parse_version(&current).unwrap_or((0, 0, 0));
+    let has_update = latest_ver > cur_ver;
+
+    // 获取更新日志（先 fetch 标签再取 log）
+    let changelog = if has_update {
+        let _ = std::process::Command::new("git")
+            .args(["fetch", "origin", "tag", &latest_tag, "--no-tags"])
+            .output();
+        std::process::Command::new("git")
+            .args(["log", &format!("{}..{}", current, latest_tag), "--oneline", "--no-merges"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Ok(json!({
+        "current": current,
+        "latest": latest_tag,
+        "has_update": has_update,
+        "changelog": changelog,
+    }))
+}
+
+fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let s = s.trim_start_matches('v');
+    let parts: Vec<u32> = s.split('.').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() >= 3 {
+        Some((parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+pub fn run_upgrade() -> Result<String, String> {
     let args = load_args();
     let script_name = if cfg!(windows) {
         "deecodex.bat"
@@ -1036,10 +1219,9 @@ pub async fn update_account(
 
     // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
     if store.active_id.as_ref() == Some(&account.id) {
-        if let Some(app_state) = manager.app_state.lock().await.as_ref() {
+        if let Some(_app_state) = manager.app_state.lock().await.as_ref() {
             let port = *manager.port.lock().await;
-            let client_api_key = app_state.client_api_key.read().await.clone();
-            deecodex::codex_config::inject(port, &client_api_key, account.context_window_override);
+            deecodex::codex_config::inject(port, account.context_window_override);
         }
     }
 
@@ -1138,8 +1320,7 @@ pub async fn switch_account(
 
         // 根据新账号的上下文窗口覆盖重新注入 codex config
         let port = *manager.port.lock().await;
-        let client_api_key = app_state.client_api_key.read().await.clone();
-        deecodex::codex_config::inject(port, &client_api_key, target.context_window_override);
+        deecodex::codex_config::inject(port, target.context_window_override);
 
         tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
     }
@@ -1795,14 +1976,19 @@ pub async fn delete_thread(
     Ok(serde_json::json!({ "ok": true, "message": "线程已永久删除" }))
 }
 
-/// 测试上游 API 端点连通性
-#[tauri::command]
-pub async fn test_upstream_connectivity(
-    upstream: String,
-    api_key: String,
-) -> Result<Value, String> {
+/// 连通性检测结果
+struct ConnectivityResult {
+    ok: bool,
+    status_code: u16,
+    latency_ms: u128,
+    model_count: Option<usize>,
+    endpoint: String,
+    error: Option<String>,
+}
+
+/// 执行上游连通性检测（内部使用）
+async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<ConnectivityResult, String> {
     let base = upstream.trim_end_matches('/');
-    // 尝试 /models 端点
     let url = format!("{base}/models");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -1810,7 +1996,7 @@ pub async fn test_upstream_connectivity(
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     let mut req = client.get(&url);
     if !api_key.is_empty() {
-        req = req.bearer_auth(&api_key);
+        req = req.bearer_auth(api_key);
     }
     let start = std::time::Instant::now();
     match req.send().await {
@@ -1818,26 +2004,44 @@ pub async fn test_upstream_connectivity(
             let status = resp.status().as_u16();
             let latency_ms = start.elapsed().as_millis();
             let body = resp.text().await.unwrap_or_default();
-            // 尝试解析模型数量
             let model_count = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()));
-            Ok(serde_json::json!({
-                "ok": status < 500,
-                "status": status,
-                "latency_ms": latency_ms,
-                "model_count": model_count,
-                "endpoint": url,
-            }))
+            Ok(ConnectivityResult {
+                ok: status < 500,
+                status_code: status,
+                latency_ms,
+                model_count,
+                endpoint: url,
+                error: None,
+            })
         }
-        Err(e) => Ok(serde_json::json!({
-            "ok": false,
-            "status": 0,
-            "latency_ms": start.elapsed().as_millis(),
-            "error": e.to_string(),
-            "endpoint": url,
-        })),
+        Err(e) => Ok(ConnectivityResult {
+            ok: false,
+            status_code: 0,
+            latency_ms: start.elapsed().as_millis(),
+            model_count: None,
+            endpoint: url,
+            error: Some(e.to_string()),
+        }),
     }
+}
+
+/// 测试上游 API 端点连通性
+#[tauri::command]
+pub async fn test_upstream_connectivity(
+    upstream: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let r = do_test_connectivity(&upstream, &api_key).await?;
+    Ok(serde_json::json!({
+        "ok": r.ok,
+        "status": r.status_code,
+        "latency_ms": r.latency_ms,
+        "model_count": r.model_count,
+        "endpoint": r.endpoint,
+        "error": r.error,
+    }))
 }
 
 // ── 请求历史 ──────────────────────────────────────────────────────────────

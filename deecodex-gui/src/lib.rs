@@ -157,6 +157,28 @@ fn load_env() {
 }
 
 pub fn run() {
+    // 单实例控制：检测已有 GUI 实例，避免重复启动
+    {
+        let current_pid = std::process::id();
+        let process_name = "deecodex-gui";
+        // 扫描同名进程（排除自身）
+        let output = std::process::Command::new("pgrep")
+            .arg("-x")
+            .arg(process_name)
+            .output();
+        if let Ok(out) = output {
+            let pids: Vec<&str> = std::str::from_utf8(&out.stdout)
+                .unwrap_or("")
+                .lines()
+                .filter(|l| !l.is_empty())
+                .collect();
+            if pids.len() > 1 || (pids.len() == 1 && pids[0] != current_pid.to_string()) {
+                eprintln!("deecodex-gui 已在运行中 (pid: {}), 本次启动取消", pids.join(", "));
+                std::process::exit(1);
+            }
+        }
+    }
+
     load_env();
 
     let args = crate::commands::load_args();
@@ -344,7 +366,10 @@ pub fn run() {
             commands::save_config,
             commands::get_logs,
             commands::validate_config,
-            commands::update_service,
+            commands::check_upgrade,
+            commands::run_upgrade,
+            commands::run_diagnostics,
+            commands::run_full_diagnostics,
             commands::launch_codex_cdp,
             commands::stop_codex_cdp,
             commands::list_accounts,
