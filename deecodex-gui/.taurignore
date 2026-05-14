@@ -1,1 +1,7 @@
 .deecodex
+gui/nav/fragments.js
+*.md
+target-mac/
+.cargo/
+功能/
+编译二进制/
