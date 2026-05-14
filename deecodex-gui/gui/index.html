@@ -622,23 +622,28 @@ body {
 .threads-toggle-track.on .threads-toggle-knob { transform: translateX(24px); background: #fff; }
 
 .threads-table {
-  width: 100%; border-collapse: collapse; margin-top: 12px;
+  width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 12px;
 }
 .threads-table th {
   text-align: left; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
   color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
   padding: 8px 0; border-bottom: 2px solid var(--border-subtle);
 }
+.threads-table th:nth-child(1) { width: 44%; }
+.threads-table th:nth-child(2) { width: 14%; }
+.threads-table th:nth-child(3) { width: 24%; }
+.threads-table th:nth-child(4) { width: 18%; }
 .threads-table td {
   padding: 7px 8px; border-bottom: 1px solid var(--border-subtle);
   font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .threads-table td:first-child {
-  color: var(--text-primary); overflow: visible; white-space: nowrap;
+  color: var(--text-primary); overflow: hidden; white-space: nowrap;
+  position: relative; padding-right: 46px;
 }
 .td-title-text {
-  display: inline-block; max-width: 250px;
+  display: inline-block; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   vertical-align: middle;
 }
@@ -1022,13 +1027,14 @@ body {
 .thread-row { cursor: pointer; transition: background var(--transition); }
 .thread-row:hover { background: var(--accent-dim); }
 .tag-delete {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
   display: none; font-family: var(--font-mono); font-size: 9px;
   font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
   letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
   background: var(--red-dim); color: var(--red);
-  border: 1px solid rgba(255, 60, 92, 0.2); vertical-align: middle;
+  border: 1px solid rgba(255, 60, 92, 0.2); white-space: nowrap;
 }
-.thread-row:hover .tag-delete { display: inline-block; }
+.thread-row:hover .tag-delete { display: block; }
 .tag-delete:hover { background: rgba(255, 60, 92, 0.25); }
 
 /* ── Detail Panel ── */
@@ -2581,17 +2587,10 @@ function renderThreads() {
     <h2>线程聚合</h2>
     <p>切换 Codex 侧边栏会话历史的 provider 归属</p>
   </div>
-  <div class="threads-toggle-row">
-    <span class="threads-toggle-label" id="toggleLabelCodex">隔离模式</span>
-    <div class="threads-toggle-track" id="threadsToggle" onclick="toggleThreadsMode()">
-      <div class="threads-toggle-knob"></div>
-    </div>
-    <span class="threads-toggle-label" id="toggleLabelDeecodex">聚合模式</span>
-  </div>
   <div class="threads-summary" id="threadsSummary">
     <div class="threads-stat"><div class="stat-value">—</div><div class="stat-label">总线程数</div></div>
     <div class="threads-stat other"><div class="stat-value">—</div><div class="stat-label">非统一线程</div></div>
-    <div class="threads-stat migrated"><div class="stat-value">—</div><div class="stat-label">当前模式</div></div>
+    <div class="threads-stat migrated"><div class="stat-value">—</div><div class="stat-label">归属</div></div>
   </div>
   <div class="mgmt-actions" style="margin-bottom:20px;">
     <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()">⟐ 聚合所有线程</button>
@@ -2626,13 +2625,10 @@ async function refreshThreads() {
         cards[2].textContent = '需要校准';
         cards[2].style.color = 'var(--amber)';
       } else {
-        cards[2].textContent = status.migrated ? '聚合模式' : '隔离模式';
-        cards[2].style.color = status.migrated ? 'var(--green)' : 'var(--text-primary)';
+        cards[2].textContent = status.active_provider || '—';
+        cards[2].style.color = 'var(--text-primary)';
       }
     }
-
-    // 更新 toggle 状态
-    updateToggle(status.migrated && !status.calibration_needed, status.active_provider);
 
     // 更新按钮状态
     const btnMigrate = document.getElementById('btnMigrate');
@@ -2681,22 +2677,6 @@ async function refreshThreads() {
     showToast('加载线程数据失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
     if (tbody) tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--red);">加载失败: ' + esc(String(err)) + '</td></tr>';
-  }
-}
-
-function updateToggle(migrated, activeProvider) {
-  const track = document.getElementById('threadsToggle');
-  const labelCodex = document.getElementById('toggleLabelCodex');
-  const labelDeecodex = document.getElementById('toggleLabelDeecodex');
-  if (track) {
-    if (migrated) track.classList.add('on'); else track.classList.remove('on');
-  }
-  if (labelCodex) {
-    if (migrated) labelCodex.classList.remove('active'); else labelCodex.classList.add('active');
-  }
-  if (labelDeecodex) {
-    labelDeecodex.textContent = '聚合模式';
-    if (migrated) labelDeecodex.classList.add('active'); else labelDeecodex.classList.remove('active');
   }
 }
 
@@ -2752,42 +2732,6 @@ async function doCalibrate() {
     showToast('校准失败: ' + err, 'error');
   } finally {
     if (btn) btn.disabled = false;
-  }
-}
-
-async function toggleThreadsMode() {
-  const track = document.getElementById('threadsToggle');
-  const isCurrentlyOn = track && track.classList.contains('on');
-  const needsCalibration = _threadsData && _threadsData.status && _threadsData.status.calibration_needed;
-  const activeProvider = (_threadsData && _threadsData.status && _threadsData.status.active_provider) || '';
-
-  // 需要校准时，点击 toggle 触发校准
-  if (needsCalibration) {
-    await doCalibrate();
-    return;
-  }
-
-  const newMode = !isCurrentlyOn;
-
-  const label = newMode ? '聚合模式' : '隔离模式';
-  if (!await showConfirm(`确定要切换到「${label}」模式吗？\n\n${newMode ? `所有线程将统一标识为「${activeProvider}」，Codex 侧边栏下聚合显示。\n不影响 Codex 当前路由行为。` : '线程将还原到各自的原始 provider。'}`)) return;
-
-  track.classList.add('disabled');
-  showToast('切换中...', 'info');
-
-  try {
-    if (newMode) {
-      const diff = await invoke('migrate_threads');
-      showToast(`已切换到聚合模式，${diff.changed_count} 条线程已迁移`, 'success');
-    } else {
-      const diff = await invoke('restore_threads');
-      showToast(`已切换到隔离模式，${diff.changed_count} 条线程已还原`, 'success');
-    }
-    await refreshThreads();
-  } catch (err) {
-    showToast('切换失败: ' + err, 'error');
-  } finally {
-    track.classList.remove('disabled');
   }
 }
 
