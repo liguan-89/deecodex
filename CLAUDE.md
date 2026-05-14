@@ -104,6 +104,9 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 - **Error handling:** `anyhow` for internal errors. Custom error types in `files.rs`, `prompts.rs`, `vector_stores.rs` implement `IntoResponse`.
 - **Logging:** `tracing` with `tracing-subscriber` env-filter. Daemon mode writes to log file; foreground writes to stderr. Default filter: `deecodex=info`.
 - **Dynamic JSON:** `serde_json::Value` used extensively for API translation — fields are manipulated dynamically rather than through strict struct deserialization.
+- **路径绝对化：** `data_dir` 等所有目录配置在使用前必须转为绝对路径。clap `default_value` 可能产生相对路径（如 `.deecodex`），不同启动目录下指向不同位置，导致账号/配置/日志静默分离。`load_args()` 中统一用 `config::home_dir()` 转换。
+- **静默失败加日志：** 关键分支（如托盘菜单构建、账号加载、文件读取）返回空结果时要打 `tracing::warn!`，不静默跳过。
+- **跨目录启动测试：** 编译后从不同目录启动二进制验证路径解析是否正常。
 
 ## 功能分区与提交规范
 
