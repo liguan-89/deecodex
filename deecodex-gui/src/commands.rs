@@ -153,7 +153,16 @@ pub(crate) fn load_args() -> Args {
             });
         }
     };
-    args.merge_with_file()
+    let mut args = args.merge_with_file();
+    // 确保 data_dir 为绝对路径，避免托盘菜单等逻辑找不到文件
+    if args.data_dir.is_relative() {
+        if let Some(home) = deecodex::config::home_dir() {
+            args.data_dir = home.join(".deecodex");
+        } else if let Ok(cwd) = std::env::current_dir() {
+            args.data_dir = cwd.join(&args.data_dir);
+        }
+    }
+    args
 }
 
 /// 执行首次启动迁移：如果 accounts.json 不存在，从旧配置和 Codex config 迁移账号。
