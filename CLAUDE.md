@@ -6,6 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
 
+## 当前分区
+
+你正在 **功能/Windows兼容** 分区工作，负责 Windows 平台兼容性修复。
+
+**只修改这些文件：**
+- `deecodex.bat` — Windows 启动脚本
+- `install.ps1` — Windows 安装脚本
+- `tauri.conf.json` — Windows 打包配置部分
+- 源码中 `#[cfg(target_os = "windows")]` 代码块
+
+**核心原则：** 优先用 `#[cfg(target_os = "windows")]` 在源码中隔离平台差异，避免影响 macOS/Linux。
+
+**注意：** 本分区无独立导航片段。
+
+**验证方式：**
+- 编译: `cargo build`
+- 编译 GUI: `cargo build -p deecodex-gui`
+- 测试: `cargo test`
+- 代码检查: `cargo clippy -- -D warnings`
+- 最终需在 Windows 环境验证
+
 ## Build & Test
 
 ```
