@@ -1377,25 +1377,12 @@ const CONFIG_SECTIONS = [
     id: 'basic', icon: '●', label: '基础设置',
     fields: [
       { key: 'port', label: '监听端口', hint: '服务监听的本地端口，默认 4446', type: 'number', min: 1, max: 65535 },
-      { key: 'upstream', label: '上游 API 地址', hint: 'DeepSeek / OpenRouter Chat Completions 端点', type: 'text', placeholder: 'https://api.deepseek.com/v1' },
-      { key: 'api_key', label: 'API Key', hint: '上游 LLM 提供商的 API 密钥', type: 'password' },
-      { key: 'client_api_key', label: '客户端认证密钥', hint: '客户端调用 deecodex 需要的 Bearer Token，留空不验证', type: 'password' },
-      { key: 'model_map', label: '模型映射', hint: 'JSON 格式，键名大小写敏感', type: 'json', placeholder: '{"gpt-5.5":"deepseek-v4-pro"}' },
-      { key: 'max_body_mb', label: '最大请求体 (MB)', hint: '上传/请求体大小上限', type: 'number', min: 1, max: 2048 },
+{ key: 'max_body_mb', label: '最大请求体 (MB)', hint: '上传/请求体大小上限', type: 'number', min: 1, max: 2048 },
       { key: 'chinese_thinking', label: '中文思考模式', hint: '强制中文思维链输出', type: 'checkbox' },
       { key: 'codex_auto_inject', label: '自动注入 Codex 配置', hint: '启动时将 deecodex 路由注入 Codex config.toml，停止时移除', type: 'checkbox' },
       { key: 'codex_persistent_inject', label: '持久注入', hint: '配置持久保留在 Codex config.toml 中，不再自动移除', type: 'checkbox' },
       { key: 'data_dir', label: '数据目录', hint: '配置文件、日志、PID 文件存储位置', type: 'text', placeholder: '.deecodex' },
       { key: 'prompts_dir', label: 'Prompts 目录', hint: 'Hosted Prompts 模板存放目录', type: 'text', placeholder: 'prompts' },
-    ]
-  },
-  {
-    id: 'vision', icon: '◎', label: '视觉路由',
-    fields: [
-      { key: 'vision_upstream', label: '视觉上游地址', hint: '多模态图片模型的 API 地址', type: 'text', placeholder: 'https://api.minimax.chat' },
-      { key: 'vision_api_key', label: '视觉 API Key', hint: '视觉模型的 API 密钥', type: 'password' },
-      { key: 'vision_model', label: '视觉模型名', hint: '使用的视觉模型名称', type: 'text', placeholder: 'MiniMax-M1' },
-      { key: 'vision_endpoint', label: '视觉端点路径', hint: '视觉 API 的具体端点', type: 'text', placeholder: 'v1/coding_plan/vlm' },
     ]
   },
   {
@@ -1555,12 +1542,6 @@ function renderStatus() {
         <div class="card-value small">${esc(v(s.chinese_thinking, false) ? '中文' : '默认')}</div>
         <div class="card-label">思考模式</div>
         ${badge(s.chinese_thinking)}
-      </div>
-      <div class="status-card">
-        <div class="card-icon">⬡ 认证</div>
-        <div class="card-value small">${esc(s.client_auth_enabled ? '需要密钥' : '开放访问')}</div>
-        <div class="card-label">客户端认证</div>
-        ${badge(s.client_auth_enabled)}
       </div>
       <div class="status-card">
         <div class="card-icon">⬢ CDP 注入</div>
@@ -1917,7 +1898,6 @@ async function loadStatus() {
       vision_enabled: cfg ? !!(cfg.vision_upstream && cfg.vision_api_key) : false,
       computer_executor: cfg ? cfg.computer_executor : 'disabled',
       chinese_thinking: cfg ? cfg.chinese_thinking : false,
-      client_auth_enabled: cfg ? !!cfg.client_api_key : false,
       cdp_port: cfg ? cfg.cdp_port : 9222,
       codex_launch_with_cdp: cfg ? cfg.codex_launch_with_cdp : false,
     };

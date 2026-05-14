@@ -122,7 +122,7 @@ fn codex_is_installed() -> bool {
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
 /// `context_window_override`: Some(size) 时生成 models_deecodex.json 并设置 model_catalog_json，
 /// 同时按 90% 设置 model_auto_compact_token_limit。None 时清除相关配置。
-pub fn inject(port: u16, client_api_key: &str, context_window_override: Option<u32>) {
+pub fn inject(port: u16, context_window_override: Option<u32>) {
     let Some(path) = codex_config_path() else {
         info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
         return;
@@ -149,7 +149,7 @@ pub fn inject(port: u16, client_api_key: &str, context_window_override: Option<u
         clear_context_catalog();
     }
 
-    match do_inject(&path, port, client_api_key, context_window_override) {
+    match do_inject(&path, port, context_window_override) {
         Ok(true) => info!("已将 deecodex 配置注入 codex config.toml (port={port})"),
         Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新端口"),
         Err(e) => warn!("注入 codex 配置失败: {e}"),
@@ -175,7 +175,6 @@ pub fn remove() {
 fn do_inject(
     path: &std::path::Path,
     port: u16,
-    client_api_key: &str,
     context_window_override: Option<u32>,
 ) -> Result<bool> {
     let content = read_config_file(path)?;
@@ -191,7 +190,7 @@ fn do_inject(
         toml_edit::value(format!("http://127.0.0.1:{}/v1", port));
     doc["model_providers"]["deecodex"]["name"] = toml_edit::value("deecodex");
     doc["model_providers"]["deecodex"]["requires_openai_auth"] = toml_edit::value(false);
-    doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value(client_api_key);
+    doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value("");
     doc["model_providers"]["deecodex"]["wire_api"] = toml_edit::value("responses");
 
     // 大上下文窗口覆盖
