@@ -28,10 +28,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
-**验证方式：**
+**验证方式（编译通过不算完成，必须跑测试）：**
 - 编译: `cargo build`
-- 测试: `cargo test`
+- **必须运行测试：** `cargo test`
 - 代码检查: `cargo clippy -- -D warnings`
+- 如涉及 GUI 面板改动，必须启动 GUI 实测对应功能
 ## Build & Test
 
 ```
