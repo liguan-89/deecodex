@@ -1005,46 +1005,65 @@ pub async fn check_upgrade() -> Result<Value, String> {
         .trim()
         .to_string();
 
-    let client = reqwest::Client::builder()
-        .user_agent("deecodex")
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-
-    let resp = client
-        .get("https://api.github.com/repos/liguan-89/deecodex/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .await
-        .map_err(|e| format!("获取最新版本失败: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回: {}", resp.status()));
-    }
-
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {e}"))?;
-    let latest_tag = body["tag_name"].as_str().unwrap_or("").to_string();
-    let release_body = body["body"].as_str().unwrap_or("").to_string();
+    let latest_tag = fetch_latest_tag().await;
 
     let cur_ver = parse_version(&current).unwrap_or((0, 0, 0));
     let latest_ver = parse_version(&latest_tag).unwrap_or((0, 0, 0));
     let has_update = latest_ver > cur_ver;
 
-    let changelog = if has_update {
-        release_body.lines().take(20).collect::<Vec<_>>().join("\n")
-    } else {
-        String::new()
-    };
-
     Ok(json!({
         "current": current,
         "latest": latest_tag,
         "has_update": has_update,
-        "changelog": changelog,
+        "changelog": "",
     }))
+}
+
+/// 获取最新版本 tag：主站 GitHub API → 兜底 jsDelivr CDN
+async fn fetch_latest_tag() -> String {
+    let client = match reqwest::Client::builder().user_agent("deecodex").build() {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    // 1. GitHub API
+    match client
+        .get("https://api.github.com/repos/liguan-89/deecodex/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.json::<Value>().await {
+                if let Some(tag) = body["tag_name"].as_str() {
+                    return tag.to_string();
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // 2. 兜底：jsDelivr CDN 读取 VERSION 文件
+    match client
+        .get("https://cdn.jsdelivr.net/gh/liguan-89/deecodex@main/VERSION")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(tag) = resp.text().await {
+                let tag = tag.trim().to_string();
+                if !tag.is_empty() {
+                    return tag;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    String::new()
 }
 
 fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
