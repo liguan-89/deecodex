@@ -132,7 +132,7 @@ gui/
 
 - **不把大段 JS/CSS 写回 `index.html`**，放到 `gui/js/<feature>.js` 或 `gui/css/app.css`
 - **不直接调用 `window.__TAURI__`**，统一走 `DeeCodexTauri.invoke(name, args)`
-- **不直接访问 `localStorage`**，统一走 `deeStorage`（浏览器安全策略下自动降级为内存存储）
+- **不直接访问 `localStorage`**，统一走 `window.deeStorage`（Tauri WebView 中映射到 `window.localStorage`）
 - **不为 `file://` 预览模式牺牲正式 Tauri GUI 逻辑**
 - **非 Tauri 环境直接显示阻断页**，不做假数据或静默降级
 - **新增 Tauri command 优先拆到 `src/commands/<feature>.rs`**（已有 `logs.rs`）
