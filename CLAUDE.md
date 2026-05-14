@@ -26,12 +26,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 cargo build
 cargo build --release
-cargo test --all-targets
-cargo clippy -- -D warnings
+cargo test
 cargo fmt --check
 ```
 
-Run a specific test: `cargo test <test_name>`
+**注意：** 本分区无核心 Rust 模块，通常只需改 HTML。`cargo build` 用于确认改动不破坏编译。
 
 ## Architecture
 
