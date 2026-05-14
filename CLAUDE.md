@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
 
+## 当前分区
+
+你正在 **功能/使用帮助** 分区工作，负责使用帮助文档。
+
+**只修改这些文件：**
+- `gui/nav/08-使用帮助.html` — 导航栏片段
+
+**注意：** 本分区无核心 Rust 模块，主要维护帮助文档和导航片段。如需修改前端展示内容，在 `deecodex-gui/gui/index.html` 中「使用帮助」面板区域修改。
+
+**禁止修改其他分区的导航片段。**
+
+**验证方式：**
+- 编译: `cargo build`
+- 前端变更无需编译，刷新 Tauri 窗口即可看到效果
+
 ## Build & Test
 
 ```
