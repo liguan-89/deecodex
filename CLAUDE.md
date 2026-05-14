@@ -12,9 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **只修改这些文件：**
 - `src/request_history.rs` — 请求历史存储与查询
+- `deecodex-gui/gui/js/request-history.js` — 请求历史面板
 - `gui/nav/05-请求历史.html` — 导航栏片段
-
-**如需修改前端展示：** 在 `deecodex-gui/gui/index.html` 中「请求历史」面板区域修改。
 
 **排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
@@ -22,7 +21,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 编译: `cargo build`
 - 测试: `cargo test`
 - 代码检查: `cargo clippy -- -D warnings`
-
 ## Build & Test
 
 ```
@@ -36,7 +34,6 @@ cargo fmt --check
 Run a specific test: `cargo test <test_name>`
 
 **并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。
-
 ## Architecture
 
 deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** requests into **Chat Completions API** calls for DeepSeek/OpenRouter. The core translation is two-way:
