@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **注意：** 本分区无核心 Rust 模块，主要维护前端面板和导航片段。如需修改前端展示内容，在 `deecodex-gui/gui/index.html` 中 `renderDexAssistant()` 函数区域修改。
 
-**禁止修改其他分区的导航片段。**
+**排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
 **验证方式：**
 - 编译: `cargo build`
