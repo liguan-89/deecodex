@@ -851,6 +851,127 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         .collect()
 }
 
+/// 运行完整诊断（同步，含 14 项检查；连通性检测标记为 Info 待后续异步补全）
+#[tauri::command]
+pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
+    let args = Args {
+        command: None,
+        config: None,
+        port: config.port,
+        upstream: config.upstream,
+        api_key: config.api_key,
+        client_api_key: config.client_api_key,
+        model_map: config.model_map,
+        max_body_mb: config.max_body_mb as usize,
+        vision_upstream: config.vision_upstream,
+        vision_api_key: config.vision_api_key,
+        vision_model: config.vision_model,
+        vision_endpoint: config.vision_endpoint,
+        chinese_thinking: config.chinese_thinking,
+        codex_auto_inject: config.codex_auto_inject,
+        codex_persistent_inject: config.codex_persistent_inject,
+        prompts_dir: config.prompts_dir.into(),
+        data_dir: config.data_dir.into(),
+        token_anomaly_prompt_max: config.token_anomaly_prompt_max,
+        token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
+        token_anomaly_burn_window: config.token_anomaly_burn_window,
+        token_anomaly_burn_rate: config.token_anomaly_burn_rate,
+        allowed_mcp_servers: config.allowed_mcp_servers,
+        allowed_computer_displays: config.allowed_computer_displays,
+        computer_executor: config.computer_executor,
+        computer_executor_timeout_secs: config.computer_executor_timeout_secs,
+        mcp_executor_config: config.mcp_executor_config,
+        mcp_executor_timeout_secs: config.mcp_executor_timeout_secs,
+        playwright_state_dir: config.playwright_state_dir,
+        browser_use_bridge_url: config.browser_use_bridge_url,
+        browser_use_bridge_command: config.browser_use_bridge_command,
+        daemon: false,
+        codex_launch_with_cdp: config.codex_launch_with_cdp,
+        cdp_port: config.cdp_port,
+    };
+
+    let ctx = deecodex::validate::DiagnosticContext::from(&args);
+    let report = deecodex::validate::run_diagnostics_sync(&ctx);
+    serde_json::to_value(report).unwrap_or_default()
+}
+
+/// 运行完整诊断（异步，包含上游 API 连通性检测）
+#[tauri::command]
+pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value, String> {
+    let args = Args {
+        command: None,
+        config: None,
+        port: config.port,
+        upstream: config.upstream.clone(),
+        api_key: config.api_key.clone(),
+        client_api_key: config.client_api_key,
+        model_map: config.model_map,
+        max_body_mb: config.max_body_mb as usize,
+        vision_upstream: config.vision_upstream,
+        vision_api_key: config.vision_api_key,
+        vision_model: config.vision_model,
+        vision_endpoint: config.vision_endpoint,
+        chinese_thinking: config.chinese_thinking,
+        codex_auto_inject: config.codex_auto_inject,
+        codex_persistent_inject: config.codex_persistent_inject,
+        prompts_dir: config.prompts_dir.into(),
+        data_dir: config.data_dir.into(),
+        token_anomaly_prompt_max: config.token_anomaly_prompt_max,
+        token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
+        token_anomaly_burn_window: config.token_anomaly_burn_window,
+        token_anomaly_burn_rate: config.token_anomaly_burn_rate,
+        allowed_mcp_servers: config.allowed_mcp_servers,
+        allowed_computer_displays: config.allowed_computer_displays,
+        computer_executor: config.computer_executor,
+        computer_executor_timeout_secs: config.computer_executor_timeout_secs,
+        mcp_executor_config: config.mcp_executor_config,
+        mcp_executor_timeout_secs: config.mcp_executor_timeout_secs,
+        playwright_state_dir: config.playwright_state_dir,
+        browser_use_bridge_url: config.browser_use_bridge_url,
+        browser_use_bridge_command: config.browser_use_bridge_command,
+        daemon: false,
+        codex_launch_with_cdp: config.codex_launch_with_cdp,
+        cdp_port: config.cdp_port,
+    };
+
+    let ctx = deecodex::validate::DiagnosticContext::from(&args);
+    let mut report = deecodex::validate::run_diagnostics_sync(&ctx);
+
+    // 异步检测上游连通性
+    let connectivity = do_test_connectivity(&config.upstream, &config.api_key).await;
+    let conn_item = match connectivity {
+        Ok(result) => {
+            deecodex::validate::connectivity_check_result(
+                result.ok,
+                result.status_code,
+                result.latency_ms,
+                result.model_count,
+                &result.endpoint,
+                result.error.as_deref(),
+            )
+        }
+        Err(e) => deecodex::validate::connectivity_check_result(
+            false, 0, 0, None, &config.upstream, Some(&e),
+        ),
+    };
+
+    // 替换「账号连通」分组中的连通性检查项
+    for group in &mut report.groups {
+        if group.name == "账号连通" {
+            if let Some(item) = group.items.iter_mut().find(|i| i.check_name == "账号连通性") {
+                *item = conn_item;
+            }
+            group.health = deecodex::validate::DiagnosticReport::compute_group_health(&group.items);
+            break;
+        }
+    }
+
+    // 重新计算摘要
+    report.summary = deecodex::validate::DiagnosticReport::compute_summary(&report.groups);
+
+    Ok(serde_json::to_value(report).unwrap_or_default())
+}
+
 #[tauri::command]
 pub fn check_upgrade() -> Result<Value, String> {
     let args = load_args();
@@ -1855,14 +1976,19 @@ pub async fn delete_thread(
     Ok(serde_json::json!({ "ok": true, "message": "线程已永久删除" }))
 }
 
-/// 测试上游 API 端点连通性
-#[tauri::command]
-pub async fn test_upstream_connectivity(
-    upstream: String,
-    api_key: String,
-) -> Result<Value, String> {
+/// 连通性检测结果
+struct ConnectivityResult {
+    ok: bool,
+    status_code: u16,
+    latency_ms: u128,
+    model_count: Option<usize>,
+    endpoint: String,
+    error: Option<String>,
+}
+
+/// 执行上游连通性检测（内部使用）
+async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<ConnectivityResult, String> {
     let base = upstream.trim_end_matches('/');
-    // 尝试 /models 端点
     let url = format!("{base}/models");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -1870,7 +1996,7 @@ pub async fn test_upstream_connectivity(
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     let mut req = client.get(&url);
     if !api_key.is_empty() {
-        req = req.bearer_auth(&api_key);
+        req = req.bearer_auth(api_key);
     }
     let start = std::time::Instant::now();
     match req.send().await {
@@ -1878,26 +2004,44 @@ pub async fn test_upstream_connectivity(
             let status = resp.status().as_u16();
             let latency_ms = start.elapsed().as_millis();
             let body = resp.text().await.unwrap_or_default();
-            // 尝试解析模型数量
             let model_count = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()));
-            Ok(serde_json::json!({
-                "ok": status < 500,
-                "status": status,
-                "latency_ms": latency_ms,
-                "model_count": model_count,
-                "endpoint": url,
-            }))
+            Ok(ConnectivityResult {
+                ok: status < 500,
+                status_code: status,
+                latency_ms,
+                model_count,
+                endpoint: url,
+                error: None,
+            })
         }
-        Err(e) => Ok(serde_json::json!({
-            "ok": false,
-            "status": 0,
-            "latency_ms": start.elapsed().as_millis(),
-            "error": e.to_string(),
-            "endpoint": url,
-        })),
+        Err(e) => Ok(ConnectivityResult {
+            ok: false,
+            status_code: 0,
+            latency_ms: start.elapsed().as_millis(),
+            model_count: None,
+            endpoint: url,
+            error: Some(e.to_string()),
+        }),
     }
+}
+
+/// 测试上游 API 端点连通性
+#[tauri::command]
+pub async fn test_upstream_connectivity(
+    upstream: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let r = do_test_connectivity(&upstream, &api_key).await?;
+    Ok(serde_json::json!({
+        "ok": r.ok,
+        "status": r.status_code,
+        "latency_ms": r.latency_ms,
+        "model_count": r.model_count,
+        "endpoint": r.endpoint,
+        "error": r.error,
+    }))
 }
 
 // ── 请求历史 ──────────────────────────────────────────────────────────────
