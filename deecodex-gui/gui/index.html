@@ -2933,6 +2933,7 @@ async function mgmtLogs() {
           <label style="font-size:11px;color:var(--text-secondary);cursor:pointer;display:flex;align-items:center;gap:4px;">
             <input type="checkbox" id="logAutoRefreshChk" ${autoRefresh ? 'checked' : ''} onchange="toggleLogAutoRefresh(this.checked)"> 自动刷新
           </label>
+          <button class="btn btn-ghost btn-sm" onclick="clearLogs()">清空日志</button>
           <button class="modal-close" onclick="document.getElementById('logModal').remove();clearInterval(window._logAutoRefresh)">✕</button>
         </div>
       </div>
@@ -2955,6 +2956,16 @@ function toggleLogAutoRefresh(on) {
   } else {
     clearInterval(window._logAutoRefresh);
     window._logAutoRefresh = null;
+  }
+}
+
+async function clearLogs() {
+  if (!confirm('确定要清空日志吗？')) return;
+  try {
+    await invoke('clear_logs');
+    await refreshLogs();
+  } catch (e) {
+    showToast('清空日志失败: ' + e, 'error');
   }
 }
 

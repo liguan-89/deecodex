@@ -808,6 +808,23 @@ pub fn get_logs() -> Vec<String> {
 }
 
 #[tauri::command]
+pub fn clear_logs() -> Result<(), String> {
+    let args = load_args();
+    let log_path = args.data_dir.join("deecodex.log");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(&log_path)
+        .map_err(|e| format!("无法打开日志文件: {e}"))?;
+    use std::io::Write;
+    f.write_all(&[0xEF, 0xBB, 0xBF])
+        .map_err(|e| format!("写入日志文件失败: {e}"))?;
+    tracing::info!("日志已清空");
+    Ok(())
+}
+
+#[tauri::command]
 pub fn validate_config(config: GuiConfig) -> Vec<Value> {
     let args = Args {
         command: None,
