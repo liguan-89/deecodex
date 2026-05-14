@@ -1846,12 +1846,8 @@ async function init() {
   }
 
   setInterval(async () => {
-    if (currentPanel === 'status') {
-      await loadStatus();
-      await loadAccountsData();
-    } else if (currentPanel === 'accounts') {
-      await loadAccountsData();
-    }
+    if (currentPanel === 'status') await loadStatus();
+    else if (currentPanel === 'accounts') await loadAccountsData();
   }, 10000);
 }
 
@@ -3990,7 +3986,7 @@ async function loadAccountsData() {
     const result = await invoke('list_accounts');
     accountsData = result;
     if (!providerPresets.length) await loadProviderPresets();
-    if (accountsView !== 'add') renderMainContent();
+    if (accountsView !== 'add' && currentPanel === 'accounts') renderMainContent();
     // 异步加载余额（不阻塞渲染）
     if (accountsView === 'list') {
       (accountsData.accounts || []).forEach(a => fetchBalanceForCard(a));
