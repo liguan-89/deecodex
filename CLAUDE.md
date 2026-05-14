@@ -18,9 +18,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
 
-**验证方式：**
+**验证方式（编译通过不算完成，必须启动 GUI 看效果）：**
 - 编译: `cargo build`
-- 前端变更无需编译，刷新 Tauri 窗口即可看到效果
+- **必须启动 GUI 看效果：** 前端变更需启动 GUI 确认页面渲染正确、无报错，不能只编译
+- 导航片段变更可刷新 Tauri 窗口看到效果
 ## Build & Test
 
 ```
