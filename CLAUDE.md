@@ -1,10 +1,8 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## 交流语言
 
-与本仓库的所有交互必须使用中文（简体中文），包括代码注释、commit 信息、PR 描述以及对话回复。
+与本仓库的所有交互使用中文。
 
 ## 当前分区
 
@@ -12,27 +10,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **只修改这些文件：**
 - `src/accounts.rs` — 多账号管理
-- `src/config.rs` — 配置系统（Args、合并逻辑）
+- `src/config.rs` — 配置系统
 - `src/validate.rs` — 诊断引擎
-- `src/codex_config.rs` — Codex 配置注入
-- `src/cdp.rs` — CDP 注入
-- `src/inject.rs` — 注入逻辑
-- `src/session.rs` — 会话存储
-- `src/cache.rs` — 请求缓存
-- `src/backup_store.rs` — 备份存储
-- `src/ratelimit.rs` — 速率限制
-- `src/metrics.rs` — Prometheus 指标
-- `src/token_anomaly.rs` — Token 异常检测
+- `src/codex_config.rs` / `src/cdp.rs` / `src/inject.rs` — Codex/CDP 注入
+- `src/session.rs` / `src/cache.rs` / `src/backup_store.rs` — 会话/缓存
+- `src/ratelimit.rs` / `src/metrics.rs` / `src/token_anomaly.rs` — 限流/指标
 - `deecodex-gui/gui/js/accounts.js` — 账号管理面板
 - `gui/nav/04-账号管理.html` — 导航栏片段
 
-**排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
+排查 bug 时可以阅读任何分区代码。修改仅限本分区文件。
 
-**验证方式（编译通过不算完成，必须跑测试）：**
-- 编译: `cargo build`
-- **必须运行测试：** `cargo test`
-- 代码检查: `cargo clippy -- -D warnings`
-- 如涉及 GUI 面板改动，必须启动 GUI 实测对应功能
 ## Build & Test
 
 ```
@@ -43,246 +30,27 @@ cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-Run a specific test: `cargo test <test_name>`
 
-**并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。
-## Architecture
+## 前端规则
 
-deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** requests into **Chat Completions API** calls for DeepSeek/OpenRouter. The core translation is two-way:
+- **Tauri-only**，不测 `file://`。非 Tauri 环境直接阻断
+- **不把 JS/CSS 写回 `index.html`**，放 `gui/js/<feature>.js` 或 `gui/css/app.css`
+- 统一走 `DeeCodexTauri.invoke()`，所有 IPC 自动 trace
+- 统一走 `window.deeStorage`（即 `localStorage`）
+- `confirm()` 在 WebView 中不可靠，用 `showConfirm()`
+- **改完必须启动 GUI 实测**，编译通过不算完成
 
-- `translate.rs` → Requests: Responses API → Chat Completions API
-- `stream.rs` → Responses: Chat Completions SSE stream → Responses API SSE events
+## Bug 定位速查（按顺序）
 
-### Crate structure
+1. `invoke('debug_gui_state')` 确认环境
+2. 控制台看 `[ipc:start]` / `[ipc:ok]` / `[ipc:error]` trace
+3. 检查 `generate_handler![]` 是否注册了对应 command
+4. 检查文件/DB 是否真的被修改
+5. 检查前端过滤/解析是否误判（空状态、BOM 等）
 
-- `src/lib.rs` — Library crate root. Exposes all public modules (`handlers`, `translate`, `stream`, `session`, `cache`, `files`, `prompts`, `vector_stores`, `executor`, `types`, `utils`, `sse`, `ratelimit`, `metrics`, `token_anomaly`). Integration tests import from `deecodex::`.
-- `src/main.rs` — Separate binary crate. Owns: service management (start/stop/restart/status/logs subcommands), daemonization, tracing init, `.env` loading, TUI launch, Codex config injection.
-- `deecodex-gui/` — Tauri 2 desktop GUI crate. Contains Tray, IPC commands (`src/commands.rs`, `src/commands/`), and webview frontend (`gui/`).
-- `deecodex-plugins/` — Plugin host crate: install/uninstall/enable/disable, subprocess management, JSON-RPC communication.
+## 提交
 
-Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
+中文 commit，前缀: `feat:` / `fix:` / `refactor:` / `docs:` / `chore:` / `release:`
+只改本分区覆盖的文件。改共享层去父区 `/Users/liguan/deecodex` 做。
 
-### Request flow
-
-1. `main.rs` builds `AppState` (monolithic shared state via `Arc`), calls `handlers::build_router()`, serves via axum.
-2. `handlers.rs` (`/v1/responses` POST) validates auth, checks cache, calls `translate::to_chat_request()`.
-3. For streaming: `stream::translate_stream()` spawns a tokio task that reads upstream SSE, emits Responses SSE events through a `tokio::sync::mpsc::Sender`.
-4. Non-streaming: collects all events, returns JSON response.
-5. Vision requests (images) are optionally routed to a separate upstream.
-
-### State management
-
-- `AppState` in `handlers.rs` holds everything: sessions, upstream URL, API keys, model map, cache, vision config, files, vector stores, prompts, rate limiter, metrics, token tracker, tool policy, background tasks.
-- Caches use `Arc<DashMap<K, V>>` for concurrent access.
-- Sessions/reasoning are in-memory only (lost on restart; Codex replays full conversation).
-- `EvictingMap` pattern: `Arc<Mutex<VecDeque<K>>>` for bounded LRU eviction.
-- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio and computer execution are default-disabled, run only when configured/allowed.
-
-### Key modules
-
-| Module | Purpose |
-|--------|---------|
-| `handlers` | Axum router, all HTTP handlers, `AppState`, middleware |
-| `translate` | Request direction: Responses → Chat translation |
-| `stream` | Response direction: SSE stream translation |
-| `files` | Local Files API with search index |
-| `vector_stores` | Local Vector Store API |
-| `prompts` | Hosted prompts registry |
-| `sse` | SSE event builder helpers |
-| `session` | In-memory session/conversation store |
-| `types` | Request/response types |
-| `cache` | LRU request cache |
-| `utils` | Merge/truncation helpers |
-| `token_anomaly` | Token usage anomaly detection |
-| `config` | Args struct, config persistence, merge logic |
-| `executor` | Local computer/MCP executor config, Playwright action adapter |
-| `metrics` | Prometheus metrics |
-| `codex_config` | Codex config.toml injection/removal |
-| `ratelimit` | Sliding-window rate limiter |
-| `accounts` | Multi-account management, presets, CRUD |
-| `validate` | 15-item diagnostics engine |
-| `cdp` | Chrome DevTools Protocol client |
-| `inject` | CDP page injection (auth switching, session delete UI) |
-| `codex_threads` | Codex thread aggregation, migration, restore |
-| `request_history` | Request history store, monthly stats |
-
-## deecodex-gui 前端规则
-
-**deecodex-gui 是 Tauri 桌面应用，不支持将 `gui/index.html` 当作独立网页使用。** `file://` 打开仅用于静态排版检查，不能作为功能测试依据。
-
-真实功能测试必须使用：
-
-```bash
-cd /Users/liguan/deecodex
-cargo tauri dev
-```
-
-### 前端结构
-
-```
-gui/
-  index.html              # 只保留页面骨架和 <script> 资源加载，不写业务逻辑
-  css/
-    app.css               # 全局样式
-  js/
-    tauri-api.js          # Tauri IPC 边界：DeeCodexTauri 环境判断 + invoke 封装
-    ui-core.js            # toast、confirm、转义、deeStorage 封装
-    app-shell.js          # 初始化、loadNav()、renderPanel() 分发
-    theme-config.js       # 主题、配置 schema
-    service-management.js # 服务启停、重启、CDP、升级
-    log-viewer.js         # 日志弹窗、刷新、清空、解析
-    panels-core.js        # 状态、配置、诊断、帮助面板
-    setup-wizard.js       # 首次配置引导
-    formatters.js         # 通用格式化函数
-    request-history.js    # 请求历史面板
-    threads.js            # 线程聚合面板
-    accounts.js           # 账号管理面板
-    plugins.js            # 插件管理面板
-    placeholder-pages.js  # DEX助手、个人中心占位
-    startup.js            # DOM 事件入口
-```
-
-### 前端约定
-
-- **不把大段 JS/CSS 写回 `index.html`**，放到 `gui/js/<feature>.js` 或 `gui/css/app.css`
-- **不直接调用 `window.__TAURI__`**，统一走 `DeeCodexTauri.invoke(name, args)`
-- **不直接访问 `localStorage`**，统一走 `window.deeStorage`（Tauri WebView 中映射到 `window.localStorage`）
-- **不为 `file://` 预览模式牺牲正式 Tauri GUI 逻辑**
-- **非 Tauri 环境直接显示阻断页**，不做假数据或静默降级
-- **新增 Tauri command 优先拆到 `src/commands/<feature>.rs`**（已有 `logs.rs`）
-- **改完代码必须启动 GUI 实际测试**，编译通过不算完成
-
-## Configuration System
-
-Three config sources, merged at startup:
-
-1. **Environment variables** — `DEECODEX_*` (backward compat `CODEX_RELAY_*` → `DEECODEX_*` mapping in main.rs)
-2. **CLI args** — via clap derive (`Args` in `config.rs`)
-3. **`config.json`** — persisted to `~/.deecodex/config.json`
-
-Merge rule: CLI/env values override file values only when they differ from hardcoded defaults (see `pick()`, `pick_str()`, `pick_f64()` in `config.rs`). `.env` is loaded from CWD, `~/.deecodex/`, or exe directory.
-
-Service management subcommands (`start`, `stop`, `restart`, `status`, `logs`) are handled before tracing init and before config merge. They fork the process as a daemon, write a PID file to the data dir, and manage the Codex config injection lifecycle.
-
-## Codex Config Injection
-
-On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route Codex through deecodex:
-- Sets `model_provider = "custom"` and `[model_providers.custom]` section with `base_url = http://127.0.0.1:{port}/v1`
-- Uses `toml_edit` for non-destructive TOML editing (preserves other config).
-- On shutdown/SIGTERM/SIGINT, `codex_config::remove()` cleans up the injected section.
-
-## Testing Conventions
-
-- Integration tests in `tests/integration.rs`: Build the Axum router via `build_router()`, send requests with `tower::ServiceExt::oneshot`, mock upstreams with raw `tokio::net::TcpListener` + `tokio::io` write.
-- Unit tests inline in source modules (e.g., `ratelimit.rs`).
-- No mocking framework — raw TCP sockets simulate upstream responses.
-- Test helper `test_state()` constructs a fully wired `AppState`.
-- `tests/compat_deepseek_v4_pro.rs` requires `DEEPSEEK_API_KEY` env var to run.
-
-## Conventions
-
-- **Concurrency:** `DashMap` for shared maps, `Arc<Mutex<VecDeque>>` for bounded queues. Tokio async runtime.
-- **Error handling:** `anyhow` for internal errors. Custom error types in `files.rs`, `prompts.rs`, `vector_stores.rs` implement `IntoResponse`.
-- **Logging:** `tracing` with `tracing-subscriber` env-filter. Daemon mode writes to log file; foreground writes to stderr. Default filter: `deecodex=info`.
-
-## GUI Bug 定位流程
-
-遇到 GUI 按钮、弹窗、状态刷新、Tauri command 不生效时，**必须按以下顺序逐层排除**，禁止跳步猜测：
-
-### 1. 确认运行环境
-- 是否在 Tauri WebView 中？`file://` 打开不能作为功能测试依据
-- 启动 GUI：`/Users/liguan/deecodex/target-mac/debug/deecodex-gui`
-- 排查工具：调用 `invoke('debug_gui_state')` 查看 data_dir、log_path、log_size
-
-### 2. 确认前端事件
-- 按钮是否存在？事件是否绑定？点击后是否进入 handler？
-- 查看浏览器控制台（`cargo tauri dev` 可看到 console.debug/error）
-- 所有 IPC 调用已自动 trace：`[ipc:start]` / `[ipc:ok]` / `[ipc:error]`
-
-### 3. 确认 IPC 调用
-- command 名称是否和 `generate_handler!` 注册一致？
-- 参数名是否和 Rust 函数参数一致？
-- 前端 catch 是否吞掉错误？
-
-### 4. 确认 Rust command
-- 是否被 `#[tauri::command]` 标注？
-- 是否在 `tauri::generate_handler![]` 注册？
-- 函数是否返回 `Result<T, String>` 并暴露真实错误？
-
-### 5. 确认副作用
-- 文件是否真的改了？状态是否真的写入？
-- 是否被后续逻辑重新写回？（如清空日志后又 `tracing::info!` 写回）
-- 是否有缓存、自动刷新、轮询覆盖结果？
-
-### 6. 确认展示逻辑
-- 后端返回值是否正确？
-- 前端过滤/解析是否误判？（如 BOM-only 文件被当作有内容）
-- 空状态是否正确显示？
-- **Dynamic JSON:** `serde_json::Value` used extensively for API translation — fields are manipulated dynamically rather than through strict struct deserialization.
-- **路径绝对化：** `data_dir` 等所有目录配置在使用前必须转为绝对路径。clap `default_value` 可能产生相对路径（如 `.deecodex`），不同启动目录下指向不同位置，导致账号/配置/日志静默分离。`load_args()` 中统一用 `config::home_dir()` 转换。
-- **静默失败加日志：** 关键分支（如托盘菜单构建、账号加载、文件读取）返回空结果时要打 `tracing::warn!`，不静默跳过。
-- **跨目录启动测试：** 编译后从不同目录启动二进制验证路径解析是否正常。
-
-## 功能分区与提交规范
-
-项目通过 git worktree 划分为 11 个功能分区 + 3 个编译分区，每个分区独立开发、独立提交。
-
-### 11 个功能分区（后端归属 + GUI 归属）
-
-| 分区 | 后端归属 | GUI 归属 |
-|------|---------|---------|
-| 功能/服务概览 | `deecodex-gui/src/lib.rs`；服务启停/状态/CDP/升级/logs 相关 commands | `gui/js/service-management.js`；`gui/js/log-viewer.js`；`gui/nav/01-服务概览.html` |
-| 功能/协议配置 | `src/translate.rs`；`src/stream.rs`；`src/handlers.rs`；`src/sse.rs`；`src/types.rs`；`src/utils.rs` | `gui/nav/02-协议配置.html`；必要时 `panels-core.js` 中配置面板 |
-| 功能/执行诊断 | `src/files.rs`；`src/vector_stores.rs`；`src/prompts.rs`；`src/executor.rs` | `gui/js/panels-core.js` 中诊断页；`gui/nav/03-执行诊断.html` |
-| 功能/账号管理 | `src/accounts.rs`；`src/config.rs`；`src/validate.rs`；`src/codex_config.rs`；`src/cdp.rs`；`src/inject.rs`；`src/session.rs`；`src/cache.rs`；`src/backup_store.rs`；`src/ratelimit.rs`；`src/metrics.rs`；`src/token_anomaly.rs` | `gui/js/accounts.js`；`gui/nav/04-账号管理.html` |
-| 功能/请求历史 | `src/request_history.rs` | `gui/js/request-history.js`；`gui/nav/05-请求历史.html` |
-| 功能/线程聚合 | `src/codex_threads.rs` | `gui/js/threads.js`；`gui/nav/06-线程聚合.html` |
-| 功能/插件管理 | `deecodex-plugins/`；插件相关 Tauri commands | `gui/js/plugins.js`；`gui/nav/07-插件管理.html` |
-| 功能/使用帮助 | — | `gui/js/panels-core.js` 中帮助页；`gui/nav/08-使用帮助.html` |
-| 功能/DEX助手 | — | `gui/js/placeholder-pages.js`；`gui/nav/09-DEX助手.html` |
-| 功能/个人中心 | — | `gui/js/placeholder-pages.js`；`gui/nav/10-个人中心.html` |
-| 功能/Windows兼容 | `deecodex.bat`；`install.ps1`；`#[cfg(target_os = "windows")]` 代码块 | `tauri.conf.json` Windows 打包；icons；无导航片段 |
-
-### GUI 共享层
-
-以下文件属于共享架构层，**不归单一业务分区独占**：
-
-- `deecodex-gui/gui/index.html`
-- `deecodex-gui/gui/css/app.css`
-- `deecodex-gui/gui/js/ui-core.js`
-- `deecodex-gui/gui/js/tauri-api.js`
-- `deecodex-gui/gui/js/theme-config.js`
-- `deecodex-gui/gui/js/app-shell.js`
-- `deecodex-gui/gui/js/startup.js`
-- `deecodex-gui/gui/js/panels-core.js`
-- `deecodex-gui/gui/js/formatters.js`
-- `deecodex-gui/gui/js/setup-wizard.js`
-- `deecodex-gui/build.rs`
-- `deecodex-gui/tauri.conf.json`
-
-**修改共享层时：**
-- 优先在父区 `deecodex-gui` 做；
-- 提交说明写清影响范围；
-- 合入后立刻同步所有功能 worktree。
-
-### 提交前缀
-
-- `feat:` — 新功能
-- `fix:` — 修复
-- `refactor:` — 重构
-- `docs:` — 文档
-- `chore:` — 杂项/构建
-- `release:` — 发版
-
-### 工作流
-
-1. 在对应 worktree 目录开发，只改自己分区覆盖的文件（排查 bug 时可以阅读任何分区代码）
-2. 提交使用中文，前缀 + 简短描述
-3. 推到自己的分支：`git push deecodex-new 功能/<分区名>`
-4. 回主工作区 `cd /Users/liguan/deecodex` 合入：`git merge 功能/<分区名>`
-5. 推送主干：`git push deecodex-new deecodex-gui`
-6. 同步其他 worktree：`for b in ...; do git -C "功能/$b" merge deecodex-gui; done`
-
-### 导航栏修改
-
-导航栏采用 `build.rs` 自动拼接 `gui/nav/*.html` 生成 `fragments.js`。每个分区只改自己的片段文件，合入时不冲突。不要在功能分区中修改 `gui/js/app-shell.js` 的 `loadNav()`/`renderPanel()` 分发逻辑，除非正在做 GUI 架构调整。
+完整架构、配置系统、模块说明、测试约定见父区: /Users/liguan/deecodex/CLAUDE.md
