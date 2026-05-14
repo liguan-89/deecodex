@@ -332,7 +332,8 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		}
 
 		async function clearHistory() {
-				  if (!confirm('确定要清空所有请求历史吗？此操作不可恢复。')) return;
+				  var ok = await showConfirm('确定要清空所有请求历史吗？此操作不可恢复。');
+		  if (!ok) return;
 		  try {
 		    await invoke('clear_request_history');
 		    showToast('请求历史已清空', 'success');
