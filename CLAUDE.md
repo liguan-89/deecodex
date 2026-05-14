@@ -28,6 +28,8 @@ cargo fmt --check
 
 Run a specific test: `cargo test <test_name>`
 
+**不实测不算完成：** 改完代码必须运行对应测试或启动 GUI 验证功能正常，编译通过不代表任务完成。
+
 **并发构建避免：** `cargo build` 前先 `pgrep -x cargo` 检查是否有其他 cargo 进程在运行。若有，等其结束后再执行。`~/.cargo/registry/` 和 `~/.cargo/git/` 是全机共享的，并发构建会抢锁失败。
 
 ## Architecture
