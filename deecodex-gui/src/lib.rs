@@ -480,6 +480,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("启动 deecodex GUI 失败")
         .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
