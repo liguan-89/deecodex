@@ -126,7 +126,9 @@ fn build_account_submenu(
     data_dir: &std::path::Path,
 ) -> Result<Option<tauri::menu::Submenu<tauri::Wry>>, tauri::Error> {
     let store = deecodex::accounts::load_accounts(data_dir);
+    tracing::info!(count = %store.accounts.len(), data_dir = %data_dir.display(), "构建账号切换子菜单");
     if store.accounts.is_empty() {
+        tracing::warn!(data_dir = %data_dir.display(), "账号列表为空，跳过子菜单");
         return Ok(None);
     }
 
