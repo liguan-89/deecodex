@@ -42,7 +42,9 @@ deecodex is a proxy that translates Codex CLI's **OpenAI Responses API** request
 ### Crate structure
 
 - `src/lib.rs` — Library crate root. Exposes all public modules (`handlers`, `translate`, `stream`, `session`, `cache`, `files`, `prompts`, `vector_stores`, `executor`, `types`, `utils`, `sse`, `ratelimit`, `metrics`, `token_anomaly`). Integration tests import from `deecodex::`.
-- `src/main.rs` — Separate binary crate. Owns: service management (start/stop/restart/status/logs subcommands), daemonization, tracing init, `.env` loading, TUI launch, Codex config injection. Has its own `mod` declarations that include lib.rs modules plus `codex_config`, `config`, and `tui`.
+- `src/main.rs` — Separate binary crate. Owns: service management (start/stop/restart/status/logs subcommands), daemonization, tracing init, `.env` loading, TUI launch, Codex config injection.
+- `deecodex-gui/` — Tauri 2 desktop GUI crate. Contains Tray, IPC commands (`src/commands.rs`, `src/commands/`), and webview frontend (`gui/`).
+- `deecodex-plugins/` — Plugin host crate: install/uninstall/enable/disable, subprocess management, JSON-RPC communication.
 
 Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
 
@@ -60,30 +62,81 @@ Modules NOT in lib.rs (binary-only): `config`, `tui`, `codex_config`.
 - Caches use `Arc<DashMap<K, V>>` for concurrent access.
 - Sessions/reasoning are in-memory only (lost on restart; Codex replays full conversation).
 - `EvictingMap` pattern: `Arc<Mutex<VecDeque<K>>>` for bounded LRU eviction.
-- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio and computer execution are default-disabled, run only when configured/allowed, and return `mcp_tool_call_output` / `computer_call_output` instead of surfacing executor failures as HTTP 500.
+- Local executor settings are parsed in `executor.rs` and stored on `AppState`; MCP stdio and computer execution are default-disabled, run only when configured/allowed.
 
-### Key modules (largest → smallest)
+### Key modules
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `handlers` | 2,561 | Axum router, all HTTP handlers, `AppState`, middleware |
-| `translate` | 1,580 | Request direction: Responses → Chat translation |
-| `stream` | 1,477 | Response direction: SSE stream translation |
-| `files` | 1,203 | Local Files API with search index |
-| `tui` | 1,160 | Terminal UI config menu (ratatui) |
-| `vector_stores` | 761 | Local Vector Store API |
-| `prompts` | 711 | Hosted prompts registry |
-| `sse` | 676 | SSE event builder helpers |
-| `session` | 644 | In-memory session/conversation store |
-| `types` | 545 | Request/response types |
-| `cache` | 418 | LRU request cache |
-| `utils` | 224 | Merge/truncation helpers |
-| `token_anomaly` | 205 | Token usage anomaly detection |
-| `config` | 204 | Args struct, config persistence, merge logic |
-| `executor` | ~650 | Local computer/MCP executor config, Playwright action adapter, and stdio MCP JSON-RPC tool execution |
-| `metrics` | 180 | Prometheus metrics |
-| `codex_config` | 106 | Codex config.toml injection/removal |
-| `ratelimit` | 90 | Sliding-window rate limiter |
+| Module | Purpose |
+|--------|---------|
+| `handlers` | Axum router, all HTTP handlers, `AppState`, middleware |
+| `translate` | Request direction: Responses → Chat translation |
+| `stream` | Response direction: SSE stream translation |
+| `files` | Local Files API with search index |
+| `vector_stores` | Local Vector Store API |
+| `prompts` | Hosted prompts registry |
+| `sse` | SSE event builder helpers |
+| `session` | In-memory session/conversation store |
+| `types` | Request/response types |
+| `cache` | LRU request cache |
+| `utils` | Merge/truncation helpers |
+| `token_anomaly` | Token usage anomaly detection |
+| `config` | Args struct, config persistence, merge logic |
+| `executor` | Local computer/MCP executor config, Playwright action adapter |
+| `metrics` | Prometheus metrics |
+| `codex_config` | Codex config.toml injection/removal |
+| `ratelimit` | Sliding-window rate limiter |
+| `accounts` | Multi-account management, presets, CRUD |
+| `validate` | 15-item diagnostics engine |
+| `cdp` | Chrome DevTools Protocol client |
+| `inject` | CDP page injection (auth switching, session delete UI) |
+| `codex_threads` | Codex thread aggregation, migration, restore |
+| `request_history` | Request history store, monthly stats |
+
+## deecodex-gui 前端规则
+
+**deecodex-gui 是 Tauri 桌面应用，不支持将 `gui/index.html` 当作独立网页使用。** `file://` 打开仅用于静态排版检查，不能作为功能测试依据。
+
+真实功能测试必须使用：
+
+```bash
+cd /Users/liguan/deecodex
+cargo tauri dev
+```
+
+### 前端结构
+
+```
+gui/
+  index.html              # 只保留页面骨架和 <script> 资源加载，不写业务逻辑
+  css/
+    app.css               # 全局样式
+  js/
+    tauri-api.js          # Tauri IPC 边界：DeeCodexTauri 环境判断 + invoke 封装
+    ui-core.js            # toast、confirm、转义、deeStorage 封装
+    app-shell.js          # 初始化、loadNav()、renderPanel() 分发
+    theme-config.js       # 主题、配置 schema
+    service-management.js # 服务启停、重启、CDP、升级
+    log-viewer.js         # 日志弹窗、刷新、清空、解析
+    panels-core.js        # 状态、配置、诊断、帮助面板
+    setup-wizard.js       # 首次配置引导
+    formatters.js         # 通用格式化函数
+    request-history.js    # 请求历史面板
+    threads.js            # 线程聚合面板
+    accounts.js           # 账号管理面板
+    plugins.js            # 插件管理面板
+    placeholder-pages.js  # DEX助手、个人中心占位
+    startup.js            # DOM 事件入口
+```
+
+### 前端约定
+
+- **不把大段 JS/CSS 写回 `index.html`**，放到 `gui/js/<feature>.js` 或 `gui/css/app.css`
+- **不直接调用 `window.__TAURI__`**，统一走 `DeeCodexTauri.invoke(name, args)`
+- **不直接访问 `localStorage`**，统一走 `deeStorage`（浏览器安全策略下自动降级为内存存储）
+- **不为 `file://` 预览模式牺牲正式 Tauri GUI 逻辑**
+- **非 Tauri 环境直接显示阻断页**，不做假数据或静默降级
+- **新增 Tauri command 优先拆到 `src/commands/<feature>.rs`**（已有 `logs.rs`）
+- **改完代码必须启动 GUI 实际测试**，编译通过不算完成
 
 ## Configuration System
 
@@ -106,7 +159,7 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 
 ## Testing Conventions
 
-- Integration tests in `tests/integration.rs` (3,235 lines): Build the Axum router via `build_router()`, send requests with `tower::ServiceExt::oneshot`, mock upstreams with raw `tokio::net::TcpListener` + `tokio::io` write.
+- Integration tests in `tests/integration.rs`: Build the Axum router via `build_router()`, send requests with `tower::ServiceExt::oneshot`, mock upstreams with raw `tokio::net::TcpListener` + `tokio::io` write.
 - Unit tests inline in source modules (e.g., `ratelimit.rs`).
 - No mocking framework — raw TCP sockets simulate upstream responses.
 - Test helper `test_state()` constructs a fully wired `AppState`.
@@ -124,23 +177,45 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 
 ## 功能分区与提交规范
 
-项目通过 git worktree 划分为 10 个功能分区，每个分区独立开发、独立提交。
+项目通过 git worktree 划分为 11 个功能分区 + 3 个编译分区，每个分区独立开发、独立提交。
 
-### 10 个功能分区
+### 11 个功能分区（后端归属 + GUI 归属）
 
-| 分区 | 覆盖模块 | 导航片段 |
+| 分区 | 后端归属 | GUI 归属 |
 |------|---------|---------|
-| 功能/服务概览 | `deecodex-gui/` Tauri 应用 | `gui/nav/01-服务概览.html` |
-| 功能/协议配置 | `translate.rs`, `stream.rs`, `handlers.rs`, `sse.rs`, `types.rs`, `utils.rs` | `gui/nav/02-协议配置.html` |
-| 功能/执行诊断 | `files.rs`, `vector_stores.rs`, `prompts.rs`, `executor.rs` | `gui/nav/03-执行诊断.html` |
-| 功能/账号管理 | `accounts.rs`, `config.rs`, `validate.rs`, `codex_config.rs`, `cdp.rs`, `inject.rs`, `session.rs`, `cache.rs`, `backup_store.rs`, `ratelimit.rs`, `metrics.rs`, `token_anomaly.rs` | `gui/nav/04-账号管理.html` |
-| 功能/请求历史 | `request_history.rs` | `gui/nav/05-请求历史.html` |
-| 功能/线程聚合 | `codex_threads.rs` | `gui/nav/06-线程聚合.html` |
-| 功能/插件管理 | `deecodex-plugins/` | `gui/nav/07-插件管理.html` |
-| 功能/使用帮助 | — | `gui/nav/08-使用帮助.html` |
-| 功能/DEX助手 | — | `gui/nav/09-DEX助手.html` |
-| 功能/个人中心 | — | `gui/nav/10-个人中心.html` |
-| 功能/Windows兼容 | `deecodex.bat`, `install.ps1`, `tauri.conf.json` 等 | 无（跨平台底层修复） |
+| 功能/服务概览 | `deecodex-gui/src/lib.rs`；服务启停/状态/CDP/升级/logs 相关 commands | `gui/js/service-management.js`；`gui/js/log-viewer.js`；`gui/nav/01-服务概览.html` |
+| 功能/协议配置 | `src/translate.rs`；`src/stream.rs`；`src/handlers.rs`；`src/sse.rs`；`src/types.rs`；`src/utils.rs` | `gui/nav/02-协议配置.html`；必要时 `panels-core.js` 中配置面板 |
+| 功能/执行诊断 | `src/files.rs`；`src/vector_stores.rs`；`src/prompts.rs`；`src/executor.rs` | `gui/js/panels-core.js` 中诊断页；`gui/nav/03-执行诊断.html` |
+| 功能/账号管理 | `src/accounts.rs`；`src/config.rs`；`src/validate.rs`；`src/codex_config.rs`；`src/cdp.rs`；`src/inject.rs`；`src/session.rs`；`src/cache.rs`；`src/backup_store.rs`；`src/ratelimit.rs`；`src/metrics.rs`；`src/token_anomaly.rs` | `gui/js/accounts.js`；`gui/nav/04-账号管理.html` |
+| 功能/请求历史 | `src/request_history.rs` | `gui/js/request-history.js`；`gui/nav/05-请求历史.html` |
+| 功能/线程聚合 | `src/codex_threads.rs` | `gui/js/threads.js`；`gui/nav/06-线程聚合.html` |
+| 功能/插件管理 | `deecodex-plugins/`；插件相关 Tauri commands | `gui/js/plugins.js`；`gui/nav/07-插件管理.html` |
+| 功能/使用帮助 | — | `gui/js/panels-core.js` 中帮助页；`gui/nav/08-使用帮助.html` |
+| 功能/DEX助手 | — | `gui/js/placeholder-pages.js`；`gui/nav/09-DEX助手.html` |
+| 功能/个人中心 | — | `gui/js/placeholder-pages.js`；`gui/nav/10-个人中心.html` |
+| 功能/Windows兼容 | `deecodex.bat`；`install.ps1`；`#[cfg(target_os = "windows")]` 代码块 | `tauri.conf.json` Windows 打包；icons；无导航片段 |
+
+### GUI 共享层
+
+以下文件属于共享架构层，**不归单一业务分区独占**：
+
+- `deecodex-gui/gui/index.html`
+- `deecodex-gui/gui/css/app.css`
+- `deecodex-gui/gui/js/ui-core.js`
+- `deecodex-gui/gui/js/tauri-api.js`
+- `deecodex-gui/gui/js/theme-config.js`
+- `deecodex-gui/gui/js/app-shell.js`
+- `deecodex-gui/gui/js/startup.js`
+- `deecodex-gui/gui/js/panels-core.js`
+- `deecodex-gui/gui/js/formatters.js`
+- `deecodex-gui/gui/js/setup-wizard.js`
+- `deecodex-gui/build.rs`
+- `deecodex-gui/tauri.conf.json`
+
+**修改共享层时：**
+- 优先在父区 `deecodex-gui` 做；
+- 提交说明写清影响范围；
+- 合入后立刻同步所有功能 worktree。
 
 ### 提交前缀
 
@@ -153,7 +228,7 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 
 ### 工作流
 
-1. 在对应 worktree 目录开发，只改自己分区覆盖的文件
+1. 在对应 worktree 目录开发，只改自己分区覆盖的文件（排查 bug 时可以阅读任何分区代码）
 2. 提交使用中文，前缀 + 简短描述
 3. 推到自己的分支：`git push deecodex-new 功能/<分区名>`
 4. 回主工作区 `cd /Users/liguan/deecodex` 合入：`git merge 功能/<分区名>`
@@ -162,4 +237,4 @@ On startup, `codex_config::inject()` writes into `~/.codex/config.toml` to route
 
 ### 导航栏修改
 
-导航栏采用 `build.rs` 自动拼接 `gui/nav/*.html` 生成 `fragments.js`。每个分区只改自己的片段文件，合入时不冲突。不要修改其他分区的片段文件，不要修改 `index.html` 中的 `loadNav()` 逻辑。
+导航栏采用 `build.rs` 自动拼接 `gui/nav/*.html` 生成 `fragments.js`。每个分区只改自己的片段文件，合入时不冲突。不要在功能分区中修改 `gui/js/app-shell.js` 的 `loadNav()`/`renderPanel()` 分发逻辑，除非正在做 GUI 架构调整。
