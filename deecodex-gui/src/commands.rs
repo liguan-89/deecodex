@@ -32,7 +32,6 @@ pub struct GuiConfig {
     pub port: u16,
     pub upstream: String,
     pub api_key: String,
-    pub client_api_key: String,
     pub model_map: String,
     pub chinese_thinking: bool,
     pub codex_auto_inject: bool,
@@ -67,7 +66,6 @@ impl From<Args> for GuiConfig {
             port: a.port,
             upstream: a.upstream,
             api_key: a.api_key,
-            client_api_key: a.client_api_key,
             model_map: a.model_map,
             chinese_thinking: a.chinese_thinking,
             codex_auto_inject: a.codex_auto_inject,
@@ -122,7 +120,6 @@ pub(crate) fn load_args() -> Args {
                     port: 4446,
                     upstream: "https://openrouter.ai/api/v1".into(),
                     api_key: String::new(),
-                    client_api_key: String::new(),
                     model_map: "{}".into(),
                     max_body_mb: 100,
                     vision_upstream: String::new(),
@@ -378,7 +375,6 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
             .build()?,
         upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
         api_key: Arc::new(tokio::sync::RwLock::new(active_account.api_key.clone())),
-        client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key.clone())),
         model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
         vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
         vision_api_key: Arc::new(tokio::sync::RwLock::new(vision_api_key)),
@@ -461,7 +457,6 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         deecodex::codex_config::fix();
         deecodex::codex_config::inject(
             port,
-            &state.client_api_key.read().await,
             load_active_account_context_window(&args.data_dir),
         );
     }
@@ -697,33 +692,35 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     let config_path = Args::default_config_path(&data_dir);
     let existing = Args::load_from_file(&config_path);
 
-    // 掩码保护：若前端传回掩码值，保留原有明文 Key
-    let api_key = if config.api_key.contains("****") || config.api_key == "********" {
-        existing
-            .as_ref()
-            .map(|a| a.api_key.clone())
-            .unwrap_or_default()
-    } else {
-        config.api_key.clone()
-    };
-    let client_api_key =
-        if config.client_api_key.contains("****") || config.client_api_key == "********" {
-            existing
-                .as_ref()
-                .map(|a| a.client_api_key.clone())
-                .unwrap_or_default()
-        } else {
-            config.client_api_key.clone()
-        };
-    let vision_api_key =
-        if config.vision_api_key.contains("****") || config.vision_api_key == "********" {
-            existing
-                .as_ref()
-                .map(|a| a.vision_api_key.clone())
-                .unwrap_or_default()
-        } else {
-            config.vision_api_key.clone()
-        };
+    // 账号管理的字段始终保留已有配置值（这些字段不在高级设置页面中展示）
+    let upstream = existing
+        .as_ref()
+        .map(|a| a.upstream.clone())
+        .unwrap_or_default();
+    let api_key = existing
+        .as_ref()
+        .map(|a| a.api_key.clone())
+        .unwrap_or_default();
+    let model_map = existing
+        .as_ref()
+        .map(|a| a.model_map.clone())
+        .unwrap_or_default();
+    let vision_upstream = existing
+        .as_ref()
+        .map(|a| a.vision_upstream.clone())
+        .unwrap_or_default();
+    let vision_api_key = existing
+        .as_ref()
+        .map(|a| a.vision_api_key.clone())
+        .unwrap_or_default();
+    let vision_model = existing
+        .as_ref()
+        .map(|a| a.vision_model.clone())
+        .unwrap_or_default();
+    let vision_endpoint = existing
+        .as_ref()
+        .map(|a| a.vision_endpoint.clone())
+        .unwrap_or_default();
 
     // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
@@ -735,15 +732,14 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         command: None,
         config: None,
         port: config.port,
-        upstream: config.upstream,
+        upstream,
         api_key,
-        client_api_key,
-        model_map: config.model_map,
+        model_map,
         max_body_mb: config.max_body_mb as usize,
-        vision_upstream: config.vision_upstream,
+        vision_upstream,
         vision_api_key,
-        vision_model: config.vision_model,
-        vision_endpoint: config.vision_endpoint,
+        vision_model,
+        vision_endpoint,
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
@@ -773,11 +769,10 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
 
     // 根据更新后的 Codex 注入开关立即应用/移除 Codex config.toml 修改
     let port = args.port;
-    let ca_key = args.client_api_key.clone();
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject(port, &ca_key, cw);
+        deecodex::codex_config::inject(port, cw);
     } else {
         deecodex::codex_config::remove();
     }
@@ -812,7 +807,6 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         port: config.port,
         upstream: config.upstream,
         api_key: config.api_key,
-        client_api_key: config.client_api_key,
         model_map: config.model_map,
         max_body_mb: config.max_body_mb as usize,
         vision_upstream: config.vision_upstream,
@@ -1034,10 +1028,9 @@ pub async fn update_account(
 
     // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
     if store.active_id.as_ref() == Some(&account.id) {
-        if let Some(app_state) = manager.app_state.lock().await.as_ref() {
+        if let Some(_app_state) = manager.app_state.lock().await.as_ref() {
             let port = *manager.port.lock().await;
-            let client_api_key = app_state.client_api_key.read().await.clone();
-            deecodex::codex_config::inject(port, &client_api_key, account.context_window_override);
+            deecodex::codex_config::inject(port, account.context_window_override);
         }
     }
 
@@ -1136,8 +1129,7 @@ pub async fn switch_account(
 
         // 根据新账号的上下文窗口覆盖重新注入 codex config
         let port = *manager.port.lock().await;
-        let client_api_key = app_state.client_api_key.read().await.clone();
-        deecodex::codex_config::inject(port, &client_api_key, target.context_window_override);
+        deecodex::codex_config::inject(port, target.context_window_override);
 
         tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
     }

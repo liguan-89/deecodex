@@ -31,7 +31,6 @@ fn test_state() -> AppState {
             reqwest::Url::parse("https://example.com").unwrap(),
         )),
         api_key: Arc::new(tokio::sync::RwLock::new("test".into())),
-        client_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),
         model_map: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         vision_upstream: Arc::new(tokio::sync::RwLock::new(None)),
         vision_api_key: Arc::new(tokio::sync::RwLock::new(String::new())),

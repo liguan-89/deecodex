@@ -543,7 +543,6 @@ mod tests {
             port: 4446,
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
-            client_api_key: String::new(),
             model_map: "{}".into(),
             max_body_mb: 100,
             vision_upstream: String::new(),

@@ -16,7 +16,7 @@ use axum::{
     extract::{Multipart, Path, Query, Request, State},
     http::header,
     http::StatusCode,
-    middleware::{from_fn_with_state, Next},
+
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -42,7 +42,6 @@ pub struct AppState {
     pub client: Client,
     pub upstream: Arc<tokio::sync::RwLock<Url>>,
     pub api_key: Arc<tokio::sync::RwLock<String>>,
-    pub client_api_key: Arc<tokio::sync::RwLock<String>>,
     pub model_map: Arc<tokio::sync::RwLock<ModelMap>>,
     pub vision_upstream: Arc<tokio::sync::RwLock<Option<Url>>>,
     pub vision_api_key: Arc<tokio::sync::RwLock<String>>,
@@ -201,7 +200,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/threads/migrate", post(handle_migrate_threads_api))
         .route("/api/threads/restore", post(handle_restore_threads_api))
         .fallback(handle_fallback)
-        .layer(from_fn_with_state(state.clone(), require_client_auth))
         .with_state(state)
 }
 
@@ -243,46 +241,6 @@ async fn handle_v1() -> Response {
 async fn handle_metrics(State(state): State<AppState>) -> Response {
     let body = state.metrics.gather();
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
-}
-
-async fn require_client_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let path = req.uri().path();
-    if path == "/health" || path == "/v1" {
-        return next.run(req).await;
-    }
-    let client_api_key = state.client_api_key.read().await.clone();
-    if client_api_key.is_empty() {
-        return next.run(req).await;
-    }
-    let authorized = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|value| authorization_matches(value, &client_api_key));
-    if authorized {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": {
-                    "message": "Missing or invalid Authorization header",
-                    "type": "invalid_request_error",
-                    "code": "invalid_api_key"
-                }
-            })),
-        )
-            .into_response()
-    }
-}
-
-fn authorization_matches(header_value: &str, expected: &str) -> bool {
-    header_value
-        .strip_prefix("Bearer ")
-        .or_else(|| header_value.strip_prefix("bearer "))
-        .unwrap_or(header_value)
-        .trim()
-        == expected
 }
 
 #[derive(Debug, Deserialize)]
@@ -1218,12 +1176,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         return response;
     }
     if let Some(ref limiter) = state.rate_limiter {
-        let client_key_snip = state.client_api_key.read().await.clone();
-        let key = if !client_key_snip.is_empty() {
-            format!("rl_{}", &client_key_snip[..4.min(client_key_snip.len())])
-        } else {
-            "rl_default".into()
-        };
+        let key = "rl_default";
         if !limiter.check(&key) {
             state
                 .metrics
@@ -3457,14 +3410,6 @@ mod tests {
             &policy,
         )
         .is_none());
-    }
-
-    #[test]
-    fn test_authorization_matches_bearer_token() {
-        assert!(authorization_matches("Bearer abc", "abc"));
-        assert!(authorization_matches("bearer abc", "abc"));
-        assert!(authorization_matches("abc", "abc"));
-        assert!(!authorization_matches("Bearer abc", "def"));
     }
 
     #[test]

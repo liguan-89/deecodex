@@ -42,10 +42,6 @@ pub struct Args {
     #[arg(long, env = "DEECODEX_API_KEY", default_value = "")]
     pub api_key: String,
 
-    /// 客户端调用所需的 Bearer token。为空则禁用本地认证。
-    #[arg(long, env = "DEECODEX_CLIENT_API_KEY", default_value = "")]
-    pub client_api_key: String,
-
     #[arg(long, env = "DEECODEX_MODEL_MAP", default_value = "{}")]
     pub model_map: String,
 
@@ -332,7 +328,6 @@ impl Args {
                     &file.upstream,
                 ),
                 api_key: pick_str(&self.api_key, "", &file.api_key),
-                client_api_key: pick_str(&self.client_api_key, "", &file.client_api_key),
                 model_map: pick_str(&self.model_map, "{}", &file.model_map),
                 max_body_mb: pick(self.max_body_mb, 100, file.max_body_mb),
                 vision_upstream: pick_str(&self.vision_upstream, "", &file.vision_upstream),
@@ -473,7 +468,6 @@ mod tests {
             port: 5555,
             upstream: "https://example.com/api/v1".into(),
             api_key: "upstream-key".into(),
-            client_api_key: "client-key".into(),
             model_map: "{}".into(),
             max_body_mb: 100,
             vision_upstream: String::new(),
@@ -511,7 +505,6 @@ mod tests {
             port: 4446,
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
-            client_api_key: String::new(),
             model_map: "{}".into(),
             max_body_mb: 100,
             vision_upstream: String::new(),
