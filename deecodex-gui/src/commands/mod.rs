@@ -538,6 +538,10 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         deecodex::inject::try_inject_with_port(inject_state, cdp_port).await;
     });
 
+    // 写入 PID 文件，供诊断检测服务运行状态
+    let pid = std::process::id();
+    let _ = std::fs::write(args.data_dir.join("deecodex.pid"), pid.to_string());
+
     manager.update_tray().await;
     tracing::info!("服务已启动 → http://127.0.0.1:{port}");
 
@@ -574,6 +578,9 @@ pub async fn stop_service_inner(manager: &ServerManager) -> Result<ServiceInfo, 
     if args.codex_auto_inject && !args.codex_persistent_inject && !needs_deecodex_injection {
         deecodex::codex_config::remove();
     }
+
+    // 清理 PID 文件
+    let _ = std::fs::remove_file(args.data_dir.join("deecodex.pid"));
 
     *manager.start_time.lock().await = None;
     *manager.app_state.lock().await = None;
