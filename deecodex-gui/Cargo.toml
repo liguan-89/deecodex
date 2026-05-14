@@ -1,6 +1,6 @@
 [package]
 name = "deecodex-gui"
-version = "1.9.5"
+version = "1.9.6"
 edition = "2021"
 description = "deecodex Desktop GUI"
 
