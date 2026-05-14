@@ -462,8 +462,10 @@ async fn main() -> Result<()> {
     }
 
     // ── 初始化 tracing（daemon 模式写文件，否则写 stderr） ──
+    // 确保 data_dir 存在（PID 文件需要）
+    std::fs::create_dir_all(&args.data_dir)?;
+
     if args.daemon {
-        std::fs::create_dir_all(&args.data_dir)?;
         let log_path = log_path(&args.data_dir);
         let mut log_file = std::fs::OpenOptions::new()
             .create(true)
@@ -481,9 +483,6 @@ async fn main() -> Result<()> {
                     .unwrap_or_else(|_| "deecodex=info".into()),
             )
             .init();
-        // 写入 PID 文件
-        let pid = std::process::id();
-        std::fs::write(pid_path(&args.data_dir), pid.to_string())?;
     } else {
         tracing_subscriber::fmt()
             .with_writer(|| FlushWriter(std::io::stderr()))
@@ -493,6 +492,10 @@ async fn main() -> Result<()> {
             )
             .init();
     }
+
+    // 写入 PID 文件（daemon 和前台模式都需要）
+    let pid = std::process::id();
+    std::fs::write(pid_path(&args.data_dir), pid.to_string())?;
 
     // 从 config.json 加载持久化配置并合并
     let args = {
