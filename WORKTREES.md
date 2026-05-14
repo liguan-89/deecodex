@@ -318,21 +318,70 @@ cargo build --release          # 产物在 target-linux/release/
 
 ### 发布二进制
 
-编译完成后，发布到公开仓库 `origin`（`liguan-89/deecodex`）：
+发布流程涉及 3 个分区：
+
+| 步骤 | 分区 | 操作 |
+|------|------|------|
+| 1 | **deecodex-gui**（父区） | 合入所有修复后，升级版本号并打 tag |
+| 2 | **编译二进制/** | 从父区同步，编译各平台 DMG |
+| 3 | **origin**（公开仓库） | tag 推到这里，上传 DMG 到 Releases |
+
+**第一步：父区升级版本号并打 tag**
 
 ```bash
-# 1. 切到对应的编译工作区
-cd 编译二进制/编译-mac    # 以 mac 为例
+cd /Users/liguan/deecodex
 
-# 2. 打发布 tag（英文）
-git tag release/v1.9.6-beta
+# 1. 确认所有修复已合入
+git log --oneline -5
 
-# 3. 推送到公开仓库
-git push origin release/v1.9.6-beta
+# 2. 升级版本号（四处同步）
+#    Cargo.toml → version = "1.9.7"
+#    deecodex-gui/Cargo.toml → version = "1.9.7"
+#    deecodex-gui/tauri.conf.json → "version": "1.9.7"
+#    VERSION → v1.9.7
 
-# 4. 在 GitHub Releases 页面上传编译产物
-# https://github.com/liguan-89/deecodex/releases
+# 3. 提交版本号
+git add Cargo.toml deecodex-gui/Cargo.toml deecodex-gui/tauri.conf.json VERSION
+git commit -m "chore: 版本号 → 1.9.7"
+
+# 4. 打 tag 并推送
+git tag v1.9.7
+git push deecodex-new deecodex-gui
+git push origin v1.9.7          # ← origin 是公开仓库，check_upgrade 读它
 ```
+
+**第二步：编译各平台 DMG**
+
+```bash
+# macOS
+cd 编译二进制/编译-mac
+git merge deecodex-gui
+cargo tauri build --bundles dmg
+# 产物: target-mac/release/bundle/dmg/deecodex_1.9.7_aarch64.dmg
+
+# Windows（交叉编译或 Windows 机器）
+cd 编译二进制/编译-win
+git merge deecodex-gui
+cargo tauri build --bundles nsis
+# 产物: target-win/release/bundle/nsis/deecodex_1.9.7_x64-setup.exe
+
+# Linux
+cd 编译二进制/编译-linux
+git merge deecodex-gui
+cargo tauri build --bundles deb
+# 产物: target-linux/release/bundle/deb/deecodex_1.9.7_amd64.deb
+```
+
+**第三步：上传 GitHub Releases**
+
+1. 打开 https://github.com/liguan-89/deecodex/releases
+2. 基于 `v1.9.7` tag 创建 Release
+3. 上传各平台 DMG/exe/deb
+4. 写发布说明
+
+**升级检测原理**
+
+用户 GUI 中的 `check_upgrade` 命令读取 `origin` 远程的所有 tag，比较版本号。版本号变更（如 v1.9.6 → v1.9.7）才会触发更新提示。同版本号的新提交不会被检测到，因此每次发版必须升版本号。
 
 ---
 
