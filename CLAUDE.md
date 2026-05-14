@@ -18,6 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **核心原则：** 优先用 `#[cfg(target_os = "windows")]` 在源码中隔离平台差异，避免影响 macOS/Linux。
 
+**排查 bug 时可以阅读任何分区的代码。修改仅限本分区文件。**
+
 **注意：** 本分区无独立导航片段。
 
 **验证方式：**
