@@ -103,6 +103,14 @@ function renderStatus() {
 // 配置面板
 // ═══════════════════════════════════════════════════════════════
 function renderConfig() {
+  if (!currentConfig) {
+    return `
+      <div class="page-header">
+        <h2>配置</h2>
+        <p>正在加载配置...</p>
+      </div>`;
+  }
+
   let html = `
     <div class="page-header">
       <h2>配置</h2>
@@ -401,7 +409,7 @@ function toggleReasoningFields() {
 }
 
 function collectFormData() {
-  const data = {};
+  const data = currentConfig ? { ...currentConfig } : {};
   for (const sec of CONFIG_SECTIONS) {
     for (const f of sec.fields) {
       const el = document.getElementById('field_' + f.key);
@@ -501,6 +509,9 @@ async function saveConfig() {
   setLoading(true);
 
   try {
+    if (!currentConfig || Object.keys(currentConfig).length === 0) {
+      currentConfig = await invoke('get_config');
+    }
     const data = collectFormData();
     await invoke('save_config', { config: data });
 

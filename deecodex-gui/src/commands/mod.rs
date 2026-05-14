@@ -109,6 +109,20 @@ fn parse_csv_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn normalize_data_dir(data_dir: impl Into<std::path::PathBuf>) -> std::path::PathBuf {
+    let data_dir = data_dir.into();
+    if data_dir.is_absolute() {
+        return data_dir;
+    }
+    if let Some(home) = deecodex::config::home_dir() {
+        home.join(data_dir)
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(data_dir)
+    } else {
+        data_dir
+    }
+}
+
 pub(crate) fn load_args() -> Args {
     // 从环境变量 + 默认值构建 Args
     let args = match Args::try_parse_from(["deecodex-gui"]) {
@@ -155,14 +169,16 @@ pub(crate) fn load_args() -> Args {
             });
         }
     };
-    let mut args = args.merge_with_file();
-    // 确保 data_dir 为绝对路径，避免托盘菜单等逻辑找不到文件
+    let mut args = args;
+    // 先确保 data_dir 为绝对路径，再合并配置文件；否则 dev 模式会去
+    // deecodex-gui/.deecodex 读配置，导致 GUI 保存到 HOME 后又读回默认值。
     if args.data_dir.is_relative() {
-        if let Some(home) = deecodex::config::home_dir() {
-            args.data_dir = home.join(&args.data_dir);
-        } else if let Ok(cwd) = std::env::current_dir() {
-            args.data_dir = cwd.join(&args.data_dir);
-        }
+        args.data_dir = normalize_data_dir(args.data_dir);
+    }
+    let mut args = args.merge_with_file();
+    // 文件里的旧 data_dir 也可能仍是相对路径，合并后再规整一次。
+    if args.data_dir.is_relative() {
+        args.data_dir = normalize_data_dir(args.data_dir);
     }
     args
 }
@@ -698,7 +714,7 @@ pub fn get_config() -> Result<GuiConfig, String> {
 
 #[tauri::command]
 pub fn save_config(config: GuiConfig) -> Result<(), String> {
-    let data_dir: std::path::PathBuf = std::path::PathBuf::from(&config.data_dir);
+    let data_dir = normalize_data_dir(&config.data_dir);
     let config_path = Args::default_config_path(&data_dir);
     let existing = Args::load_from_file(&config_path);
 
@@ -754,7 +770,7 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
         prompts_dir: config.prompts_dir.into(),
-        data_dir: config.data_dir.into(),
+        data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
         token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
         token_anomaly_burn_window: config.token_anomaly_burn_window,
@@ -793,6 +809,7 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
 
 #[tauri::command]
 pub fn validate_config(config: GuiConfig) -> Vec<Value> {
+    let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
@@ -809,7 +826,7 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
         prompts_dir: config.prompts_dir.into(),
-        data_dir: config.data_dir.into(),
+        data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
         token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
         token_anomaly_burn_window: config.token_anomaly_burn_window,
@@ -846,6 +863,7 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
 /// 运行完整诊断（同步，含 14 项检查；连通性检测标记为 Info 待后续异步补全）
 #[tauri::command]
 pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
+    let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
@@ -862,7 +880,7 @@ pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
         prompts_dir: config.prompts_dir.into(),
-        data_dir: config.data_dir.into(),
+        data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
         token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
         token_anomaly_burn_window: config.token_anomaly_burn_window,
@@ -889,6 +907,7 @@ pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
 /// 运行完整诊断（异步，包含上游 API 连通性检测）
 #[tauri::command]
 pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value, String> {
+    let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
@@ -905,7 +924,7 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
         prompts_dir: config.prompts_dir.into(),
-        data_dir: config.data_dir.into(),
+        data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
         token_anomaly_spike_ratio: config.token_anomaly_spike_ratio,
         token_anomaly_burn_window: config.token_anomaly_burn_window,
@@ -2322,4 +2341,3 @@ pub async fn stop_plugin_account(
     .await
     .map_err(|e| e.to_string())
 }
-

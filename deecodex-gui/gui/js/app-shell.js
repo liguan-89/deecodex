@@ -1,5 +1,5 @@
 let currentPanel = 'status';
-let currentConfig = {};
+let currentConfig = null;
 
 let accountsView = 'list';
 let accountsData = { accounts: [], active_id: null };
