@@ -157,7 +157,7 @@ pub(crate) fn load_args() -> Args {
     // 确保 data_dir 为绝对路径，避免托盘菜单等逻辑找不到文件
     if args.data_dir.is_relative() {
         if let Some(home) = deecodex::config::home_dir() {
-            args.data_dir = home.join(".deecodex");
+            args.data_dir = home.join(&args.data_dir);
         } else if let Ok(cwd) = std::env::current_dir() {
             args.data_dir = cwd.join(&args.data_dir);
         }

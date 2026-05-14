@@ -7,7 +7,7 @@
 //! 迁移前自动备份，还原后自动清理备份。全程不破坏 Codex 原有数据。
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -60,10 +60,12 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
         if let Ok(appdata) = std::env::var("APPDATA") {
             search_dirs.push(PathBuf::from(&appdata).join("Codex"));
             search_dirs.push(PathBuf::from(&appdata).join("codex"));
+            search_dirs.push(PathBuf::from(&appdata).join("anthropic").join("Codex"));
         }
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             search_dirs.push(PathBuf::from(&local_appdata).join("Codex"));
             search_dirs.push(PathBuf::from(&local_appdata).join("codex"));
+            search_dirs.push(PathBuf::from(&local_appdata).join("anthropic").join("Codex"));
         }
     }
 
@@ -359,7 +361,7 @@ pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
 // ── 内部函数 ──
 
 fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {
-    let conn = Connection::open(db_path)?;
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
         "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived
          FROM threads
@@ -381,7 +383,7 @@ fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {
 }
 
 fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
-    let conn = Connection::open(db_path)?;
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
         "SELECT COALESCE(NULLIF(TRIM(model_provider), ''), '(空)'), COUNT(*)
          FROM threads
