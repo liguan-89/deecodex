@@ -254,6 +254,66 @@ fn start_service_daemon(args: &Args) -> Result<()> {
     Ok(())
 }
 
+// ── CLI 诊断输出 ─────────────────────────────────────────────────────────────
+
+fn print_diagnostics_cli(args: &crate::config::Args) {
+    use crate::validate::{DiagnosticContext, Status};
+
+    let ctx = DiagnosticContext::from(args);
+    let report = crate::validate::run_diagnostics_sync(&ctx);
+
+    println!(
+        "══════════════════════════════════════\n  deecodex 执行诊断  v{}\n══════════════════════════════════════\n",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    for group in &report.groups {
+        let icon = match group.health {
+            crate::validate::GroupHealth::Healthy => "✅",
+            crate::validate::GroupHealth::Degraded => "⚠️ ",
+            crate::validate::GroupHealth::Broken => "❌",
+        };
+        println!("[{}] {} {}", group.name, icon, {
+            match group.health {
+                crate::validate::GroupHealth::Healthy => "healthy",
+                crate::validate::GroupHealth::Degraded => "degraded",
+                crate::validate::GroupHealth::Broken => "broken",
+            }
+        });
+
+        for item in &group.items {
+            let icon = match item.status {
+                Status::Pass => "  ✅",
+                Status::Warn => "  ⚠️ ",
+                Status::Fail => "  ❌",
+                Status::Info => "  ℹ️ ",
+            };
+            println!("{} {}", icon, item.message);
+
+            if let Some(ref detail) = item.detail {
+                println!("     详情: {}", detail);
+            }
+            if let Some(ref suggestion) = item.suggestion {
+                println!("     建议: {}", suggestion);
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "══════════════════════════════════════\n 总计: {} 通过 | {} 警告 | {} 失败 | {} 提示\n 健康状态: {}\n══════════════════════════════════════",
+        report.summary.pass,
+        report.summary.warn,
+        report.summary.fail,
+        report.summary.info,
+        match report.summary.health {
+            crate::validate::GroupHealth::Healthy => "healthy",
+            crate::validate::GroupHealth::Degraded => "degraded",
+            crate::validate::GroupHealth::Broken => "broken",
+        }
+    );
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -394,6 +454,10 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Some(Commands::Diagnose) => {
+            print_diagnostics_cli(&args);
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -524,7 +588,6 @@ async fn main() -> Result<()> {
             .build()?,
         upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
         api_key: Arc::new(tokio::sync::RwLock::new(args.api_key.clone())),
-        client_api_key: Arc::new(tokio::sync::RwLock::new(args.client_api_key)),
         model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
         vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
         vision_api_key: Arc::new(tokio::sync::RwLock::new(args.vision_api_key.clone())),
@@ -658,11 +721,6 @@ async fn main() -> Result<()> {
     } else {
         info!("MCP executor: disabled (no configured servers)");
     }
-    if state.client_api_key.read().await.is_empty() {
-        tracing::warn!("client auth disabled: client_api_key is empty");
-    } else {
-        info!("client auth enabled for /v1 API routes");
-    }
 
     let max_bytes = args.max_body_mb * 1024 * 1024;
     let body_limit = axum::extract::DefaultBodyLimit::max(max_bytes);
@@ -682,7 +740,7 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject(args.port, &state.client_api_key.read().await, None);
+        codex_config::inject(args.port, None);
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口
@@ -703,11 +761,13 @@ async fn main() -> Result<()> {
     }
 
     // 尝试 CDP 注入（插件解锁 + 会话删除 UI），异步执行，不阻塞服务启动
-    let inject_state = state.clone();
-    let cdp_port = args.cdp_port;
-    tokio::spawn(async move {
-        inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
-    });
+    if args.codex_launch_with_cdp {
+        let inject_state = state.clone();
+        let cdp_port = args.cdp_port;
+        tokio::spawn(async move {
+            inject::try_inject_with_port(Arc::new(inject_state), cdp_port).await;
+        });
+    }
 
     #[cfg(unix)]
     async fn shutdown_signal() {

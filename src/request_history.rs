@@ -34,8 +34,7 @@ pub struct RequestHistoryStore {
 
 impl RequestHistoryStore {
     pub fn new(db_path: &Path) -> Result<Self, String> {
-        let conn =
-            Connection::open(db_path).map_err(|e| format!("打开请求历史数据库失败: {e}"))?;
+        let conn = Connection::open(db_path).map_err(|e| format!("打开请求历史数据库失败: {e}"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS request_history (
                 id TEXT PRIMARY KEY,
