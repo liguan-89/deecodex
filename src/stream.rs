@@ -121,6 +121,8 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
     } else {
         let tool_name = if name == "apply_patch" {
             "exec_command".to_string()
+        } else if name == "exec_command" {
+            "apply_patch".to_string()
         } else {
             name.to_string()
         };
@@ -973,7 +975,7 @@ pub fn translate_stream(
                 reasoning: accumulated_reasoning.clone(),
                 tool_calls: tool_calls.values().map(|tc| CachedToolCall {
                     id: tc.id.clone(),
-                    name: if tc.name == "apply_patch" { "exec_command".into() } else { tc.name.clone() },
+                    name: if tc.name == "apply_patch" { "exec_command".into() } else if tc.name == "exec_command" { "apply_patch".into() } else { tc.name.clone() },
                     arguments: tc.arguments.clone(),
                 }).collect(),
                 usage: usage_to_cached(cache_usage.as_ref()),
