@@ -1151,6 +1151,7 @@ async fn handle_fallback(req: Request) -> Response {
 }
 
 async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
+    let _start = std::time::Instant::now();
     let mut req: ResponsesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -1165,6 +1166,11 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
             return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response();
         }
     };
+    let model = req.model.clone();
+    let translate_enabled = state.active_account.read().await.translate_enabled;
+    let upstream = state.active_account.read().await.upstream.clone();
+    let mode = if translate_enabled { "translate" } else { "bypass" };
+    tracing::info!("⇢ {mode} {model} → {upstream}");
     if let Some(response) = validate_response_include(req.include.as_deref()) {
         return response;
     }
@@ -1267,6 +1273,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         local_file_search_input_items,
     )
     .await;
+    tracing::info!("⇠ translate {} done in {}ms", model, _start.elapsed().as_millis());
     let status = response.status().as_u16().to_string();
     state
         .metrics
@@ -1335,6 +1342,12 @@ async fn handle_responses_bypass(
         }
     }
 
+    tracing::info!(
+        "⇢ bypass {} → {}",
+        model,
+        upstream_url
+    );
+
     let response_id = state.sessions.new_id();
     let bypass = BypassArgs {
         state: state.clone(),
@@ -1349,11 +1362,14 @@ async fn handle_responses_bypass(
         model,
     };
 
-    if req.stream {
+    let start = std::time::Instant::now();
+    let result = if req.stream {
         bypass_stream_forward(bypass).await
     } else {
         bypass_send_request(bypass).await
-    }
+    };
+    tracing::info!("⇠ bypass done in {}ms", start.elapsed().as_millis());
+    result
 }
 
 async fn bypass_stream_forward(
