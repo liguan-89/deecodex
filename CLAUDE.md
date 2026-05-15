@@ -6,11 +6,11 @@
 
 ## 当前分区
 
-你正在 **功能/使用帮助** 分区工作，负责使用帮助文档。
+你正在 **功能/DEX助手** 分区工作，负责智能诊断与辅助工具面板。
 
 **只修改这些文件：**
-- `deecodex-gui/gui/js/panels-core.js` — 帮助面板渲染
-- `gui/nav/08-使用帮助.html` — 导航栏片段
+- `deecodex-gui/gui/js/placeholder-pages.js` — DEX助手占位
+- `gui/nav/09-DEX助手.html` — 导航栏片段
 
 本分区无核心 Rust 模块。
 
