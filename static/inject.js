@@ -52,7 +52,7 @@
     function spoofChatGPTAuthMethod(element) {
         const auth = authContextValueFrom(element);
         if (!auth || auth.authMethod === "chatgpt") return false;
-        auth.setAuthMethod("pro");
+        auth.setAuthMethod("chatgpt");
         return true;
     }
 

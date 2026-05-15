@@ -804,6 +804,19 @@ fn unsupported_param(param: &str, message: &str) -> Response {
 
 async fn handle_models(State(state): State<AppState>) -> Response {
     debug!("GET /v1/models");
+    let model_map = state.model_map.read().await;
+    if !model_map.is_empty() {
+        let data: Vec<serde_json::Value> = model_map
+            .keys()
+            .map(|id| json!({
+                "id": id,
+                "object": "model",
+                "owned_by": "deecodex"
+            }))
+            .collect();
+        return Json(json!({ "object": "list", "data": data })).into_response();
+    }
+    // fallback: proxy to upstream
     let upstream = state.upstream.read().await;
     let url = format!("{}models", join_base(&upstream));
     let mut builder = state.client.get(&url);
