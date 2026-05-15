@@ -760,13 +760,14 @@ body {
 .history-loading { text-align: center; padding: 30px; color: var(--text-muted); }
 
 /* Stats bar */
-.history-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.history-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 16px; }
 .history-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; text-align: center; }
 .history-stat .stat-value { font-family: var(--font-mono); font-size: 20px; font-weight: 600; color: var(--fg); }
 .history-stat .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .history-stat.accent .stat-value { color: var(--accent); }
 .history-stat.green .stat-value { color: var(--green); }
 .history-stat.red .stat-value { color: var(--red); }
+.history-stat.cache .stat-value { color: var(--accent); }
 
 /* Chart */
 .history-chart { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 16px; }

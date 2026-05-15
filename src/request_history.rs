@@ -17,6 +17,7 @@ pub struct HistoryEntry {
     pub duration_ms: u64,
     pub upstream_url: String,
     pub error_msg: String,
+    pub cache_hit: bool,
 }
 
 #[allow(dead_code)]
@@ -47,7 +48,8 @@ impl RequestHistoryStore {
                 total_tokens INTEGER DEFAULT 0,
                 duration_ms INTEGER DEFAULT 0,
                 upstream_url TEXT DEFAULT '',
-                error_msg TEXT DEFAULT ''
+                error_msg TEXT DEFAULT '',
+                cache_hit INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_created_at ON request_history(created_at DESC);
             CREATE TABLE IF NOT EXISTS history_monthly_stats (
@@ -60,6 +62,10 @@ impl RequestHistoryStore {
             ",
         )
         .map_err(|e| format!("初始化请求历史表失败: {e}"))?;
+        // 迁移：为已有数据库添加 cache_hit 列（列已存在时忽略错误）
+        let _ = conn.execute_batch(
+            "ALTER TABLE request_history ADD COLUMN cache_hit INTEGER DEFAULT 0;",
+        );
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
         })
@@ -77,13 +83,14 @@ impl RequestHistoryStore {
         duration_ms: u64,
         upstream_url: String,
         error_msg: String,
+        cache_hit: bool,
     ) {
         let total = input_tokens + output_tokens;
         let db = self.db.lock().await;
         let _ = db.execute(
             "INSERT OR REPLACE INTO request_history
-             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg, cache_hit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 created_at,
@@ -94,7 +101,8 @@ impl RequestHistoryStore {
                 total,
                 duration_ms,
                 upstream_url,
-                error_msg
+                error_msg,
+                cache_hit
             ],
         );
         // 每月首条记录触发上月归档：聚合 → 写入 monthly_stats → 删除明细
@@ -131,7 +139,7 @@ impl RequestHistoryStore {
     pub async fn list(&self, limit: usize) -> Vec<HistoryEntry> {
         let db = self.db.lock().await;
         let mut stmt = match db.prepare(
-            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg
+            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg, cache_hit
              FROM request_history ORDER BY created_at DESC LIMIT ?1",
         ) {
             Ok(s) => s,
@@ -149,6 +157,7 @@ impl RequestHistoryStore {
                 duration_ms: row.get(7)?,
                 upstream_url: row.get(8)?,
                 error_msg: row.get(9)?,
+                cache_hit: row.get(10)?,
             })
         });
         match rows {

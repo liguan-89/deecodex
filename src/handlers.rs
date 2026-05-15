@@ -1425,6 +1425,7 @@ async fn bypass_stream_forward(
                         start.elapsed().as_millis() as u64,
                         url,
                         format!("connection error: {e}"),
+                        false,
                     )
                     .await;
                 return (
@@ -1461,6 +1462,7 @@ async fn bypass_stream_forward(
                 start.elapsed().as_millis() as u64,
                 url,
                 format!("HTTP {}", status.as_u16()),
+                false,
             )
             .await;
         return (status, error_body).into_response();
@@ -1570,6 +1572,7 @@ async fn bypass_send_request(
                     start.elapsed().as_millis() as u64,
                     url,
                     format!("connection error: {e}"),
+                    false,
                 )
                 .await;
             (
@@ -1630,6 +1633,7 @@ async fn bypass_send_request(
                     start.elapsed().as_millis() as u64,
                     url,
                     String::new(),
+                    false,
                 )
                 .await;
 
@@ -1970,9 +1974,11 @@ async fn handle_responses_inner(
         if store_response && req.background != Some(true) && conversation_id.is_none() {
             if let Some(cached) = state.request_cache.get(cache_key) {
                 info!("request cache: hit (key={})", cache_key);
+                let input_tokens = cached.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
+                let output_tokens = cached.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
                 let cached_sse = stream::translate_cached(stream::CachedArgs {
                     response_id: response_id.clone(),
-                    model: mapped_model,
+                    model: mapped_model.clone(),
                     cached,
                     sessions: state.sessions.clone(),
                     request_input_items,
@@ -1987,6 +1993,24 @@ async fn handle_responses_inner(
                         header::HeaderValue::from_static("true"),
                     );
                 }
+                let _ = state
+                    .request_history
+                    .record(
+                        response_id.clone(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        mapped_model.clone(),
+                        "completed".into(),
+                        input_tokens,
+                        output_tokens,
+                        0,
+                        url.clone(),
+                        String::new(),
+                        true,
+                    )
+                    .await;
                 return resp;
             }
         }
@@ -2164,6 +2188,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     start.elapsed().as_millis() as u64,
                     url,
                     e.to_string(),
+                    false,
                 )
                 .await;
             (StatusCode::BAD_GATEWAY, e.to_string()).into_response()
@@ -2204,6 +2229,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     start.elapsed().as_millis() as u64,
                     url,
                     format!("HTTP {}", status.as_u16()),
+                    false,
                 )
                 .await;
             (
@@ -2247,6 +2273,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         start.elapsed().as_millis() as u64,
                         url,
                         e.to_string(),
+                        false,
                     )
                     .await;
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -2331,6 +2358,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         start.elapsed().as_millis() as u64,
                         url.clone(),
                         String::new(),
+                        false,
                     )
                     .await;
 

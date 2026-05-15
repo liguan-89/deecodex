@@ -25,6 +25,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    <div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div>
 		    <div class="history-stat accent"><div class="stat-value">—</div><div class="stat-label">Token 消耗</div></div>
 		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div>
+		    <div class="history-stat cache"><div class="stat-value">—</div><div class="stat-label">命中缓存</div></div>
 		  </div>
 		  <div class="history-chart">
 		    <div class="history-chart-header">
@@ -64,13 +65,15 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		function computeStats(entries) {
 		  const total = entries.length;
 		  const completed = entries.filter(e => e.status === 'completed').length;
+		  const cacheHits = entries.filter(e => e.cache_hit).length;
 		  const totalTokens = entries.reduce((s, e) => s + (e.total_tokens || 0), 0);
 		  const totalMs = entries.reduce((s, e) => s + (e.duration_ms || 0), 0);
 		  return {
 		    total,
 		    successRate: total > 0 ? Math.round(completed / total * 100) : 0,
 		    totalTokens,
-		    avgMs: total > 0 ? Math.round(totalMs / total) : 0
+		    avgMs: total > 0 ? Math.round(totalMs / total) : 0,
+		    cacheHitRate: total > 0 ? Math.round(cacheHits / total * 100) : 0
 		  };
 		}
 
@@ -79,6 +82,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  document.querySelector('#historyStats .history-stat:nth-child(2) .stat-value').textContent = stats.successRate + '%';
 		  document.querySelector('#historyStats .history-stat:nth-child(3) .stat-value').textContent = fmtTokens(stats.totalTokens);
 		  document.querySelector('#historyStats .history-stat:nth-child(4) .stat-value').textContent = fmtDuration(stats.avgMs);
+		  document.querySelector('#historyStats .history-stat:nth-child(5) .stat-value').textContent = stats.cacheHitRate + '%';
 		}
 
 		function renderHistoryCards(entries) {
@@ -236,7 +240,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
 		      if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
 		    } else {
-		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">总请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div>';
+		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">总请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div><div class="history-stat cache"><div class="stat-value">—</div><div class="stat-label">命中缓存</div></div>';
 		      if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">暂无数据</div>';
 		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
 		    }
