@@ -31,20 +31,44 @@ Codex CLI  →  /v1/responses
 | macOS 12+ | `deecodex_*.dmg` — 双击挂载，拖入 Applications |
 | Windows | `deecodex_*.msi` — 双击运行安装向导 |
 
-### 最新版 v1.8.11
+### 最新版 v2.0.0
+
+| 平台 | 下载 |
+|------|------|
+| macOS (Apple Silicon) | [deecodex_2.0.0_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v2.0.0/deecodex_2.0.0_aarch64.dmg) |
+| macOS (Intel) | [deecodex_2.0.0_x64.dmg](https://github.com/liguan-89/deecodex/releases/download/v2.0.0/deecodex_2.0.0_x64.dmg) |
+| Windows (EXE) | [deecodex.exe](https://github.com/liguan-89/deecodex/releases/download/v2.0.0/deecodex.exe) |
+| Linux (CLI) | [deecodex-linux-x64](https://github.com/liguan-89/deecodex/releases/download/v2.0.0/deecodex-linux-x64) |
+
+### 兜底版本 v1.8.11
+
+如 v2.0.0 遇到问题，可回退：
 
 | 平台 | 下载 |
 |------|------|
 | macOS (Apple Silicon) | [deecodex_1.8.11_aarch64.dmg](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_aarch64.dmg) |
 | Windows (EXE) | [deecodex_1.8.11_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.8.11/deecodex_1.8.11_x64-setup.exe) |
 
-### 兜底版本 v1.6.0
+## 功能界面
 
-如 v1.8.11 在 Windows 上遇到问题，可回退至稳定版：
+<details open>
+<summary><b>📸 控制台截图（点击展开）</b></summary>
+<br>
 
-| 平台 | 下载 |
+| | |
 |------|------|
-| Windows (EXE) | [deecodex_1.6.0_x64-setup.exe](https://github.com/liguan-89/deecodex/releases/download/v1.6.0/deecodex_1.6.0_x64-setup.exe) |
+| **服务概览** | **请求历史** |
+| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-01-overview.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-02-history.png" width="480"> |
+| **会话聚合** | **账户管理** |
+| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-03-threads.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-04-accounts.png" width="480"> |
+| **插件管理** | **高级设置** |
+| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-05-plugins.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-06-settings.png" width="480"> |
+| **执行诊断** | **使用帮助** |
+| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-07-diagnostics.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-08-help.png" width="480"> |
+| **DEX助手** | |
+| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-09-dex.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-10-dex2.png" width="480"> |
+
+</details>
 
 ## 依赖要求
 
