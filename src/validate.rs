@@ -549,7 +549,6 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
     }
 }
 
-
 fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
     let raw = ctx.model_map.trim();
     if raw.is_empty() || raw == "{}" {
@@ -599,7 +598,10 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
         DiagnosticItem {
             status: Status::Pass,
             check_name: "模型映射".into(),
-            message: format!("模型映射完整（已覆盖 {} 个 Codex 模型）", accounts::CODEX_MODEL_LIST.len()),
+            message: format!(
+                "模型映射完整（已覆盖 {} 个 Codex 模型）",
+                accounts::CODEX_MODEL_LIST.len()
+            ),
             detail: Some(format!("映射条目总数: {}", map_obj.len())),
             suggestion: None,
         }

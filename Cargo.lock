@@ -1033,6 +1033,7 @@ dependencies = [
  "dashmap",
  "deecodex",
  "deecodex-plugin-host",
+ "futures-util",
  "reqwest 0.12.28",
  "rfd",
  "serde",

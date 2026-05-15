@@ -1,3 +1,4 @@
+pub mod dex;
 pub mod logs;
 
 use std::collections::HashMap;

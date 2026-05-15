@@ -1668,3 +1668,283 @@ body {
 .theme-toggle-btn:hover:not(.active) {
   color: var(--text-secondary);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
+   DEX助手 Chat 面板 — 工业控制台 Cyber-Industrial 设计
+   美学：终端 × 霓虹 × 毛玻璃 × 数据密度
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 面板容器 ── */
+.dex-chat-panel {
+  display: flex; flex-direction: column; height: 100%;
+  background: linear-gradient(180deg, #060b14 0%, #0a1020 100%);
+  position: relative;
+}
+.dex-chat-panel::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,200,232,0.008) 2px, rgba(0,200,232,0.008) 4px);
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.3) 10%, rgba(0,0,0,0.3) 90%, transparent 100%);
+}
+
+/* ── 头部 ── */
+.dex-chat-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid rgba(0,200,232,0.12);
+  background: rgba(10,16,32,0.8); backdrop-filter: blur(12px);
+  position: relative; z-index: 2;
+}
+.dex-chat-header h3 {
+  font-size: 15px; font-weight: 600; color: #c4d0e4; letter-spacing: 0.06em;
+  margin: 0; white-space: nowrap;
+}
+.dex-chat-header h3::before { content: '▸ '; color: #00c8e8; }
+
+/* ── 状态栏 ── */
+.dex-status-bar {
+  display: flex; align-items: center; gap: 10px; padding: 1px 0 3px;
+  font-size: 11px; color: #6b7fa8; font-family: 'SF Mono','JetBrains Mono',monospace; letter-spacing: 0.03em;
+}
+.dex-status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.dex-status-dot.dex-status-ok { background: #00d68f; box-shadow: 0 0 6px rgba(0,214,143,0.5); }
+.dex-status-dot.dex-status-err { background: #ff3c5c; box-shadow: 0 0 6px rgba(255,60,92,0.5); animation: dexPulse 2s infinite; }
+.dex-status-dot.dex-status-warn { background: #f09040; box-shadow: 0 0 6px rgba(240,144,64,0.5); }
+
+/* ── 头部操作区 ── */
+.dex-header-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dex-header-actions .btn-sm {
+  font-size: 11px; padding: 3px 8px; border-radius: 4px;
+  text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500;
+}
+
+/* ── 消息区域 ── */
+.dex-chat-messages {
+  flex: 1; overflow-y: auto; padding: 16px; position: relative; z-index: 1;
+  scroll-behavior: smooth;
+}
+.dex-chat-messages::-webkit-scrollbar { width: 4px; }
+.dex-chat-messages::-webkit-scrollbar-track { background: transparent; }
+.dex-chat-messages::-webkit-scrollbar-thumb { background: rgba(0,200,232,0.15); border-radius: 2px; }
+.dex-chat-messages::-webkit-scrollbar-thumb:hover { background: rgba(0,200,232,0.3); }
+
+/* ── 消息气泡基础 ── */
+.dex-msg {
+  margin-bottom: 10px; position: relative; z-index: 1;
+  animation: dexMsgIn 0.25s ease-out;
+}
+@keyframes dexMsgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.dex-bubble {
+  border-radius: 6px; padding: 10px 14px; line-height: 1.55; position: relative;
+  font-size: 13px;
+}
+
+/* ── 助手气泡：终端风格 ── */
+.dex-bubble-assistant {
+  background: rgba(15,23,41,0.7); border: 1px solid rgba(26,42,69,0.6);
+  border-left: 2px solid #00c8e8; max-width: 88%;
+  box-shadow: 1px 1px 0 rgba(0,200,232,0.03);
+}
+.dex-bubble-assistant::after {
+  content: ''; position: absolute; top: 0; left: -2px; width: 2px; height: 30%;
+  background: linear-gradient(180deg, #00c8e8, transparent);
+  opacity: 0.5;
+}
+
+/* ── 用户气泡：霓虹玻璃 ── */
+.dex-msg-user { display: flex; justify-content: flex-end; }
+.dex-bubble-user {
+  background: rgba(0,200,232,0.12); border: 1px solid rgba(0,200,232,0.25);
+  max-width: 82%; color: #d4e0f0; font-weight: 500;
+  box-shadow: 0 0 12px rgba(0,200,232,0.06);
+}
+
+/* ── 工具调用：紧凑工业风 ── */
+.dex-tool-msg {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+  font-family: 'SF Mono','JetBrains Mono',monospace; font-size: 11px;
+  border-radius: 4px; letter-spacing: 0.03em;
+}
+.dex-tool-msg.dex-tool-start { color: #f09040; border-left: 2px solid #f09040; background: rgba(240,144,64,0.04); }
+.dex-tool-msg.dex-tool-result { color: #00d68f; border-left: 2px solid #00d68f; background: rgba(0,214,143,0.04); }
+.dex-tool-msg.dex-tool-error { color: #ff3c5c; border-left: 2px solid #ff3c5c; background: rgba(255,60,92,0.04); }
+.dex-tool-icon { flex-shrink: 0; font-size: 13px; }
+.dex-tool-name { font-weight: 600; }
+.dex-tool-args { color: #6b7fa8; font-size: 10px; overflow: hidden; text-overflow: ellipsis; max-width: 200px; white-space: nowrap; }
+.dex-tool-summary { margin-left: auto; font-size: 10px; color: #6b7fa8; white-space: nowrap; }
+
+/* ── 工具详情折叠 ── */
+.dex-tool-details { margin-top: 3px; width: 100%; }
+.dex-tool-details summary { cursor: pointer; font-size: 10px; color: #3a4f72; padding: 1px 0; letter-spacing: 0.04em; text-transform: uppercase; }
+.dex-tool-details summary:hover { color: #6b7fa8; }
+.dex-tool-details pre {
+  font-size: 10px; max-height: 200px; overflow-y: auto; margin-top: 3px;
+  padding: 6px 8px; background: rgba(0,0,0,0.3); border-radius: 4px;
+  white-space: pre-wrap; word-break: break-all; color: #6b7fa8;
+  border: 1px solid rgba(26,42,69,0.4);
+}
+
+/* ── 系统消息 ── */
+.dex-system-msg { text-align: center; color: #3a4f72; font-size: 11px; padding: 6px 0; font-family: 'SF Mono',monospace; letter-spacing: 0.04em; }
+.dex-system-msg::before { content: '— '; }
+.dex-system-msg::after { content: ' —'; }
+
+/* ── 模型标签 ── */
+.dex-model-tag {
+  display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 3px;
+  background: rgba(0,200,232,0.1); color: #00c8e8; margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.06em; font-family: 'SF Mono',monospace;
+}
+
+/* ── 思考过程 ── */
+.dex-reasoning-wrap { margin-bottom: 4px; }
+.dex-reasoning { font-size: 11px; }
+.dex-reasoning summary { cursor: pointer; color: #3a4f72; font-size: 10px; padding: 2px 0; letter-spacing: 0.04em; text-transform: uppercase; }
+.dex-reasoning summary:hover { color: #6b7fa8; }
+.dex-reasoning-content {
+  white-space: pre-wrap; font-size: 10px; color: #6b7fa8; padding: 6px 8px;
+  background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 2px; max-height: 160px; overflow-y: auto;
+  border-left: 2px solid rgba(0,200,232,0.4); font-style: italic;
+}
+
+/* ── 模型下拉 ── */
+.dex-model-drop { position: relative; display: inline-block; }
+.dex-model-btn {
+  font-size: 11px; padding: 4px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(26,42,69,0.8); background: rgba(10,16,32,0.8); color: #6b7fa8;
+  white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis;
+  font-family: 'SF Mono',monospace; letter-spacing: 0.03em; transition: all 0.15s;
+}
+.dex-model-btn:hover { border-color: #00c8e8; color: #00c8e8; }
+.dex-model-menu {
+  position: absolute; top: 100%; left: 0; z-index: 100; min-width: 150px; max-width: 220px; max-height: 200px;
+  overflow-y: auto; border: 1px solid rgba(26,42,69,0.8); border-radius: 4px;
+  background: #0a1020; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+}
+.dex-model-item {
+  padding: 5px 10px; font-size: 11px; color: #6b7fa8; cursor: pointer; white-space: nowrap;
+  font-family: 'SF Mono',monospace; transition: all 0.1s;
+}
+.dex-model-item:hover { background: rgba(0,200,232,0.1); color: #00c8e8; }
+
+/* ── 输入区 ── */
+.dex-input-area {
+  border-top: 1px solid rgba(0,200,232,0.1); padding: 10px 16px 6px;
+  background: rgba(10,16,32,0.6); backdrop-filter: blur(8px); position: relative; z-index: 2;
+}
+.dex-input-foot { display: flex; justify-content: flex-end; padding: 2px 0; }
+.dex-input-row { display: flex; gap: 8px; align-items: flex-end; }
+.dex-input-row textarea {
+  flex: 1; background: rgba(10,16,32,0.8); border: 1px solid rgba(26,42,69,0.6); border-radius: 6px;
+  padding: 8px 12px; color: #c4d0e4; font-family: inherit; font-size: 13px; resize: none; min-height: 38px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.dex-input-row textarea:focus { outline: none; border-color: #00c8e8; box-shadow: 0 0 0 2px rgba(0,200,232,0.1); }
+.dex-input-row textarea::placeholder { color: #3a4f72; }
+.dex-input-row .btn { flex-shrink: 0; }
+.dex-token-count { font-size: 10px; color: #3a4f72; font-family: 'SF Mono',monospace; letter-spacing: 0.03em; }
+.dex-tool-preview { font-size: 10px; color: #00c8e8; padding: 0 0 4px; font-family: 'SF Mono',monospace; }
+
+/* ── 停止按钮 ── */
+#dexStopBtn {
+  background: rgba(255,60,92,0.15); color: #ff3c5c; border: 1px solid rgba(255,60,92,0.3);
+  border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; flex-shrink: 0;
+  transition: all 0.15s; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+}
+#dexStopBtn:hover { background: rgba(255,60,92,0.25); }
+
+/* ── 思考动画 ── */
+.dex-msg-thinking .dex-thinking-dots { display: flex; gap: 4px; padding: 4px 0; }
+.dex-msg-thinking .dex-thinking-dots span { width: 5px; height: 5px; border-radius: 50%; background: #00c8e8; animation: dexBounce 1.4s infinite both; }
+.dex-msg-thinking .dex-thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.dex-msg-thinking .dex-thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dexBounce { 0%,80%,100% { transform: scale(0.5); opacity: 0.3; } 40% { transform: scale(1); opacity: 1; } }
+@keyframes dexPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* ── Markdown 内容 ── */
+.dex-bubble-text p { margin: 4px 0; }
+.dex-bubble-text code { font-family: 'SF Mono',monospace; font-size: 12px; background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px; color: #00c8e8; }
+.dex-bubble-text pre { background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin: 8px 0; border: 1px solid rgba(26,42,69,0.4); }
+.dex-bubble-text pre code { background: none; padding: 0; color: #c4d0e4; }
+.dex-bubble-text blockquote { border-left: 2px solid #00c8e8; margin: 8px 0; padding: 4px 12px; color: #6b7fa8; font-style: italic; }
+.dex-bubble-text hr { border: none; border-top: 1px solid rgba(26,42,69,0.6); margin: 12px 0; }
+.dex-bubble-text a { color: #00c8e8; text-decoration: underline; }
+.dex-bubble-text strong { color: #fff; font-weight: 600; }
+.dex-bubble-text h3, .dex-bubble-text h4 { color: #c4d0e4; margin: 10px 0 4px; }
+.dex-bubble-text ul, .dex-bubble-text ol { margin: 4px 0; padding-left: 20px; }
+.dex-md-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+.dex-md-table th { background: rgba(0,200,232,0.06); padding: 5px 8px; text-align: left; border-bottom: 1px solid rgba(0,200,232,0.2); color: #00c8e8; font-weight: 600; }
+.dex-md-table td { padding: 4px 8px; border-bottom: 1px solid rgba(26,42,69,0.4); color: #c4d0e4; }
+
+/* ── 快捷操作 ── */
+.dex-quick-actions { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 0; }
+.dex-quick-actions .btn { font-size: 11px; padding: 5px 12px; border-radius: 4px; font-weight: 500; }
+
+/* ── 搜索栏 ── */
+.dex-search-bar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(10,16,32,0.9); border-bottom: 1px solid rgba(0,200,232,0.1); }
+.dex-search-bar input { flex: 1; background: rgba(10,16,32,0.8); border: 1px solid rgba(26,42,69,0.6); color: #c4d0e4; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+.dex-search-bar input:focus { outline: none; border-color: #00c8e8; }
+.dex-search-count { font-size: 10px; color: #6b7fa8; white-space: nowrap; font-family: 'SF Mono',monospace; }
+
+/* ── 内联确认 ── */
+.dex-confirm-inline { margin: 8px 0; }
+.dex-confirm-card { background: rgba(240,144,64,0.06); border: 1px solid rgba(240,144,64,0.3); border-radius: 6px; padding: 10px 14px; }
+.dex-confirm-header { font-size: 12px; font-weight: 600; color: #f09040; margin-bottom: 4px; }
+.dex-confirm-body { font-size: 12px; color: #c4d0e4; margin-bottom: 8px; }
+.dex-confirm-actions { display: flex; gap: 6px; }
+.dex-confirm-ok { background: rgba(240,144,64,0.15); color: #f09040; border: 1px solid rgba(240,144,64,0.3); }
+.dex-confirm-ok:hover { background: rgba(240,144,64,0.25); }
+
+/* ── 欢迎消息 ── */
+.dex-welcome { opacity: 0.8; }
+
+/* ═══ 亮色主题 ═══ */
+[data-theme="light"] .dex-chat-panel { background: #f5f6f8; }
+[data-theme="light"] .dex-chat-panel::before { background: none; }
+[data-theme="light"] .dex-chat-header { background: #fff; border-bottom: 1px solid #e2e5e9; }
+[data-theme="light"] .dex-chat-header h3 { color: #1a1a2e; }
+[data-theme="light"] .dex-status-bar { color: #5a6470; }
+[data-theme="light"] .dex-status-dot.dex-status-warn { animation: none; }
+[data-theme="light"] .dex-bubble-assistant { background: #fff; border: 1px solid #e2e5e9; border-left: 3px solid #0891b2; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+[data-theme="light"] .dex-bubble-assistant::after { background: linear-gradient(180deg, #0891b2, transparent); }
+[data-theme="light"] .dex-bubble-user { background: #e0f2fe; border: 1px solid #bae6fd; color: #0c4a6e; box-shadow: 0 1px 3px rgba(8,145,178,0.08); }
+[data-theme="light"] .dex-bubble-text { color: #1e293b; }
+[data-theme="light"] .dex-bubble-text p { color: #334155; }
+[data-theme="light"] .dex-bubble-text strong { color: #0f172a; }
+[data-theme="light"] .dex-bubble-text code { background: #e2e8f0; color: #0891b2; }
+[data-theme="light"] .dex-bubble-text pre { background: #f1f5f9; border-color: #e2e5e9; color: #334155; }
+[data-theme="light"] .dex-bubble-text a { color: #0891b2; }
+[data-theme="light"] .dex-tool-msg { font-weight: 500; }
+[data-theme="light"] .dex-tool-msg.dex-tool-start { background: #fff7ed; border-left-color: #ea580c; color: #9a3412; }
+[data-theme="light"] .dex-tool-msg.dex-tool-result { background: #f0fdf4; border-left-color: #16a34a; color: #166534; }
+[data-theme="light"] .dex-tool-msg.dex-tool-error { background: #fef2f2; border-left-color: #dc2626; color: #991b1b; }
+[data-theme="light"] .dex-tool-name { font-weight: 600; }
+[data-theme="light"] .dex-tool-args { color: #64748b; }
+[data-theme="light"] .dex-tool-summary { color: #64748b; }
+[data-theme="light"] .dex-tool-details pre { background: #f1f5f9; border-color: #e2e5e9; color: #475569; }
+[data-theme="light"] .dex-tool-details summary { color: #94a3b8; }
+[data-theme="light"] .dex-input-area { background: #fff; border-top: 1px solid #e2e5e9; }
+[data-theme="light"] .dex-input-row textarea { background: #f8fafc; border-color: #cbd5e1; color: #1e293b; }
+[data-theme="light"] .dex-input-row textarea:focus { border-color: #0891b2; box-shadow: 0 0 0 2px rgba(8,145,178,0.12); }
+[data-theme="light"] .dex-input-row textarea::placeholder { color: #94a3b8; }
+[data-theme="light"] .dex-token-count { color: #94a3b8; }
+[data-theme="light"] .dex-model-btn { background: #f8fafc; border-color: #cbd5e1; color: #475569; }
+[data-theme="light"] .dex-model-btn:hover { border-color: #0891b2; color: #0891b2; }
+[data-theme="light"] .dex-model-menu { background: #fff; border-color: #e2e5e9; box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+[data-theme="light"] .dex-model-item { color: #334155; }
+[data-theme="light"] .dex-model-item:hover { background: #e0f2fe; color: #0891b2; }
+[data-theme="light"] .dex-search-bar { background: #fff; border-bottom: 1px solid #e2e5e9; }
+[data-theme="light"] .dex-search-bar input { background: #f8fafc; border-color: #cbd5e1; color: #1e293b; }
+[data-theme="light"] .dex-search-count { color: #64748b; }
+[data-theme="light"] .dex-system-msg { color: #94a3b8; }
+[data-theme="light"] .dex-model-tag { background: #e0f2fe; color: #0891b2; }
+[data-theme="light"] .dex-reasoning-content { color: #64748b; border-left-color: #0891b2; }
+[data-theme="light"] .dex-reasoning summary { color: #94a3b8; }
+[data-theme="light"] .dex-quick-actions .btn { color: #475569; }
+[data-theme="light"] .dex-md-table th { background: #f1f5f9; color: #0891b2; border-bottom-color: #bae6fd; }
+[data-theme="light"] .dex-md-table td { border-bottom-color: #e2e5e9; color: #334155; }
+[data-theme="light"] .dex-confirm-card { background: #fffbeb; border-color: #fcd34d; }
+[data-theme="light"] .dex-confirm-header { color: #92400e; }
+[data-theme="light"] .dex-confirm-body { color: #1e293b; }
+[data-theme="light"] .dex-chat-messages::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); }
+[data-theme="light"] #dexStopBtn { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+
