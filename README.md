@@ -55,18 +55,33 @@ Codex CLI  →  /v1/responses
 <summary><b>📸 控制台截图（点击展开）</b></summary>
 <br>
 
-| | |
-|------|------|
-| **服务概览** | **请求历史** |
-| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-01-overview.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-02-history.png" width="480"> |
-| **会话聚合** | **账户管理** |
-| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-03-threads.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-04-accounts.png" width="480"> |
-| **插件管理** | **高级设置** |
-| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-05-plugins.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-06-settings.png" width="480"> |
-| **执行诊断** | **使用帮助** |
-| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-07-diagnostics.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-08-help.png" width="480"> |
-| **DEX助手** | |
-| <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-09-dex.png" width="480"> | <img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-10-dex2.png" width="480"> |
+**服务概览**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-01-overview.png" width="800">
+
+**请求历史**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-02-history.png" width="800">
+
+**会话聚合**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-03-threads.png" width="800">
+
+**账户管理**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-04-accounts.png" width="800">
+
+**插件管理**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-05-plugins.png" width="800">
+
+**高级设置**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-06-settings.png" width="800">
+
+**执行诊断**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-07-diagnostics.png" width="800">
+
+**使用帮助**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-08-help.png" width="800">
+
+**DEX助手**
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-09-dex.png" width="800">
+<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/screenshots-10-dex2.png" width="800">
 
 </details>
 
