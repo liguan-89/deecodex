@@ -361,6 +361,7 @@ pub fn translate_stream(
                         start.elapsed().as_millis() as u64,
                         upstream_url,
                         format!("HTTP {}", status_code),
+                        false,
                     ).await;
                     return;
                 }
@@ -399,6 +400,7 @@ pub fn translate_stream(
                         start.elapsed().as_millis() as u64,
                         upstream_url,
                         e.to_string(),
+                        false,
                     ).await;
                     return;
                 }
@@ -651,6 +653,7 @@ pub fn translate_stream(
                     start.elapsed().as_millis() as u64,
                     upstream_url,
                     message,
+                    false,
                 ).await;
                 return;
             }
@@ -998,6 +1001,7 @@ pub fn translate_stream(
             start.elapsed().as_millis() as u64,
             upstream_url,
             String::new(),
+            false,
         ).await;
     };
 
