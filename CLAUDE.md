@@ -4,47 +4,76 @@
 
 与本仓库的所有交互使用中文。
 
-## 当前分区
+## 当前工作区
 
-你正在 **功能/DEX助手** 分区工作，负责智能诊断与辅助工具面板。
+你正在 **主开发区** `/Users/liguan/deecodex` 工作，对应主分支 `deecodex-gui`。
 
-**只修改这些文件：**
-- `deecodex-gui/gui/js/placeholder-pages.js` — DEX助手占位
-- `gui/nav/09-DEX助手.html` — 导航栏片段
+主开发区用于日常开发、共享层修改、集成验证和发版前合入。不要再把长期功能 worktree 当作固定模块边界使用；需要隔离开发时，按任务临时创建 `功能/<任务名>` worktree，完成合入后删除。
 
-本分区无核心 Rust 模块。
+## 修改边界
 
-排查 bug 时可以阅读任何分区代码。修改仅限本分区文件。
+- 小改动、共享层改动、跨模块修复优先在主开发区完成。
+- 大功能或高风险实验可临时创建 `功能/<任务名>` worktree。
+- 编译产物和安装包只放在 `编译二进制/` 工作区或发布目录，不回写源码区。
+- 排查 bug 可以阅读全仓库；提交前确认变更范围与任务目标一致。
 
 ## Build & Test
 
-```
+```bash
 cargo build
+cargo build --release
+cargo test --all-targets
+cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-本分区通常只需改 HTML。`cargo build` 用于确认不破坏编译。
+运行 `cargo build` 前先检查并发构建：
 
-## 前端规则
+```bash
+pgrep -x cargo
+```
 
-- **Tauri-only**，不测 `file://`。非 Tauri 环境直接阻断
-- **不把 JS/CSS 写回 `index.html`**，放 `gui/js/<feature>.js` 或 `gui/css/app.css`
-- 统一走 `DeeCodexTauri.invoke()`，所有 IPC 自动 trace
-- 统一走 `window.deeStorage`（即 `localStorage`）
-- `confirm()` 在 WebView 中不可靠，用 `showConfirm()`
-- **改完必须启动 GUI 实测**，编译通过不算完成
+若已有 cargo 进程在运行，等待结束后再构建。
 
-## Bug 定位速查（按顺序）
+## deecodex-gui 前端规则
 
-1. `invoke('debug_gui_state')` 确认环境
-2. 控制台看 `[ipc:start]` / `[ipc:ok]` / `[ipc:error]` trace
-3. 检查 `generate_handler![]` 是否注册了对应 command
-4. 检查文件/DB 是否真的被修改
-5. 检查前端过滤/解析是否误判（空状态、BOM 等）
+`deecodex-gui` 是 Tauri 桌面应用，不支持将 `gui/index.html` 当作独立网页使用。
+
+真实功能测试必须使用：
+
+```bash
+cd /Users/liguan/deecodex
+cargo tauri dev
+```
+
+前端约定：
+
+- 不把大段 JS/CSS 写回 `index.html`。
+- 不直接调用 `window.__TAURI__`，统一走 `DeeCodexTauri.invoke(name, args)`。
+- 不直接访问 `localStorage`，统一走 `deeStorage`。
+- 不为 `file://` 预览模式做兜底或假数据。
+- 非 Tauri 环境直接显示阻断页。
+- 改完 GUI 代码必须启动 GUI 实测，编译通过不算完成。
+
+## 模块归属
+
+详细模块归属、临时 worktree 流程和发版编译工作区见 `WORKTREES.md`。
+
+高层规则：
+
+- 协议翻译：`src/translate.rs`、`src/stream.rs`、`src/handlers.rs`、`src/sse.rs`、`src/types.rs`、`src/utils.rs`。
+- 本地能力与诊断：`src/files.rs`、`src/vector_stores.rs`、`src/prompts.rs`、`src/executor.rs`、`src/validate.rs`。
+- 账号、配置与会话：`src/accounts.rs`、`src/config.rs`、`src/codex_config.rs`、`src/session.rs`、`src/cache.rs`、`src/ratelimit.rs`、`src/metrics.rs`、`src/token_anomaly.rs`。
+- GUI：`deecodex-gui/src/`、`deecodex-gui/gui/js/`、`deecodex-gui/gui/nav/`、`deecodex-gui/gui/css/`。
+- 插件：`deecodex-plugins/` 与插件相关 GUI/IPC。
 
 ## 提交
 
-中文 commit，前缀: `feat:` / `fix:` / `refactor:` / `docs:` / `chore:` / `release:`
-只改本分区覆盖的文件。改共享层去父区 `/Users/liguan/deecodex` 做。
+中文 commit，前缀使用：
 
-完整架构、配置系统、模块说明、测试约定见父区: /Users/liguan/deecodex/CLAUDE.md
+- `feat:` — 新功能
+- `fix:` — 修复
+- `refactor:` — 重构
+- `docs:` — 文档
+- `chore:` — 杂项/构建
+- `release:` — 发版

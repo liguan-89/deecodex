@@ -124,9 +124,9 @@ Three config sources merged at startup: environment variables (`DEECODEX_*`), CL
 - **静默失败加日志：** 关键分支返回空结果时要打 `tracing::warn!`，不静默跳过。
 - **跨目录启动测试：** 编译后从不同目录启动二进制验证路径解析是否正常。
 
-## 功能分区
+## 工作区
 
-项目通过 git worktree 划分为 11 个功能分区，每个分区独立开发、独立提交。详细分区定义和 GUI 共享层规则见 `CLAUDE.md`。
+项目长期保留主开发区、稳定版和三个平台编译 worktree。功能开发按任务临时创建 `功能/<任务名>` worktree，合入后删除；不再长期维护固定 11 个功能分区。详细模块归属、临时 worktree 流程和 GUI 共享层规则见 `CLAUDE.md` 与 `WORKTREES.md`。
 
 ### 提交前缀
 
