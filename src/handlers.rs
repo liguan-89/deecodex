@@ -808,11 +808,13 @@ async fn handle_models(State(state): State<AppState>) -> Response {
     if !model_map.is_empty() {
         let data: Vec<serde_json::Value> = model_map
             .keys()
-            .map(|id| json!({
-                "id": id,
-                "object": "model",
-                "owned_by": "deecodex"
-            }))
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "object": "model",
+                    "owned_by": "deecodex"
+                })
+            })
             .collect();
         return Json(json!({ "object": "list", "data": data })).into_response();
     }
@@ -1182,11 +1184,22 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     let model = req.model.clone();
     let translate_enabled = state.active_account.read().await.translate_enabled;
     let upstream = state.active_account.read().await.upstream.clone();
-    let mode = if translate_enabled { "translate" } else { "bypass" };
+    let mode = if translate_enabled {
+        "translate"
+    } else {
+        "bypass"
+    };
     tracing::info!("⇢ {mode} {model} → {upstream}");
     if let Some(response) = validate_response_include(req.include.as_deref()) {
         return response;
     }
+
+    // 直连模式：仅做模型映射，其他全部透传
+    if !translate_enabled {
+        return handle_responses_bypass(state, req, body).await;
+    }
+
+    // ── 以下仅翻译/代理模式生效 ──
     if let Err(err) = state.prompts.apply_to_request(&mut req) {
         return err.into_response();
     }
@@ -1209,11 +1222,6 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
                 }
             }))).into_response();
         }
-    }
-
-    // 翻译关闭时，直接透传至上游 Responses API
-    if !state.active_account.read().await.translate_enabled {
-        return handle_responses_bypass(state, req, body).await;
     }
 
     if let Err(err) = state.files.resolve_request_files(&mut req) {
@@ -1286,7 +1294,11 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         local_file_search_input_items,
     )
     .await;
-    tracing::info!("⇠ translate {} done in {}ms", model, _start.elapsed().as_millis());
+    tracing::info!(
+        "⇠ translate {} done in {}ms",
+        model,
+        _start.elapsed().as_millis()
+    );
     let status = response.status().as_u16().to_string();
     state
         .metrics
@@ -1296,9 +1308,105 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     response
 }
 
+/// 从 SSE 字节流中提取 usage 信息，返回 (input_tokens, output_tokens, cache_hit)
+fn extract_usage_from_sse(bytes: &[u8]) -> (u32, u32, bool) {
+    let text = String::from_utf8_lossy(bytes);
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
+    let mut cache_hit = false;
+    for line in text.lines() {
+        let data = line.strip_prefix("data: ").unwrap_or(line);
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+            // response.completed 事件
+            if let Some(resp) = v.get("response").and_then(|r| r.get("usage")) {
+                input_tokens = resp
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(input_tokens as u64) as u32;
+                output_tokens = resp
+                    .get("output_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(output_tokens as u64) as u32;
+                if !cache_hit {
+                    if let Some(obj) = resp.as_object() {
+                        tracing::info!("bypass usage: {:?}", obj);
+                        cache_hit = is_cache_hit(obj);
+                    }
+                }
+            }
+            // 最后一条 data chunk 直接带 usage
+            if let Some(usage) = v.get("usage").and_then(|u| u.as_object()) {
+                if !usage.is_empty() {
+                    input_tokens = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(input_tokens as u64) as u32;
+                    output_tokens = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(output_tokens as u64) as u32;
+                    if !cache_hit {
+                        tracing::info!("bypass usage: {:?}", usage);
+                        cache_hit = is_cache_hit(usage);
+                    }
+                }
+            }
+        }
+    }
+    (input_tokens, output_tokens, cache_hit)
+}
+
+/// 判断 usage 对象中是否包含缓存命中标记
+fn is_cache_hit(usage: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let prompt_cache_hit = usage
+        .get("prompt_cache_hit_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let prompt_cached = usage
+        .get("prompt_tokens_details")
+        .and_then(|v| v.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let input_cached = usage
+        .get("input_tokens_details")
+        .and_then(|v| v.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    // 通过 input_tokens_details.cached_tokens 判断时，要求缓存占比 > 50%，
+    // 避免系统提示词的少量缓存被误判为命中（新会话首请求也有 ~40% 缓存）。
+    let input_total = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(input_cached);
+    let significant_hit = input_cached > input_total / 2;
+    let hit = prompt_cache_hit > 0 || prompt_cached > 0 || significant_hit;
+    if hit {
+        tracing::info!(
+            "bypass cache_hit: prompt_cache_hit={} prompt_cached={} input_cached={}/{}",
+            prompt_cache_hit, prompt_cached, input_cached, input_total
+        );
+    }
+    hit
+}
+
+/// 修改原始 JSON body 中的某个字段值
+fn patch_body_model_field(
+    body: &axum::body::Bytes,
+    model: &str,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut v: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("model".to_string(), serde_json::json!(model));
+    }
+    serde_json::to_vec(&v).map(axum::body::Bytes::from)
+}
+
 async fn handle_responses_bypass(
     state: AppState,
-    req: ResponsesRequest,
+    mut req: ResponsesRequest,
     body: axum::body::Bytes,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
@@ -1316,13 +1424,22 @@ async fn handle_responses_bypass(
             .into_response();
     }
 
+    // 模型映射（直连模式下仅此一项处理）
+    let model_map = state.model_map.read().await.clone();
+    let model = resolve_model(&req.model, &model_map);
+    let body = if model != req.model {
+        patch_body_model_field(&body, &model).unwrap_or(body)
+    } else {
+        body
+    };
+    req.model = model.clone();
+
     let account = state.active_account.read().await;
     let upstream = account.upstream.clone();
     let api_key = account.api_key.clone();
     let custom_headers = account.custom_headers.clone();
     let timeout_secs = account.request_timeout_secs;
     let max_retries = account.max_retries;
-    let model = req.model.clone();
     drop(account);
 
     let upstream_url =
@@ -1355,11 +1472,7 @@ async fn handle_responses_bypass(
         }
     }
 
-    tracing::info!(
-        "⇢ bypass {} → {}",
-        model,
-        upstream_url
-    );
+    tracing::info!("⇢ bypass {} → {}", model, upstream_url);
 
     let response_id = state.sessions.new_id();
     let bypass = BypassArgs {
@@ -1494,11 +1607,70 @@ async fn bypass_stream_forward(
                 false,
             )
             .await;
-        return (status, error_body).into_response();
+        // 上游可能返回 HTML，转为 JSON 错误
+        let error_body = if error_body.trim_start().starts_with('<') {
+            format!("upstream returned HTTP {}", status.as_u16())
+        } else {
+            error_body
+        };
+        return (status, Json(json!({
+            "error": {
+                "code": status.as_u16().to_string(),
+                "message": error_body,
+                "type": "upstream_error"
+            }
+        })))
+            .into_response();
     }
 
-    let stream = resp.bytes_stream();
-    let body_stream = axum::body::Body::from_stream(stream);
+    // 收集完整响应体，解析 usage 后再透传
+    let body_bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("bypass stream read body: {e}");
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    format!("stream read error: {e}"),
+                    false,
+                )
+                .await;
+            return (StatusCode::BAD_GATEWAY, format!("upstream stream error: {e}")).into_response();
+        }
+    };
+
+    let (input_tokens, output_tokens, cache_hit) = extract_usage_from_sse(&body_bytes);
+    let _ = state
+        .request_history
+        .record(
+            response_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            model,
+            "completed".into(),
+            input_tokens,
+            output_tokens,
+            start.elapsed().as_millis() as u64,
+            url,
+            String::new(),
+            cache_hit,
+        )
+        .await;
+
+    let body_stream = axum::body::Body::from(body_bytes);
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/event-stream")
@@ -1642,29 +1814,44 @@ async fn bypass_send_request(
                     .save_response(response_id.clone(), response_body.clone());
             }
 
-            let _ = state
-                .request_history
-                .record(
-                    response_id,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    model,
-                    if status.is_success() {
-                        "completed"
-                    } else {
-                        "failed"
-                    }
-                    .into(),
-                    0,
-                    0,
-                    start.elapsed().as_millis() as u64,
-                    url,
-                    String::new(),
-                    false,
-                )
-                .await;
+            let _ = {
+                let usage = response_body.get("usage");
+                let input_tokens = usage
+                    .and_then(|u| u.get("input_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let output_tokens = usage
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let cache_hit = usage
+                    .and_then(|u| u.as_object())
+                    .map(|u| is_cache_hit(u))
+                    .unwrap_or(false);
+                state
+                    .request_history
+                    .record(
+                        response_id,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        model,
+                        if status.is_success() {
+                            "completed"
+                        } else {
+                            "failed"
+                        }
+                        .into(),
+                        input_tokens,
+                        output_tokens,
+                        start.elapsed().as_millis() as u64,
+                        url,
+                        String::new(),
+                        cache_hit,
+                    )
+                    .await
+            };
 
             (
                 if status.is_success() {
@@ -2004,7 +2191,11 @@ async fn handle_responses_inner(
             if let Some(cached) = state.request_cache.get(cache_key) {
                 info!("request cache: hit (key={})", cache_key);
                 let input_tokens = cached.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
-                let output_tokens = cached.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
+                let output_tokens = cached
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens)
+                    .unwrap_or(0);
                 let cached_sse = stream::translate_cached(stream::CachedArgs {
                     response_id: response_id.clone(),
                     model: mapped_model.clone(),
@@ -2220,7 +2411,17 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     false,
                 )
                 .await;
-            (StatusCode::BAD_GATEWAY, e.to_string()).into_response()
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "code": "connection_error",
+                        "message": format!("upstream connection error: {e}"),
+                        "type": "upstream_error"
+                    }
+                })),
+            )
+                .into_response()
         }
         Ok(r) if !r.status().is_success() => {
             let status = r.status();
@@ -2261,9 +2462,21 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     false,
                 )
                 .await;
+            // 上游可能返回 HTML，Codex 期望 JSON，统一转为 JSON 错误
+            let error_message = if body.trim_start().starts_with('<') {
+                format!("upstream returned {}", status.as_u16())
+            } else {
+                body
+            };
             (
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                body,
+                Json(json!({
+                    "error": {
+                        "code": status.as_u16().to_string(),
+                        "message": error_message,
+                        "type": "upstream_error"
+                    }
+                })),
             )
                 .into_response()
         }

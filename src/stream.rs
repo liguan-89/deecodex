@@ -334,7 +334,12 @@ pub fn translate_stream(
                         continue;
                     }
 
-                    error!("upstream {}: {}", status_code, body);
+                    let error_msg = if body.trim_start().starts_with('<') {
+                        format!("upstream HTTP {}", status_code)
+                    } else {
+                        body.clone()
+                    };
+                    error!("upstream {}: {}", status_code, body.chars().take(300).collect::<String>());
                     if store_response {
                         let mut failed = json!({
                             "id": &response_id,
@@ -342,7 +347,7 @@ pub fn translate_stream(
                             "status": "failed",
                             "model": &model,
                             "output": [],
-                            "error": {"code": status_code.to_string(), "message": body.clone()}
+                            "error": {"code": status_code.to_string(), "message": error_msg.clone()}
                         });
                         merge_response_extra(&mut failed, &response_extra);
                         sessions.save_response(response_id.clone(), failed);
@@ -350,7 +355,7 @@ pub fn translate_stream(
                     yield event_with_sequence(
                         &mut seq,
                         "response.failed",
-                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": body}}}),
+                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": error_msg}}}),
                     );
                     let _ = request_history.record(
                         response_id,

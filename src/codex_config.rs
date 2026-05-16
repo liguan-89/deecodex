@@ -189,7 +189,10 @@ fn do_inject(
 
     // 确保 model_providers 是常规表（非内联表），避免与用户自定义 provider 冲突
     if doc.get("model_providers").is_none() {
-        doc.insert("model_providers", toml_edit::Item::Table(toml_edit::Table::new()));
+        doc.insert(
+            "model_providers",
+            toml_edit::Item::Table(toml_edit::Table::new()),
+        );
     }
     doc["model_providers"]["deecodex"]["base_url"] =
         toml_edit::value(format!("http://127.0.0.1:{}/v1", port));

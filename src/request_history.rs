@@ -63,9 +63,8 @@ impl RequestHistoryStore {
         )
         .map_err(|e| format!("初始化请求历史表失败: {e}"))?;
         // 迁移：为已有数据库添加 cache_hit 列（列已存在时忽略错误）
-        let _ = conn.execute_batch(
-            "ALTER TABLE request_history ADD COLUMN cache_hit INTEGER DEFAULT 0;",
-        );
+        let _ = conn
+            .execute_batch("ALTER TABLE request_history ADD COLUMN cache_hit INTEGER DEFAULT 0;");
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
         })

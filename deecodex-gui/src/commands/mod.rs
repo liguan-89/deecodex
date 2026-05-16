@@ -1512,12 +1512,17 @@ pub async fn fetch_upstream_models(
     let base = upstream.trim_end_matches('/');
     let urls = vec![format!("{base}/models")];
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("创建客户端失败: {e}"))?;
     for url in &urls {
         let mut req = client.get(url);
         if !api_key.is_empty() {
             req = req.bearer_auth(&api_key);
         }
+        tracing::info!("获取上游模型: GET {url}");
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
                 let body: Value = resp.json().await.map_err(|e| format!("解析失败: {e}"))?;
@@ -1530,10 +1535,23 @@ pub async fn fetch_upstream_models(
                     })
                     .unwrap_or_default();
                 if !models.is_empty() {
+                    tracing::info!("获取上游模型成功: {} 个模型", models.len());
                     return Ok(models);
                 }
+                tracing::info!("上游模型响应中 data 为空: {:?}", body);
             }
-            _ => continue,
+            Ok(resp) => {
+                let status = resp.status();
+                let snippet = resp.text().await.unwrap_or_default();
+                tracing::info!(
+                    "上游模型请求失败 HTTP {}: {}",
+                    status.as_u16(),
+                    snippet.chars().take(200).collect::<String>()
+                );
+            }
+            Err(e) => {
+                tracing::info!("上游模型请求错误: {url} → {e}");
+            }
         }
     }
     Err("无法从上游获取模型列表".to_string())

@@ -585,8 +585,10 @@ async fn main() -> Result<()> {
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
         client: Client::builder()
-            .pool_idle_timeout(None)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .pool_max_idle_per_host(4)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .tcp_keepalive(std::time::Duration::from_secs(60))
             .timeout(std::time::Duration::from_secs(300))
             .build()?,
         upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
