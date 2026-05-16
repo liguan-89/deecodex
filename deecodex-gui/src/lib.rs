@@ -356,14 +356,16 @@ pub fn run() {
             // 存储托盘引用、AppHandle 和 data_dir 到状态管理器
             let manager = app.state::<ServerManager>();
             let app_handle = app.handle().clone();
-            let data_dir = crate::commands::load_args().data_dir.clone();
+            let args = crate::commands::load_args();
+            let data_dir = args.data_dir.clone();
+            let llm_base_url = format!("http://127.0.0.1:{}", args.port);
             tauri::async_runtime::block_on(async {
                 // 初始化插件管理器
                 let pm = Arc::new(deecodex_plugin_host::PluginManager::new(
                     data_dir.clone(),
-                    "http://127.0.0.1:4446".to_string(),
+                    llm_base_url.clone(),
                 ));
-                tracing::info!("插件管理器已初始化");
+                tracing::info!(llm_base_url = %llm_base_url, "插件管理器已初始化");
 
                 // 自动安装内置微信插件
                 let mut weixin_paths: Vec<std::path::PathBuf> = vec![
