@@ -1,7 +1,7 @@
 // DEX助手
 // ═══════════════════════════════════════════════════════════════
 
-// ── CSS 注入：DEX 专用样式（一次性）──
+// ── CSS 注入：DEX 运行态补丁样式（一次性）──
 (function () {
   if (!document.getElementById('dex-inline-style')) {
     var style = document.createElement('style');
@@ -9,38 +9,26 @@
     style.textContent = [
       '.dex-spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border-color,#334155);border-top-color:var(--accent-color,#00c8e8);border-radius:50%;animation:dex-spin 0.8s linear infinite;vertical-align:middle;margin-right:6px;flex-shrink:0}',
       '@keyframes dex-spin{to{transform:rotate(360deg)}}',
-      '.dex-tool-summary{color:var(--text-secondary,#6b7fa8);font-size:12px;margin-left:6px}',
-      '.dex-tool-details{margin-top:4px;font-size:12px}',
+      '.dex-chat-header{min-width:0}',
+      '.dex-header-title{min-width:0;flex:1 1 auto}',
+      '.dex-header-title h3{overflow:hidden;text-overflow:ellipsis}',
+      '.dex-header-actions{flex:0 1 auto;justify-content:flex-end}',
+      '.dex-header-actions .dex-icon-btn{width:30px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1}',
+      '.dex-tool-msg{flex-wrap:wrap;align-items:flex-start}',
+      '.dex-tool-name{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}',
+      '.dex-tool-args{flex:1 1 160px;min-width:0;max-width:none}',
+      '.dex-tool-summary{margin-left:auto;min-width:0;max-width:45%;overflow:hidden;text-overflow:ellipsis}',
+      '.dex-tool-details{flex:1 0 100%;margin-top:4px;font-size:12px}',
       '.dex-tool-details summary{cursor:pointer;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-details pre{max-height:300px;overflow-y:auto;font-size:11px;margin-top:4px;padding:6px 8px}',
+      '.dex-tool-details pre{max-height:300px;overflow:auto;font-size:11px;margin-top:4px;padding:6px 8px;white-space:pre-wrap;word-break:break-word}',
       '.dex-tool-error-details summary{color:var(--error-color,#ef4444)}',
-      '.dex-model-select{font-size:12px;padding:2px 6px;border:1px solid var(--border-color,#334155);border-radius:4px;background:var(--bg-secondary,#0f172a);color:var(--text-primary,#c4d0e4);cursor:pointer;margin-right:6px;max-width:160px}',
-      '.dex-md-table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}',
-      '.dex-md-table th,.dex-md-table td{border:1px solid var(--border-color,#334155);padding:4px 8px;text-align:left}',
-      '.dex-md-table th{background:var(--bg-secondary,#0f172a);font-weight:600;color:var(--text-primary,#c4d0e4)}',
-      '.dex-bubble-text blockquote{border-left:3px solid var(--accent-color,#00c8e8);margin:8px 0;padding:4px 12px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-bubble-text hr{border:none;border-top:1px solid var(--border-color,#334155);margin:8px 0}',
-      '.dex-bubble-text a{color:var(--accent-color,#00c8e8);text-decoration:underline}',
-      '.dex-bubble-text a:hover{color:var(--accent-hover,#00e0ff)}',
-      '.dex-bubble-text p{margin:4px 0}',
-      '.dex-bubble-text ul,.dex-bubble-text ol{margin:4px 0;padding-left:20px}',
-      '.dex-bubble-text h3.dex-md-h3{font-size:15px;margin:8px 0 4px;color:var(--text-primary,#c4d0e4)}',
-      '.dex-bubble-text h4.dex-md-h4{font-size:14px;margin:6px 0 4px;color:var(--text-primary,#c4d0e4)}',
-      '.dex-tool-msg.dex-tool-result .dex-tool-icon{margin-right:6px}',
-      '.dex-tool-msg.dex-tool-error .dex-tool-icon{margin-right:6px}',
-      '.dex-status-bar{display:flex;align-items:center;gap:8px;padding:2px 0;font-size:12px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;background:#6b7fa8}',
-      '.dex-status-dot.dex-status-ok{background:#22c55e}',
-      '.dex-status-dot.dex-status-err{background:#ef4444}',
-      '.dex-status-dot.dex-status-warn{background:#f59e0b}',
-      '.dex-search-bar{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg-secondary,#0f172a);border-bottom:1px solid var(--border-color,#334155)}',
-      '.dex-search-bar input{flex:1;background:var(--bg-primary,#060b14);border:1px solid var(--border-color,#334155);color:var(--text-primary,#c4d0e4);padding:4px 8px;border-radius:4px;font-size:12px}',
-      '.dex-search-bar .dex-search-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap}',
-      '.dex-search-bar .btn{padding:2px 8px;font-size:11px}',
+      '.dex-confirm-command{margin-top:8px;padding:8px 10px;border:1px solid rgba(240,144,64,0.28);border-radius:4px;background:rgba(0,0,0,0.24);font-family:var(--font-mono);font-size:11px;line-height:1.5;color:var(--text-primary);white-space:pre-wrap;word-break:break-word}',
       '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
       '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
       '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
-      '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);margin-top:2px;font-style:italic}'
+      '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);margin-top:2px;font-style:italic}',
+      '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
+      '@media (max-width:900px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{flex-wrap:wrap}.dex-input-row textarea{flex-basis:100%}.dex-input-row .btn{flex:1 1 96px}}'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -687,8 +675,8 @@ var DEX_TOOLS = [
   {
     name: 'execute_shell',
     tauriCmd: 'dex_execute_shell',
-    level: 2,
-    confirm: null,
+    level: 3,
+    confirm: '确定要执行这条 Shell 命令吗？请确认命令内容可信。',
     description: '执行 Shell 命令',
     parameters: {
       type: 'object',
@@ -1123,11 +1111,12 @@ window.dexAgent = {
     var statusEl = dexAppendMessage('tool-start', fnName, { args: fnArgs });
 
     if (toolDef.level === 3 && toolDef.confirm) {
-      var confirmed = await dexShowInlineConfirm(fnName, toolDef.confirm, toolCall.id);
+      var confirmed = await dexShowInlineConfirm(fnName, toolDef.confirm, toolCall.id, fnArgs);
       if (!confirmed) {
         dexUpdateMessage(statusEl, 'tool-error', fnName + ': 用户取消了操作', { error: '用户取消了 L3 操作' });
         return { error: '用户取消了 L3 操作: ' + fnName };
       }
+      if (fnName === 'execute_shell') fnArgs.confirmed = true;
     }
 
     // 诊断/校验命令自动注入当前配置
@@ -1294,13 +1283,13 @@ function renderDexAssistant() {
     dexBindShortcuts();
   }, 0);
 
-  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div><h3>DEX助手 — AI工具运维专家</h3>'
+  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title"><h3 title="DEX助手 — AI工具运维专家">DEX助手 — AI工具运维专家</h3>'
     + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span> <span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
     + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型 ▾</button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
-    + '<button class="btn btn-ghost btn-sm" onclick="dexExportChat()" title="导出对话">导出</button>'
-    + '<button class="btn btn-ghost btn-sm" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话">搜索</button>'
-    + '<button class="btn btn-ghost btn-sm" onclick="dexNewChat()">+新对话</button>'
-    + '<button class="btn btn-ghost btn-sm" onclick="dexClearChat()">清空</button></div></div>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexExportChat()" title="导出对话" aria-label="导出对话">⇩<span class="dex-sr-only">导出对话</span></button>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话" aria-label="搜索对话">⌕<span class="dex-sr-only">搜索对话</span></button>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexNewChat()" title="新对话" aria-label="新对话">＋<span class="dex-sr-only">新对话</span></button>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexClearChat()" title="清空对话" aria-label="清空对话">⌫<span class="dex-sr-only">清空对话</span></button></div></div>'
     + '<div class="dex-search-bar" id="dexSearchBar" style="display:none"><input id="dexSearchInput" placeholder="搜索对话..." /><span class="dex-search-count" id="dexSearchCount"></span><button class="btn btn-ghost btn-sm" onclick="dexCloseSearch()">关闭</button></div>'
     + '<div class="dex-chat-messages" id="dexMessages">' + dexWelcomeHTML() + '</div>'
     + '<div class="dex-input-area" id="dexInputAreaWrap">'
@@ -1488,16 +1477,20 @@ function dexToolSummary(fnName, result) {
   return '完成';
 }
 
-function dexShowInlineConfirm(toolName, message, toolCallId) {
+function dexShowInlineConfirm(toolName, message, toolCallId, fnArgs) {
   return new Promise(function (resolve) {
     var container = document.getElementById('dexMessages');
     if (!container) { resolve(false); return; }
     var el = document.createElement('div');
     el.className = 'dex-msg dex-msg-confirm-inline';
     el.id = 'dexConfirm-' + (toolCallId || Date.now());
+    var commandPreview = '';
+    if (toolName === 'execute_shell' && fnArgs && fnArgs.command) {
+      commandPreview = '<pre class="dex-confirm-command">' + esc(fnArgs.command) + '</pre>';
+    }
     el.innerHTML = '<div class="dex-confirm-card"><div class="dex-confirm-header">⚠ 需要确认操作</div>'
       + '<div class="dex-confirm-body"><div class="dex-confirm-tool">' + esc(toolName) + '</div>'
-      + '<div class="dex-confirm-msg">' + esc(message) + '</div></div>'
+      + '<div class="dex-confirm-msg">' + esc(message) + '</div>' + commandPreview + '</div>'
       + '<div class="dex-confirm-actions">'
       + '<button class="btn btn-primary btn-sm dex-confirm-ok">确认执行</button>'
       + '<button class="btn btn-ghost btn-sm dex-confirm-cancel">取消</button></div></div>';

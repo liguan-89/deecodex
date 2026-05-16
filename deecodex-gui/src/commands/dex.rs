@@ -624,8 +624,13 @@ fn has_dangerous_pattern(cmd: &str) -> Option<&'static str> {
 pub async fn dex_execute_shell(
     command: String,
     timeout_secs: Option<u64>,
+    confirmed: Option<bool>,
 ) -> Result<Value, String> {
     let timeout_secs = timeout_secs.unwrap_or(30);
+
+    if confirmed != Some(true) {
+        return Err("安全限制：执行 Shell 命令前必须经过用户确认".to_string());
+    }
 
     if let Some(pattern) = has_dangerous_pattern(&command) {
         return Err(format!("安全限制：禁止执行危险命令 ({pattern})"));
