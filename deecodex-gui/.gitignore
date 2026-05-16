@@ -1,5 +1,8 @@
 # Tauri 自动生成
 gen/
 
+# 运行时数据
+.deecodex/
+
 # Rust 构建
 target/
