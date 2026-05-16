@@ -232,6 +232,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    ]);
 		    _historyEntries = entries || [];
 		    _historyMonthlyStats = monthlyStats || [];
+		    saveHistoryCache(_historyEntries, _historyMonthlyStats);
 		    _historyOffline = false;
 		    stopReconnectPolling();
 		    hideHistoryOfflineBanner();;
@@ -273,6 +274,22 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    if (!data || !data.entries) return null;
 		    return data;
 		  } catch (_) { return null; }
+		}
+
+		function saveHistoryCache(entries, monthlyStats) {
+		  try {
+		    deeStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify({
+		      entries: entries || [],
+		      monthlyStats: monthlyStats || [],
+		      savedAt: Date.now()
+		    }));
+		  } catch (_) {}
+		}
+
+		function clearHistoryCache() {
+		  try {
+		    deeStorage.removeItem(HISTORY_CACHE_KEY);
+		  } catch (_) {}
 		}
 
 		function showHistoryOfflineBanner() {
@@ -342,6 +359,8 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    await invoke('clear_request_history');
 		    showToast('请求历史已清空', 'success');
 		    _historyEntries = [];
+		    _historyMonthlyStats = [];
+		    clearHistoryCache();
 		    refreshHistory();
 		  } catch (e) {
 		    showToast('清空失败: ' + e, 'error');

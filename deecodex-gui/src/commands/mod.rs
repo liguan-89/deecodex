@@ -124,6 +124,34 @@ fn normalize_data_dir(data_dir: impl Into<std::path::PathBuf>) -> std::path::Pat
     }
 }
 
+struct AccountBackedConfig {
+    upstream: String,
+    api_key: String,
+    model_map: String,
+    vision_upstream: String,
+    vision_api_key: String,
+    vision_model: String,
+    vision_endpoint: String,
+}
+
+fn account_backed_config(existing: Option<&Args>) -> AccountBackedConfig {
+    AccountBackedConfig {
+        upstream: existing.map(|a| a.upstream.clone()).unwrap_or_default(),
+        api_key: existing.map(|a| a.api_key.clone()).unwrap_or_default(),
+        model_map: existing.map(|a| a.model_map.clone()).unwrap_or_default(),
+        vision_upstream: existing
+            .map(|a| a.vision_upstream.clone())
+            .unwrap_or_default(),
+        vision_api_key: existing
+            .map(|a| a.vision_api_key.clone())
+            .unwrap_or_default(),
+        vision_model: existing.map(|a| a.vision_model.clone()).unwrap_or_default(),
+        vision_endpoint: existing
+            .map(|a| a.vision_endpoint.clone())
+            .unwrap_or_default(),
+    }
+}
+
 pub(crate) fn load_args() -> Args {
     // 从环境变量 + 默认值构建 Args
     let args = match Args::try_parse_from(["deecodex-gui"]) {
@@ -725,55 +753,26 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
     let data_dir = normalize_data_dir(&config.data_dir);
     let config_path = Args::default_config_path(&data_dir);
     let existing = Args::load_from_file(&config_path);
-
-    // 账号管理的字段始终保留已有配置值（这些字段不在高级设置页面中展示）
-    let upstream = existing
-        .as_ref()
-        .map(|a| a.upstream.clone())
-        .unwrap_or_default();
-    let api_key = existing
-        .as_ref()
-        .map(|a| a.api_key.clone())
-        .unwrap_or_default();
-    let model_map = existing
-        .as_ref()
-        .map(|a| a.model_map.clone())
-        .unwrap_or_default();
-    let vision_upstream = existing
-        .as_ref()
-        .map(|a| a.vision_upstream.clone())
-        .unwrap_or_default();
-    let vision_api_key = existing
-        .as_ref()
-        .map(|a| a.vision_api_key.clone())
-        .unwrap_or_default();
-    let vision_model = existing
-        .as_ref()
-        .map(|a| a.vision_model.clone())
-        .unwrap_or_default();
-    let vision_endpoint = existing
-        .as_ref()
-        .map(|a| a.vision_endpoint.clone())
-        .unwrap_or_default();
+    let account_config = account_backed_config(existing.as_ref());
 
     // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
-    Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &config.upstream);
-    Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &api_key);
-    Args::sync_to_env_file(&data_dir, "DEECODEX_MODEL_MAP", &config.model_map);
+    Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &account_config.upstream);
+    Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &account_config.api_key);
+    Args::sync_to_env_file(&data_dir, "DEECODEX_MODEL_MAP", &account_config.model_map);
 
     let args = Args {
         command: None,
         config: None,
         port: config.port,
-        upstream,
-        api_key,
-        model_map,
+        upstream: account_config.upstream,
+        api_key: account_config.api_key,
+        model_map: account_config.model_map,
         max_body_mb: config.max_body_mb as usize,
-        vision_upstream,
-        vision_api_key,
-        vision_model,
-        vision_endpoint,
+        vision_upstream: account_config.vision_upstream,
+        vision_api_key: account_config.vision_api_key,
+        vision_model: account_config.vision_model,
+        vision_endpoint: account_config.vision_endpoint,
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
@@ -2251,8 +2250,14 @@ pub async fn list_plugins(manager: State<'_, ServerManager>) -> Result<Vec<Value
 #[tauri::command]
 pub async fn install_plugin(
     manager: State<'_, ServerManager>,
-    path: String,
+    path: Option<String>,
+    archive_path: Option<String>,
+    plugin_path: Option<String>,
 ) -> Result<Value, String> {
+    let path = path
+        .or(archive_path)
+        .or(plugin_path)
+        .ok_or_else(|| "缺少插件路径".to_string())?;
     let pm = get_pm(&manager).await?;
     let manifest = pm
         .install(std::path::Path::new(&path))
@@ -2385,4 +2390,82 @@ pub async fn stop_plugin_account(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_args() -> Args {
+        Args {
+            command: None,
+            config: None,
+            port: 4446,
+            upstream: "https://openrouter.ai/api/v1".into(),
+            api_key: String::new(),
+            model_map: "{}".into(),
+            max_body_mb: 100,
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: "MiniMax-M1".into(),
+            vision_endpoint: "v1/coding_plan/vlm".into(),
+            chinese_thinking: false,
+            codex_auto_inject: true,
+            codex_persistent_inject: false,
+            codex_launch_with_cdp: false,
+            cdp_port: 9222,
+            prompts_dir: PathBuf::from("prompts"),
+            data_dir: PathBuf::from(".deecodex"),
+            token_anomaly_prompt_max: 200000,
+            token_anomaly_spike_ratio: 5.0,
+            token_anomaly_burn_window: 120,
+            token_anomaly_burn_rate: 500000,
+            allowed_mcp_servers: String::new(),
+            allowed_computer_displays: String::new(),
+            computer_executor: "disabled".into(),
+            computer_executor_timeout_secs: 30,
+            mcp_executor_config: String::new(),
+            mcp_executor_timeout_secs: 30,
+            playwright_state_dir: String::new(),
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
+            daemon: false,
+        }
+    }
+
+    #[test]
+    fn account_backed_config_preserves_fields_from_existing_config() {
+        let mut existing = test_args();
+        existing.upstream = "https://account.example/v1".into();
+        existing.api_key = "account-key".into();
+        existing.model_map = r#"{"gpt-5.5":"deepseek-v4-pro"}"#.into();
+        existing.vision_upstream = "https://vision.example/v1".into();
+        existing.vision_api_key = "vision-key".into();
+        existing.vision_model = "vision-model".into();
+        existing.vision_endpoint = "v1/vision".into();
+
+        let preserved = account_backed_config(Some(&existing));
+
+        assert_eq!(preserved.upstream, "https://account.example/v1");
+        assert_eq!(preserved.api_key, "account-key");
+        assert_eq!(preserved.model_map, r#"{"gpt-5.5":"deepseek-v4-pro"}"#);
+        assert_eq!(preserved.vision_upstream, "https://vision.example/v1");
+        assert_eq!(preserved.vision_api_key, "vision-key");
+        assert_eq!(preserved.vision_model, "vision-model");
+        assert_eq!(preserved.vision_endpoint, "v1/vision");
+    }
+
+    #[test]
+    fn account_backed_config_is_empty_without_existing_config() {
+        let preserved = account_backed_config(None);
+
+        assert!(preserved.upstream.is_empty());
+        assert!(preserved.api_key.is_empty());
+        assert!(preserved.model_map.is_empty());
+        assert!(preserved.vision_upstream.is_empty());
+        assert!(preserved.vision_api_key.is_empty());
+        assert!(preserved.vision_model.is_empty());
+        assert!(preserved.vision_endpoint.is_empty());
+    }
 }

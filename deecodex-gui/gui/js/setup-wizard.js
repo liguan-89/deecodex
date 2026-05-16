@@ -123,7 +123,8 @@ function renderWizardBar(bar) {
       actBtn.disabled = true; actBtn.textContent = '...';
       try {
         if (s.quick === 'fetchUpstreamModels') {
-          await invoke('fetch_upstream_models', { provider: null });
+          const account = await invoke('get_active_account');
+          await invoke('fetch_upstream_models', { accountId: account.id });
         } else if (s.quick === 'presetModelMap') {
           await presetModelMapping();
         } else if (s.quick === 'saveConfig') {

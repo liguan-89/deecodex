@@ -200,3 +200,90 @@ impl RequestHistoryStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RequestHistoryStore;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn records_and_lists_recent_entries() {
+        let store = RequestHistoryStore::new(Path::new(":memory:")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        store
+            .record(
+                "old".into(),
+                now,
+                "deepseek-chat".into(),
+                "completed".into(),
+                12,
+                34,
+                250,
+                "https://api.example.test/v1/chat/completions".into(),
+                String::new(),
+                false,
+            )
+            .await;
+        store
+            .record(
+                "new".into(),
+                now + 1,
+                "deepseek-reasoner".into(),
+                "failed".into(),
+                5,
+                0,
+                1_500,
+                "https://api.example.test/v1/chat/completions".into(),
+                "HTTP 429".into(),
+                true,
+            )
+            .await;
+
+        let entries = store.list(1).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "new");
+        assert_eq!(entries[0].model, "deepseek-reasoner");
+        assert_eq!(entries[0].status, "failed");
+        assert_eq!(entries[0].total_tokens, 5);
+        assert_eq!(entries[0].duration_ms, 1_500);
+        assert_eq!(entries[0].error_msg, "HTTP 429");
+        assert!(entries[0].cache_hit);
+    }
+
+    #[tokio::test]
+    async fn clear_removes_history_and_monthly_stats() {
+        let store = RequestHistoryStore::new(Path::new(":memory:")).unwrap();
+
+        store
+            .record(
+                "archived".into(),
+                0,
+                "deepseek-chat".into(),
+                "completed".into(),
+                10,
+                20,
+                300,
+                "https://api.example.test/v1/chat/completions".into(),
+                String::new(),
+                false,
+            )
+            .await;
+
+        let stats = store.list_monthly_stats(6).await;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].year_month, "1970-01");
+        assert_eq!(stats[0].total_requests, 1);
+        assert_eq!(stats[0].success_count, 1);
+        assert_eq!(stats[0].total_tokens, 30);
+        assert_eq!(stats[0].avg_duration_ms, 300);
+
+        store.clear().await.unwrap();
+
+        assert!(store.list(10).await.is_empty());
+        assert!(store.list_monthly_stats(6).await.is_empty());
+    }
+}

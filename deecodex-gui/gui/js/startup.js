@@ -2,7 +2,6 @@
 // ═══════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   try {
-    document.getElementById('sidebarSaveBtn')?.addEventListener('click', saveConfig);
     document.getElementById('qrCloseBtn')?.addEventListener('click', closeQrOverlay);
     document.getElementById('qrOverlay')?.addEventListener('click', (event) => {
       if (event.target === event.currentTarget) closeQrOverlay();

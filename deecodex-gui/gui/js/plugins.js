@@ -36,13 +36,13 @@ function renderPluginsPanel() {
     <button class="btn btn-primary" onclick="installPluginFromPath()">安装</button>
   </div>
   <div class="plugin-controls">
-    <label class="history-toggle" id="pluginAutoToggle" onclick="togglePluginAutoRefresh()">
+    <label class="history-toggle${_pluginsRefreshTimer ? ' on' : ''}" id="pluginAutoToggle" onclick="togglePluginAutoRefresh()">
       <div class="toggle-dot"></div> 自动刷新
     </label>
-    <select class="history-select" id="pluginIntervalSel" onchange="setPluginRefreshInterval(this.value)" style="display:none;">
-      <option value="5000">5s</option>
-      <option value="10000" selected>10s</option>
-      <option value="30000">30s</option>
+    <select class="history-select" id="pluginIntervalSel" onchange="setPluginRefreshInterval(this.value)" style="${_pluginsRefreshTimer ? '' : 'display:none;'}">
+      <option value="5000" ${_pluginsRefreshMs === 5000 ? 'selected' : ''}>5s</option>
+      <option value="10000" ${_pluginsRefreshMs === 10000 || !_pluginsRefreshMs ? 'selected' : ''}>10s</option>
+      <option value="30000" ${_pluginsRefreshMs === 30000 ? 'selected' : ''}>30s</option>
     </select>
     <button class="btn btn-ghost" onclick="refreshPlugins()">⟳ 刷新</button>
   </div>
@@ -194,7 +194,7 @@ async function installPluginFromPath() {
   const path = document.getElementById('pluginZipPath').value.trim();
   if (!path) { showToast('请输入插件包路径'); return; }
   try {
-    await invoke('install_plugin', { archivePath: path });
+    await invoke('install_plugin', { path: path });
     showToast('插件已安装', 'success');
     document.getElementById('pluginZipPath').value = '';
     await loadPluginsData();
@@ -273,9 +273,10 @@ async function scanAndStart(pluginId, accountId) {
   // 扫码登录
   var oc = document.getElementById('qrOverlayContent');
   var oa = document.getElementById('qrOverlayAccount');
+  if (!oc || !oa) { showToast('二维码弹窗未初始化，请重启 GUI', 'error'); return; }
   oc.innerHTML = '<span style="color:var(--text-muted);">获取二维码中...</span>';
   oa.textContent = '账号：' + accountId + '（扫码后自动启动网关）';
-  showQrOverlay();
+  if (!showQrOverlay()) return;
   try {
     var result2 = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
     var url2 = result2.qrcode_data_url || result2.data_url || '';
@@ -337,16 +338,31 @@ async function addPluginAccount(pluginId) {
   } catch(e) { showToast('添加失败: ' + esc(String(e)), 'error'); }
 }
 
-function showQrOverlay() { document.getElementById('qrOverlay').classList.add('show'); }
-function closeQrOverlay() { document.getElementById('qrOverlay').classList.remove('show'); }
+function showQrOverlay() {
+  const overlay = document.getElementById('qrOverlay');
+  if (!overlay) {
+    showToast('二维码弹窗未初始化，请重启 GUI', 'error');
+    return false;
+  }
+  overlay.classList.add('show');
+  overlay.setAttribute('aria-hidden', 'false');
+  return true;
+}
+function closeQrOverlay() {
+  const overlay = document.getElementById('qrOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('show');
+  overlay.setAttribute('aria-hidden', 'true');
+}
 
 async function scanPluginQr(pluginId, accountId) {
   if (!accountId) { showToast('请先添加账号'); return; }
   var oc = document.getElementById('qrOverlayContent');
   var oa = document.getElementById('qrOverlayAccount');
+  if (!oc || !oa) { showToast('二维码弹窗未初始化，请重启 GUI', 'error'); return; }
   oc.innerHTML = '<span style="color:var(--text-muted);">获取二维码中...</span>';
   oa.textContent = '账号：' + accountId + '（扫码后自动启动网关）';
-  showQrOverlay();
+  if (!showQrOverlay()) return;
   try {
     var result = await invoke('get_plugin_qrcode', { pluginId: pluginId, accountId: accountId });
     var url = result.qrcode_data_url || result.data_url || '';

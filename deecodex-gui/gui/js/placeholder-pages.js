@@ -421,9 +421,9 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_path: { type: 'string', description: '插件文件路径' }
+        path: { type: 'string', description: '插件文件或目录路径' }
       },
-      required: ['plugin_path']
+      required: ['path']
     }
   },
   {
@@ -492,9 +492,10 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
+        plugin_id: { type: 'string', description: '插件 ID' },
+        account_id: { type: 'string', description: '插件账号 ID' }
       },
-      required: ['plugin_id']
+      required: ['plugin_id', 'account_id']
     }
   },
   {
@@ -506,9 +507,10 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
+        plugin_id: { type: 'string', description: '插件 ID' },
+        account_id: { type: 'string', description: '插件账号 ID' }
       },
-      required: ['plugin_id']
+      required: ['plugin_id', 'account_id']
     }
   },
   {
@@ -520,9 +522,10 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
+        plugin_id: { type: 'string', description: '插件 ID' },
+        account_id: { type: 'string', description: '插件账号 ID' }
       },
-      required: ['plugin_id']
+      required: ['plugin_id', 'account_id']
     }
   },
   {
@@ -534,9 +537,10 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
+        plugin_id: { type: 'string', description: '插件 ID' },
+        account_id: { type: 'string', description: '插件账号 ID' }
       },
-      required: ['plugin_id']
+      required: ['plugin_id', 'account_id']
     }
   },
   {
@@ -548,9 +552,10 @@ var DEX_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
+        plugin_id: { type: 'string', description: '插件 ID' },
+        account_id: { type: 'string', description: '插件账号 ID' }
       },
-      required: ['plugin_id']
+      required: ['plugin_id', 'account_id']
     }
   },
 
@@ -889,6 +894,39 @@ var DEX_SYSTEM_PROMPT = [
       '- 不重复用户已知信息，不啰嗦解释显而易见的操作',
 ].join('\n');
 
+function dexNormalizePluginArgs(args) {
+  var normalized = Object.assign({}, args || {});
+  if (normalized.plugin_id !== undefined && normalized.pluginId === undefined) {
+    normalized.pluginId = normalized.plugin_id;
+    delete normalized.plugin_id;
+  }
+  if (normalized.account_id !== undefined && normalized.accountId === undefined) {
+    normalized.accountId = normalized.account_id;
+    delete normalized.account_id;
+  }
+  if (normalized.plugin_path !== undefined && normalized.path === undefined) {
+    normalized.path = normalized.plugin_path;
+    delete normalized.plugin_path;
+  }
+  if (normalized.archivePath !== undefined && normalized.path === undefined) {
+    normalized.path = normalized.archivePath;
+    delete normalized.archivePath;
+  }
+  if (normalized.config_json !== undefined && normalized.config === undefined) {
+    if (typeof normalized.config_json === 'string') {
+      try {
+        normalized.config = JSON.parse(normalized.config_json);
+      } catch (e) {
+        normalized.config = normalized.config_json;
+      }
+    } else {
+      normalized.config = normalized.config_json;
+    }
+    delete normalized.config_json;
+  }
+  return normalized;
+}
+
 // ── Agent 核心对象 ──
 window.dexAgent = {
   messages: [],
@@ -1125,6 +1163,10 @@ window.dexAgent = {
         try { var cfg = await DeeCodexTauri.invoke('get_config'); fnArgs.config = cfg; }
         catch (e) { /* 降级：无 config 也能跑部分检查 */ }
       }
+    }
+
+    if (toolDef.tauriCmd.indexOf('plugin') >= 0) {
+      fnArgs = dexNormalizePluginArgs(fnArgs);
     }
 
     // 错误去重：同一工具同参数连续失败不重试

@@ -40,6 +40,17 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
+<div class="qr-overlay" id="qrOverlay" aria-hidden="true">
+  <div class="qr-dialog">
+    <div class="qr-title">扫码登录</div>
+    <div id="qrOverlayContent">
+      <span style="color:var(--text-muted);">等待二维码...</span>
+    </div>
+    <div class="qr-account" id="qrOverlayAccount"></div>
+    <button class="qr-close" id="qrCloseBtn" type="button">关闭</button>
+  </div>
+</div>
+
 <script src="nav/fragments.js"></script>
 
 <script src="js/tauri-api.js"></script>
