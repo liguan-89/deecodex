@@ -1386,7 +1386,10 @@ fn is_cache_hit(usage: &serde_json::Map<String, serde_json::Value>) -> bool {
     if hit {
         tracing::info!(
             "bypass cache_hit: prompt_cache_hit={} prompt_cached={} input_cached={}/{}",
-            prompt_cache_hit, prompt_cached, input_cached, input_total
+            prompt_cache_hit,
+            prompt_cached,
+            input_cached,
+            input_total
         );
     }
     hit
@@ -1613,13 +1616,16 @@ async fn bypass_stream_forward(
         } else {
             error_body
         };
-        return (status, Json(json!({
-            "error": {
-                "code": status.as_u16().to_string(),
-                "message": error_body,
-                "type": "upstream_error"
-            }
-        })))
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "code": status.as_u16().to_string(),
+                    "message": error_body,
+                    "type": "upstream_error"
+                }
+            })),
+        )
             .into_response();
     }
 
@@ -1646,7 +1652,11 @@ async fn bypass_stream_forward(
                     false,
                 )
                 .await;
-            return (StatusCode::BAD_GATEWAY, format!("upstream stream error: {e}")).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("upstream stream error: {e}"),
+            )
+                .into_response();
         }
     };
 
