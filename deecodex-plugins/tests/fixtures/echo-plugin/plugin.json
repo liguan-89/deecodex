@@ -9,6 +9,36 @@
     "script": "index.js",
     "args": []
   },
+  "dex_tools": [
+    {
+      "name": "echo_status",
+      "description": "返回 Echo 测试插件状态",
+      "level": 0,
+      "method": "echo.status",
+      "capability": "plugin.echo-test",
+      "parameters": { "type": "object", "properties": {}, "required": [] }
+    },
+    {
+      "name": "echo_message",
+      "description": "回显一段文本，用于验证 DEX 插件工具代理",
+      "level": 1,
+      "method": "echo.message",
+      "capability": "plugin.echo-test",
+      "parameters": {
+        "type": "object",
+        "properties": { "message": { "type": "string", "description": "要回显的文本" } },
+        "required": ["message"]
+      }
+    },
+    {
+      "name": "echo_danger",
+      "description": "模拟高风险插件操作，用于验证 L3 确认链路",
+      "level": 3,
+      "method": "echo.danger",
+      "capability": "plugin.echo-test",
+      "parameters": { "type": "object", "properties": {}, "required": [] }
+    }
+  ],
   "permissions": ["llm.call"],
   "config_schema": {
     "type": "object",

@@ -725,6 +725,15 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: empty_params(),
         },
         BuiltinToolSpec {
+            name: "dex_self_check",
+            tauri_cmd: "dex_self_check",
+            level: 0,
+            confirm: None,
+            description: "检查 DEX助手自身状态、能力包、工具注册表、插件工具和最近请求错误",
+            capability: "core.system",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
             name: "analyze_requests",
             tauri_cmd: "dex_analyze_requests",
             level: 0,

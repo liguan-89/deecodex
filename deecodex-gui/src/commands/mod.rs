@@ -2740,6 +2740,7 @@ mod tests {
             id: id.into(),
             name: "Test".into(),
             provider: "deepseek".into(),
+            wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
             model_map: Default::default(),
@@ -2756,9 +2757,12 @@ mod tests {
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: Default::default(),
+            provider_options: deecodex::providers::provider_options_for_slug("deepseek"),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
             endpoints: Vec::new(),
         }
     }

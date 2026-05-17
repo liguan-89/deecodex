@@ -467,7 +467,8 @@ pub async fn dex_execute_tool(
                         manager,
                         account_id,
                         opt_string(&args, "upstream"),
-                        opt_string(&args, "api_key")
+                        opt_string(&args, "api_key"),
+                        opt_string(&args, "endpoint_kind")
                     )
                     .await?
                 )
@@ -488,11 +489,16 @@ pub async fn dex_execute_tool(
                     )
                 } else {
                     let data_dir = manager.data_dir.lock().await.clone();
-                    let (upstream, api_key, _) = get_active_account_info(&data_dir)
+                    let (upstream, api_key, _, _, _) = get_active_account_info(&data_dir)
                         .ok_or("缺少 upstream/api_key，且没有活跃账号")?;
                     (upstream, api_key)
                 };
-                crate::commands::test_upstream_connectivity(upstream, api_key).await?
+                crate::commands::test_upstream_connectivity(
+                    upstream,
+                    api_key,
+                    opt_string(&args, "endpoint_kind"),
+                )
+                .await?
             }
             "list_sessions" => crate::commands::list_sessions(manager).await?,
             "delete_session" => {
@@ -620,6 +626,7 @@ pub async fn dex_execute_tool(
             )?,
             "get_codex_config_raw" => dex_get_codex_config_raw()?,
             "health_summary" => dex_health_summary(manager).await?,
+            "dex_self_check" => dex_self_check(manager).await?,
             "analyze_requests" => dex_analyze_requests(manager).await?,
             "config_backup" => {
                 dex_config_backup(req_string(&args, "action")?, opt_string(&args, "name"))?
@@ -1429,6 +1436,92 @@ pub async fn dex_health_summary(manager: State<'_, ServerManager>) -> Result<Val
         "recent_errors": recent_errors,
         "data_dir": args.data_dir.to_string_lossy(),
     }))
+}
+
+/// DEX 助手：自检 DEX 注册表、能力包、插件工具和最近错误。
+#[tauri::command]
+pub async fn dex_self_check(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let states = load_capability_states(&data_dir);
+    let tools = all_tool_defs(&manager).await;
+    let capabilities = dex_list_capabilities(manager.clone()).await?;
+    let workspace = dex_get_workspace_context(manager.clone())
+        .await
+        .unwrap_or_else(|e| json!({ "error": e }));
+
+    let mut level_counts: HashMap<String, usize> = HashMap::new();
+    let mut source_counts: HashMap<String, usize> = HashMap::new();
+    let mut capability_counts: HashMap<String, usize> = HashMap::new();
+    let mut disabled_tool_count = 0usize;
+    for tool in &tools {
+        *level_counts.entry(format!("L{}", tool.level)).or_default() += 1;
+        *source_counts.entry(tool.source.clone()).or_default() += 1;
+        *capability_counts
+            .entry(tool.capability.clone())
+            .or_default() += 1;
+        if !is_capability_enabled(&states, &tool.capability) {
+            disabled_tool_count += 1;
+        }
+    }
+    let plugin_tools: Vec<Value> = tools
+        .iter()
+        .filter(|tool| tool.source == "plugin")
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "capability": tool.capability,
+                "level": tool.level,
+                "plugin_id": tool.plugin_id,
+            })
+        })
+        .collect();
+    let recent_request_errors = match manager.request_history.lock().await.as_ref() {
+        Some(store) => store
+            .list(50)
+            .await
+            .into_iter()
+            .filter(|entry| entry.status != "completed" || !entry.error_msg.is_empty())
+            .take(10)
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "status": entry.status,
+                    "model": entry.model,
+                    "error": entry.error_msg,
+                    "duration_ms": entry.duration_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+
+    let mut warnings = Vec::new();
+    if tools.is_empty() {
+        warnings.push("工具注册表为空".to_string());
+    }
+    if disabled_tool_count > 0 {
+        warnings.push(format!("有 {disabled_tool_count} 个工具属于已停用能力包"));
+    }
+    if plugin_tools.is_empty() {
+        warnings.push("当前没有插件向 DEX 暴露工具".to_string());
+    }
+    if !recent_request_errors.is_empty() {
+        warnings.push(format!("最近有 {} 条请求错误", recent_request_errors.len()));
+    }
+
+    Ok(mask_sensitive_value(json!({
+        "ok": warnings.is_empty(),
+        "warnings": warnings,
+        "tool_count": tools.len(),
+        "disabled_tool_count": disabled_tool_count,
+        "level_counts": level_counts,
+        "source_counts": source_counts,
+        "capability_counts": capability_counts,
+        "capabilities": capabilities,
+        "plugin_tools": plugin_tools,
+        "recent_request_errors": recent_request_errors,
+        "workspace": workspace,
+    })))
 }
 
 /// DEX 助手：请求历史分析（最近请求统计）
@@ -2399,6 +2492,13 @@ mod tests {
             .expect("claude_env_overview 工具应存在");
         assert_eq!(claude.capability, "ai.claude");
         assert_eq!(claude.level, 0);
+
+        let self_check = tools
+            .iter()
+            .find(|tool| tool.name == "dex_self_check")
+            .expect("dex_self_check 工具应存在");
+        assert_eq!(self_check.capability, "core.system");
+        assert_eq!(self_check.level, 0);
     }
 
     #[test]

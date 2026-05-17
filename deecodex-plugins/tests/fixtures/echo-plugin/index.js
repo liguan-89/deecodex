@@ -64,6 +64,28 @@ function handleRequest(req) {
       sendJson({ jsonrpc: '2.0', id, result: { ok: true }});
       break;
     }
+    case 'echo.status': {
+      sendJson({ jsonrpc: '2.0', id, result: {
+        ok: true,
+        plugin: 'echo-test',
+        dex_tools: 3,
+      }});
+      break;
+    }
+    case 'echo.message': {
+      sendJson({ jsonrpc: '2.0', id, result: {
+        echo: req.params?.message || '',
+      }});
+      break;
+    }
+    case 'echo.danger': {
+      sendJson({ jsonrpc: '2.0', id, result: {
+        ok: true,
+        simulated: true,
+        message: 'L3 demo action executed',
+      }});
+      break;
+    }
     default: {
       sendJson({ jsonrpc: '2.0', id, error: {
         code: -32601, message: 'Method not found: ' + req.method,

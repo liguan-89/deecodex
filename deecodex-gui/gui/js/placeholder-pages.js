@@ -30,7 +30,18 @@
       '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.18);color:var(--text-secondary,#6b7fa8);border-radius:4px;padding:3px 7px;font-size:11px;line-height:1.4;cursor:pointer}',
       '.dex-cap-chip.on{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.32);background:rgba(0,200,232,0.08)}',
       '.dex-cap-chip.off{opacity:0.55}',
+      '.dex-mode-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
+      '.dex-mode-tab{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.16);color:var(--text-secondary,#6b7fa8);border-radius:4px;padding:4px 8px;font-size:11px;line-height:1.4;cursor:pointer}',
+      '.dex-mode-tab.active{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.4);background:rgba(0,200,232,0.1)}',
+      '.dex-tool-catalog{margin-top:8px;border-top:1px solid rgba(148,163,184,0.14);padding-top:6px;font-size:11px;color:var(--text-secondary,#6b7fa8)}',
+      '.dex-tool-catalog summary{cursor:pointer;color:var(--text-secondary,#6b7fa8)}',
+      '.dex-tool-catalog-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px;margin-top:6px;max-height:220px;overflow:auto}',
+      '.dex-tool-catalog-item{border:1px solid rgba(148,163,184,0.16);border-radius:4px;padding:5px 6px;background:rgba(0,0,0,0.12);min-width:0}',
+      '.dex-tool-catalog-name{display:block;color:var(--text-primary,#c4d0e4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dex-tool-catalog-meta{display:block;margin-top:2px;color:var(--text-secondary,#6b7fa8)}',
       '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);margin-top:2px;font-style:italic}',
+      '.dex-tool-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;font-size:10px;color:var(--text-secondary,#6b7fa8);white-space:nowrap}',
+      '.dex-tool-actions{flex:1 0 100%;display:flex;gap:6px;margin-top:6px}',
       '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
       '@media (max-width:900px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{flex-wrap:wrap}.dex-input-row textarea{flex-basis:100%}.dex-input-row .btn{flex:1 1 96px}}'
     ].join('\n');
@@ -42,6 +53,16 @@
 var DEX_TOOLS = [];
 var DEX_CAPABILITIES = [];
 var DEX_WORKSPACE_CONTEXT = null;
+var DEX_MODE = (window.deeStorage && window.deeStorage.getItem('dex_mode')) || 'diag';
+
+var DEX_MODES = {
+  diag: { label: '诊断', prompt: '优先使用只读诊断工具定位问题，先给风险概览，再建议修复路径。' },
+  fix: { label: '修复', prompt: '先诊断，再执行 L2 修复；L3 必须通过前端内联确认。每次修复后复核结果。' },
+  workspace: { label: '工作区', prompt: '聚焦当前项目上下文、Git 状态、配置文件、CLI 版本、端口和受限文件读取。' },
+  plugins: { label: '插件', prompt: '聚焦插件状态、插件账号、插件暴露给 DEX 的工具和插件 JSON-RPC 错误。' },
+  cost: { label: '成本', prompt: '聚焦请求历史、Token 消耗、缓存命中、模型分布、失败率和成本估算。' },
+  logs: { label: '日志', prompt: '聚焦日志异常、最近错误、关键栈信息和可复现线索。' }
+};
 
 // ── System Prompt ──
 var DEX_SYSTEM_PROMPT = [
@@ -68,6 +89,7 @@ function dexBuildSystemPrompt() {
     return '- ' + c.id + '：' + c.label + '（' + (c.tool_count || 0) + ' 个工具）';
   }).join('\n') || '- 使用默认能力包';
   var ctx = DEX_WORKSPACE_CONTEXT || {};
+  var mode = DEX_MODES[DEX_MODE] || DEX_MODES.diag;
   var ctxLines = [];
   if (ctx.cwd) ctxLines.push('- 当前工作区: ' + ctx.cwd);
   if (ctx.project_types && ctx.project_types.length) ctxLines.push('- 项目类型: ' + ctx.project_types.join(', '));
@@ -85,6 +107,9 @@ function dexBuildSystemPrompt() {
     '',
     '## 当前启用能力包',
     caps,
+    '',
+    '## 当前模式',
+    '- ' + mode.label + '模式：' + mode.prompt,
     '',
     '## 工作区上下文',
     ctxLines.join('\n') || '- 暂无工作区上下文',
@@ -290,8 +315,8 @@ window.dexAgent = {
           for (var i = 0; i < msg.tool_calls.length; i++) {
             var tc = msg.tool_calls[i];
             var toolResult = await this.executeTool(tc);
-            if (toolResult && toolResult.cancelled) {
-              this.messages.pop();
+            if (window.DexAgentState && window.DexAgentState.shouldStopAfterToolResult(toolResult)) {
+              window.DexAgentState.removePendingAssistantToolCall(this.messages);
               this.saveHistory();
               break;
             }
@@ -309,7 +334,7 @@ window.dexAgent = {
             if (resultStr.length > 2000) resultStr = resultStr.substring(0, 2000) + '…';
             this.messages.push({ role: 'tool', tool_call_id: tc.id, content: resultStr });
           }
-          if (toolResult && toolResult.cancelled) break;
+          if (window.DexAgentState && window.DexAgentState.shouldStopAfterToolResult(toolResult)) break;
           this.saveHistory();
           continue;
         }
@@ -360,13 +385,14 @@ window.dexAgent = {
       return cached;
     }
 
+    var startedAt = Date.now();
     var statusEl = dexAppendMessage('tool-start', fnName, { args: fnArgs, toolDef: toolDef });
 
     if (toolDef.level >= 3) {
       var confirmText = toolDef.confirm || ('确定要执行高风险工具 ' + fnName + ' 吗？');
       var confirmed = await dexShowInlineConfirm(fnName, confirmText, toolCall.id, fnArgs);
       if (!confirmed) {
-        dexUpdateMessage(statusEl, 'tool-error', fnName + ': 用户取消了操作', { error: '用户取消了 L3 操作' });
+        dexUpdateMessage(statusEl, 'tool-error', fnName + ': 用户取消了操作', { error: '用户取消了 L3 操作', toolDef: toolDef, elapsedMs: Date.now() - startedAt });
         return { cancelled: true, error: '用户取消了 L3 操作: ' + fnName };
       }
       if (fnName === 'execute_shell') fnArgs.confirmed = true;
@@ -401,7 +427,7 @@ window.dexAgent = {
         });
         this._lastErrorKey = null;
         this._toolCache[cacheKey] = { success: true, data: result };
-        dexUpdateMessage(statusEl, 'tool-result', fnName, { result: result, success: true });
+        dexUpdateMessage(statusEl, 'tool-result', fnName, { result: result, success: true, toolDef: toolDef, elapsedMs: Date.now() - startedAt });
         // 影响全局状态的工具执行后刷新状态栏 + 通知其他面板
         dexAfterMutate(fnName);
         return { success: true, data: result };
@@ -416,7 +442,7 @@ window.dexAgent = {
     this._lastErrorKey = errKey;
     var finalErr = (lastError && (lastError.message || lastError)) ? String(lastError.message || lastError) : '未知错误';
     this._toolCache[cacheKey] = { error: '工具执行失败: ' + finalErr };
-    dexUpdateMessage(statusEl, 'tool-error', fnName + ': 失败', { error: finalErr });
+    dexUpdateMessage(statusEl, 'tool-error', fnName + ': 失败', { error: finalErr, toolDef: toolDef, elapsedMs: Date.now() - startedAt });
     return { error: '工具执行失败: ' + finalErr };
   },
 
@@ -469,6 +495,8 @@ async function dexLoadDynamicContext() {
     DEX_WORKSPACE_CONTEXT = result[2] || null;
     window.dexAgent.messages[0] = { role: 'system', content: dexBuildSystemPrompt() };
     dexRenderCapabilityChips();
+    dexRenderModeTabs();
+    dexRenderToolCatalog();
   } catch (e) {
     DEX_TOOLS = [];
     console.warn('[dexAgent] 动态工具加载失败，当前不暴露工具清单:', e);
@@ -486,6 +514,47 @@ function dexRenderCapabilityChips() {
     var cls = c.enabled ? 'dex-cap-chip on' : 'dex-cap-chip off';
     return '<button class="' + cls + '" onclick="dexToggleCapability(\'' + escAttr(c.id) + '\',' + (!c.enabled) + ')" title="' + escAttr(c.description || '') + '">' + esc(c.label || c.id) + ' · ' + (c.tool_count || 0) + '</button>';
   }).join('');
+}
+
+function dexRenderModeTabs() {
+  var el = document.getElementById('dexModeTabs');
+  if (!el) return;
+  el.innerHTML = Object.keys(DEX_MODES).map(function(id) {
+    var mode = DEX_MODES[id];
+    var cls = id === DEX_MODE ? 'dex-mode-tab active' : 'dex-mode-tab';
+    return '<button class="' + cls + '" onclick="dexSetMode(\'' + escAttr(id) + '\')" title="' + escAttr(mode.prompt) + '">' + esc(mode.label) + '</button>';
+  }).join('');
+}
+
+function dexSetMode(mode) {
+  if (!DEX_MODES[mode]) mode = 'diag';
+  DEX_MODE = mode;
+  if (window.deeStorage) window.deeStorage.setItem('dex_mode', mode);
+  if (window.dexAgent && window.dexAgent.messages.length) {
+    window.dexAgent.messages[0] = { role: 'system', content: dexBuildSystemPrompt() };
+  }
+  dexRenderModeTabs();
+  showToast('DEX模式：' + DEX_MODES[mode].label, 'success');
+}
+
+function dexRenderToolCatalog() {
+  var el = document.getElementById('dexToolCatalog');
+  if (!el) return;
+  if (!DEX_TOOLS || !DEX_TOOLS.length) {
+    el.innerHTML = '<details class="dex-tool-catalog"><summary>工具清单：0 个</summary><div class="dex-tool-catalog-list"></div></details>';
+    return;
+  }
+  var html = '<details class="dex-tool-catalog"><summary>工具清单：' + DEX_TOOLS.length + ' 个（按需展开）</summary><div class="dex-tool-catalog-list">';
+  for (var i = 0; i < DEX_TOOLS.length; i++) {
+    var t = DEX_TOOLS[i];
+    html += '<div class="dex-tool-catalog-item">'
+      + '<span class="dex-tool-catalog-name">' + esc(t.name) + '</span>'
+      + '<span class="dex-tool-catalog-meta">L' + (t.level || 0) + ' · ' + esc(t.source || 'builtin') + ' · ' + esc(t.capability || 'core') + '</span>'
+      + '<span class="dex-tool-catalog-meta">' + esc(t.description || '') + '</span>'
+      + '</div>';
+  }
+  html += '</div></details>';
+  el.innerHTML = html;
 }
 
 async function dexToggleCapability(id, enabled) {
@@ -510,6 +579,7 @@ function renderDexAssistant() {
     dexLoadDynamicContext().then(function () {
       dexUpdateTokenCount();
     });
+    dexRenderModeTabs();
 
     dexLoadModels();
 
@@ -601,7 +671,9 @@ function renderDexAssistant() {
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexNewChat()" title="新对话" aria-label="新对话">＋<span class="dex-sr-only">新对话</span></button>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexClearChat()" title="清空对话" aria-label="清空对话">⌫<span class="dex-sr-only">清空对话</span></button></div></div>'
     + '<div class="dex-search-bar" id="dexSearchBar" style="display:none"><input id="dexSearchInput" placeholder="搜索对话..." /><span class="dex-search-count" id="dexSearchCount"></span><button class="btn btn-ghost btn-sm" onclick="dexCloseSearch()">关闭</button></div>'
+    + '<div class="dex-mode-tabs" id="dexModeTabs"></div>'
     + '<div class="dex-cap-chips" id="dexCapabilityChips"></div>'
+    + '<div id="dexToolCatalog"></div>'
     + '<div class="dex-chat-messages" id="dexMessages">' + dexWelcomeHTML() + '</div>'
     + '<div class="dex-input-area" id="dexInputAreaWrap">'
     + '<div id="dexToolPreview" class="dex-tool-preview" style="display:none"></div>'
@@ -620,11 +692,38 @@ function dexWelcomeHTML() {
     + '<div class="dex-quick-actions">'
     + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'运行完整诊断，自动修复所有发现的问题\')">一键修复</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'健康概览，指出当前 AI 工具链风险\')">健康概览</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'运行 DEX 自检，检查工具注册表、能力包、插件工具和最近错误\')">DEX自检</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Codex、Claude、MCP 和模型账号环境\')">AI工具诊断</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Claude Code MCP 集成状态\')">MCP检查</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查看插件状态和可用插件能力\')">插件状态</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'分析当前项目工作区环境\')">项目环境</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">日志异常</button></div></div></div>';
+}
+
+function dexToolMetaHtml(meta) {
+  if (!meta) return '';
+  var parts = [];
+  if (meta.toolDef) {
+    parts.push('L' + (meta.toolDef.level || 0));
+    parts.push(meta.toolDef.source || 'builtin');
+    parts.push(meta.toolDef.capability || 'core');
+  }
+  if (meta.elapsedMs !== undefined) parts.push(meta.elapsedMs + 'ms');
+  if (!parts.length) return '';
+  return '<span class="dex-tool-badge">' + esc(parts.join(' · ')) + '</span>';
+}
+
+function dexToolActionHtml(fnName, data) {
+  if (fnName === 'list_request_history' || fnName === 'analyze_requests' || fnName === 'token_cost') {
+    return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'sessions\')">打开请求历史</button></div>';
+  }
+  if (fnName === 'list_plugins' || fnName.indexOf('plugin') >= 0) {
+    return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'plugins\')">打开插件管理</button></div>';
+  }
+  if (fnName === 'get_threads_status' || fnName === 'list_threads') {
+    return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'threads\')">打开线程面板</button></div>';
+  }
+  return '';
 }
 
 // ── UI 交互 ──
@@ -655,7 +754,7 @@ function dexAppendMessage(type, content, meta) {
       el.innerHTML = '<div class="dex-system-msg">' + esc(content) + '</div>';
       break;
     case 'tool-start':
-      var toolMeta = meta && meta.toolDef ? '<span class="dex-tool-summary">' + esc((meta.toolDef.source || 'builtin') + ' · ' + (meta.toolDef.capability || 'core')) + '</span>' : '';
+      var toolMeta = dexToolMetaHtml(meta);
       el.innerHTML = '<div class="dex-tool-msg dex-tool-start">'
         + (isHistory ? '<span class="dex-tool-icon">🔧</span>' : '<span class="dex-spinner"></span>')
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
@@ -667,11 +766,14 @@ function dexAppendMessage(type, content, meta) {
       var summary = dexToolSummary(content, meta && meta.result ? meta.result : null);
       var rawData = meta && meta.result ? (meta.result.data !== undefined ? meta.result.data : meta.result) : null;
       var detailText = rawData ? dexFormatResultText(content, rawData) : '';
+      var actionHtml = dexToolActionHtml(content, rawData);
       el.innerHTML = '<div class="dex-tool-msg dex-tool-result">'
         + '<span class="dex-tool-icon">✅</span>'
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
+        + dexToolMetaHtml(meta)
         + '<span class="dex-tool-summary">' + esc(summary) + '</span>'
         + (detailText ? '<details class="dex-tool-details"><summary>详情</summary><pre>' + esc(detailText) + '</pre></details>' : '')
+        + actionHtml
         + '</div>';
       break;
     case 'tool-error':
@@ -698,12 +800,15 @@ function dexUpdateMessage(el, type, content, meta) {
       var summary = dexToolSummary(content, meta && meta.result ? meta.result : null);
       var rawData = meta && meta.result ? (meta.result.data !== undefined ? meta.result.data : meta.result) : null;
       var detailText = rawData ? dexFormatResultText(content, rawData) : '';
+      var actionHtml = dexToolActionHtml(content, rawData);
       el.className = 'dex-msg dex-msg-tool-result';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-result">'
         + '<span class="dex-tool-icon">✅</span>'
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
+        + dexToolMetaHtml(meta)
         + '<span class="dex-tool-summary">' + esc(summary) + '</span>'
         + (detailText ? '<details class="dex-tool-details"><summary>详情</summary><pre>' + esc(detailText) + '</pre></details>' : '')
+        + actionHtml
         + '</div>';
       break;
     case 'tool-error':
@@ -713,11 +818,12 @@ function dexUpdateMessage(el, type, content, meta) {
       el.innerHTML = '<div class="dex-tool-msg dex-tool-error">'
         + '<span class="dex-tool-icon">❌</span>'
         + '<span class="dex-tool-name">' + esc(errMsg) + '</span>'
+        + dexToolMetaHtml(meta)
         + (errDetail ? '<details class="dex-tool-details dex-tool-error-details"><summary>错误详情</summary><pre>' + esc(errDetail) + '</pre></details>' : '')
         + '</div>';
       break;
     case 'tool-start':
-      var toolMeta = meta && meta.toolDef ? '<span class="dex-tool-summary">' + esc((meta.toolDef.source || 'builtin') + ' · ' + (meta.toolDef.capability || 'core')) + '</span>' : '';
+      var toolMeta = dexToolMetaHtml(meta);
       el.className = 'dex-msg dex-msg-tool-start';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-start">'
         + '<span class="dex-spinner"></span>'
@@ -769,6 +875,7 @@ function dexToolSummary(fnName, result) {
     case 'get_threads_status': if (data && data.total !== undefined) return data.total + ' 个线程'; break;
     case 'get_env_info': if (data && data.os) return data.os + ' · deecodex ' + data.deecodex_version; break;
     case 'health_summary': if (data) return (data.service.running?'🟢':'🔴') + ' svc ' + (data.account.ok?'🟢':'🔴') + ' acct · ' + data.recent_errors + ' err'; break;
+    case 'dex_self_check': if (data) return (data.ok ? '正常' : '需关注') + ' · ' + (data.tool_count || 0) + ' 工具 · ' + ((data.plugin_tools || []).length) + ' 插件工具'; break;
     case 'analyze_requests': if (data && data.total) return data.total + '请求 · ' + data.success_rate + '%成功 · ' + data.avg_latency_ms + 'ms均值'; return '无数据';
     case 'detect_processes': if (data && Array.isArray(data.processes)) { var r = data.processes.filter(function(p){return p.running;}).length; return r + ' 个进程运行中'; } break;
     case 'detect_ports': if (data && Array.isArray(data.ports)) { var u = data.ports.filter(function(p){return p.in_use;}).length; return u + ' 个端口占用'; } break;
@@ -1198,6 +1305,7 @@ var DEX_SLASH_COMMANDS = {
   '/diag': '运行完整诊断，分析结果',
   '/fix': '自动修复所有发现的问题',
   '/health': '健康概览',
+  '/self': '运行 DEX 自检，检查工具注册表、能力包、插件工具和最近错误',
   '/mcp': '检查 Claude Code MCP 集成状态',
   '/workspace': '分析当前项目工作区环境',
   '/plugins': '查看插件状态和可用插件能力',
@@ -1233,6 +1341,7 @@ function dexUpdateTokenCount() {
 
 // ── 工具建议预览 ──
 var DEX_TOOL_KEYWORDS = [
+  { keywords: ['自检', 'self', 'dex状态', '工具注册表'], tools: 'dex_self_check, get_env_info' },
   { keywords: ['诊断', 'diag', '问题', '修复', 'fix', '错误', '失败', '异常'], tools: 'get_service_status, run_diagnostics, run_full_diagnostics' },
   { keywords: ['账号', '账户', 'account', '余额', '切换', '供应商', '导入'], tools: 'list_accounts, get_active_account, fetch_balance' },
   { keywords: ['配置', 'config', 'conf', '备份', 'backup', '恢复'], tools: 'get_config, save_config, config_backup' },
