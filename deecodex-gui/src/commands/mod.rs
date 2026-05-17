@@ -2969,7 +2969,7 @@ mod tests {
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: Default::default(),
-            provider_options: Default::default(),
+            provider_options: deecodex::providers::provider_options_for_slug("deepseek"),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,

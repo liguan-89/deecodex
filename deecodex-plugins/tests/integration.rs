@@ -25,6 +25,7 @@ fn test_parse_manifest() {
     assert_eq!(manifest.version, "1.0.0");
     assert_eq!(manifest.entry.runtime, "node");
     assert_eq!(manifest.entry.script, "index.js");
+    assert_eq!(manifest.dex_tools.len(), 3);
 }
 
 #[test]
@@ -135,6 +136,33 @@ fn test_manifest_dex_tools_reject_invalid_level_and_name() {
     }"#;
     let manifest: PluginManifest = serde_json::from_str(bad_name).unwrap();
     assert!(manifest.validate().is_err());
+
+    let bad_capability = r#"{
+        "id": "bad-capability-plugin",
+        "name": "Bad Capability Plugin",
+        "version": "1.0.0",
+        "description": "bad",
+        "author": "unit test",
+        "entry": { "runtime": "node", "script": "main.js" },
+        "dex_tools": [{ "name": "bad", "description": "bad", "level": 1, "method": "bad.run", "capability": "core.system" }]
+    }"#;
+    let manifest: PluginManifest = serde_json::from_str(bad_capability).unwrap();
+    assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn test_manifest_dex_tools_allow_plugin_scoped_capability() {
+    let json = r#"{
+        "id": "tool-plugin",
+        "name": "Tool Plugin",
+        "version": "1.0.0",
+        "description": "DEX tool provider",
+        "author": "unit test",
+        "entry": { "runtime": "node", "script": "main.js" },
+        "dex_tools": [{ "name": "echo", "description": "echo", "level": 0, "method": "echo.run", "capability": "plugin.tool-plugin" }]
+    }"#;
+    let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+    assert!(manifest.validate().is_ok());
 }
 
 #[test]

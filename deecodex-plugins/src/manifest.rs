@@ -103,6 +103,15 @@ impl PluginManifest {
             {
                 anyhow::bail!("dex_tools.name 只能包含 ASCII 字母、数字、下划线或短横线");
             }
+            let allowed_plugin_capability = format!("plugin.{}", self.id);
+            if tool.capability != "plugins.dynamic" && tool.capability != allowed_plugin_capability
+            {
+                anyhow::bail!(
+                    "dex_tools.capability 只能是 plugins.dynamic 或 {}，当前: {}",
+                    allowed_plugin_capability,
+                    tool.capability
+                );
+            }
         }
         Ok(())
     }
