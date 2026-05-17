@@ -59,6 +59,9 @@ function renderAccountList() {
     cards = '<div class="accounts-grid">' + list.map(a => {
       const active = a.id === accountsData.active_id;
       const caps = accountCapabilityLabels(a).slice(0, 3);
+      const capabilityAccount = a.capability_account_id
+        ? list.find(candidate => candidate.id === a.capability_account_id)
+        : null;
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-header">
           <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
@@ -76,6 +79,7 @@ function renderAccountList() {
         ${a.context_window_override ? `<div class="card-context" title="上下文窗口: ${a.context_window_override.toLocaleString()} tokens">⇄ ${a.context_window_override.toLocaleString()} tokens</div>` : ''}
         ${a.vision_enabled ? '<div class="card-context" title="已启用多模态视觉路由">👁 多模态</div>' : ''}
         ${a.reasoning_effort_override ? `<div class="card-context" title="推理强度: ${a.reasoning_effort_override}${a.thinking_tokens ? ', 思考预算: ' + a.thinking_tokens.toLocaleString() + ' tokens' : ''}">🧠 ${a.reasoning_effort_override}</div>` : ''}
+        ${a.capability_enabled ? `<div class="card-context" title="能力补全账号: ${escAttr(capabilityAccount ? capabilityAccount.name : '未找到')}">能力补全: ${esc(capabilityAccount ? capabilityAccount.name : '未配置')}</div>` : ''}
         <div class="card-actions-row">
           <button class="btn-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">↻</button>
           ${active
@@ -245,7 +249,29 @@ function renderAccountDetail() {
         <span class="hint">Codex 有效上下文 = 此值 × 95%（如填 1052632 可达真正 1M）</span>
       </div>
     </div>
-  </div>
+
+    <div class="collapsible-section">
+      <div class="config-fields">
+        <div class="config-field">
+          <label style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="edit_capability_enabled" ${a.capability_enabled ? 'checked' : ''} onchange="toggleCapabilityFields()">
+            启用能力补全
+          </label>
+          <span class="hint">当请求包含图片、computer_use、浏览器、MCP 或插件工具时，先由能力账号执行观察，再回传给当前账号完成最终回答。</span>
+        </div>
+      </div>
+      <div id="capabilityFields" style="${a.capability_enabled ? '' : 'display:none;'}">
+        <div class="config-fields" style="margin-top:12px;">
+          <div class="config-field">
+            <label>能力账号</label>
+            <select id="edit_capability_account_id">
+              ${renderCapabilityAccountOptions(a)}
+            </select>
+            <span class="hint">请选择支持多模态和 Codex 工具能力的 GPT/OpenAI 账号；不能选择当前账号。</span>
+          </div>
+        </div>
+      </div>
+    </div>
 
   <div class="collapsible-section">
     <div class="config-fields">
@@ -307,6 +333,17 @@ function renderAccountDetail() {
     <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
     <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
   </div>`;
+}
+
+function renderCapabilityAccountOptions(account) {
+  const accounts = (accountsData.accounts || []).filter(candidate => candidate.id !== account.id);
+  if (accounts.length === 0) {
+    return '<option value="">暂无其他账号可选</option>';
+  }
+  return '<option value="">请选择能力账号</option>' + accounts.map(candidate => {
+    const selected = candidate.id === account.capability_account_id ? ' selected' : '';
+    return `<option value="${escAttr(candidate.id)}"${selected}>${esc(candidate.name)} (${esc(candidate.provider || 'custom')})</option>`;
+  }).join('');
 }
 
 function renderModelMappingRows(knownModels) {
@@ -522,6 +559,8 @@ function addAccount(provider) {
     wire_protocol: preset.wire_protocol || 'chat_completions',
     provider_options: preset.provider_options || { capability_labels: preset.capability_labels || [] },
     translate_enabled: (preset.wire_protocol || 'chat_completions') === 'chat_completions',
+    capability_enabled: false,
+    capability_account_id: null,
   };
   accountsView = 'edit';
   renderMainContent();
@@ -624,6 +663,23 @@ async function saveAccount() {
   const preset = getProviderPreset(a.provider);
   if (!a.provider_options || Object.keys(a.provider_options).length === 0) {
     a.provider_options = { capability_labels: preset ? (preset.capability_labels || []) : [] };
+  }
+
+  const capabilityEnabled = document.getElementById('edit_capability_enabled');
+  if (capabilityEnabled) a.capability_enabled = capabilityEnabled.checked;
+  const capabilityAccount = document.getElementById('edit_capability_account_id');
+  a.capability_account_id = capabilityEnabled && capabilityEnabled.checked && capabilityAccount
+    ? (capabilityAccount.value || null)
+    : null;
+  if (a.capability_enabled) {
+    if (!a.capability_account_id) {
+      showToast('请选择能力补全账号', 'error');
+      return;
+    }
+    if (a.id && a.capability_account_id === a.id) {
+      showToast('能力补全账号不能选择当前账号', 'error');
+      return;
+    }
   }
 
   a.model_map = collectModelMap();

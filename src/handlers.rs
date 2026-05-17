@@ -10,7 +10,9 @@ use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
-use crate::{files, native_protocols, prompts, providers, stream, translate, vector_stores};
+use crate::{
+    capability, files, native_protocols, prompts, providers, stream, translate, vector_stores,
+};
 use anyhow::{bail, Result};
 use axum::{
     extract::{Multipart, Path, Query, Request, State},
@@ -123,6 +125,11 @@ struct VlmArgs {
     store_response: bool,
     request_input_items: Vec<Value>,
     response_extra: Value,
+}
+
+struct CapabilityObservationResult {
+    message: Option<ChatMessage>,
+    suppress_vision_route: bool,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -1885,7 +1892,7 @@ async fn bypass_send_request(
                         String::new(),
                         cache_hit,
                     )
-                    .await
+                    .await;
             };
 
             (
@@ -1934,15 +1941,6 @@ async fn handle_responses_inner(
     let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
     if !local_output_prefix_items.is_empty() {
         response_extra[LOCAL_OUTPUT_PREFIX_ITEMS_KEY] = json!(local_output_prefix_items);
-    }
-    if store_response {
-        if let Some(id) = conversation_id.as_deref() {
-            let mut items = state.sessions.get_conversation_items(id);
-            items.extend(request_input_items.clone());
-            state
-                .sessions
-                .save_conversation_items(id.to_string(), items);
-        }
     }
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
     let (mut reasoning_effort, mut thinking) = map_effort(effort);
@@ -2010,6 +2008,30 @@ async fn handle_responses_inner(
     let profile = providers::profile_for_account(&active_account);
     providers::adapt_chat_request(&profile, &mut chat_req);
 
+    let capability_observation = build_capability_observation(&state, &req).await;
+    if let Some(observation) = capability_observation.message {
+        request_input_items.push(capability_observation_input_item(&observation));
+        let insert_at = if chat_req
+            .messages
+            .first()
+            .is_some_and(|message| message.role == "system")
+        {
+            1
+        } else {
+            0
+        };
+        chat_req.messages.insert(insert_at, observation);
+    }
+    if store_response {
+        if let Some(id) = conversation_id.as_deref() {
+            let mut items = state.sessions.get_conversation_items(id);
+            items.extend(request_input_items.clone());
+            state
+                .sessions
+                .save_conversation_items(id.to_string(), items);
+        }
+    }
+
     // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
     let has_new_image = match &req.input {
@@ -2030,14 +2052,18 @@ async fn handle_responses_inner(
         }),
     };
     let vision_upstream_val = state.vision_upstream.read().await.clone();
-    let route_to_vision =
-        translated.has_images && vision_upstream_val.is_some() && !is_review_model && has_new_image;
+    let route_to_vision = translated.has_images
+        && vision_upstream_val.is_some()
+        && !is_review_model
+        && has_new_image
+        && !capability_observation.suppress_vision_route;
     drop(vision_upstream_val);
     info!(
-        "route_to_vision: has_images={} review={} new_image={} msgs={} route={}",
+        "route_to_vision: has_images={} review={} new_image={} capability={} msgs={} route={}",
         translated.has_images,
         is_review_model,
         has_new_image,
+        capability_observation.suppress_vision_route,
         chat_req.messages.len(),
         route_to_vision
     );
@@ -2388,6 +2414,84 @@ async fn handle_responses_inner(
         let elapsed = start.elapsed();
         debug!("blocking request completed in {:.0}ms", elapsed.as_millis());
         resp
+    }
+}
+
+async fn build_capability_observation(
+    state: &AppState,
+    req: &ResponsesRequest,
+) -> CapabilityObservationResult {
+    let main_account = state.active_account.read().await.clone();
+    let requested = !capability::capability_observer_request(req)
+        && main_account.capability_enabled
+        && capability::detect_trigger(req).is_some();
+    if !requested {
+        return CapabilityObservationResult {
+            message: None,
+            suppress_vision_route: false,
+        };
+    }
+    let helper_account = {
+        let store = state.account_store.read().await;
+        main_account
+            .capability_account_id
+            .as_ref()
+            .and_then(|helper_id| store.accounts.iter().find(|a| &a.id == helper_id).cloned())
+    };
+
+    let helper_context = if let Some(helper) = helper_account.as_ref() {
+        match validate_upstream(&helper.upstream) {
+            Ok(upstream) => Some(capability::CapabilityContext {
+                client: state.client.clone(),
+                upstream,
+                api_key: helper.api_key.clone(),
+                custom_headers: helper.custom_headers.clone(),
+                timeout_secs: helper.request_timeout_secs,
+                max_retries: helper.max_retries,
+                executors: state.executors.read().await.clone(),
+                tool_policy: state.tool_policy.read().await.clone(),
+                chinese_thinking: state.chinese_thinking,
+            }),
+            Err(err) => {
+                warn!(
+                    account_id = %helper.id,
+                    account_name = %helper.name,
+                    error = %err,
+                    "能力账号上游 URL 无效，回退主模型并跳过旧视觉路由"
+                );
+                return CapabilityObservationResult {
+                    message: None,
+                    suppress_vision_route: true,
+                };
+            }
+        }
+    } else {
+        None
+    };
+
+    let Some(context) = helper_context else {
+        warn!(
+            account_id = %main_account.id,
+            account_name = %main_account.name,
+            "能力补全已触发但未配置有效能力账号，回退主模型并跳过旧视觉路由"
+        );
+        return CapabilityObservationResult {
+            message: None,
+            suppress_vision_route: true,
+        };
+    };
+
+    let message = capability::maybe_observe(req, &main_account, helper_account, context).await;
+    if message.is_none() {
+        warn!(
+            account_id = %main_account.id,
+            account_name = %main_account.name,
+            "能力补全已触发但未产生可注入观察，回退主模型并跳过旧视觉路由"
+        );
+    }
+    CapabilityObservationResult {
+        message,
+        suppress_vision_route: true,
     }
 }
 
@@ -3233,6 +3337,26 @@ fn response_input_items(req: &ResponsesRequest) -> Vec<Value> {
             })
             .collect(),
     }
+}
+
+fn capability_observation_input_item(message: &ChatMessage) -> Value {
+    let text = match &message.content {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => serde_json::to_string(value).unwrap_or_default(),
+        None => String::new(),
+    };
+    json!({
+        "id": format!("item_capability_{}", uuid::Uuid::new_v4().simple()),
+        "type": "message",
+        "role": "system",
+        "content": [{
+            "type": "input_text",
+            "text": text,
+        }],
+        "metadata": {
+            "x_deecodex_kind": "capability_observation"
+        }
+    })
 }
 
 fn is_tool_output_input_item(item_type: &str) -> bool {

@@ -398,6 +398,8 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
         };
 
         tracing::info!(

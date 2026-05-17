@@ -1054,7 +1054,7 @@ pub fn translate_stream(
                 reasoning: accumulated_reasoning.clone(),
                 tool_calls: tool_calls.values().map(|tc| CachedToolCall {
                     id: tc.id.clone(),
-                    name: if tc.name == "apply_patch" { "exec_command".into() } else if tc.name == "exec_command" { "apply_patch".into() } else { tc.name.clone() },
+                    name: if tc.name == "apply_patch" { "exec_command".into() } else { tc.name.clone() },
                     arguments: tc.arguments.clone(),
                 }).collect(),
                 usage: usage_to_cached(cache_usage.as_ref()),

@@ -410,6 +410,18 @@ function toggleReasoningFields() {
   }
 }
 
+function toggleCapabilityFields() {
+  const cb = document.getElementById('edit_capability_enabled');
+  const fields = document.getElementById('capabilityFields');
+  if (cb && fields) {
+    fields.style.display = cb.checked ? '' : 'none';
+    if (!cb.checked) {
+      const select = document.getElementById('edit_capability_account_id');
+      if (select) select.value = '';
+    }
+  }
+}
+
 function collectFormData() {
   const data = currentConfig ? { ...currentConfig } : {};
   for (const sec of CONFIG_SECTIONS) {

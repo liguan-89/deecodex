@@ -68,6 +68,12 @@ pub struct Account {
     /// 关闭时请求直接透传至上游 Responses API 端点。
     #[serde(default = "default_translate_enabled")]
     pub translate_enabled: bool,
+    /// 是否启用能力补全：由耦合账号先执行多模态/工具观察，再回传主模型推理。
+    #[serde(default)]
+    pub capability_enabled: bool,
+    /// 能力补全账号 ID，通常选择支持原生工具/多模态能力的 OpenAI/GPT 账号。
+    #[serde(default)]
+    pub capability_account_id: Option<String>,
 }
 
 fn default_translate_enabled() -> bool {
@@ -189,6 +195,29 @@ pub fn hydrate_account_defaults(store: &mut AccountStore) {
     }
 }
 
+#[allow(dead_code)]
+pub fn validate_capability_links(store: &AccountStore) -> Result<()> {
+    for account in &store.accounts {
+        if !account.capability_enabled {
+            continue;
+        }
+        let Some(helper_id) = account.capability_account_id.as_deref() else {
+            anyhow::bail!("账号 '{}' 已启用能力补全但未选择能力账号", account.name);
+        };
+        if helper_id == account.id {
+            anyhow::bail!("账号 '{}' 的能力账号不能指向自身", account.name);
+        }
+        if !store
+            .accounts
+            .iter()
+            .any(|candidate| candidate.id == helper_id)
+        {
+            anyhow::bail!("账号 '{}' 选择的能力账号不存在", account.name);
+        }
+    }
+    Ok(())
+}
+
 // ── 工具函数 ────────────────────────────────────────────────────────────────
 
 pub fn generate_id() -> String {
@@ -214,7 +243,7 @@ pub fn guess_provider(upstream: &str) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
+mod provider_tests {
     use super::*;
     use crate::providers::{
         AuthScheme, ModelsResponseShape, ReasoningMode, StreamUsageMode, WireProtocol,
@@ -274,5 +303,82 @@ mod tests {
         assert!(account.translate_enabled);
         assert!(account.provider_options.contains_key("capability_labels"));
         assert!(account.custom_headers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_account(id: &str) -> Account {
+        Account {
+            id: id.into(),
+            name: format!("账号 {id}"),
+            provider: "custom".into(),
+            upstream: "https://example.com/v1".into(),
+            api_key: String::new(),
+            model_map: HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            vision_enabled: false,
+            from_codex_config: false,
+            balance_url: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
+            translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
+        }
+    }
+
+    #[test]
+    fn legacy_account_defaults_capability_disabled() {
+        let account: Account = serde_json::from_value(json!({
+            "id": "a1",
+            "name": "legacy",
+            "provider": "deepseek",
+            "upstream": "https://api.deepseek.com/v1",
+            "api_key": "sk-test"
+        }))
+        .unwrap();
+
+        assert!(!account.capability_enabled);
+        assert_eq!(account.capability_account_id, None);
+    }
+
+    #[test]
+    fn validate_capability_links_rejects_self_reference() {
+        let mut account = base_account("a1");
+        account.capability_enabled = true;
+        account.capability_account_id = Some("a1".into());
+        let store = AccountStore {
+            accounts: vec![account],
+            active_id: Some("a1".into()),
+        };
+
+        assert!(validate_capability_links(&store).is_err());
+    }
+
+    #[test]
+    fn validate_capability_links_allows_existing_helper() {
+        let mut main = base_account("a1");
+        main.capability_enabled = true;
+        main.capability_account_id = Some("a2".into());
+        let helper = base_account("a2");
+        let store = AccountStore {
+            accounts: vec![main, helper],
+            active_id: Some("a1".into()),
+        };
+
+        assert!(validate_capability_links(&store).is_ok());
     }
 }

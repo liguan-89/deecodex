@@ -276,6 +276,8 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 request_timeout_secs: None,
                 max_retries: None,
                 translate_enabled: true,
+                capability_enabled: false,
+                capability_account_id: None,
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
             accounts.push(migrated);
@@ -323,6 +325,8 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
         };
         tracing::info!("创建默认 OpenRouter 空账号");
         accounts.push(default);
@@ -486,6 +490,59 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
             )
         },
     })
+}
+
+async fn running_app_state(manager: &ServerManager) -> Option<handlers::AppState> {
+    manager.app_state.lock().await.clone()
+}
+
+async fn sync_account_store_to_running_state(manager: &ServerManager, store: &AccountStore) {
+    if let Some(app_state) = running_app_state(manager).await {
+        *app_state.account_store.write().await = store.clone();
+    }
+}
+
+async fn sync_active_account_to_running_state(
+    manager: &ServerManager,
+    store: &AccountStore,
+    target: &deecodex::accounts::Account,
+) -> Result<(), String> {
+    let Some(app_state) = running_app_state(manager).await else {
+        return Ok(());
+    };
+
+    let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
+        .map_err(|e| format!("目标账号上游 URL 无效: {e}"))?;
+    let vision_upstream = if target.vision_upstream.is_empty() {
+        None
+    } else {
+        Some(
+            deecodex::handlers::validate_upstream(&target.vision_upstream)
+                .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
+        )
+    };
+
+    *app_state.upstream.write().await = upstream_url;
+    *app_state.api_key.write().await = target.api_key.clone();
+    *app_state.model_map.write().await = target.model_map.clone();
+    *app_state.vision_upstream.write().await = vision_upstream;
+    *app_state.vision_api_key.write().await = target.vision_api_key.clone();
+    *app_state.vision_model.write().await = target.vision_model.clone();
+    *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
+
+    *app_state.reasoning_effort_override.write().await = target.reasoning_effort_override.clone();
+    *app_state.thinking_tokens.write().await = target.thinking_tokens;
+    *app_state.custom_headers.write().await = target.custom_headers.clone();
+    *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
+
+    *app_state.active_account.write().await = target.clone();
+    *app_state.account_store.write().await = store.clone();
+
+    let port = *manager.port.lock().await;
+    deecodex::codex_config::inject(port, target.context_window_override);
+
+    tracing::info!("已同步运行中账号: {} ({})", target.name, target.provider);
+    Ok(())
 }
 
 // ── 内部函数（托盘和 Tauri 命令共用） ─────────────────────────────────────
@@ -1271,18 +1328,33 @@ pub async fn add_account(
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
         }
     };
 
+    let mut candidate_store = store.clone();
+    candidate_store.accounts.push(new_account.clone());
+    deecodex::accounts::validate_capability_links(&candidate_store).map_err(|e| e.to_string())?;
+
     // 如果没有活跃账号，自动设为活跃
-    if store.active_id.is_none() {
+    let became_active = store.active_id.is_none();
+    if became_active {
         store.active_id = Some(new_account.id.clone());
     }
 
     store.accounts.push(new_account.clone());
 
+    if became_active {
+        sync_active_account_to_running_state(&manager, &store, &new_account).await?;
+    }
+
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    if !became_active {
+        sync_account_store_to_running_state(&manager, &store).await;
+    }
 
     Ok(account_to_value(&new_account))
 }
@@ -1319,40 +1391,19 @@ pub async fn update_account(
     account.updated_at = now_secs();
 
     store.accounts[pos] = account.clone();
+    deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+
+    let is_active = store.active_id.as_ref() == Some(&account.id);
+    if is_active {
+        sync_active_account_to_running_state(&manager, &store, &account).await?;
+    }
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
 
-    // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
-    if store.active_id.as_ref() == Some(&account.id) {
-        if let Some(app_state) = manager.app_state.lock().await.as_ref() {
-            let upstream_url = deecodex::handlers::validate_upstream(&account.upstream)
-                .map_err(|e| format!("账号上游 URL 无效: {e}"))?;
-            *app_state.upstream.write().await = upstream_url;
-            *app_state.api_key.write().await = account.api_key.clone();
-            *app_state.model_map.write().await = account.model_map.clone();
-            let vision_upstream = if account.vision_upstream.is_empty() {
-                None
-            } else {
-                Some(
-                    deecodex::handlers::validate_upstream(&account.vision_upstream)
-                        .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
-                )
-            };
-            *app_state.vision_upstream.write().await = vision_upstream;
-            *app_state.vision_api_key.write().await = account.vision_api_key.clone();
-            *app_state.vision_model.write().await = account.vision_model.clone();
-            *app_state.vision_endpoint.write().await = account.vision_endpoint.clone();
-            *app_state.custom_headers.write().await = account.custom_headers.clone();
-            *app_state.request_timeout_secs.write().await = account.request_timeout_secs;
-            *app_state.reasoning_effort_override.write().await =
-                account.reasoning_effort_override.clone();
-            *app_state.thinking_tokens.write().await = account.thinking_tokens;
-            *app_state.active_account.write().await = account.clone();
-            *app_state.account_store.write().await = store.clone();
-            let port = *manager.port.lock().await;
-            deecodex::codex_config::inject(port, account.context_window_override);
-        }
+    // 如果保存的是活跃账号，同步热字段；否则刷新账号仓库，让能力账号配置即时生效。
+    if !is_active {
+        sync_account_store_to_running_state(&manager, &store).await;
     }
 
     Ok(account_to_value(&account))
@@ -1374,14 +1425,34 @@ pub async fn delete_account(
     let was_active = store.active_id.as_deref() == Some(&id);
 
     store.accounts.retain(|a| a.id != id);
+    for account in &mut store.accounts {
+        if account.capability_account_id.as_deref() == Some(&id) {
+            account.capability_enabled = false;
+            account.capability_account_id = None;
+        }
+    }
 
     // 如果删除的是活跃账号，切换到第一个
     if was_active {
         store.active_id = Some(store.accounts[0].id.clone());
     }
 
+    deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+
+    if was_active {
+        if let Some(active_id) = store.active_id.as_deref() {
+            if let Some(active) = store.accounts.iter().find(|a| a.id == active_id) {
+                sync_active_account_to_running_state(&manager, &store, active).await?;
+            }
+        }
+    }
+
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    if !was_active {
+        sync_account_store_to_running_state(&manager, &store).await;
+    }
 
     Ok(json!({"success": true}))
 }
@@ -1402,55 +1473,13 @@ pub(crate) async fn switch_account_inner(
         .ok_or_else(|| format!("账号不存在: {id}"))?
         .clone();
 
+    deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+
     store.active_id = Some(id.clone());
 
-    // 如果服务在运行，先同步更新 AppState 热字段，再写文件
-    // 避免文件已切但 AppState 更新失败导致的不一致
-    if let Some(app_state) = manager.app_state.lock().await.as_ref() {
-        // 更新上游 URL
-        let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
-            .map_err(|e| format!("目标账号上游 URL 无效: {e}"))?;
-        *app_state.upstream.write().await = upstream_url;
-
-        // 更新 API Key
-        *app_state.api_key.write().await = target.api_key.clone();
-
-        // 更新模型映射
-        *app_state.model_map.write().await = target.model_map.clone();
-
-        // 更新视觉配置
-        let vision_upstream = if target.vision_upstream.is_empty() {
-            None
-        } else {
-            Some(
-                deecodex::handlers::validate_upstream(&target.vision_upstream)
-                    .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
-            )
-        };
-        *app_state.vision_upstream.write().await = vision_upstream;
-        *app_state.vision_api_key.write().await = target.vision_api_key.clone();
-        *app_state.vision_model.write().await = target.vision_model.clone();
-        *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
-
-        // 同步推理配置
-        *app_state.reasoning_effort_override.write().await =
-            target.reasoning_effort_override.clone();
-        *app_state.thinking_tokens.write().await = target.thinking_tokens;
-        *app_state.custom_headers.write().await = target.custom_headers.clone();
-        *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
-
-        // 更新 active_account
-        *app_state.active_account.write().await = target.clone();
-
-        // 同步更新 account_store
-        *app_state.account_store.write().await = store.clone();
-
-        // 根据新账号的上下文窗口覆盖重新注入 codex config
-        let port = *manager.port.lock().await;
-        deecodex::codex_config::inject(port, target.context_window_override);
-
-        tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
-    }
+    // 如果服务在运行，先同步更新 AppState 热字段，再写文件。
+    // 避免文件已切但 AppState 更新失败导致的不一致。
+    sync_active_account_to_running_state(manager, &store, &target).await?;
 
     // 持久化到文件（无论服务是否运行）
     deecodex::accounts::save_accounts(&data_dir, &store)
@@ -2052,6 +2081,8 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "request_timeout_secs": a.request_timeout_secs,
         "max_retries": a.max_retries,
         "translate_enabled": a.translate_enabled,
+        "capability_enabled": a.capability_enabled,
+        "capability_account_id": a.capability_account_id,
         "from_codex_config": a.from_codex_config,
         "balance_url": a.balance_url,
         "created_at": a.created_at,
@@ -2445,6 +2476,7 @@ pub async fn stop_plugin_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deecodex::accounts::Account;
     use std::path::PathBuf;
 
     fn test_args() -> Args {
@@ -2517,5 +2549,40 @@ mod tests {
         assert!(preserved.vision_api_key.is_empty());
         assert!(preserved.vision_model.is_empty());
         assert!(preserved.vision_endpoint.is_empty());
+    }
+
+    #[test]
+    fn account_to_value_exposes_capability_fields() {
+        let account = Account {
+            id: "main".into(),
+            name: "主账号".into(),
+            provider: "deepseek".into(),
+            upstream: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-test".into(),
+            model_map: HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            vision_enabled: false,
+            from_codex_config: false,
+            balance_url: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
+            translate_enabled: true,
+            capability_enabled: true,
+            capability_account_id: Some("helper".into()),
+        };
+
+        let value = account_to_value(&account);
+
+        assert_eq!(value["capability_enabled"], true);
+        assert_eq!(value["capability_account_id"], "helper");
     }
 }

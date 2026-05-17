@@ -584,7 +584,7 @@ fn response_format_from_text(text: Option<&Value>) -> Option<Value> {
 
 /// Responses API flat tool → Chat Completions nested format.
 /// Handles function, custom (apply_patch), and namespace (MCP) types.
-fn convert_tool(tool: &Value) -> Value {
+pub fn convert_tool(tool: &Value) -> Value {
     let Some(obj) = tool.as_object() else {
         return tool.clone();
     };
