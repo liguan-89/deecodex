@@ -121,8 +121,6 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
     } else {
         let tool_name = if name == "apply_patch" {
             "exec_command".to_string()
-        } else if name == "exec_command" {
-            "apply_patch".to_string()
         } else {
             name.to_string()
         };

@@ -1,4 +1,5 @@
 mod accounts;
+mod anthropic;
 mod backup_store;
 mod cache;
 mod cdp;
@@ -22,6 +23,7 @@ mod types;
 mod utils;
 mod validate;
 mod vector_stores;
+mod vision;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -557,7 +559,7 @@ async fn main() -> Result<()> {
     )?;
 
     use crate::accounts::{generate_id, now_secs, Account, AccountStore};
-    let default_account = Account {
+    let mut default_account = Account {
         id: generate_id(),
         name: "默认账号".into(),
         provider: crate::accounts::guess_provider(&args.upstream).into(),
@@ -580,7 +582,9 @@ async fn main() -> Result<()> {
         request_timeout_secs: None,
         max_retries: None,
         translate_enabled: true,
+        endpoints: Vec::new(),
     };
+    default_account.normalize_v2();
 
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
@@ -625,8 +629,11 @@ async fn main() -> Result<()> {
         executors: Arc::new(tokio::sync::RwLock::new(executors)),
         data_dir: Arc::new(args.data_dir.clone()),
         account_store: Arc::new(tokio::sync::RwLock::new(AccountStore {
+            version: crate::accounts::ACCOUNT_STORE_VERSION,
             accounts: vec![default_account.clone()],
             active_id: Some(default_account.id.clone()),
+            active_account_id: Some(default_account.id.clone()),
+            active_endpoint_id: None,
         })),
         active_account: Arc::new(tokio::sync::RwLock::new(default_account)),
         reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),

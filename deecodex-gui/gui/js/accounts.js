@@ -9,6 +9,136 @@ function providerIcon(p) {
   return icons[p] || '…';
 }
 
+function currentEndpoint(a) {
+  const endpoints = Array.isArray(a?.endpoints) ? a.endpoints : [];
+  const selectedId = selectedEndpointId(a);
+  if (selectedId) return endpoints.find(ep => ep.id === selectedId) || endpoints[0] || null;
+  return endpoints[0] || null;
+}
+
+function currentEndpointIndex(a) {
+  const endpoints = Array.isArray(a?.endpoints) ? a.endpoints : [];
+  const ep = currentEndpoint(a);
+  if (!ep) return -1;
+  const idx = endpoints.findIndex(item => item.id === ep.id);
+  return idx >= 0 ? idx : 0;
+}
+
+function endpointKindLabel(kind) {
+  const labels = {
+    open_ai_chat: 'Chat 兼容',
+    open_ai_responses: 'Responses 直连',
+    anthropic_messages: 'Anthropic Messages',
+    custom_chat: '自定义 Chat',
+    custom_responses: '自定义 Responses',
+    OpenAiChat: 'Chat 兼容',
+    OpenAiResponses: 'Responses 直连',
+    AnthropicMessages: 'Anthropic Messages',
+    CustomChat: '自定义 Chat',
+    CustomResponses: '自定义 Responses',
+  };
+  return labels[kind] || kind || 'Chat 兼容';
+}
+
+function visionModeLabel(mode) {
+  const labels = {
+    off: '视觉关闭',
+    native: '原生多模态',
+    glue: '胶水多模态',
+    Off: '视觉关闭',
+    Native: '原生多模态',
+    Glue: '胶水多模态',
+  };
+  return labels[mode] || '视觉关闭';
+}
+
+function setVisionMode(mode) {
+  const input = document.getElementById('edit_vision_mode');
+  if (input) input.value = mode;
+  document.querySelectorAll('.vision-mode-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  toggleVisionFields();
+}
+
+function selectedEndpointId(a) {
+  if (!a) return null;
+  if (a._editing_endpoint_id) return a._editing_endpoint_id;
+  if (a.id === (accountsData.active_account_id || accountsData.active_id) && accountsData.active_endpoint_id) {
+    return accountsData.active_endpoint_id;
+  }
+  return Array.isArray(a.endpoints) && a.endpoints[0] ? a.endpoints[0].id : null;
+}
+
+function providerDefaultTemplate(provider) {
+  const templates = endpointTemplates || [];
+  if (provider === 'anthropic') {
+    return templates.find(t => t.id === 'anthropic_messages')
+      || templates.find(t => t.kind === 'anthropic_messages' || t.kind === 'AnthropicMessages')
+      || null;
+  }
+  if (provider === 'openai') {
+    return templates.find(t => t.id === 'responses_direct')
+      || templates.find(t => t.kind === 'open_ai_responses' || t.kind === 'OpenAiResponses')
+      || null;
+  }
+  return templates.find(t => t.id === 'chat_compatible')
+    || templates.find(t => t.kind === 'open_ai_chat' || t.kind === 'OpenAiChat')
+    || templates[0]
+    || null;
+}
+
+function newEndpointId() {
+  return 'endpoint_' + Date.now().toString(16) + '_' + Math.random().toString(16).slice(2, 8);
+}
+
+function createEndpointFromTemplate(template, account) {
+  const tpl = template || providerDefaultTemplate(account?.provider) || {};
+  const hasTemplateBaseUrl = Object.prototype.hasOwnProperty.call(tpl, 'default_base_url');
+  const baseUrl = hasTemplateBaseUrl
+    ? (tpl.default_base_url || account?.upstream || '')
+    : (account?.upstream || 'https://openrouter.ai/api/v1');
+  const kind = tpl.kind || 'open_ai_chat';
+  return {
+    id: newEndpointId(),
+    name: tpl.label || endpointKindLabel(kind),
+    kind,
+    base_url: baseUrl,
+    path: tpl.default_path || '',
+    template_id: tpl.id || '',
+    template_version: 1,
+    model_map: { ...(account?.model_map || {}) },
+    model_profiles: {},
+    vision: {
+      mode: tpl.default_vision_mode || 'off',
+      unsupported_image_policy: 'reject',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: account?.vision_upstream || '',
+      api_key: account?.vision_api_key || '',
+      model: account?.vision_model || '',
+      path: account?.vision_endpoint || 'v1/coding_plan/vlm',
+    },
+    custom_headers: { ...(account?.custom_headers || {}) },
+    request_timeout_secs: account?.request_timeout_secs || null,
+    max_retries: account?.max_retries ?? null,
+    context_window_override: account?.context_window_override || null,
+    reasoning_effort_override: account?.reasoning_effort_override || null,
+    thinking_tokens: account?.thinking_tokens || null,
+    balance_url: account?.balance_url || '',
+  };
+}
+
+function ensureAccountEndpoints(a) {
+  if (!a) return [];
+  if (!Array.isArray(a.endpoints)) a.endpoints = [];
+  if (a.endpoints.length === 0) {
+    a.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(a.provider), a));
+  }
+  if (!selectedEndpointId(a)) a._editing_endpoint_id = a.endpoints[0].id;
+  return a.endpoints;
+}
+
 function navigateAccounts(view) {
   accountsView = view;
   if (view === 'list') editingAccount = null;
@@ -34,7 +164,12 @@ function renderAccountList() {
     cards = '<div class="empty-state">暂无账号，点击下方按钮创建</div>';
   } else {
     cards = '<div class="accounts-grid">' + list.map(a => {
-      const active = a.id === accountsData.active_id;
+      const active = a.id === (accountsData.active_account_id || accountsData.active_id);
+      const ep = currentEndpoint(a);
+      const visionMode = ep?.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
+      const contextWindow = ep?.context_window_override ?? null;
+      const reasoningEffort = ep?.reasoning_effort_override ?? null;
+      const thinkingTokens = ep?.thinking_tokens ?? null;
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-header">
           <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
@@ -44,28 +179,31 @@ function renderAccountList() {
         <div class="card-name">${esc(a.name)}</div>
         <div class="card-key">${esc(maskKey(a.api_key) || '(未配置)')}</div>
         <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
+        <div class="card-context" title="活跃端点">${esc(ep?.name || '默认端点')} · ${esc(endpointKindLabel(ep?.kind))}</div>
+        <div class="card-context" title="视觉模式">${esc(visionModeLabel(visionMode))}</div>
         <div class="card-balance" id="balance-${escAttr(a.id)}">
           <span class="balance-loading">—</span>
         </div>
-        ${a.context_window_override ? `<div class="card-context" title="上下文窗口: ${a.context_window_override.toLocaleString()} tokens">⇄ ${a.context_window_override.toLocaleString()} tokens</div>` : ''}
-        ${a.vision_enabled ? '<div class="card-context" title="已启用多模态视觉路由">👁 多模态</div>' : ''}
-        ${a.reasoning_effort_override ? `<div class="card-context" title="推理强度: ${a.reasoning_effort_override}${a.thinking_tokens ? ', 思考预算: ' + a.thinking_tokens.toLocaleString() + ' tokens' : ''}">🧠 ${a.reasoning_effort_override}</div>` : ''}
+        ${contextWindow ? `<div class="card-context" title="上下文窗口: ${contextWindow.toLocaleString()} tokens">⇄ ${contextWindow.toLocaleString()} tokens</div>` : ''}
+        ${visionMode === 'glue' || visionMode === 'Glue' ? '<div class="card-context" title="已启用胶水多模态">👁 胶水</div>' : ''}
+        ${visionMode === 'native' || visionMode === 'Native' ? '<div class="card-context" title="当前模型原生支持图片输入">👁 原生</div>' : ''}
+        ${reasoningEffort ? `<div class="card-context" title="推理强度: ${reasoningEffort}${thinkingTokens ? ', 思考预算: ' + thinkingTokens.toLocaleString() + ' tokens' : ''}">🧠 ${reasoningEffort}</div>` : ''}
         <div class="card-actions-row">
-          <button class="btn-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">↻</button>
+          <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
           ${active
-            ? '<button class="btn-applied" disabled>✓ 已应用</button>'
-            : `<button class="btn-apply" onclick="applyAccount('${escAttr(a.id)}')">▶ 应用</button>`}
-          <button onclick="editAccount('${escAttr(a.id)}')">⚙ 编辑</button>
+            ? '<button class="account-action account-applied" disabled>已应用</button>'
+            : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
+          <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
         </div>
       </div>`;
     }).join('') + '</div>';
   }
 
-  return `<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+  return `<div class="page-header accounts-page-header">
     <div><h2>账号管理</h2><p>管理上游 LLM 账号，点击「应用」切换活跃账号</p></div>
-    <div style="display:flex;gap:10px;">
-      <button class="btn btn-ghost" onclick="importFromCodex()">📥 导入 Codex 配置</button>
-      <button class="btn btn-primary" onclick="navigateAccounts('add')">+ 添加账号</button>
+    <div class="page-header-actions">
+      <button class="btn btn-ghost" onclick="importFromCodex()">导入配置</button>
+      <button class="btn btn-primary" onclick="navigateAccounts('add')">添加账号</button>
     </div>
   </div>
   ${cards}`;
@@ -102,161 +240,239 @@ function renderAddAccount() {
 function renderAccountDetail() {
   if (!editingAccount) return '<div class="empty-state">账号数据丢失，请返回列表</div>';
   const a = editingAccount;
+  ensureAccountEndpoints(a);
+  const ep = currentEndpoint(a) || {};
+  const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
+  const contextWindow = ep.context_window_override ?? null;
+  const reasoningEffort = ep.reasoning_effort_override ?? null;
+  const thinkingTokens = ep.thinking_tokens ?? null;
+  const customHeaders = ep.custom_headers || {};
+  const requestTimeout = ep.request_timeout_secs ?? null;
+  const maxRetries = ep.max_retries ?? a.max_retries;
   const knownModels = getProviderKnownModels(a.provider);
 
   return `<div class="breadcrumb">
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / ${esc(a.name)}</span>
   </div>
-  <div class="page-header"><h2>${esc(a.name)} <span style="color:red;font-size:12px;">[v1.8.9-1M]</span></h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
+  <div class="page-header"><h2>${esc(a.name)}</h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
 
   <div class="account-form">
-    <div class="config-fields">
-      <div class="config-field">
-        <label>账号名称</label>
-        <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">账号凭据</div>
+        <div class="account-section-desc">同一个 API Key 下可以配置多个端点。</div>
       </div>
-      <div class="config-field">
-        <label>上游 URL</label>
-        <input type="text" id="edit_upstream" value="${escAttr(a.upstream)}" placeholder="https://api.example.com/v1">
-        <span class="hint">Chat Completions API 基础地址</span>
-        <button class="btn btn-ghost" onclick="testUpstreamConnectivity()" style="font-size:11px;margin-top:4px;">🔌 测试连通性</button>
-        <span id="connectivityResult" style="font-size:11px;margin-left:8px;"></span>
-      </div>
-      <div class="config-field">
-        <label>API Key</label>
-        <div class="pass-group">
-          <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
-          <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
-        </div>
-        <span class="hint">API Key 通过密码框安全存储</span>
-      </div>
-      <div class="config-field">
-        <label>余额查询 URL <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
-        <input type="text" id="edit_balance_url" value="${escAttr(a.balance_url || '')}" placeholder="留空则自动探测">
-        <span class="hint">自定义余额/额度查询接口地址，例如 https://api.minimax.com/v1/account/info</span>
-      </div>
-      <div class="config-field">
-        <label style="display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="edit_translate_enabled"
-            ${a.translate_enabled !== false ? 'checked' : ''}>
-          启用请求翻译（Responses → Chat Completions）
-        </label>
-        <span class="hint">关闭后请求将直接透传至上游 Responses API，适用于原生支持 Responses API 的上游（如 OpenAI）。DeepSeek 等仅支持 Chat Completions 的供应商需保持开启。</span>
-      </div>
-    </div>
-
-    <div class="section-sub-label">模型映射</div>
-    <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">左侧为 Codex 请求的模型名，右侧为上游实际模型名</div>
-    <div style="margin-bottom:10px;">
-      <button class="btn btn-ghost" onclick="fetchAndPopulateModels()" style="font-size:11px;">⬇ 从上游获取模型列表</button>
-      <span id="modelFetchStatus" style="font-size:10px;color:var(--text-muted);margin-left:8px;"></span>
-    </div>
-    <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
-    <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
-
-    <div class="collapsible-section">
       <div class="config-fields">
         <div class="config-field">
-          <label style="display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="edit_vision_enabled" ${a.vision_enabled ? 'checked' : ''} onchange="toggleVisionFields()">
-            启用多模态（视觉路由）
-          </label>
-          <span class="hint">模型支持图片输入时勾选，配置独立的视觉模型路由</span>
+          <label>账号名称</label>
+          <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+        </div>
+        <div class="config-field">
+          <label>API Key</label>
+          <div class="pass-group">
+            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+            <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
+          </div>
+          <span class="hint">账号级凭据，切换端点时复用。</span>
         </div>
       </div>
-      <div id="visionFields" style="${a.vision_enabled ? '' : 'display:none;'}">
-        <div class="config-fields" style="margin-top:12px;">
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">端点</div>
+        <div class="account-section-desc">端点决定协议、URL、路径和余额探测。</div>
+      </div>
+      ${renderEndpointControls(a, ep)}
+      <div class="config-fields endpoint-detail-fields">
+        <div class="config-field">
+          <label>端点名称</label>
+          <input type="text" id="edit_endpoint_name" value="${escAttr(ep.name || '')}" placeholder="例如主模型端点 / 备用端点">
+        </div>
+        <div class="config-field">
+          <label>端点协议</label>
+          <select id="edit_endpoint_kind">
+            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>Chat 兼容（Responses → Chat）</option>
+            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>Responses 直连</option>
+            <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
+            <option value="custom_chat" ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? 'selected' : ''}>自定义 Chat</option>
+            <option value="custom_responses" ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? 'selected' : ''}>自定义 Responses</option>
+          </select>
+          <span class="hint">选择当前上游真实支持的 API 协议。</span>
+        </div>
+        <div class="config-field wide">
+          <label>上游 URL</label>
+          <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
+          <div class="inline-test-row">
+            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
+            <span id="connectivityResult"></span>
+          </div>
+        </div>
+        <div class="config-field">
+          <label>端点路径 <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空使用协议默认路径">
+          <span class="hint">例如 chat/completions、responses、messages。</span>
+        </div>
+        <div class="config-field">
+          <label>余额查询 URL <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_balance_url" value="${escAttr(ep.balance_url || '')}" placeholder="留空则自动探测">
+        </div>
+      </div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">模型</div>
+        <div class="account-section-desc">每一行就是一个模型的映射和图片处理方式。</div>
+      </div>
+      <div class="section-action-row">
+        <button class="btn btn-ghost" onclick="fetchAndPopulateModels()">从上游获取模型列表</button>
+        <span id="modelFetchStatus"></span>
+      </div>
+      <div class="model-map-head">
+        <span>Codex 请求模型</span>
+        <span>上游模型</span>
+        <span>图片处理</span>
+      </div>
+      <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
+      <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">其他模型图片处理</div>
+        <div class="account-section-desc">上方没有单独配置的模型，才使用这里。</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>其他模型</label>
+          <input type="hidden" id="edit_vision_mode" value="${escAttr(String(visionMode).toLowerCase())}">
+          <div class="vision-mode-segments" role="group" aria-label="视觉能力">
+            <button type="button" class="vision-mode-option ${visionMode === 'off' || visionMode === 'Off' ? 'active' : ''}" data-mode="off" onclick="setVisionMode('off')">关闭</button>
+            <button type="button" class="vision-mode-option ${visionMode === 'native' || visionMode === 'Native' ? 'active' : ''}" data-mode="native" onclick="setVisionMode('native')">原生</button>
+            <button type="button" class="vision-mode-option ${visionMode === 'glue' || visionMode === 'Glue' ? 'active' : ''}" data-mode="glue" onclick="setVisionMode('glue')">胶水</button>
+          </div>
+          <span class="hint">模型映射行优先生效；这里处理临时模型或未列出的模型。</span>
+        </div>
+        <div class="config-field">
+          <label>不支持图片时</label>
+          <select id="edit_unsupported_image_policy">
+            <option value="reject" ${(ep.vision?.unsupported_image_policy || 'reject') === 'reject' ? 'selected' : ''}>拒绝请求并提示</option>
+            <option value="strip_with_warning" ${ep.vision?.unsupported_image_policy === 'strip_with_warning' ? 'selected' : ''}>剥离图片并继续</option>
+          </select>
+          <span class="hint">关闭视觉或模型覆盖为关闭时生效</span>
+        </div>
+      </div>
+      <div id="visionFields" style="${visionMode === 'glue' || visionMode === 'Glue' ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>胶水适配器</label>
+            <select id="edit_vision_adapter">
+              <option value="minimax_coding_plan_vlm" ${(ep.vision?.adapter_id || 'minimax_coding_plan_vlm') === 'minimax_coding_plan_vlm' ? 'selected' : ''}>MiniMax Coding Plan VLM</option>
+            </select>
+            <span class="hint">第一版仅实现 MiniMax 胶水适配器</span>
+          </div>
+          <div class="config-field">
+            <label>胶水策略</label>
+            <select id="edit_glue_strategy">
+              <option value="final_answer" ${(ep.vision?.glue_strategy || 'final_answer') === 'final_answer' ? 'selected' : ''}>视觉模型直接回答</option>
+              <option value="caption_then_main" ${ep.vision?.glue_strategy === 'caption_then_main' ? 'selected' : ''}>先识图再交给主模型</option>
+            </select>
+          </div>
           <div class="config-field">
             <label>视觉上游 URL</label>
-            <input type="text" id="edit_vision_upstream" value="${escAttr(a.vision_upstream || '')}" placeholder="https://api.minimax.chat">
+            <input type="text" id="edit_vision_upstream" value="${escAttr(ep.vision?.base_url || a.vision_upstream || '')}" placeholder="https://api.minimax.chat">
           </div>
           <div class="config-field">
             <label>视觉 API Key</label>
             <div class="pass-group">
-              <input type="password" id="edit_vision_api_key" value="${escAttr(a.vision_api_key || '')}" placeholder="视觉模型密钥" autocomplete="off">
+              <input type="password" id="edit_vision_api_key" value="${escAttr(ep.vision?.api_key || a.vision_api_key || '')}" placeholder="视觉模型密钥" autocomplete="off">
               <button type="button" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏">⊙</button>
             </div>
           </div>
           <div class="config-field">
             <label>视觉模型名</label>
-            <input type="text" id="edit_vision_model" value="${escAttr(a.vision_model || '')}" placeholder="MiniMax-M1">
+            <input type="text" id="edit_vision_model" value="${escAttr(ep.vision?.model || a.vision_model || '')}" placeholder="MiniMax-M1">
           </div>
           <div class="config-field">
             <label>视觉端点路径</label>
-            <input type="text" id="edit_vision_endpoint" value="${escAttr(a.vision_endpoint || '')}" placeholder="v1/coding_plan/vlm">
+            <input type="text" id="edit_vision_endpoint" value="${escAttr(ep.vision?.path || a.vision_endpoint || 'v1/coding_plan/vlm')}" placeholder="v1/coding_plan/vlm">
+            <div class="inline-test-row">
+              <button class="btn btn-ghost" onclick="testVisionConnectivity()">测试视觉端点</button>
+              <span id="visionConnectivityResult"></span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="section-sub-label" style="color:red;">【测试】上下文窗口（1M 大上下文）</div>
-    <div class="config-fields" style="margin-bottom:10px;">
-      <div class="config-field">
-        <label style="display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="edit_cw_enabled" ${a.context_window_override ? 'checked' : ''} onchange="toggleContextWindowFields()">
-          启用上下文窗口覆盖
-        </label>
-        <span class="hint">勾选后 Codex 将使用下方设定的 token 数作为模型上下文窗口大小</span>
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">运行参数</div>
+        <div class="account-section-desc">按端点覆盖上下文窗口和推理预算。</div>
       </div>
-      <div class="config-field" id="cwSizeField" style="${a.context_window_override ? '' : 'display:none;'}">
-        <label>上下文窗口大小 (token)</label>
-        <input type="number" id="edit_cw_size" value="${a.context_window_override || 1000000}" min="1" max="10000000" step="1" placeholder="1000000">
-        <span class="hint">Codex 有效上下文 = 此值 × 95%（如填 1052632 可达真正 1M）</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="collapsible-section">
-    <div class="config-fields">
-      <div class="config-field">
-        <label style="display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="edit_reasoning_enabled" ${a.reasoning_effort_override ? 'checked' : ''} onchange="toggleReasoningFields()">
-          强制推理强度（覆盖 Codex 请求）
-        </label>
-        <span class="hint">用于需要强制启用扩展思考的模型，如 Claude Opus、DeepSeek-R1</span>
-      </div>
-    </div>
-    <div id="reasoningFields" style="${a.reasoning_effort_override ? '' : 'display:none;'}">
-      <div class="config-fields" style="margin-top:12px;">
+      <div class="config-fields">
         <div class="config-field">
-          <label>推理强度</label>
-          <select id="edit_reasoning_effort">
-            <option value="" ${!a.reasoning_effort_override ? 'selected' : ''}>不覆盖（跟随 Codex 请求）</option>
-            <option value="low" ${a.reasoning_effort_override === 'low' ? 'selected' : ''}>low - 低推理</option>
-            <option value="medium" ${a.reasoning_effort_override === 'medium' ? 'selected' : ''}>medium - 中等推理</option>
-            <option value="high" ${a.reasoning_effort_override === 'high' ? 'selected' : ''}>high - 高推理</option>
-            <option value="max" ${a.reasoning_effort_override === 'max' ? 'selected' : ''}>max - 最大推理</option>
-          </select>
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_cw_enabled" ${contextWindow ? 'checked' : ''} onchange="toggleContextWindowFields()">
+            上下文窗口覆盖
+          </label>
+          <span class="hint">勾选后 Codex 使用下方 token 数作为该端点上下文。</span>
+        </div>
+        <div class="config-field" id="cwSizeField" style="${contextWindow ? '' : 'display:none;'}">
+          <label>上下文窗口大小 (token)</label>
+          <input type="number" id="edit_cw_size" value="${contextWindow || 1000000}" min="1" max="10000000" step="1" placeholder="1000000">
+          <span class="hint">Codex 有效上下文约为此值 × 95%。</span>
         </div>
         <div class="config-field">
-          <label>思考 Token 预算 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
-          <input type="number" id="edit_thinking_tokens" value="${a.thinking_tokens || ''}" min="1024" max="128000" step="1024" placeholder="留空不设限制，如 16000">
-          <span class="hint">Claude Extended Thinking 的 token 预算，留空则不限制</span>
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_reasoning_enabled" ${reasoningEffort ? 'checked' : ''} onchange="toggleReasoningFields()">
+            推理强度覆盖
+          </label>
+          <span class="hint">用于 Claude、R1 等需要固定思考预算的端点。</span>
         </div>
       </div>
-    </div>
-  </div>
+      <div id="reasoningFields" style="${reasoningEffort ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>推理强度</label>
+            <select id="edit_reasoning_effort">
+              <option value="" ${!reasoningEffort ? 'selected' : ''}>不覆盖（跟随 Codex 请求）</option>
+              <option value="low" ${reasoningEffort === 'low' ? 'selected' : ''}>low - 低推理</option>
+              <option value="medium" ${reasoningEffort === 'medium' ? 'selected' : ''}>medium - 中等推理</option>
+              <option value="high" ${reasoningEffort === 'high' ? 'selected' : ''}>high - 高推理</option>
+              <option value="max" ${reasoningEffort === 'max' ? 'selected' : ''}>max - 最大推理</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <label>思考 Token 预算 <span class="optional-label">可选</span></label>
+            <input type="number" id="edit_thinking_tokens" value="${thinkingTokens || ''}" min="1024" max="128000" step="1024" placeholder="留空不设限制，如 16000">
+            <span class="hint">Claude Extended Thinking 的 token 预算，留空则不限制</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
   <div class="collapsible-section">
-    <button class="collapsible-toggle${(a.custom_headers && Object.keys(a.custom_headers).length > 0) || a.request_timeout_secs ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+    <button class="collapsible-toggle${Object.keys(customHeaders).length > 0 || requestTimeout ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
       <span class="arrow">▸</span> 高级（自定义头 / 超时）
     </button>
-    <div class="collapsible-content${(a.custom_headers && Object.keys(a.custom_headers).length > 0) || a.request_timeout_secs ? ' open' : ''}">
-      <div class="config-fields" style="margin-top:12px;">
+    <div class="collapsible-content${Object.keys(customHeaders).length > 0 || requestTimeout ? ' open' : ''}">
+      <div class="config-fields nested-fields">
         <div class="config-field">
-          <label>自定义 HTTP 头 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
-          <textarea id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123" style="font-family:monospace;font-size:12px;">${escAttr(Object.entries(a.custom_headers || {}).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
+          <label>自定义 HTTP 头 <span class="optional-label">可选</span></label>
+          <textarea class="mono-textarea" id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123">${escAttr(Object.entries(customHeaders).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
           <span class="hint">每行一个头，格式: 头名称: 头值，将在每次上游请求时附加</span>
         </div>
         <div class="config-field">
-          <label>请求超时（秒） <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
-          <input type="number" id="edit_request_timeout" value="${a.request_timeout_secs || ''}" min="1" max="600" step="1" placeholder="留空使用默认 300s">
+          <label>请求超时（秒） <span class="optional-label">可选</span></label>
+          <input type="number" id="edit_request_timeout" value="${requestTimeout || ''}" min="1" max="600" step="1" placeholder="留空使用默认 300s">
           <span class="hint">此账号的上游请求超时时间，Claude 扩展思考建议设 180-300</span>
         </div>
         <div class="config-field">
-          <label>最大重试次数 <span style="font-weight:normal;color:var(--text-muted);">（可选）</span></label>
-          <input type="number" id="edit_max_retries" value="${a.max_retries ?? ''}" min="0" max="10" step="1" placeholder="留空使用默认 3 次">
+          <label>最大重试次数 <span class="optional-label">可选</span></label>
+          <input type="number" id="edit_max_retries" value="${maxRetries ?? ''}" min="0" max="10" step="1" placeholder="留空使用默认 3 次">
           <span class="hint">上游请求失败（401/429/502/503/连接错误）时的重试次数，0 表示不重试</span>
         </div>
       </div>
@@ -266,13 +482,81 @@ function renderAccountDetail() {
   <div class="accounts-actions">
     <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
     <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
+  </div>
+  </div>`;
+}
+
+function renderEndpointControls(a, ep) {
+  const endpoints = ensureAccountEndpoints(a);
+  const active = a.id === (accountsData.active_account_id || accountsData.active_id);
+  const currentId = ep?.id || selectedEndpointId(a) || '';
+  const isSavedAccount = Boolean(a.id);
+  const isCurrentActiveEndpoint = active && currentId === accountsData.active_endpoint_id;
+  const applyDisabled = !isSavedAccount || !currentId || isCurrentActiveEndpoint;
+  const applyLabel = !isSavedAccount ? '保存后可应用' : '应用端点';
+  const templateOptions = (endpointTemplates || []).map(t =>
+    `<option value="${escAttr(t.id)}">${esc(t.label)}</option>`
+  ).join('');
+  const endpointOptions = endpoints.map(endpoint => {
+    const isCurrent = endpoint.id === currentId;
+    const isActiveEndpoint = active && endpoint.id === accountsData.active_endpoint_id;
+    const suffix = isActiveEndpoint ? '（活跃）' : '';
+    return `<option value="${escAttr(endpoint.id)}" ${isCurrent ? 'selected' : ''}>${esc(endpoint.name || endpointKindLabel(endpoint.kind))}${suffix}</option>`;
+  }).join('');
+  const endpointName = ep?.name || '默认端点';
+  const endpointKind = endpointKindLabel(ep?.kind);
+  const endpointState = isCurrentActiveEndpoint ? '正在使用' : (active ? '未应用' : '账号未应用');
+  const endpointPath = ep?.path || '协议默认路径';
+  const endpointBaseUrl = ep?.base_url || a.upstream || '';
+  const applyAction = isCurrentActiveEndpoint
+    ? ''
+    : `<button class="btn btn-primary" onclick="applyCurrentEndpoint()" ${applyDisabled ? 'disabled' : ''}>${applyLabel}</button>`;
+  const deleteAction = endpoints.length > 1
+    ? '<button class="btn btn-danger" onclick="deleteCurrentEndpoint()">删除</button>'
+    : '';
+  const currentEndpointControl = endpoints.length > 1
+    ? `<div class="endpoint-switch-row">
+        <label for="edit_endpoint_id">正在编辑</label>
+        <select id="edit_endpoint_id" onchange="selectEditingEndpoint(this.value)">${endpointOptions}</select>
+      </div>`
+    : '';
+  const manageClass = endpoints.length > 1 ? 'endpoint-manage-panel' : 'endpoint-manage-panel single';
+
+  return `<div class="endpoint-box">
+    <div class="endpoint-current-panel">
+      <div class="endpoint-status-main">
+        <div class="endpoint-status-name">${esc(endpointName)}</div>
+        <div class="endpoint-status-sub" title="${escAttr(endpointBaseUrl)}">${esc(endpointKind)} · ${esc(trunc(endpointBaseUrl || '未设置 URL', 58))}</div>
+      </div>
+      <div class="endpoint-status-tags">
+        <span class="${isCurrentActiveEndpoint ? 'active' : ''}">${esc(endpointState)}</span>
+        <span>${esc(endpointPath)}</span>
+      </div>
+      <div class="endpoint-actions">
+        ${applyAction}
+        <button class="btn btn-ghost" onclick="duplicateCurrentEndpoint()" ${currentId ? '' : 'disabled'}>复制</button>
+        ${deleteAction}
+      </div>
+    </div>
+    <div class="${manageClass}">
+      ${currentEndpointControl}
+      <div class="endpoint-add-panel">
+        <div class="endpoint-control-group endpoint-control-template">
+          <label for="new_endpoint_template">添加备用端点</label>
+          <select id="new_endpoint_template" title="选择要新增的协议端点">${templateOptions || '<option value="">Chat 兼容端点</option>'}</select>
+          <span class="endpoint-add-hint">用于同一账号下配置备用协议或备用上游。</span>
+        </div>
+        <button class="btn btn-ghost" onclick="addEndpointFromSelectedTemplate()">添加</button>
+      </div>
+    </div>
   </div>`;
 }
 
 function renderModelMappingRows(knownModels) {
   const a = editingAccount;
   if (!a) return '';
-  const map = a.model_map || {};
+  const ep = currentEndpoint(a) || {};
+  const map = ep.model_map || a.model_map || {};
   const rows = [];
   for (const codexModel of CODEX_MODEL_LIST) {
     const val = map[codexModel] || '';
@@ -290,21 +574,52 @@ function renderModelMappingRows(knownModels) {
 
   return rows.map((r, i) => {
     const labelExtra = r.readonly ? '' : ' (自定义)';
+    const upstreamModel = r.val || r.codexModel;
+    const profile = (ep.model_profiles || {})[upstreamModel] || {};
+    const visionMode = profile.vision_mode || ep.vision?.mode || 'off';
+    const removeControl = r.readonly
+      ? '<span class="model-remove-placeholder"></span>'
+      : '<button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>';
     return `<div class="model-row">
       <div class="model-label codex">${esc(r.codexModel)}${labelExtra}</div>
       <div class="model-value">
         <div class="model-autocomplete">
           <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)"
             data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
-            onchange="onModelMapChange(this)"
+            onchange="syncModelVisionTarget(this)"
             onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)"
             autocomplete="off">
           <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
         </div>
-        <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
+        ${renderModelVisionSegments(upstreamModel, visionMode)}
+        ${removeControl}
       </div>
     </div>`;
   }).join('');
+}
+
+function normalizedVisionMode(mode) {
+  const value = String(mode || 'off').toLowerCase();
+  return ['off', 'native', 'glue'].includes(value) ? value : 'off';
+}
+
+function parseOptionalInteger(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function renderModelVisionSegments(model, value) {
+  const mode = normalizedVisionMode(value);
+  const modelAttr = escAttr(model || '');
+  const options = [
+    ['off', '关闭'],
+    ['native', '原生'],
+    ['glue', '胶水'],
+  ];
+  return `<div class="model-vision-segments" data-model="${modelAttr}" data-mode="${mode}" role="group" aria-label="当前映射模型视觉能力">
+    ${options.map(([value, label]) => `<button type="button" class="${mode === value ? 'active' : ''}" data-mode="${value}" onclick="setModelVisionMode(this, '${value}')">${label}</button>`).join('')}
+  </div>`;
 }
 
 // ── 数据加载 ──
@@ -314,6 +629,7 @@ async function loadAccountsData() {
     const result = await invoke('list_accounts');
     accountsData = result;
     if (!providerPresets.length) await loadProviderPresets();
+    if (!endpointTemplates.length) await loadEndpointTemplates();
     if (accountsView === 'list' && currentPanel === 'accounts') renderMainContent();
     // 异步加载余额（不阻塞渲染）
     if (accountsView === 'list') {
@@ -332,16 +648,20 @@ async function loadProviderPresets() {
   }
 }
 
+async function loadEndpointTemplates() {
+  try {
+    endpointTemplates = await invoke('get_endpoint_templates');
+  } catch (e) {
+    showToast('加载端点模板失败: ' + e, 'error');
+  }
+}
+
 function getProviderKnownModels(provider) {
   const p = providerPresets.find(pp => pp.slug === provider);
   return p ? p.known_models : [];
 }
 
 // ── 模型映射编辑辅助 ──
-
-function onModelMapChange(input) {
-  // 预留：当用户修改上游模型名时更新占位数据
-}
 
 function removeModelMapRow(btn) {
   const row = btn.closest('.model-row');
@@ -353,6 +673,177 @@ function removeModelMapRow(btn) {
     }
   }
   row.remove();
+}
+
+function syncEditingDraftFromForm() {
+  if (!editingAccount) return;
+  const a = editingAccount;
+  const nameInput = document.getElementById('edit_name');
+  if (nameInput) a.name = nameInput.value.trim() || a.name;
+  const keyInput = document.getElementById('edit_api_key');
+  if (keyInput) a.api_key = keyInput.value.trim();
+
+  const endpoints = ensureAccountEndpoints(a);
+  const ep = currentEndpoint(a) || endpoints[0];
+  if (!ep) return;
+
+  const endpointName = document.getElementById('edit_endpoint_name');
+  if (endpointName) ep.name = endpointName.value.trim() || ep.name || '默认端点';
+  const endpointKind = document.getElementById('edit_endpoint_kind');
+  if (endpointKind) ep.kind = endpointKind.value;
+  const upstream = document.getElementById('edit_upstream');
+  if (upstream) {
+    ep.base_url = upstream.value.trim();
+    a.upstream = ep.base_url || a.upstream;
+  }
+  const endpointPath = document.getElementById('edit_endpoint_path');
+  if (endpointPath) ep.path = endpointPath.value.trim();
+  const balanceUrl = document.getElementById('edit_balance_url');
+  if (balanceUrl) {
+    ep.balance_url = balanceUrl.value.trim();
+    a.balance_url = ep.balance_url;
+  }
+
+  if (!ep.vision) ep.vision = {};
+  const visionMode = document.getElementById('edit_vision_mode');
+  if (visionMode) {
+    ep.vision.mode = visionMode.value || 'off';
+    a.vision_enabled = ep.vision.mode === 'glue';
+  }
+  const visionUpstream = document.getElementById('edit_vision_upstream');
+  if (visionUpstream) { ep.vision.base_url = visionUpstream.value.trim(); a.vision_upstream = ep.vision.base_url; }
+  const visionKey = document.getElementById('edit_vision_api_key');
+  if (visionKey) { ep.vision.api_key = visionKey.value.trim(); a.vision_api_key = ep.vision.api_key; }
+  const visionModel = document.getElementById('edit_vision_model');
+  if (visionModel) { ep.vision.model = visionModel.value.trim(); a.vision_model = ep.vision.model; }
+  const visionPath = document.getElementById('edit_vision_endpoint');
+  if (visionPath) { ep.vision.path = visionPath.value.trim() || 'v1/coding_plan/vlm'; a.vision_endpoint = ep.vision.path; }
+  ep.vision.adapter_id = document.getElementById('edit_vision_adapter')?.value || ep.vision.adapter_id || 'minimax_coding_plan_vlm';
+  ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
+  ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'reject';
+
+  ep.model_map = collectModelMap();
+  ep.model_profiles = collectModelProfiles();
+  a.model_map = ep.model_map;
+
+  const cwEnabled = document.getElementById('edit_cw_enabled');
+  if (cwEnabled) {
+    ep.context_window_override = cwEnabled.checked
+      ? parseOptionalInteger(document.getElementById('edit_cw_size')?.value)
+      : null;
+    a.context_window_override = ep.context_window_override;
+  }
+
+  const reasoningEnabled = document.getElementById('edit_reasoning_enabled');
+  if (reasoningEnabled) {
+    ep.reasoning_effort_override = reasoningEnabled.checked
+      ? (document.getElementById('edit_reasoning_effort')?.value || null)
+      : null;
+    ep.thinking_tokens = reasoningEnabled.checked
+      ? parseOptionalInteger(document.getElementById('edit_thinking_tokens')?.value)
+      : null;
+    a.reasoning_effort_override = ep.reasoning_effort_override;
+    a.thinking_tokens = ep.thinking_tokens;
+  }
+
+  const headersText = document.getElementById('edit_custom_headers');
+  if (headersText) {
+    ep.custom_headers = {};
+    const raw = headersText.value.trim();
+    if (raw) {
+      raw.split('\n').forEach(line => {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 0) {
+          const k = line.substring(0, colonIdx).trim();
+          const v = line.substring(colonIdx + 1).trim();
+          if (k && v) ep.custom_headers[k] = v;
+        }
+      });
+    }
+    a.custom_headers = ep.custom_headers;
+  }
+
+  const timeoutInput = document.getElementById('edit_request_timeout');
+  if (timeoutInput) {
+    ep.request_timeout_secs = parseOptionalInteger(timeoutInput.value);
+    a.request_timeout_secs = ep.request_timeout_secs;
+  }
+  const retriesInput = document.getElementById('edit_max_retries');
+  if (retriesInput) {
+    ep.max_retries = parseOptionalInteger(retriesInput.value);
+    a.max_retries = ep.max_retries;
+  }
+  a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
+}
+
+function selectEditingEndpoint(endpointId) {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  editingAccount._editing_endpoint_id = endpointId;
+  upstreamModels = [];
+  renderMainContent();
+}
+
+function addEndpointFromSelectedTemplate() {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  const templateId = document.getElementById('new_endpoint_template')?.value;
+  const template = (endpointTemplates || []).find(t => t.id === templateId) || providerDefaultTemplate(editingAccount.provider);
+  const endpoint = createEndpointFromTemplate(template, editingAccount);
+  ensureAccountEndpoints(editingAccount).push(endpoint);
+  editingAccount._editing_endpoint_id = endpoint.id;
+  renderMainContent();
+}
+
+function duplicateCurrentEndpoint() {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  const ep = currentEndpoint(editingAccount);
+  if (!ep) return;
+  const copy = JSON.parse(JSON.stringify(ep));
+  copy.id = newEndpointId();
+  copy.name = (copy.name || endpointKindLabel(copy.kind)) + ' 副本';
+  ensureAccountEndpoints(editingAccount).push(copy);
+  editingAccount._editing_endpoint_id = copy.id;
+  renderMainContent();
+}
+
+async function deleteCurrentEndpoint() {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  const endpoints = ensureAccountEndpoints(editingAccount);
+  const ep = currentEndpoint(editingAccount);
+  if (!ep || endpoints.length <= 1) return;
+  if (!await showConfirm('确定要删除当前端点吗？')) return;
+  editingAccount.endpoints = endpoints.filter(item => item.id !== ep.id);
+  editingAccount._editing_endpoint_id = editingAccount.endpoints[0]?.id || null;
+  renderMainContent();
+}
+
+async function applyCurrentEndpoint() {
+  if (!editingAccount?.id) {
+    showToast('请先保存账号后再应用端点', 'error');
+    return;
+  }
+  const ep = currentEndpoint(editingAccount);
+  if (!ep) return;
+  try {
+    await saveAccount({ silent: true, stay: true });
+    await invoke('switch_endpoint', { accountId: editingAccount.id, endpointId: ep.id });
+    showToast('已应用端点', 'success');
+    accountsData.active_id = editingAccount.id;
+    accountsData.active_account_id = editingAccount.id;
+    accountsData.active_endpoint_id = ep.id;
+    await loadAccountsData();
+    editingAccount = accountsData.accounts.find(ac => ac.id === editingAccount.id);
+    if (editingAccount) {
+      editingAccount = JSON.parse(JSON.stringify(editingAccount));
+      editingAccount._editing_endpoint_id = ep.id;
+    }
+    renderMainContent();
+  } catch (e) {
+    showToast('应用端点失败: ' + e, 'error');
+  }
 }
 
 function showSuggestions(input) {
@@ -399,6 +890,7 @@ function selectSuggestion(item) {
   const input = wrap.querySelector('input');
   if (input) {
     input.value = item.textContent;
+    syncModelVisionTarget(input);
     input.focus();
   }
   const dropdown = wrap.querySelector('.model-suggestions');
@@ -412,16 +904,34 @@ function addModelRow(containerId, knownModelsJson) {
   const container = document.getElementById(containerId);
   const row = document.createElement('div');
   row.className = 'model-row';
-  row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名" style="width:100%;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--radius-sm);color:var(--text-primary);padding:7px 10px;font-size:12px;font-family:var(--font-mono);outline:none;"></div>
+  row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名"></div>
     <div class="model-value">
       <div class="model-autocomplete">
         <input type="text" placeholder="上游模型名" autocomplete="off"
+          onchange="syncModelVisionTarget(this)"
           onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)">
         <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
       </div>
+      ${renderModelVisionSegments('', document.getElementById('edit_vision_mode')?.value || 'off')}
       <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
     </div>`;
   container.appendChild(row);
+}
+
+function setModelVisionMode(button, mode) {
+  const wrap = button.closest('.model-vision-segments');
+  if (!wrap) return;
+  wrap.querySelectorAll('button').forEach(item => {
+    item.classList.toggle('active', item === button);
+  });
+  wrap.dataset.mode = normalizedVisionMode(mode);
+}
+
+function syncModelVisionTarget(input) {
+  const row = input.closest('.model-row');
+  const wrap = row?.querySelector('.model-vision-segments');
+  if (!wrap) return;
+  wrap.dataset.model = input.value.trim();
 }
 
 function collectModelMap() {
@@ -439,6 +949,21 @@ function collectModelMap() {
       upstream = inputs[0].value.trim();
     }
     if (codex && upstream) result[codex] = upstream;
+  });
+  return result;
+}
+
+function collectModelProfiles() {
+  const result = {};
+  const rows = document.querySelectorAll('#modelMapRows .model-row');
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll('input[type="text"]');
+    const upstreamInput = inputs.length === 2 ? inputs[1] : inputs[0];
+    const model = upstreamInput?.value?.trim() || upstreamInput?.dataset?.codex || row.querySelector('.custom-codex-model')?.value?.trim();
+    const mode = row.querySelector('.model-vision-segments')?.dataset.mode || 'off';
+    if (model) {
+      result[model] = { vision_mode: mode };
+    }
   });
   return result;
 }
@@ -481,6 +1006,8 @@ function addAccount(provider) {
     max_retries: null,
     translate_enabled: true,
   };
+  editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
+  editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
   accountsView = 'edit';
   renderMainContent();
 }
@@ -497,89 +1024,26 @@ function editAccount(id) {
   renderMainContent();
 }
 
-async function saveAccount() {
+async function saveAccount(options = {}) {
   if (!editingAccount) return;
+  if (options instanceof Event) options = {};
   const a = editingAccount;
 
-  a.name = document.getElementById('edit_name')?.value?.trim() || a.name;
-  a.upstream = document.getElementById('edit_upstream')?.value?.trim() || a.upstream;
-
-  const keyInput = document.getElementById('edit_api_key');
-  if (keyInput) a.api_key = keyInput.value.trim();
-
-  const visionEnabled = document.getElementById('edit_vision_enabled');
-  if (visionEnabled) a.vision_enabled = visionEnabled.checked;
-
-  const vu = document.getElementById('edit_vision_upstream');
-  if (vu) a.vision_upstream = vu.value.trim();
-  const vk = document.getElementById('edit_vision_api_key');
-  if (vk) a.vision_api_key = vk.value.trim();
-  const vm = document.getElementById('edit_vision_model');
-  if (vm) a.vision_model = vm.value.trim();
-  const ve = document.getElementById('edit_vision_endpoint');
-  if (ve) a.vision_endpoint = ve.value.trim();
-
-  const bu = document.getElementById('edit_balance_url');
-  if (bu) a.balance_url = bu.value.trim();
-
-  // 大上下文窗口覆盖
-  const cwEnabled = document.getElementById('edit_cw_enabled');
-  if (cwEnabled && cwEnabled.checked) {
-    const cwSize = document.getElementById('edit_cw_size');
-    a.context_window_override = cwSize ? parseInt(cwSize.value, 10) || null : null;
-  } else {
-    a.context_window_override = null;
+  syncEditingDraftFromForm();
+  const ep = currentEndpoint(a);
+  if (ep) {
+    a.upstream = ep.base_url || a.upstream;
+    a.balance_url = ep.balance_url || '';
+    a.model_map = ep.model_map || {};
+    a.context_window_override = ep.context_window_override ?? null;
+    a.reasoning_effort_override = ep.reasoning_effort_override ?? null;
+    a.thinking_tokens = ep.thinking_tokens ?? null;
+    a.custom_headers = ep.custom_headers || {};
+    a.request_timeout_secs = ep.request_timeout_secs ?? null;
+    a.max_retries = ep.max_retries ?? null;
+    a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
   }
-
-  // 推理配置
-  const reasoningEnabled = document.getElementById('edit_reasoning_enabled');
-  if (reasoningEnabled && reasoningEnabled.checked) {
-    const effortSel = document.getElementById('edit_reasoning_effort');
-    a.reasoning_effort_override = effortSel ? (effortSel.value || null) : null;
-    const thinkingTokens = document.getElementById('edit_thinking_tokens');
-    a.thinking_tokens = thinkingTokens ? (parseInt(thinkingTokens.value, 10) || null) : null;
-  } else {
-    a.reasoning_effort_override = null;
-    a.thinking_tokens = null;
-  }
-
-  // 自定义 HTTP 头
-  const headersText = document.getElementById('edit_custom_headers');
-  if (headersText) {
-    const raw = headersText.value.trim();
-    a.custom_headers = {};
-    if (raw) {
-      for (const line of raw.split('\n')) {
-        const colonIdx = line.indexOf(':');
-        if (colonIdx > 0) {
-          const k = line.substring(0, colonIdx).trim();
-          const v = line.substring(colonIdx + 1).trim();
-          if (k && v) a.custom_headers[k] = v;
-        }
-      }
-    }
-  }
-
-  // 请求超时
-  const timeoutInput = document.getElementById('edit_request_timeout');
-  if (timeoutInput) {
-    a.request_timeout_secs = parseInt(timeoutInput.value, 10) || null;
-  } else {
-    a.request_timeout_secs = null;
-  }
-
-  // 最大重试次数
-  const retriesInput = document.getElementById('edit_max_retries');
-  if (retriesInput) {
-    a.max_retries = parseInt(retriesInput.value, 10) || null;
-  } else {
-    a.max_retries = null;
-  }
-
-  const translateEnabled = document.getElementById('edit_translate_enabled');
-  if (translateEnabled) a.translate_enabled = translateEnabled.checked;
-
-  a.model_map = collectModelMap();
+  const editingEndpointId = ep?.id || selectedEndpointId(a);
   a.updated_at = Math.floor(Date.now() / 1000);
 
   try {
@@ -587,17 +1051,23 @@ async function saveAccount() {
     if (!a.id) {
       // 新账号
       result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: JSON.stringify(a) });
-      showToast('账号已创建', 'success');
+      if (!options.silent) showToast('账号已创建', 'success');
     } else {
       result = await invoke('update_account', { accountJson: JSON.stringify(a) });
-      showToast('账号已保存', 'success');
+      if (!options.silent) showToast('账号已保存', 'success');
     }
     await loadAccountsData();
     editingAccount = accountsData.accounts.find(ac => ac.id === result.id);
-    if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));
-    renderMainContent();
+    if (editingAccount) {
+      editingAccount = JSON.parse(JSON.stringify(editingAccount));
+      editingAccount._editing_endpoint_id = editingEndpointId;
+    }
+    if (!options.stay) renderMainContent();
+    return result;
   } catch (e) {
-    showToast('保存账号失败: ' + e, 'error');
+    if (!options.silent) showToast('保存账号失败: ' + e, 'error');
+    if (options.silent) throw e;
+    return null;
   }
 }
 
@@ -640,24 +1110,25 @@ async function applyAccount(id) {
 
 async function fetchAndPopulateModels() {
   const statusEl = document.getElementById('modelFetchStatus');
-  if (statusEl) statusEl.textContent = '获取中...';
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">获取中...</span>';
   try {
     // 统一使用表单中的 upstream 和 api_key（用户可能已修改但尚未保存）
     const upstream = document.getElementById('edit_upstream')?.value?.trim();
     const keyInput = document.getElementById('edit_api_key');
     const apiKey = keyInput ? keyInput.value.trim() : '';
     if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
-    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey });
+    const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
+    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey, endpointKind });
     if (upstreamModels.length > 0) {
-      if (statusEl) statusEl.textContent = `✓ 获取到 ${upstreamModels.length} 个模型`;
+      if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
       // 重新渲染模型映射行
       const knownModels = getProviderKnownModels(editingAccount?.provider || '');
       document.getElementById('modelMapRows').innerHTML = renderModelMappingRows(knownModels);
     } else {
-      if (statusEl) statusEl.textContent = '上游未返回模型';
+      if (statusEl) statusEl.innerHTML = '<span class="status-muted">上游未返回模型</span>';
     }
   } catch (e) {
-    if (statusEl) statusEl.textContent = '获取失败';
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">获取失败</span>';
     showToast('获取模型列表失败: ' + e, 'error');
   }
 }
@@ -668,23 +1139,50 @@ async function testUpstreamConnectivity() {
   const keyInput = document.getElementById('edit_api_key');
   const apiKey = keyInput ? keyInput.value.trim() : '';
   const resultEl = document.getElementById('connectivityResult');
-  if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-muted);">检测中...</span>';
+  if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
+  try {
+    const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
+    const result = await invoke('test_upstream_connectivity', { upstream, apiKey, endpointKind });
+    if (result.ok) {
+      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
+      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
+      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+    } else if (result.error) {
+      if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(result.error)}</span>`;
+      showToast('连通失败: ' + result.error, 'error');
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span class="status-warn">HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      showToast(`上游返回 HTTP ${result.status}`, 'error');
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    showToast('连通测试异常: ' + e, 'error');
+  }
+}
+
+async function testVisionConnectivity() {
+  const upstream = document.getElementById('edit_vision_upstream')?.value?.trim();
+  if (!upstream) { showToast('请先填写视觉上游 URL', 'error'); return; }
+  const keyInput = document.getElementById('edit_vision_api_key');
+  const apiKey = keyInput ? keyInput.value.trim() : '';
+  const resultEl = document.getElementById('visionConnectivityResult');
+  if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
   try {
     const result = await invoke('test_upstream_connectivity', { upstream, apiKey });
     if (result.ok) {
       const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
-      if (resultEl) resultEl.innerHTML = `<span style="color:var(--green);">✓ 连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
-      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
+      showToast(`视觉上游连通正常 (${result.latency_ms}ms${models})`, 'success');
     } else if (result.error) {
-      if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">✗ ${esc(result.error)}</span>`;
-      showToast('连通失败: ' + result.error, 'error');
+      if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(result.error)}</span>`;
+      showToast('视觉上游连通失败: ' + result.error, 'error');
     } else {
-      if (resultEl) resultEl.innerHTML = `<span style="color:var(--amber);">⚠ HTTP ${result.status} (${result.latency_ms}ms)</span>`;
-      showToast(`上游返回 HTTP ${result.status}`, 'error');
+      if (resultEl) resultEl.innerHTML = `<span class="status-warn">HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      showToast(`视觉上游返回 HTTP ${result.status}`, 'error');
     }
   } catch (e) {
-    if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">✗ ${esc(String(e))}</span>`;
-    showToast('连通测试异常: ' + e, 'error');
+    if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    showToast('视觉连通测试异常: ' + e, 'error');
   }
 }
 
@@ -741,7 +1239,7 @@ function renderBalanceInfo(info) {
     return `<div class="balance-row">
       <span>5h ${iRemain}/${coding.interval_total}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.min(iPct, 100)}%"></div></div>
-      <span style="font-size:10px;">周 ${wRemain}/${coding.weekly_total}</span>
+      <span class="balance-sub-label">周 ${wRemain}/${coding.weekly_total}</span>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.min(wPct, 100)}%"></div></div>
     </div>`;
   }

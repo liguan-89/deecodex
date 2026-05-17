@@ -177,6 +177,8 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
             items: vec![
                 check_deecodex_config(ctx),
                 check_accounts_config(ctx),
+                check_active_endpoint_vision(ctx),
+                check_model_vision_profiles(ctx),
                 check_model_mapping(ctx),
                 check_upstream_connectivity_sync(ctx),
             ],
@@ -866,7 +868,10 @@ fn check_accounts_config(ctx: &DiagnosticContext) -> DiagnosticItem {
     }
 
     let store = accounts::load_accounts(&ctx.data_dir);
-    let active = store.active_id.clone();
+    let active = store
+        .active_account_id
+        .clone()
+        .or_else(|| store.active_id.clone());
     let count = store.accounts.len();
 
     if count == 0 {
@@ -878,21 +883,154 @@ fn check_accounts_config(ctx: &DiagnosticContext) -> DiagnosticItem {
             suggestion: Some("请在「账号管理」中添加至少一个上游账号".into()),
         }
     } else {
-        let active_name = active
+        let active_account = active
             .as_ref()
-            .and_then(|id| store.accounts.iter().find(|a| a.id == *id))
+            .and_then(|id| store.accounts.iter().find(|a| a.id == *id));
+        let active_name = active_account
             .map(|a| a.name.as_str())
             .unwrap_or("(未选择)");
+        let active_endpoint =
+            active_account.and_then(|a| a.active_endpoint(store.active_endpoint_id.as_deref()));
+        let endpoint_detail = active_endpoint
+            .map(|e| format!("端点: {} / {:?}, 视觉: {:?}", e.name, e.kind, e.vision.mode))
+            .unwrap_or_else(|| "端点: 未选择".into());
         DiagnosticItem {
             status: Status::Pass,
             check_name: "账号配置".into(),
             message: format!("账号配置正常（{} 个账号）", count),
             detail: Some(format!(
-                "路径: {}, 当前活跃: {}",
+                "路径: {}, 当前活跃: {}, {}",
                 path.display(),
-                active_name
+                active_name,
+                endpoint_detail
             )),
             suggestion: None,
+        }
+    }
+}
+
+fn active_account_and_endpoint(
+    store: &accounts::AccountStore,
+) -> Option<(&accounts::Account, &accounts::EndpointConfig)> {
+    let account = store.active_account()?;
+    let endpoint = account.active_endpoint(store.active_endpoint_id.as_deref())?;
+    Some((account, endpoint))
+}
+
+fn check_active_endpoint_vision(ctx: &DiagnosticContext) -> DiagnosticItem {
+    let store = accounts::load_accounts(&ctx.data_dir);
+    let Some((account, endpoint)) = active_account_and_endpoint(&store) else {
+        return DiagnosticItem {
+            status: Status::Warn,
+            check_name: "端点与视觉策略".into(),
+            message: "未找到活跃账号或活跃端点".into(),
+            detail: None,
+            suggestion: Some("请在「账号管理」中选择一个账号和端点".into()),
+        };
+    };
+
+    let mut missing = Vec::new();
+    if endpoint.vision.mode == accounts::VisionMode::Glue {
+        if endpoint.vision.base_url.trim().is_empty() {
+            missing.push("视觉上游 URL");
+        }
+        if endpoint.vision.api_key.trim().is_empty() {
+            missing.push("视觉 API Key");
+        }
+        if endpoint.vision.model.trim().is_empty() {
+            missing.push("视觉模型");
+        }
+        if endpoint.vision.path.trim().is_empty() {
+            missing.push("视觉端点路径");
+        }
+    }
+
+    let detail = format!(
+        "账号: {}, 端点: {}, 协议: {:?}, 视觉: {:?}, 图片策略: {:?}, 胶水适配器: {}",
+        account.name,
+        endpoint.name,
+        endpoint.kind,
+        endpoint.vision.mode,
+        endpoint.vision.unsupported_image_policy,
+        endpoint.vision.adapter_id
+    );
+
+    if missing.is_empty() {
+        DiagnosticItem {
+            status: Status::Pass,
+            check_name: "端点与视觉策略".into(),
+            message: "活跃端点视觉配置完整".into(),
+            detail: Some(detail),
+            suggestion: None,
+        }
+    } else {
+        DiagnosticItem {
+            status: Status::Warn,
+            check_name: "端点与视觉策略".into(),
+            message: format!("胶水视觉配置不完整：缺少 {}", missing.join("、")),
+            detail: Some(detail),
+            suggestion: Some(
+                "请在账号编辑页补齐 MiniMax 胶水视觉配置，或切换为关闭/原生多模态".into(),
+            ),
+        }
+    }
+}
+
+fn check_model_vision_profiles(ctx: &DiagnosticContext) -> DiagnosticItem {
+    let store = accounts::load_accounts(&ctx.data_dir);
+    let Some((_account, endpoint)) = active_account_and_endpoint(&store) else {
+        return DiagnosticItem {
+            status: Status::Info,
+            check_name: "模型视觉覆盖".into(),
+            message: "无活跃端点，跳过模型级视觉覆盖检查".into(),
+            detail: None,
+            suggestion: None,
+        };
+    };
+
+    if endpoint.model_profiles.is_empty() {
+        return DiagnosticItem {
+            status: Status::Pass,
+            check_name: "模型视觉覆盖".into(),
+            message: "未配置模型级视觉覆盖，使用端点默认策略".into(),
+            detail: Some(format!("端点默认视觉: {:?}", endpoint.vision.mode)),
+            suggestion: None,
+        };
+    }
+
+    let glue_missing = endpoint.vision.base_url.trim().is_empty()
+        || endpoint.vision.api_key.trim().is_empty()
+        || endpoint.vision.model.trim().is_empty()
+        || endpoint.vision.path.trim().is_empty();
+    let mut conflicts = Vec::new();
+    for (model, profile) in &endpoint.model_profiles {
+        if profile.vision_mode == accounts::ModelVisionMode::Glue && glue_missing {
+            conflicts.push(format!("{model}: 胶水视觉但胶水端点不完整"));
+        }
+    }
+
+    if conflicts.is_empty() {
+        DiagnosticItem {
+            status: Status::Pass,
+            check_name: "模型视觉覆盖".into(),
+            message: format!("模型级视觉覆盖正常（{} 项）", endpoint.model_profiles.len()),
+            detail: Some(
+                endpoint
+                    .model_profiles
+                    .iter()
+                    .map(|(model, profile)| format!("{model}={:?}", profile.vision_mode))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            suggestion: None,
+        }
+    } else {
+        DiagnosticItem {
+            status: Status::Warn,
+            check_name: "模型视觉覆盖".into(),
+            message: "发现模型视觉覆盖冲突".into(),
+            detail: Some(conflicts.join("; ")),
+            suggestion: Some("请补齐胶水视觉配置，或把相关模型覆盖为关闭/原生/继承".into()),
         }
     }
 }

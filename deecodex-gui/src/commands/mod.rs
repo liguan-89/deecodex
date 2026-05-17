@@ -224,7 +224,18 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
     // 已有账号文件，直接加载
     if path.exists() {
         tracing::info!("加载已有账号文件: {}", path.display());
-        return deecodex::accounts::load_accounts(data_dir);
+        let mut store = match std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| deecodex::accounts::parse_account_store(&content).ok())
+        {
+            Some(store) => store,
+            None => return deecodex::accounts::load_accounts(data_dir),
+        };
+        store.normalize_v2();
+        if let Err(e) = deecodex::accounts::save_accounts(data_dir, &store) {
+            tracing::warn!("保存规范化后的账号文件失败: {e}");
+        }
+        return store;
     }
 
     tracing::info!("accounts.json 不存在，执行首次迁移");
@@ -274,6 +285,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 request_timeout_secs: None,
                 max_retries: None,
                 translate_enabled: true,
+                endpoints: Vec::new(),
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
             accounts.push(migrated);
@@ -319,15 +331,20 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            endpoints: Vec::new(),
         };
         tracing::info!("创建默认 OpenRouter 空账号");
         accounts.push(default);
     }
 
-    let store = AccountStore {
+    let mut store = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
         active_id: Some(accounts[0].id.clone()),
+        active_account_id: Some(accounts[0].id.clone()),
+        active_endpoint_id: None,
         accounts,
     };
+    store.normalize_v2();
 
     // 持久化
     if let Err(e) = deecodex::accounts::save_accounts(data_dir, &store) {
@@ -343,10 +360,8 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
 fn load_active_account_context_window(data_dir: &std::path::Path) -> Option<u32> {
     let store = deecodex::accounts::load_accounts(data_dir);
     store
-        .active_id
-        .as_ref()
-        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
-        .and_then(|a| a.context_window_override)
+        .active_endpoint()
+        .and_then(|endpoint| endpoint.context_window_override)
 }
 
 fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
@@ -354,23 +369,30 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
     let account_store = migrate_or_load_accounts(&args.data_dir);
 
     // 解析活跃账号的配置
-    let active_account = account_store
-        .active_id
+    let mut active_account = account_store
+        .active_account_id
         .as_ref()
+        .or(account_store.active_id.as_ref())
         .and_then(|id| account_store.accounts.iter().find(|a| &a.id == id))
         .cloned()
         .unwrap_or_else(|| account_store.accounts[0].clone());
 
-    let model_map: HashMap<String, String> = active_account.model_map.clone();
-    let upstream = handlers::validate_upstream(&active_account.upstream).unwrap_or_else(|_| {
+    let active_endpoint = active_account
+        .active_endpoint(account_store.active_endpoint_id.as_deref())
+        .cloned()
+        .unwrap_or_else(|| active_account.endpoints[0].clone());
+    active_account.sync_legacy_from_endpoint(&active_endpoint);
+
+    let model_map: HashMap<String, String> = active_endpoint.model_map.clone();
+    let upstream = handlers::validate_upstream(&active_endpoint.base_url).unwrap_or_else(|_| {
         tracing::warn!("活跃账号上游 URL 无效，使用默认 OpenRouter");
         handlers::validate_upstream("https://openrouter.ai/api/v1").unwrap()
     });
 
-    let vision_upstream = if active_account.vision_upstream.is_empty() {
+    let vision_upstream = if active_endpoint.vision.base_url.is_empty() {
         None
     } else {
-        match handlers::validate_upstream(&active_account.vision_upstream) {
+        match handlers::validate_upstream(&active_endpoint.vision.base_url) {
             Ok(url) => Some(url),
             Err(e) => {
                 tracing::warn!("视觉上游 URL 无效: {e}");
@@ -410,16 +432,16 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         }
     };
 
-    let vision_api_key = active_account.vision_api_key.clone();
-    let vision_model = if active_account.vision_model.is_empty() {
+    let vision_api_key = active_endpoint.vision.api_key.clone();
+    let vision_model = if active_endpoint.vision.model.is_empty() {
         args.vision_model.clone()
     } else {
-        active_account.vision_model.clone()
+        active_endpoint.vision.model.clone()
     };
-    let vision_endpoint = if active_account.vision_endpoint.is_empty() {
+    let vision_endpoint = if active_endpoint.vision.path.is_empty() {
         args.vision_endpoint.clone()
     } else {
-        active_account.vision_endpoint.clone()
+        active_endpoint.vision.path.clone()
     };
 
     Ok(handlers::AppState {
@@ -465,10 +487,16 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         cdp_port: args.cdp_port,
         account_store: Arc::new(tokio::sync::RwLock::new(account_store)),
         active_account: Arc::new(tokio::sync::RwLock::new(active_account)),
-        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
-        thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
-        custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
+        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(
+            active_endpoint.reasoning_effort_override.clone(),
+        )),
+        thinking_tokens: Arc::new(tokio::sync::RwLock::new(active_endpoint.thinking_tokens)),
+        custom_headers: Arc::new(tokio::sync::RwLock::new(
+            active_endpoint.custom_headers.clone(),
+        )),
+        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(
+            active_endpoint.request_timeout_secs,
+        )),
         request_history: {
             let db_path = args.data_dir.join("request_history.db");
             Arc::new(
@@ -1183,11 +1211,17 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
     let data_dir = manager.data_dir.lock().await.clone();
     let store = deecodex::accounts::load_accounts(&data_dir);
 
-    let accounts: Vec<Value> = store.accounts.iter().map(account_to_value).collect();
+    let accounts: Vec<Value> = store
+        .accounts
+        .iter()
+        .map(|account| account_to_value_for_store(account, &store))
+        .collect();
 
     Ok(json!({
         "accounts": accounts,
         "active_id": store.active_id,
+        "active_account_id": store.active_account_id,
+        "active_endpoint_id": store.active_endpoint_id,
     }))
 }
 
@@ -1203,7 +1237,7 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
         .and_then(|id| store.accounts.iter().find(|a| &a.id == id));
 
     match active {
-        Some(a) => Ok(account_to_value(a)),
+        Some(a) => Ok(account_to_value_for_store(a, &store)),
         None => Err("没有活跃账号".to_string()),
     }
 }
@@ -1222,7 +1256,7 @@ pub async fn add_account(
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
-    let new_account = if let Some(json) = account_json {
+    let mut new_account = if let Some(json) = account_json {
         let mut a: Account =
             serde_json::from_str(&json).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
         a.id = generate_id();
@@ -1262,12 +1296,16 @@ pub async fn add_account(
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            endpoints: Vec::new(),
         }
     };
+    new_account.normalize_v2();
 
     // 如果没有活跃账号，自动设为活跃
     if store.active_id.is_none() {
         store.active_id = Some(new_account.id.clone());
+        store.active_account_id = Some(new_account.id.clone());
+        store.active_endpoint_id = new_account.endpoints.first().map(|e| e.id.clone());
     }
 
     store.accounts.push(new_account.clone());
@@ -1303,22 +1341,36 @@ pub async fn update_account(
     if account.provider.is_empty() {
         account.provider = guess_provider(&account.upstream).to_string();
     }
+    account.normalize_v2();
+    let endpoint_for_legacy = if store.active_account_id.as_ref() == Some(&account.id)
+        || store.active_id.as_ref() == Some(&account.id)
+    {
+        account
+            .active_endpoint(store.active_endpoint_id.as_deref())
+            .cloned()
+            .or_else(|| account.endpoints.first().cloned())
+    } else {
+        account.endpoints.first().cloned()
+    };
+    if let Some(endpoint) = endpoint_for_legacy.as_ref() {
+        account.sync_legacy_from_endpoint(endpoint);
+    }
     account.updated_at = now_secs();
 
+    let is_active = store.active_account_id.as_ref() == Some(&account.id)
+        || store.active_id.as_ref() == Some(&account.id);
     store.accounts[pos] = account.clone();
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
 
-    // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
-    if store.active_id.as_ref() == Some(&account.id) {
-        if let Some(_app_state) = manager.app_state.lock().await.as_ref() {
-            let port = *manager.port.lock().await;
-            deecodex::codex_config::inject(port, account.context_window_override);
-        }
+    // 如果保存的是活跃账号，立即热更新运行中的服务状态。
+    if is_active && manager.app_state.lock().await.is_some() {
+        switch_account_inner(&manager, account.id.clone()).await?;
     }
 
-    Ok(account_to_value(&account))
+    let selected_endpoint = endpoint_for_legacy.as_ref();
+    Ok(account_to_value_with_endpoint(&account, selected_endpoint))
 }
 
 /// 删除账号（拒绝删除最后一个）
@@ -1334,17 +1386,33 @@ pub async fn delete_account(
         return Err("不能删除最后一个账号".to_string());
     }
 
-    let was_active = store.active_id.as_deref() == Some(&id);
+    let was_active =
+        store.active_id.as_deref() == Some(&id) || store.active_account_id.as_deref() == Some(&id);
 
     store.accounts.retain(|a| a.id != id);
 
+    let next_active_id = if was_active {
+        Some(store.accounts[0].id.clone())
+    } else {
+        None
+    };
+
     // 如果删除的是活跃账号，切换到第一个
     if was_active {
-        store.active_id = Some(store.accounts[0].id.clone());
+        store.active_id = next_active_id.clone();
+        store.active_account_id = store.active_id.clone();
+        store.active_endpoint_id = store.accounts[0]
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.id.clone());
     }
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    if let Some(next_id) = next_active_id {
+        switch_account_inner(&manager, next_id).await?;
+    }
 
     Ok(json!({"success": true}))
 }
@@ -1358,20 +1426,29 @@ pub(crate) async fn switch_account_inner(
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
-    let target = store
+    let mut target = store
         .accounts
         .iter()
         .find(|a| a.id == id)
         .ok_or_else(|| format!("账号不存在: {id}"))?
         .clone();
+    target.normalize_v2();
+    let target_endpoint = target
+        .active_endpoint(store.active_endpoint_id.as_deref())
+        .cloned()
+        .or_else(|| target.endpoints.first().cloned())
+        .ok_or_else(|| "目标账号没有可用端点".to_string())?;
+    target.sync_legacy_from_endpoint(&target_endpoint);
 
     store.active_id = Some(id.clone());
+    store.active_account_id = Some(id.clone());
+    store.active_endpoint_id = Some(target_endpoint.id.clone());
 
     // 如果服务在运行，先同步更新 AppState 热字段，再写文件
     // 避免文件已切但 AppState 更新失败导致的不一致
     if let Some(app_state) = manager.app_state.lock().await.as_ref() {
         // 更新上游 URL
-        let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
+        let upstream_url = deecodex::handlers::validate_upstream(&target_endpoint.base_url)
             .map_err(|e| format!("目标账号上游 URL 无效: {e}"))?;
         *app_state.upstream.write().await = upstream_url;
 
@@ -1379,28 +1456,28 @@ pub(crate) async fn switch_account_inner(
         *app_state.api_key.write().await = target.api_key.clone();
 
         // 更新模型映射
-        *app_state.model_map.write().await = target.model_map.clone();
+        *app_state.model_map.write().await = target_endpoint.model_map.clone();
 
         // 更新视觉配置
-        let vision_upstream = if target.vision_upstream.is_empty() {
+        let vision_upstream = if target_endpoint.vision.base_url.is_empty() {
             None
         } else {
             Some(
-                deecodex::handlers::validate_upstream(&target.vision_upstream)
+                deecodex::handlers::validate_upstream(&target_endpoint.vision.base_url)
                     .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
             )
         };
         *app_state.vision_upstream.write().await = vision_upstream;
-        *app_state.vision_api_key.write().await = target.vision_api_key.clone();
-        *app_state.vision_model.write().await = target.vision_model.clone();
-        *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
+        *app_state.vision_api_key.write().await = target_endpoint.vision.api_key.clone();
+        *app_state.vision_model.write().await = target_endpoint.vision.model.clone();
+        *app_state.vision_endpoint.write().await = target_endpoint.vision.path.clone();
 
         // 同步推理配置
         *app_state.reasoning_effort_override.write().await =
-            target.reasoning_effort_override.clone();
-        *app_state.thinking_tokens.write().await = target.thinking_tokens;
-        *app_state.custom_headers.write().await = target.custom_headers.clone();
-        *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
+            target_endpoint.reasoning_effort_override.clone();
+        *app_state.thinking_tokens.write().await = target_endpoint.thinking_tokens;
+        *app_state.custom_headers.write().await = target_endpoint.custom_headers.clone();
+        *app_state.request_timeout_secs.write().await = target_endpoint.request_timeout_secs;
 
         // 更新 active_account
         *app_state.active_account.write().await = target.clone();
@@ -1410,7 +1487,7 @@ pub(crate) async fn switch_account_inner(
 
         // 根据新账号的上下文窗口覆盖重新注入 codex config
         let port = *manager.port.lock().await;
-        deecodex::codex_config::inject(port, target.context_window_override);
+        deecodex::codex_config::inject(port, target_endpoint.context_window_override);
 
         tracing::info!("已切换活跃账号: {} ({})", target.name, target.provider);
     }
@@ -1419,7 +1496,10 @@ pub(crate) async fn switch_account_inner(
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
 
-    Ok(account_to_value(&target))
+    Ok(account_to_value_with_endpoint(
+        &target,
+        Some(&target_endpoint),
+    ))
 }
 
 #[tauri::command]
@@ -1436,8 +1516,9 @@ pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Va
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
-    let imported = deecodex::codex_config::extract_account_from_codex_config()
+    let mut imported = deecodex::codex_config::extract_account_from_codex_config()
         .ok_or_else(|| "Codex config.toml 中未找到可导入的第三方 provider 配置".to_string())?;
+    imported.normalize_v2();
 
     // 检查是否已存在相同 upstream + key 的账号
     let is_duplicate = store
@@ -1452,6 +1533,11 @@ pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Va
     // 如果没有活跃账号，自动设为活跃
     if store.active_id.is_none() {
         store.active_id = Some(imported.id.clone());
+        store.active_account_id = Some(imported.id.clone());
+        store.active_endpoint_id = imported
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.id.clone());
     }
 
     store.accounts.push(imported.clone());
@@ -1482,6 +1568,49 @@ pub fn get_provider_presets() -> Result<Value, String> {
     Ok(json!(list))
 }
 
+#[tauri::command]
+pub fn get_endpoint_templates() -> Result<Value, String> {
+    serde_json::to_value(deecodex::accounts::get_endpoint_templates())
+        .map_err(|e| format!("序列化端点模板失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn switch_endpoint(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    endpoint_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let mut account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .cloned()
+        .ok_or_else(|| format!("账号不存在: {account_id}"))?;
+    account.normalize_v2();
+    let endpoint = account
+        .endpoints
+        .iter()
+        .find(|e| e.id == endpoint_id)
+        .cloned()
+        .ok_or_else(|| format!("端点不存在: {endpoint_id}"))?;
+
+    store.active_id = Some(account_id.clone());
+    store.active_account_id = Some(account_id.clone());
+    store.active_endpoint_id = Some(endpoint_id);
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存端点切换失败: {e}"))?;
+
+    // 复用账号切换热更新逻辑，将 active_endpoint_id 一并同步进 AppState。
+    switch_account_inner(&manager, account_id).await?;
+    Ok(json!({
+        "account": account_to_value_with_endpoint(&account, Some(&endpoint)),
+        "endpoint": endpoint,
+    }))
+}
+
 // ── 模型列表获取 ──────────────────────────────────────────────────────────
 
 /// 从上游获取模型列表（传入 account_id 时自动查真实 Key）
@@ -1491,8 +1620,9 @@ pub async fn fetch_upstream_models(
     account_id: Option<String>,
     upstream: Option<String>,
     api_key: Option<String>,
+    endpoint_kind: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let (upstream, api_key) = if let Some(id) = account_id {
+    let (upstream, api_key, endpoint_kind) = if let Some(id) = account_id {
         let data_dir = manager.data_dir.lock().await.clone();
         let store = deecodex::accounts::load_accounts(&data_dir);
         let account = store
@@ -1500,11 +1630,19 @@ pub async fn fetch_upstream_models(
             .iter()
             .find(|a| a.id == id)
             .ok_or_else(|| "账号不存在".to_string())?;
-        (account.upstream.clone(), account.api_key.clone())
+        let endpoint = endpoint_for_account_in_store(account, &store);
+        (
+            endpoint
+                .map(|ep| ep.base_url.clone())
+                .unwrap_or_else(|| account.upstream.clone()),
+            account.api_key.clone(),
+            endpoint.map(|ep| format!("{:?}", ep.kind)),
+        )
     } else {
         (
             upstream.ok_or("缺少 upstream 参数")?,
             api_key.unwrap_or_default(),
+            endpoint_kind,
         )
     };
 
@@ -1517,10 +1655,7 @@ pub async fn fetch_upstream_models(
         .build()
         .map_err(|e| format!("创建客户端失败: {e}"))?;
     for url in &urls {
-        let mut req = client.get(url);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(&api_key);
-        }
+        let req = model_probe_request(&client, url, &api_key, endpoint_kind.as_deref());
         tracing::info!("获取上游模型: GET {url}");
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -1591,7 +1726,12 @@ pub async fn fetch_balance(
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| "账号不存在".to_string())?;
-    let upstream = account.upstream.trim_end_matches('/').to_string();
+    let endpoint = endpoint_for_account_in_store(account, &store);
+    let upstream = endpoint
+        .map(|endpoint| endpoint.base_url.as_str())
+        .unwrap_or(&account.upstream)
+        .trim_end_matches('/')
+        .to_string();
     let api_key = account.api_key.clone();
 
     if api_key.is_empty() {
@@ -1609,9 +1749,14 @@ pub async fn fetch_balance(
 
     let client = reqwest::Client::new();
 
-    // 如果账号配置了自定义 balance_url，直接用该 URL 探测
-    if !account.balance_url.is_empty() {
-        let url = account.balance_url.trim_end_matches('/').to_string();
+    let balance_url = endpoint
+        .map(|endpoint| endpoint.balance_url.as_str())
+        .filter(|url| !url.is_empty())
+        .unwrap_or(&account.balance_url);
+
+    // 如果端点/账号配置了自定义 balance_url，直接用该 URL 探测
+    if !balance_url.is_empty() {
+        let url = balance_url.trim_end_matches('/').to_string();
         let mut req = client.get(&url);
         if !api_key.is_empty() {
             req = req.bearer_auth(&api_key);
@@ -1986,27 +2131,70 @@ pub async fn undo_delete_session(
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 
 fn account_to_value(a: &deecodex::accounts::Account) -> Value {
+    let endpoint = a.endpoints.first();
+    account_to_value_with_endpoint(a, endpoint)
+}
+
+fn account_to_value_for_store(
+    a: &deecodex::accounts::Account,
+    store: &deecodex::accounts::AccountStore,
+) -> Value {
+    let endpoint = endpoint_for_account_in_store(a, store);
+    account_to_value_with_endpoint(a, endpoint)
+}
+
+fn endpoint_for_account_in_store<'a>(
+    account: &'a deecodex::accounts::Account,
+    store: &deecodex::accounts::AccountStore,
+) -> Option<&'a deecodex::accounts::EndpointConfig> {
+    if store.active_account_id.as_deref() == Some(&account.id)
+        || store.active_id.as_deref() == Some(&account.id)
+    {
+        account.active_endpoint(store.active_endpoint_id.as_deref())
+    } else {
+        account.endpoints.first()
+    }
+}
+
+fn account_to_value_with_endpoint(
+    a: &deecodex::accounts::Account,
+    endpoint: Option<&deecodex::accounts::EndpointConfig>,
+) -> Value {
+    let upstream = endpoint
+        .map(|endpoint| endpoint.base_url.as_str())
+        .unwrap_or(&a.upstream);
+    let model_map = endpoint
+        .map(|endpoint| endpoint.model_map.clone())
+        .unwrap_or_else(|| a.model_map.clone());
+    let vision = endpoint.map(|endpoint| &endpoint.vision);
+    let balance_url = endpoint
+        .map(|endpoint| endpoint.balance_url.as_str())
+        .unwrap_or(&a.balance_url);
     json!({
         "id": a.id,
         "name": a.name,
         "provider": a.provider,
-        "upstream": a.upstream,
+        "upstream": upstream,
         "api_key": a.api_key.clone(),
-        "model_map": a.model_map,
-        "vision_upstream": a.vision_upstream,
-        "vision_api_key": a.vision_api_key,
-        "vision_model": a.vision_model,
-        "vision_endpoint": a.vision_endpoint,
-        "vision_enabled": a.vision_enabled,
-        "context_window_override": a.context_window_override,
-        "reasoning_effort_override": a.reasoning_effort_override,
-        "thinking_tokens": a.thinking_tokens,
-        "custom_headers": a.custom_headers,
-        "request_timeout_secs": a.request_timeout_secs,
-        "max_retries": a.max_retries,
-        "translate_enabled": a.translate_enabled,
+        "model_map": model_map,
+        "vision_upstream": vision.map(|v| v.base_url.clone()).unwrap_or_else(|| a.vision_upstream.clone()),
+        "vision_api_key": vision.map(|v| v.api_key.clone()).unwrap_or_else(|| a.vision_api_key.clone()),
+        "vision_model": vision.map(|v| v.model.clone()).unwrap_or_else(|| a.vision_model.clone()),
+        "vision_endpoint": vision.map(|v| v.path.clone()).unwrap_or_else(|| a.vision_endpoint.clone()),
+        "vision_enabled": vision.map(|v| v.mode == deecodex::accounts::VisionMode::Glue).unwrap_or(a.vision_enabled),
+        "context_window_override": endpoint.and_then(|e| e.context_window_override),
+        "reasoning_effort_override": endpoint.and_then(|e| e.reasoning_effort_override.clone()),
+        "thinking_tokens": endpoint.and_then(|e| e.thinking_tokens),
+        "custom_headers": endpoint.map(|e| e.custom_headers.clone()).unwrap_or_else(|| a.custom_headers.clone()),
+        "request_timeout_secs": endpoint.and_then(|e| e.request_timeout_secs),
+        "max_retries": endpoint.and_then(|e| e.max_retries),
+        "translate_enabled": endpoint.map(|e| e.kind.is_chat_like()).unwrap_or(a.translate_enabled),
+        "endpoints": a.endpoints,
+        "active_endpoint_name": endpoint.map(|e| e.name.clone()).unwrap_or_default(),
+        "active_endpoint_kind": endpoint.map(|e| format!("{:?}", e.kind)).unwrap_or_default(),
+        "active_vision_mode": endpoint.map(|e| format!("{:?}", e.vision.mode)).unwrap_or_default(),
         "from_codex_config": a.from_codex_config,
-        "balance_url": a.balance_url,
+        "balance_url": balance_url,
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     })
@@ -2108,16 +2296,21 @@ struct ConnectivityResult {
 
 /// 执行上游连通性检测（内部使用）
 async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<ConnectivityResult, String> {
+    do_test_connectivity_with_kind(upstream, api_key, None).await
+}
+
+async fn do_test_connectivity_with_kind(
+    upstream: &str,
+    api_key: &str,
+    endpoint_kind: Option<&str>,
+) -> Result<ConnectivityResult, String> {
     let base = upstream.trim_end_matches('/');
     let url = format!("{base}/models");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-    let mut req = client.get(&url);
-    if !api_key.is_empty() {
-        req = req.bearer_auth(api_key);
-    }
+    let req = model_probe_request(&client, &url, api_key, endpoint_kind);
     let start = std::time::Instant::now();
     match req.send().await {
         Ok(resp) => {
@@ -2147,13 +2340,40 @@ async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<Connectiv
     }
 }
 
+fn model_probe_request(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    endpoint_kind: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut req = client.get(url);
+    if api_key.is_empty() {
+        return req;
+    }
+    let is_anthropic = endpoint_kind
+        .map(|kind| {
+            let kind = kind.to_ascii_lowercase();
+            kind.contains("anthropic")
+        })
+        .unwrap_or_else(|| url.to_ascii_lowercase().contains("anthropic.com"));
+    if is_anthropic {
+        req = req
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req = req.bearer_auth(api_key);
+    }
+    req
+}
+
 /// 测试上游 API 端点连通性
 #[tauri::command]
 pub async fn test_upstream_connectivity(
     upstream: String,
     api_key: String,
+    endpoint_kind: Option<String>,
 ) -> Result<Value, String> {
-    let r = do_test_connectivity(&upstream, &api_key).await?;
+    let r = do_test_connectivity_with_kind(&upstream, &api_key, endpoint_kind.as_deref()).await?;
     Ok(serde_json::json!({
         "ok": r.ok,
         "status": r.status_code,
@@ -2434,6 +2654,34 @@ mod tests {
         }
     }
 
+    fn test_account(id: &str) -> deecodex::accounts::Account {
+        deecodex::accounts::Account {
+            id: id.into(),
+            name: "Test".into(),
+            provider: "deepseek".into(),
+            upstream: "https://api.deepseek.com/v1".into(),
+            api_key: "test-key".into(),
+            model_map: Default::default(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            vision_enabled: false,
+            from_codex_config: false,
+            balance_url: String::new(),
+            created_at: 1,
+            updated_at: 1,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: None,
+            translate_enabled: true,
+            endpoints: Vec::new(),
+        }
+    }
+
     #[test]
     fn account_backed_config_preserves_fields_from_existing_config() {
         let mut existing = test_args();
@@ -2467,5 +2715,180 @@ mod tests {
         assert!(preserved.vision_api_key.is_empty());
         assert!(preserved.vision_model.is_empty());
         assert!(preserved.vision_endpoint.is_empty());
+    }
+
+    #[test]
+    fn endpoint_selection_uses_active_endpoint_only_for_active_account() {
+        let mut active = test_account("active");
+        active.name = "Active".into();
+        active.provider = "openrouter".into();
+        active.upstream = "https://active-default.example/v1".into();
+        active.api_key = "active-key".into();
+        active.normalize_v2();
+        let mut active_second = active.endpoints[0].clone();
+        active_second.id = "shared_endpoint_id".into();
+        active_second.base_url = "https://active-selected.example/v1".into();
+        active.endpoints.push(active_second);
+
+        let mut other = active.clone();
+        other.id = "other".into();
+        other.name = "Other".into();
+        other.endpoints[0].base_url = "https://other-default.example/v1".into();
+        other.endpoints.push({
+            let mut endpoint = other.endpoints[0].clone();
+            endpoint.id = "shared_endpoint_id".into();
+            endpoint.base_url = "https://other-shared.example/v1".into();
+            endpoint
+        });
+
+        let store = deecodex::accounts::AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![active.clone(), other.clone()],
+            active_id: Some(active.id.clone()),
+            active_account_id: Some(active.id.clone()),
+            active_endpoint_id: Some("shared_endpoint_id".into()),
+        };
+
+        let active_endpoint = endpoint_for_account_in_store(&active, &store).unwrap();
+        let other_endpoint = endpoint_for_account_in_store(&other, &store).unwrap();
+
+        assert_eq!(
+            active_endpoint.base_url,
+            "https://active-selected.example/v1"
+        );
+        assert_eq!(other_endpoint.base_url, "https://other-default.example/v1");
+    }
+
+    #[test]
+    fn migrate_existing_legacy_array_accounts_file_writes_v2() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "deecodex-migrate-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let path = deecodex::accounts::accounts_file_path(&data_dir);
+        std::fs::write(
+            &path,
+            serde_json::to_string(&vec![test_account("legacy")]).unwrap(),
+        )
+        .unwrap();
+
+        let store = migrate_or_load_accounts(&data_dir);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(store.version, deecodex::accounts::ACCOUNT_STORE_VERSION);
+        assert_eq!(
+            saved["version"].as_u64(),
+            Some(deecodex::accounts::ACCOUNT_STORE_VERSION as u64)
+        );
+        assert_eq!(
+            saved["accounts"][0]["endpoints"].as_array().unwrap().len(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn build_app_state_uses_active_endpoint_advanced_fields() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "deecodex-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let mut account = test_account("active");
+        account.name = "Active".into();
+        account.provider = "custom".into();
+        account.upstream = "https://legacy.example/v1".into();
+        account.api_key = "account-key".into();
+        account.normalize_v2();
+        let endpoint = account.endpoints.first_mut().unwrap();
+        endpoint.id = "selected".into();
+        endpoint.base_url = "https://selected.example/v1".into();
+        endpoint.kind = deecodex::accounts::EndpointKind::CustomChat;
+        endpoint
+            .model_map
+            .insert("gpt-5".into(), "upstream-model".into());
+        endpoint
+            .custom_headers
+            .insert("x-test".into(), "yes".into());
+        endpoint.request_timeout_secs = Some(42);
+        endpoint.max_retries = Some(5);
+        endpoint.reasoning_effort_override = Some("high".into());
+        endpoint.thinking_tokens = Some(2048);
+        endpoint.vision.mode = deecodex::accounts::VisionMode::Glue;
+        endpoint.vision.base_url = "https://vision.example/v1".into();
+        endpoint.vision.api_key = "vision-key".into();
+        endpoint.vision.model = "vision-model".into();
+        endpoint.vision.path = "v1/coding_plan/vlm".into();
+
+        let store = deecodex::accounts::AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account],
+            active_id: Some("active".into()),
+            active_account_id: Some("active".into()),
+            active_endpoint_id: Some("selected".into()),
+        };
+        deecodex::accounts::save_accounts(&data_dir, &store).unwrap();
+
+        let mut args = test_args();
+        args.data_dir = data_dir.clone();
+        args.prompts_dir = data_dir.join("prompts");
+        let state = build_app_state(&args).unwrap();
+
+        assert_eq!(
+            state.upstream.read().await.as_str(),
+            "https://selected.example/v1"
+        );
+        assert_eq!(state.api_key.read().await.as_str(), "account-key");
+        assert_eq!(
+            state
+                .model_map
+                .read()
+                .await
+                .get("gpt-5")
+                .map(String::as_str),
+            Some("upstream-model")
+        );
+        assert_eq!(
+            state
+                .custom_headers
+                .read()
+                .await
+                .get("x-test")
+                .map(String::as_str),
+            Some("yes")
+        );
+        assert_eq!(*state.request_timeout_secs.read().await, Some(42));
+        assert_eq!(
+            state.reasoning_effort_override.read().await.as_deref(),
+            Some("high")
+        );
+        assert_eq!(*state.thinking_tokens.read().await, Some(2048));
+        assert_eq!(
+            state
+                .vision_upstream
+                .read()
+                .await
+                .as_ref()
+                .map(|url| url.as_str().to_string()),
+            Some("https://vision.example/v1".into())
+        );
+        assert_eq!(state.vision_api_key.read().await.as_str(), "vision-key");
+        assert_eq!(state.vision_model.read().await.as_str(), "vision-model");
+        assert_eq!(
+            state.vision_endpoint.read().await.as_str(),
+            "v1/coding_plan/vlm"
+        );
+
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

@@ -5,6 +5,7 @@ let accountsView = 'list';
 let accountsData = { accounts: [], active_id: null };
 let editingAccount = null;
 let providerPresets = [];
+let endpointTemplates = [];
 let upstreamModels = [];
 
 // ═══════════════════════════════════════════════════════════════

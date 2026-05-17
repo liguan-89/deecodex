@@ -192,8 +192,8 @@ fn load_env() {
 }
 
 pub fn run() {
-    // 单实例控制：检测已有 GUI 实例，避免重复启动
-    {
+    // 单实例控制：release 包避免重复启动；dev 构建允许和已安装版并行实测。
+    if !cfg!(debug_assertions) {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
         // 扫描同名进程（排除自身）
@@ -450,6 +450,8 @@ pub fn run() {
             commands::switch_account,
             commands::import_codex_config,
             commands::get_provider_presets,
+            commands::get_endpoint_templates,
+            commands::switch_endpoint,
             commands::fetch_upstream_models,
             commands::fetch_balance,
             commands::test_upstream_connectivity,
