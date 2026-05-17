@@ -18,7 +18,14 @@ type DexAccountInfo = (
 use crate::commands::load_args;
 use crate::ServerManager;
 
-// ── 辅助函数 ──────────────────────────────────────────────────────────────
+use super::dex_plugins::{execute_plugin_tool, plugin_tool_defs};
+use super::dex_registry::{
+    builtin_tool_defs, capability_meta, is_capability_enabled, load_capability_states,
+    save_capability_states, DexCapability, DexToolDef,
+};
+use super::dex_security::{has_dangerous_shell_pattern, mask_sensitive_value};
+
+// ── 执行辅助函数 ──────────────────────────────────────────────────────────
 
 /// 获取 Codex config.toml 的路径（等效于 deecodex::codex_config::codex_config_path）
 fn codex_config_path() -> Option<PathBuf> {
@@ -61,13 +68,11 @@ fn get_active_account_info(data_dir: &std::path::Path) -> Option<DexAccountInfo>
     ))
 }
 
-/// 安全路径检查：只允许 ~/.deecodex/、~/.codex/、/tmp/ 下的文件
+/// 安全路径检查：只允许 ~/.deecodex/、~/.codex/、/tmp/ 和当前工作区下的文件。
 fn is_path_allowed(path: &std::path::Path) -> bool {
-    // 规范化路径
     let canonical = match path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // 路径不存在时，尝试规范化父目录
             if let Some(parent) = path.parent() {
                 match parent.canonicalize() {
                     Ok(p) => p.join(path.file_name().unwrap_or_default()),
@@ -80,13 +85,16 @@ fn is_path_allowed(path: &std::path::Path) -> bool {
     };
 
     let path_str = canonical.to_string_lossy();
-
-    // 允许 /tmp/
     if path_str.starts_with("/tmp/") || path_str == "/tmp" {
         return true;
     }
 
-    // 允许 ~/.deecodex/
+    if let Ok(cwd) = std::env::current_dir().and_then(|p| p.canonicalize()) {
+        if path_str.starts_with(cwd.to_string_lossy().as_ref()) {
+            return true;
+        }
+    }
+
     if let Some(home) = deecodex::config::home_dir() {
         let deecodex_dir = home.join(".deecodex");
         let codex_dir = home.join(".codex");
@@ -98,6 +106,539 @@ fn is_path_allowed(path: &std::path::Path) -> bool {
     }
 
     false
+}
+
+fn req_string(args: &Value, key: &str) -> Result<String, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("缺少参数: {key}"))
+}
+
+fn opt_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn opt_usize(args: &Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(Value::as_u64).map(|v| v as usize)
+}
+
+fn opt_u64(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
+fn opt_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(Value::as_bool)
+}
+
+fn parse_gui_config(value: &Value) -> Result<crate::commands::GuiConfig, String> {
+    if let Some(raw) = value.get("config_json").and_then(Value::as_str) {
+        serde_json::from_str(raw).map_err(|e| format!("解析 config_json 失败: {e}"))
+    } else if let Some(config) = value.get("config") {
+        serde_json::from_value(config.clone()).map_err(|e| format!("解析 config 失败: {e}"))
+    } else {
+        Err("缺少参数: config_json".to_string())
+    }
+}
+
+async fn all_tool_defs(manager: &ServerManager) -> Vec<DexToolDef> {
+    let mut defs = builtin_tool_defs();
+    defs.extend(plugin_tool_defs(manager).await);
+    defs
+}
+
+/// DEX 2.0：列出能力包。
+#[tauri::command]
+pub async fn dex_list_capabilities(
+    manager: State<'_, ServerManager>,
+) -> Result<Vec<DexCapability>, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let states = load_capability_states(&data_dir);
+    let tools = all_tool_defs(&manager).await;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for tool in &tools {
+        *counts.entry(tool.capability.clone()).or_insert(0) += 1;
+    }
+
+    let ordered = [
+        "core.system",
+        "core.workspace",
+        "ai.codex",
+        "ai.claude",
+        "ai.mcp",
+        "deecodex.ops",
+        "plugins.dynamic",
+    ];
+    let mut ids: Vec<String> = ordered.iter().map(|s| s.to_string()).collect();
+    for id in counts.keys() {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+
+    Ok(ids
+        .into_iter()
+        .map(|id| {
+            let (label, description) = capability_meta(&id);
+            DexCapability {
+                enabled: is_capability_enabled(&states, &id),
+                tool_count: counts.get(&id).copied().unwrap_or(0),
+                id,
+                label: label.to_string(),
+                description: description.to_string(),
+            }
+        })
+        .collect())
+}
+
+/// DEX 2.0：列出可暴露给 LLM 的工具定义。
+#[tauri::command]
+pub async fn dex_list_tools(
+    manager: State<'_, ServerManager>,
+    capability_ids: Option<Vec<String>>,
+) -> Result<Vec<DexToolDef>, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let states = load_capability_states(&data_dir);
+    let selected: Option<HashSet<String>> = capability_ids.map(|ids| ids.into_iter().collect());
+    let mut tools = all_tool_defs(&manager).await;
+    tools.retain(|tool| {
+        let selected_match = selected
+            .as_ref()
+            .map(|ids| ids.contains(&tool.capability))
+            .unwrap_or(true);
+        selected_match && is_capability_enabled(&states, &tool.capability)
+    });
+    Ok(tools)
+}
+
+/// DEX 2.0：启停能力包。
+#[tauri::command]
+pub async fn dex_update_capability_state(
+    manager: State<'_, ServerManager>,
+    capability_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut states = load_capability_states(&data_dir);
+    states.insert(capability_id.clone(), enabled);
+    save_capability_states(&data_dir, &states)?;
+    Ok(json!({ "ok": true, "capability_id": capability_id, "enabled": enabled }))
+}
+
+fn command_first_line(cmd: &str, args: &[&str]) -> Option<String> {
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+}
+
+fn detect_project_type(cwd: &std::path::Path) -> Vec<String> {
+    let mut types = Vec::new();
+    if cwd.join("Cargo.toml").exists() {
+        types.push("rust".to_string());
+    }
+    if cwd.join("package.json").exists() {
+        types.push("node".to_string());
+    }
+    if cwd.join("pyproject.toml").exists() || cwd.join("requirements.txt").exists() {
+        types.push("python".to_string());
+    }
+    if cwd.join("tauri.conf.json").exists() || cwd.join("src-tauri").exists() {
+        types.push("tauri".to_string());
+    }
+    types
+}
+
+fn git_summary(cwd: &std::path::Path) -> Value {
+    let branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let status = std::process::Command::new("git")
+        .args(["status", "--short"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .take(40)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "is_repo": branch.is_some(),
+        "branch": branch,
+        "dirty_count": status.len(),
+        "status_preview": status,
+    })
+}
+
+/// DEX 2.0：获取 AI 工具工作台上下文摘要。
+#[tauri::command]
+pub async fn dex_get_workspace_context(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("获取当前目录失败: {e}"))?;
+    let args = load_args();
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let active_account = store
+        .active_id
+        .as_ref()
+        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "provider": a.provider,
+                "upstream": a.upstream,
+                "model_count": a.model_map.len(),
+            })
+        });
+    let config_files = [
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "tauri.conf.json",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "WORKTREES.md",
+    ];
+    let present_files: Vec<String> = config_files
+        .iter()
+        .filter(|name| cwd.join(name).exists())
+        .map(|s| s.to_string())
+        .collect();
+    let ports = dex_detect_ports().unwrap_or_else(|e| json!({ "error": e }));
+    Ok(mask_sensitive_value(json!({
+        "cwd": cwd.to_string_lossy(),
+        "data_dir": args.data_dir.to_string_lossy(),
+        "project_types": detect_project_type(&cwd),
+        "config_files": present_files,
+        "git": git_summary(&cwd),
+        "cli_versions": {
+            "codex": get_cli_version("codex", &["--version"]),
+            "claude": get_cli_version("claude", &["--version"]),
+            "node": get_cli_version("node", &["--version"]),
+            "cargo": command_first_line("cargo", &["--version"]),
+            "git": command_first_line("git", &["--version"]),
+        },
+        "active_account": active_account,
+        "ports": ports,
+    })))
+}
+
+fn active_account_id(manager_data_dir: &std::path::Path) -> Option<String> {
+    let store = deecodex::accounts::load_accounts(manager_data_dir);
+    store.active_id
+}
+
+/// DEX 2.0：统一工具执行入口。前端只负责确认与展示，后端负责路由、策略和脱敏。
+#[tauri::command]
+pub async fn dex_execute_tool(
+    manager: State<'_, ServerManager>,
+    name: String,
+    args: Option<Value>,
+    confirmed: Option<bool>,
+) -> Result<Value, String> {
+    let args = args.unwrap_or_else(|| json!({}));
+    let tool = all_tool_defs(&manager)
+        .await
+        .into_iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| format!("未知工具: {name}"))?;
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let states = load_capability_states(&data_dir);
+    if !is_capability_enabled(&states, &tool.capability) {
+        return Err(format!(
+            "能力包 '{}' 已停用，拒绝执行工具 {}",
+            tool.capability, tool.name
+        ));
+    }
+
+    if tool.level >= 3 && confirmed != Some(true) {
+        return Err(format!(
+            "安全限制：{} 是 L{} 操作，必须先确认",
+            tool.name, tool.level
+        ));
+    }
+
+    let result = if tool.source == "plugin" {
+        execute_plugin_tool(&manager, &tool, args.clone()).await?
+    } else {
+        match tool.name.as_str() {
+            "get_service_status" => {
+                serde_json::to_value(crate::commands::get_service_status(manager).await?)
+                    .unwrap_or_default()
+            }
+            "start_service" => {
+                serde_json::to_value(crate::commands::start_service_inner(&manager).await?)
+                    .unwrap_or_default()
+            }
+            "stop_service" => {
+                serde_json::to_value(crate::commands::stop_service_inner(&manager).await?)
+                    .unwrap_or_default()
+            }
+            "launch_codex_cdp" => {
+                crate::commands::launch_codex_cdp(manager)?;
+                json!({ "ok": true })
+            }
+            "stop_codex_cdp" => {
+                crate::commands::stop_codex_cdp()?;
+                json!({ "ok": true })
+            }
+            "get_config" => {
+                serde_json::to_value(crate::commands::get_config()?).unwrap_or_default()
+            }
+            "save_config" => {
+                crate::commands::save_config(parse_gui_config(&args)?)?;
+                json!({ "ok": true })
+            }
+            "validate_config" => json!(crate::commands::validate_config(parse_gui_config(&args)?)),
+            "run_diagnostics" => {
+                let cfg = args
+                    .get("config")
+                    .map(|v| {
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| format!("解析 config 失败: {e}"))
+                    })
+                    .transpose()?
+                    .unwrap_or(crate::commands::get_config()?);
+                crate::commands::run_diagnostics(cfg)
+            }
+            "run_full_diagnostics" => {
+                let cfg = args
+                    .get("config")
+                    .map(|v| {
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| format!("解析 config 失败: {e}"))
+                    })
+                    .transpose()?
+                    .unwrap_or(crate::commands::get_config()?);
+                crate::commands::run_full_diagnostics(cfg).await?
+            }
+            "list_accounts" => crate::commands::list_accounts(manager).await?,
+            "get_active_account" => crate::commands::get_active_account(manager).await?,
+            "add_account" => {
+                crate::commands::add_account(
+                    manager,
+                    req_string(&args, "provider")?,
+                    opt_string(&args, "account_json"),
+                )
+                .await?
+            }
+            "update_account" => {
+                crate::commands::update_account(manager, req_string(&args, "account_json")?).await?
+            }
+            "delete_account" => {
+                crate::commands::delete_account(manager, req_string(&args, "id")?).await?
+            }
+            "switch_account" => {
+                crate::commands::switch_account_inner(&manager, req_string(&args, "id")?).await?
+            }
+            "import_codex_config" => crate::commands::import_codex_config(manager).await?,
+            "get_provider_presets" => crate::commands::get_provider_presets()?,
+            "fetch_upstream_models" => {
+                let data_dir = manager.data_dir.lock().await.clone();
+                let account_id =
+                    opt_string(&args, "account_id").or_else(|| active_account_id(&data_dir));
+                json!(
+                    crate::commands::fetch_upstream_models(
+                        manager,
+                        account_id,
+                        opt_string(&args, "upstream"),
+                        opt_string(&args, "api_key")
+                    )
+                    .await?
+                )
+            }
+            "fetch_balance" => {
+                let data_dir = manager.data_dir.lock().await.clone();
+                let account_id = opt_string(&args, "account_id")
+                    .or_else(|| active_account_id(&data_dir))
+                    .ok_or("缺少参数: account_id，且没有活跃账号")?;
+                serde_json::to_value(crate::commands::fetch_balance(manager, account_id).await?)
+                    .unwrap_or_default()
+            }
+            "test_upstream_connectivity" => {
+                let (upstream, api_key) = if args.get("upstream").is_some() {
+                    (
+                        req_string(&args, "upstream")?,
+                        opt_string(&args, "api_key").unwrap_or_default(),
+                    )
+                } else {
+                    let data_dir = manager.data_dir.lock().await.clone();
+                    let (upstream, api_key, _) = get_active_account_info(&data_dir)
+                        .ok_or("缺少 upstream/api_key，且没有活跃账号")?;
+                    (upstream, api_key)
+                };
+                crate::commands::test_upstream_connectivity(upstream, api_key).await?
+            }
+            "list_sessions" => crate::commands::list_sessions(manager).await?,
+            "delete_session" => {
+                let id = opt_string(&args, "session_id")
+                    .or_else(|| opt_string(&args, "id"))
+                    .ok_or("缺少参数: session_id")?;
+                let session_type =
+                    opt_string(&args, "session_type").unwrap_or_else(|| "responses".to_string());
+                crate::commands::delete_session(manager, session_type, id).await?
+            }
+            "undo_delete_session" => {
+                let token = opt_string(&args, "undo_token")
+                    .or_else(|| opt_string(&args, "id"))
+                    .ok_or("缺少参数: undo_token")?;
+                crate::commands::undo_delete_session(manager, token).await?
+            }
+            "get_threads_status" => crate::commands::get_threads_status(manager).await?,
+            "list_threads" => crate::commands::list_threads().await?,
+            "get_thread_content" => {
+                crate::commands::get_thread_content(req_string(&args, "thread_id")?).await?
+            }
+            "migrate_threads" => crate::commands::migrate_threads(manager).await?,
+            "restore_threads" => crate::commands::restore_threads(manager).await?,
+            "calibrate_threads" => crate::commands::calibrate_threads(manager).await?,
+            "delete_thread" => {
+                crate::commands::delete_thread(manager, req_string(&args, "thread_id")?).await?
+            }
+            "list_request_history" => {
+                crate::commands::list_request_history(manager, opt_usize(&args, "limit")).await?
+            }
+            "clear_request_history" => crate::commands::clear_request_history(manager).await?,
+            "get_monthly_stats" => {
+                crate::commands::get_monthly_stats(manager, opt_usize(&args, "limit")).await?
+            }
+            "list_plugins" => json!(crate::commands::list_plugins(manager).await?),
+            "install_plugin" => {
+                crate::commands::install_plugin(manager, opt_string(&args, "path"), None, None)
+                    .await?
+            }
+            "uninstall_plugin" => {
+                crate::commands::uninstall_plugin(manager, req_string(&args, "plugin_id")?).await?
+            }
+            "start_plugin" => {
+                crate::commands::start_plugin(manager, req_string(&args, "plugin_id")?).await?
+            }
+            "stop_plugin" => {
+                crate::commands::stop_plugin(manager, req_string(&args, "plugin_id")?).await?
+            }
+            "update_plugin_config" => {
+                let cfg = if let Some(raw) = opt_string(&args, "config_json") {
+                    serde_json::from_str(&raw).map_err(|e| format!("解析 config_json 失败: {e}"))?
+                } else {
+                    args.get("config").cloned().unwrap_or_else(|| json!({}))
+                };
+                crate::commands::update_plugin_config(manager, req_string(&args, "plugin_id")?, cfg)
+                    .await?
+            }
+            "get_plugin_qrcode" => {
+                crate::commands::get_plugin_qrcode(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "account_id")?,
+                )
+                .await?
+            }
+            "plugin_login_cancel" => {
+                crate::commands::plugin_login_cancel(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "account_id")?,
+                )
+                .await?
+            }
+            "query_plugin_status" => {
+                crate::commands::query_plugin_status(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "account_id")?,
+                )
+                .await?
+            }
+            "start_plugin_account" => {
+                crate::commands::start_plugin_account(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "account_id")?,
+                )
+                .await?
+            }
+            "stop_plugin_account" => {
+                crate::commands::stop_plugin_account(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "account_id")?,
+                )
+                .await?
+            }
+            "get_logs" => json!(crate::commands::logs::get_logs()),
+            "clear_logs" => {
+                crate::commands::logs::clear_logs()?;
+                json!({ "ok": true })
+            }
+            "debug_gui_state" => crate::commands::logs::debug_gui_state(),
+            "browse_file" => json!(crate::commands::browse_file().await?),
+            "check_upgrade" => crate::commands::check_upgrade().await?,
+            "run_upgrade" => json!({ "output": crate::commands::run_upgrade()? }),
+            "read_file" => {
+                dex_read_file(req_string(&args, "path")?, opt_usize(&args, "max_lines"))?
+            }
+            "list_directory" => dex_list_directory(req_string(&args, "path")?)?,
+            "detect_processes" => dex_detect_processes()?,
+            "detect_ports" => dex_detect_ports()?,
+            "get_env_info" => dex_get_env_info()?,
+            "execute_shell" => {
+                dex_execute_shell(
+                    req_string(&args, "command")?,
+                    opt_u64(&args, "timeout_secs"),
+                    confirmed,
+                )
+                .await?
+            }
+            "search_logs" => dex_search_logs(
+                req_string(&args, "query")?,
+                opt_usize(&args, "context_lines"),
+            )?,
+            "get_codex_config_raw" => dex_get_codex_config_raw()?,
+            "health_summary" => dex_health_summary(manager).await?,
+            "analyze_requests" => dex_analyze_requests(manager).await?,
+            "config_backup" => {
+                dex_config_backup(req_string(&args, "action")?, opt_string(&args, "name"))?
+            }
+            "config_diff" => dex_config_diff()?,
+            "token_cost" => dex_token_cost(manager).await?,
+            "speed_test" => dex_speed_test().await?,
+            "thread_cleanup" => dex_thread_cleanup(opt_bool(&args, "dry_run"))?,
+            "auto_tune" => dex_auto_tune()?,
+            "claude_mcp_check" => dex_claude_mcp_check()?,
+            "claude_env_overview" => dex_claude_env_overview()?,
+            "network_topology" => dex_network_topology()?,
+            "ssl_check" => dex_ssl_check()?,
+            "export_report" => dex_export_report()?,
+            other => return Err(format!("未实现的内置工具: {other}")),
+        }
+    };
+
+    Ok(mask_sensitive_value(result))
 }
 
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
@@ -677,27 +1218,6 @@ fn get_cli_version(cmd: &str, args: &[&str]) -> Option<String> {
         })
 }
 
-/// 检测命令中是否包含危险模式
-fn has_dangerous_pattern(cmd: &str) -> Option<&'static str> {
-    let lower = cmd.to_lowercase();
-    if lower.contains("rm -rf") || lower.contains("rm  -rf") {
-        return Some("rm -rf");
-    }
-    if lower.contains("mkfs") {
-        return Some("mkfs");
-    }
-    if lower.contains("dd if=") {
-        return Some("dd if=");
-    }
-    if cmd.contains("> /dev/") {
-        return Some("写入设备文件");
-    }
-    if lower.contains("curl") && cmd.contains('|') && lower.contains("sh") {
-        return Some("curl | sh");
-    }
-    None
-}
-
 /// DEX 助手：安全执行 Shell 命令
 #[tauri::command]
 pub async fn dex_execute_shell(
@@ -711,7 +1231,7 @@ pub async fn dex_execute_shell(
         return Err("安全限制：执行 Shell 命令前必须经过用户确认".to_string());
     }
 
-    if let Some(pattern) = has_dangerous_pattern(&command) {
+    if let Some(pattern) = has_dangerous_shell_pattern(&command) {
         return Err(format!("安全限制：禁止执行危险命令 ({pattern})"));
     }
 
@@ -1589,6 +2109,21 @@ pub fn dex_claude_mcp_check() -> Result<Value, String> {
     }))
 }
 
+/// DEX 助手：Claude Code 环境概览
+#[tauri::command]
+pub fn dex_claude_env_overview() -> Result<Value, String> {
+    let home = deecodex::config::home_dir().unwrap_or_default();
+    let claude_dir = home.join(".claude");
+    let mcp = dex_claude_mcp_check()?;
+    Ok(mask_sensitive_value(json!({
+        "installed": command_first_line("claude", &["--version"]).is_some(),
+        "version": command_first_line("claude", &["--version"]),
+        "config_dir": claude_dir.to_string_lossy(),
+        "config_dir_exists": claude_dir.exists(),
+        "mcp": mcp,
+    })))
+}
+
 /// DEX 助手：网络拓扑检测
 #[tauri::command]
 pub fn dex_network_topology() -> Result<Value, String> {
@@ -1833,4 +2368,67 @@ pub fn dex_export_report() -> Result<Value, String> {
         "markdown": report,
         "saved_to": saved_to,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::dex_registry::default_capability_enabled;
+
+    #[test]
+    fn builtin_tools_keep_legacy_names_and_capabilities() {
+        let tools = builtin_tool_defs();
+        let health = tools
+            .iter()
+            .find(|tool| tool.name == "health_summary")
+            .expect("health_summary 工具应保留");
+        assert_eq!(health.capability, "deecodex.ops");
+        assert_eq!(health.level, 0);
+
+        let shell = tools
+            .iter()
+            .find(|tool| tool.name == "execute_shell")
+            .expect("execute_shell 工具应保留");
+        assert_eq!(shell.capability, "core.workspace");
+        assert_eq!(shell.level, 3);
+        assert!(shell.confirm.is_some());
+
+        let claude = tools
+            .iter()
+            .find(|tool| tool.name == "claude_env_overview")
+            .expect("claude_env_overview 工具应存在");
+        assert_eq!(claude.capability, "ai.claude");
+        assert_eq!(claude.level, 0);
+    }
+
+    #[test]
+    fn capability_defaults_keep_workspace_mutations_opt_in() {
+        assert!(default_capability_enabled("deecodex.ops"));
+        assert!(default_capability_enabled("plugins.dynamic"));
+        assert!(default_capability_enabled("core.workspace"));
+
+        let shell = builtin_tool_defs()
+            .into_iter()
+            .find(|tool| tool.name == "execute_shell")
+            .expect("execute_shell 工具应保留");
+        assert_eq!(shell.level, 3);
+    }
+
+    #[test]
+    fn all_builtin_tool_names_are_function_call_safe() {
+        for tool in builtin_tool_defs() {
+            assert!(
+                tool.name.len() <= 64,
+                "{} 超过 function calling 名称长度上限",
+                tool.name
+            );
+            assert!(
+                tool.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{} 包含不安全字符",
+                tool.name
+            );
+        }
+    }
 }

@@ -1,4 +1,7 @@
 pub mod dex;
+pub mod dex_plugins;
+pub mod dex_registry;
+pub mod dex_security;
 pub mod logs;
 
 use std::collections::HashMap;

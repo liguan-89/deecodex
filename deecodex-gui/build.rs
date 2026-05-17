@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    println!("cargo:rerun-if-changed=gui");
     tauri_build::build();
 
     // 拼接 gui/nav/*.html 为 fragments.js，避免 fetch 在 webview 中失败

@@ -26,6 +26,10 @@
       '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
       '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
       '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
+      '.dex-cap-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
+      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.18);color:var(--text-secondary,#6b7fa8);border-radius:4px;padding:3px 7px;font-size:11px;line-height:1.4;cursor:pointer}',
+      '.dex-cap-chip.on{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.32);background:rgba(0,200,232,0.08)}',
+      '.dex-cap-chip.off{opacity:0.55}',
       '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);margin-top:2px;font-style:italic}',
       '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
       '@media (max-width:900px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{flex-wrap:wrap}.dex-input-row textarea{flex-basis:100%}.dex-input-row .btn{flex:1 1 96px}}'
@@ -34,865 +38,67 @@
   }
 })();
 
-// ── 65 个工具定义 ──
-var DEX_TOOLS = [
-  // A. 服务管理 (5个)
-  {
-    name: 'get_service_status',
-    tauriCmd: 'get_service_status',
-    level: 0,
-    confirm: null,
-    description: '获取 deecodex 服务运行状态',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'start_service',
-    tauriCmd: 'start_service',
-    level: 2,
-    confirm: null,
-    description: '启动 deecodex 服务',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'stop_service',
-    tauriCmd: 'stop_service',
-    level: 3,
-    confirm: '确定要停止 deecodex 服务吗？',
-    description: '停止 deecodex 服务',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'launch_codex_cdp',
-    tauriCmd: 'launch_codex_cdp',
-    level: 2,
-    confirm: null,
-    description: '启动 Codex 桌面应用（CDP 模式）',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'stop_codex_cdp',
-    tauriCmd: 'stop_codex_cdp',
-    level: 3,
-    confirm: '确定要关闭 Codex 桌面应用吗？',
-    description: '关闭 Codex 桌面应用（CDP 模式）',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // B. 配置管理 (5个)
-  {
-    name: 'get_config',
-    tauriCmd: 'get_config',
-    level: 0,
-    confirm: null,
-    description: '获取当前 deecodex 配置',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'save_config',
-    tauriCmd: 'save_config',
-    level: 2,
-    confirm: null,
-    description: '保存 deecodex 配置',
-    parameters: {
-      type: 'object',
-      properties: {
-        config_json: { type: 'string', description: 'JSON 格式的配置内容' }
-      },
-      required: ['config_json']
-    }
-  },
-  {
-    name: 'validate_config',
-    tauriCmd: 'validate_config',
-    level: 0,
-    confirm: null,
-    description: '校验 deecodex 配置',
-    parameters: {
-      type: 'object',
-      properties: {
-        config_json: { type: 'string', description: '待校验的 JSON 配置' }
-      },
-      required: ['config_json']
-    }
-  },
-  {
-    name: 'run_diagnostics',
-    tauriCmd: 'run_diagnostics',
-    level: 0,
-    confirm: null,
-    description: '运行标准诊断检查',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'run_full_diagnostics',
-    tauriCmd: 'run_full_diagnostics',
-    level: 1,
-    confirm: null,
-    description: '运行完整诊断检查（含网络测试）',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // C. 账号管理 (8个)
-  {
-    name: 'list_accounts',
-    tauriCmd: 'list_accounts',
-    level: 0,
-    confirm: null,
-    description: '列出所有账号配置',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'get_active_account',
-    tauriCmd: 'get_active_account',
-    level: 0,
-    confirm: null,
-    description: '获取当前活跃账号信息',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'add_account',
-    tauriCmd: 'add_account',
-    level: 2,
-    confirm: null,
-    description: '添加新账号',
-    parameters: {
-      type: 'object',
-      properties: {
-        provider: { type: 'string', description: '供应商标识（如 openai、deepseek、custom）' },
-        account_json: { type: 'string', description: 'JSON 格式的账号配置' }
-      },
-      required: ['provider', 'account_json']
-    }
-  },
-  {
-    name: 'update_account',
-    tauriCmd: 'update_account',
-    level: 2,
-    confirm: null,
-    description: '更新账号配置',
-    parameters: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '账号 ID' },
-        account_json: { type: 'string', description: 'JSON 格式的更新内容' }
-      },
-      required: ['id', 'account_json']
-    }
-  },
-  {
-    name: 'delete_account',
-    tauriCmd: 'delete_account',
-    level: 3,
-    confirm: '确定要删除该账号吗？此操作不可撤销。',
-    description: '删除账号',
-    parameters: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '账号 ID' }
-      },
-      required: ['id']
-    }
-  },
-  {
-    name: 'switch_account',
-    tauriCmd: 'switch_account',
-    level: 2,
-    confirm: null,
-    description: '切换活跃账号',
-    parameters: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '目标账号 ID' }
-      },
-      required: ['id']
-    }
-  },
-  {
-    name: 'import_codex_config',
-    tauriCmd: 'import_codex_config',
-    level: 2,
-    confirm: null,
-    description: '从 Codex 配置文件导入账号',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'get_provider_presets',
-    tauriCmd: 'get_provider_presets',
-    level: 0,
-    confirm: null,
-    description: '获取供应商预设列表',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // D. 上游探测 (3个)
-  {
-    name: 'fetch_upstream_models',
-    tauriCmd: 'fetch_upstream_models',
-    level: 1,
-    confirm: null,
-    description: '从上游获取可用模型列表',
-    parameters: {
-      type: 'object',
-      properties: {
-        upstream: { type: 'string', description: '上游 API 地址' },
-        api_key: { type: 'string', description: 'API 密钥' }
-      },
-      required: ['upstream', 'api_key']
-    }
-  },
-  {
-    name: 'fetch_balance',
-    tauriCmd: 'fetch_balance',
-    level: 1,
-    confirm: null,
-    description: '查询账号余额/额度',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'test_upstream_connectivity',
-    tauriCmd: 'test_upstream_connectivity',
-    level: 1,
-    confirm: null,
-    description: '测试上游连通性',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // E. 会话管理 (3个)
-  {
-    name: 'list_sessions',
-    tauriCmd: 'list_sessions',
-    level: 0,
-    confirm: null,
-    description: '列出历史会话',
-    parameters: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: '返回数量上限' }
-      },
-      required: []
-    }
-  },
-  {
-    name: 'delete_session',
-    tauriCmd: 'delete_session',
-    level: 3,
-    confirm: '确定要删除该会话吗？',
-    description: '删除指定会话',
-    parameters: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '会话 ID' }
-      },
-      required: ['id']
-    }
-  },
-  {
-    name: 'undo_delete_session',
-    tauriCmd: 'undo_delete_session',
-    level: 2,
-    confirm: null,
-    description: '撤销删除会话',
-    parameters: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '会话 ID' }
-      },
-      required: ['id']
-    }
-  },
-
-  // F. 线程聚合 (7个)
-  {
-    name: 'get_threads_status',
-    tauriCmd: 'get_threads_status',
-    level: 0,
-    confirm: null,
-    description: '获取线程聚合状态',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'list_threads',
-    tauriCmd: 'list_threads',
-    level: 0,
-    confirm: null,
-    description: '列出所有线程',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'get_thread_content',
-    tauriCmd: 'get_thread_content',
-    level: 0,
-    confirm: null,
-    description: '获取指定线程的完整内容',
-    parameters: {
-      type: 'object',
-      properties: {
-        thread_id: { type: 'string', description: '线程 ID' }
-      },
-      required: ['thread_id']
-    }
-  },
-  {
-    name: 'migrate_threads',
-    tauriCmd: 'migrate_threads',
-    level: 3,
-    confirm: '确定要迁移所有线程到 deecodex 吗？',
-    description: '迁移所有线程到 deecodex 格式',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'restore_threads',
-    tauriCmd: 'restore_threads',
-    level: 3,
-    confirm: '确定要还原线程迁移吗？',
-    description: '还原线程迁移操作',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'calibrate_threads',
-    tauriCmd: 'calibrate_threads',
-    level: 2,
-    confirm: null,
-    description: '校准线程索引',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'delete_thread',
-    tauriCmd: 'delete_thread',
-    level: 3,
-    confirm: '确定要永久删除该线程吗？',
-    description: '永久删除指定线程',
-    parameters: {
-      type: 'object',
-      properties: {
-        thread_id: { type: 'string', description: '线程 ID' }
-      },
-      required: ['thread_id']
-    }
-  },
-
-  // G. 请求历史 (3个)
-  {
-    name: 'list_request_history',
-    tauriCmd: 'list_request_history',
-    level: 0,
-    confirm: null,
-    description: '列出请求历史记录',
-    parameters: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: '返回数量上限' }
-      },
-      required: []
-    }
-  },
-  {
-    name: 'clear_request_history',
-    tauriCmd: 'clear_request_history',
-    level: 3,
-    confirm: '确定要清空所有请求历史吗？',
-    description: '清空所有请求历史记录',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'get_monthly_stats',
-    tauriCmd: 'get_monthly_stats',
-    level: 0,
-    confirm: null,
-    description: '获取月度统计信息',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // H. 插件管理 (11个)
-  {
-    name: 'list_plugins',
-    tauriCmd: 'list_plugins',
-    level: 0,
-    confirm: null,
-    description: '列出所有已安装插件',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'install_plugin',
-    tauriCmd: 'install_plugin',
-    level: 2,
-    confirm: null,
-    description: '安装插件',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '插件文件或目录路径' }
-      },
-      required: ['path']
-    }
-  },
-  {
-    name: 'uninstall_plugin',
-    tauriCmd: 'uninstall_plugin',
-    level: 3,
-    confirm: '确定要卸载该插件吗？',
-    description: '卸载指定插件',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
-      },
-      required: ['plugin_id']
-    }
-  },
-  {
-    name: 'start_plugin',
-    tauriCmd: 'start_plugin',
-    level: 2,
-    confirm: null,
-    description: '启动指定插件',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
-      },
-      required: ['plugin_id']
-    }
-  },
-  {
-    name: 'stop_plugin',
-    tauriCmd: 'stop_plugin',
-    level: 2,
-    confirm: null,
-    description: '停止指定插件',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' }
-      },
-      required: ['plugin_id']
-    }
-  },
-  {
-    name: 'update_plugin_config',
-    tauriCmd: 'update_plugin_config',
-    level: 2,
-    confirm: null,
-    description: '更新插件配置',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        config_json: { type: 'string', description: 'JSON 格式的插件配置' }
-      },
-      required: ['plugin_id', 'config_json']
-    }
-  },
-  {
-    name: 'get_plugin_qrcode',
-    tauriCmd: 'get_plugin_qrcode',
-    level: 1,
-    confirm: null,
-    description: '获取插件扫码登录二维码',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        account_id: { type: 'string', description: '插件账号 ID' }
-      },
-      required: ['plugin_id', 'account_id']
-    }
-  },
-  {
-    name: 'plugin_login_cancel',
-    tauriCmd: 'plugin_login_cancel',
-    level: 2,
-    confirm: null,
-    description: '取消插件扫码登录',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        account_id: { type: 'string', description: '插件账号 ID' }
-      },
-      required: ['plugin_id', 'account_id']
-    }
-  },
-  {
-    name: 'query_plugin_status',
-    tauriCmd: 'query_plugin_status',
-    level: 0,
-    confirm: null,
-    description: '查询插件运行状态',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        account_id: { type: 'string', description: '插件账号 ID' }
-      },
-      required: ['plugin_id', 'account_id']
-    }
-  },
-  {
-    name: 'start_plugin_account',
-    tauriCmd: 'start_plugin_account',
-    level: 2,
-    confirm: null,
-    description: '启动插件账号服务',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        account_id: { type: 'string', description: '插件账号 ID' }
-      },
-      required: ['plugin_id', 'account_id']
-    }
-  },
-  {
-    name: 'stop_plugin_account',
-    tauriCmd: 'stop_plugin_account',
-    level: 2,
-    confirm: null,
-    description: '停止插件账号服务',
-    parameters: {
-      type: 'object',
-      properties: {
-        plugin_id: { type: 'string', description: '插件 ID' },
-        account_id: { type: 'string', description: '插件账号 ID' }
-      },
-      required: ['plugin_id', 'account_id']
-    }
-  },
-
-  // I. 日志和调试 (4个)
-  {
-    name: 'get_logs',
-    tauriCmd: 'get_logs',
-    level: 0,
-    confirm: null,
-    description: '获取最近日志',
-    parameters: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: '返回日志行数' }
-      },
-      required: []
-    }
-  },
-  {
-    name: 'clear_logs',
-    tauriCmd: 'clear_logs',
-    level: 3,
-    confirm: '确定要清空所有日志吗？',
-    description: '清空所有日志',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'debug_gui_state',
-    tauriCmd: 'debug_gui_state',
-    level: 0,
-    confirm: null,
-    description: '获取 GUI 调试状态信息',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'browse_file',
-    tauriCmd: 'browse_file',
-    level: 0,
-    confirm: null,
-    description: '浏览文件内容',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '文件路径' }
-      },
-      required: ['path']
-    }
-  },
-
-  // J. 升级管理 (2个)
-  {
-    name: 'check_upgrade',
-    tauriCmd: 'check_upgrade',
-    level: 0,
-    confirm: null,
-    description: '检查是否有可用更新',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'run_upgrade',
-    tauriCmd: 'run_upgrade',
-    level: 3,
-    confirm: '确定要执行一键升级吗？升级期间服务将不可用。',
-    description: '执行一键升级',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // K. DEX 专属 (8个)
-  {
-    name: 'read_file',
-    tauriCmd: 'dex_read_file',
-    level: 0,
-    confirm: null,
-    description: '读取文件内容（支持行数限制）',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '文件路径' },
-        max_lines: { type: 'number', description: '最大读取行数' }
-      },
-      required: ['path']
-    }
-  },
-  {
-    name: 'list_directory',
-    tauriCmd: 'dex_list_directory',
-    level: 0,
-    confirm: null,
-    description: '列出目录内容',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '目录路径' }
-      },
-      required: ['path']
-    }
-  },
-  {
-    name: 'detect_processes',
-    tauriCmd: 'dex_detect_processes',
-    level: 0,
-    confirm: null,
-    description: '检测系统进程信息',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'detect_ports',
-    tauriCmd: 'dex_detect_ports',
-    level: 0,
-    confirm: null,
-    description: '检测网络端口使用情况',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'get_env_info',
-    tauriCmd: 'dex_get_env_info',
-    level: 0,
-    confirm: null,
-    description: '获取系统环境信息',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'execute_shell',
-    tauriCmd: 'dex_execute_shell',
-    level: 3,
-    confirm: '确定要执行这条 Shell 命令吗？请确认命令内容可信。',
-    description: '执行 Shell 命令',
-    parameters: {
-      type: 'object',
-      properties: {
-        command: { type: 'string', description: '要执行的命令' },
-        timeout_secs: { type: 'number', description: '超时秒数' }
-      },
-      required: ['command']
-    }
-  },
-  {
-    name: 'search_logs',
-    tauriCmd: 'dex_search_logs',
-    level: 0,
-    confirm: null,
-    description: '搜索日志内容',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: '搜索关键词' },
-        context_lines: { type: 'number', description: '上下文行数' }
-      },
-      required: ['query']
-    }
-  },
-  {
-    name: 'get_codex_config_raw',
-    tauriCmd: 'dex_get_codex_config_raw',
-    level: 0,
-    confirm: null,
-    description: '获取 Codex 原始配置文件内容',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'health_summary',
-    tauriCmd: 'dex_health_summary',
-    level: 0,
-    confirm: null,
-    description: '一键健康概览：服务状态+账号状态+Codex安装+最近错误数',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'analyze_requests',
-    tauriCmd: 'dex_analyze_requests',
-    level: 0,
-    confirm: null,
-    description: '分析最近请求：成功率、延迟P50/P99、Token消耗、模型分布',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-
-  // L. 系统运维 (10个)
-  {
-    name: 'config_backup', tauriCmd: 'dex_config_backup', level: 0,
-    confirm: null,
-    description: '备份/恢复/列出配置文件',
-    parameters: { type: 'object', properties: { action: { type: 'string', description: 'backup|restore|list' } }, required: ['action'] }
-  },
-  {
-    name: 'config_diff', tauriCmd: 'dex_config_diff', level: 0,
-    confirm: null,
-    description: '对比当前配置与历史版本的差异',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'token_cost', tauriCmd: 'dex_token_cost', level: 0,
-    confirm: null,
-    description: '分析 Token 消耗与成本',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'speed_test', tauriCmd: 'dex_speed_test', level: 0,
-    confirm: null,
-    description: '测试 API 响应速度与延迟',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'thread_cleanup', tauriCmd: 'dex_thread_cleanup', level: 0,
-    confirm: null,
-    description: '清理无用线程数据',
-    parameters: { type: 'object', properties: { dry_run: { type: 'boolean', description: '是否为演练模式（不实际删除）' } }, required: [] }
-  },
-  {
-    name: 'auto_tune', tauriCmd: 'dex_auto_tune', level: 0,
-    confirm: null,
-    description: '自动调优 deecodex 配置参数',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'claude_mcp_check', tauriCmd: 'dex_claude_mcp_check', level: 0,
-    confirm: null,
-    description: '检查 Claude Code MCP 集成状态',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'network_topology', tauriCmd: 'dex_network_topology', level: 0,
-    confirm: null,
-    description: '分析网络拓扑与连通性',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'ssl_check', tauriCmd: 'dex_ssl_check', level: 0,
-    confirm: null,
-    description: '检查 SSL/TLS 证书状态',
-    parameters: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'export_report', tauriCmd: 'dex_export_report', level: 0,
-    confirm: null,
-    description: '导出系统诊断与健康报告',
-    parameters: { type: 'object', properties: {}, required: [] }
-  }
-];
+// ── 工具定义由后端能力注册中心动态提供 ──
+var DEX_TOOLS = [];
+var DEX_CAPABILITIES = [];
+var DEX_WORKSPACE_CONTEXT = null;
 
 // ── System Prompt ──
 var DEX_SYSTEM_PROMPT = [
-  '你是 deecodex 运维专家 Agent，运行在 deecodex GUI 内置的 DEX助手 面板中。',
-  '你通过调用后端工具获取实时数据、诊断问题、管理配置、操作服务和插件。',
+  '你是 DEX助手 2.0，一个 AI工具工作台 Agent，运行在 deecodex GUI 内置的 DEX助手 面板中。',
+  '你的首版范围聚焦 Codex、Claude、MCP、模型账号、日志、请求历史、线程、插件和项目环境诊断。',
+  'deecodex 是你的默认能力包之一，但你不只服务于 deecodex。',
   '',
   '## 核心原则',
-  '1. **工具优先**：始终优先调用工具获取实时数据，不要猜测或假设系统状态。',
-  '2. **安全级别**：L0/L1 工具直接执行；L2 工具自动执行并报告结果；L3 操作必须先征得用户确认。',
-  '3. **验证结果**：每次操作后检查返回结果，确认操作是否成功。',
-  '4. **失败不重复**：工具失败后分析原因换方案，不要用相同参数重复调用同一个失败的工具。',
-  '5. **先说结论**：回复以结论开头，一行说清结果，细节可折叠。不用啰嗦重复用户已知信息。',
+  '1. 工具优先：始终优先调用工具获取实时数据，不要猜测系统状态。',
+  '2. 安全分级：L0/L1 可直接执行；L2 执行后报告结果；L3 由前端统一弹出内联确认。',
+  '3. 验证结果：每次操作后检查返回结果，必要时用只读工具复核。',
+  '4. 失败不重复：同一工具同一参数失败后，换思路分析原因。',
+  '5. 回复精简：中文回复，先说结论，再给必要细节。',
   '',
-  '## 工具概览（共 71 个）',
-  '- 服务管理 (5): get_service_status, start_service, stop_service(L3), launch_codex_cdp, stop_codex_cdp(L3)',
-  '- 配置管理 (5): get_config, save_config, validate_config, run_diagnostics, run_full_diagnostics',
-  '- 账号管理 (8): list_accounts, get_active_account, add_account, update_account, delete_account(L3), switch_account, import_codex_config, get_provider_presets',
-  '- 上游探测 (3): fetch_upstream_models, fetch_balance, test_upstream_connectivity',
-  '- 会话管理 (3): list_sessions, delete_session(L3), undo_delete_session',
-  '- 线程聚合 (7): get_threads_status, list_threads, get_thread_content, migrate_threads(L3), restore_threads(L3), calibrate_threads, delete_thread(L3)',
-  '- 请求历史 (3): list_request_history, clear_request_history(L3), get_monthly_stats',
-  '- 插件管理 (11): list_plugins, install_plugin, uninstall_plugin(L3), start_plugin, stop_plugin, update_plugin_config, get_plugin_qrcode, plugin_login_cancel, query_plugin_status, start_plugin_account, stop_plugin_account',
-  '- 日志调试 (4): get_logs, clear_logs(L3), debug_gui_state, browse_file',
-  '- 升级管理 (2): check_upgrade, run_upgrade(L3)',
-  '- DEX专属 (10): health_summary, analyze_requests, read_file, list_directory, detect_processes, detect_ports, get_env_info, execute_shell, search_logs, get_codex_config_raw',
-  '- 系统运维 (10): config_backup, config_diff, token_cost, speed_test, thread_cleanup, auto_tune, claude_mcp_check, network_topology, ssl_check, export_report',
-  '',
-  '## 诊断知识库',
-  '',
-  '### Codex CLI 配置',
-  '- 配置文件: ~/.codex/config.toml',
-  '- 关键字段: model（当前使用模型）、model_provider（必须设为 custom 才能使用自定义配置）',
-  '- [model_providers.custom] 节: base_url（API 地址）、name（显示名）、requires_openai_auth（是否需要 OpenAI 认证）、wire_api（协议类型: responses 或 chat_completions）',
-  '- 常见故障:',
-  '  - base_url 末尾多余的 / 导致 404 错误',
-  '  - 端口号与实际服务端口不匹配（deecodex 默认 4446）',
-  '  - model_provider 未设为 custom，导致使用默认 OpenAI 配置',
-  '  - requires_openai_auth 设置不正确导致认证失败',
-  '- 注入机制: codex_auto_inject 在启动 Codex 时自动修改 config.toml；codex_persistent_inject 保持注入状态',
-  '',
-  '### Claude Code 集成',
-  '- MCP 配置文件: ~/.claude/mcp.json',
-  '- API 请求地址: http://127.0.0.1:4446/v1',
-  '- deecodex 作为 MCP 服务器提供工具调用能力',
-  '',
-  '### 模型映射',
-  '- 键名大小写敏感，Codex 模型名列表: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5, codex-auto-review',
-  '- model_map 格式: { "Codex模型名": "上游模型名", ... }',
-  '- 上游模型名需与实际 API 返回的模型名完全一致',
-  '',
-  '### 协议兼容性',
-  '- deecodex 在中间层翻译请求：上游 Chat Completions API → 对外 Responses API',
-  '- wire_api 指定上游协议类型',
-  '- translate_enabled 控制是否启用协议翻译（DeepSeek 等仅支持 Chat Completions 的供应商需保持开启）',
-  '- DeepSeek 的 reasoning_content 需要在翻译过程中保留并正确传递',
-  '',
-  '### deecodex 自身',
-  '- 默认端口: 4446，PID 文件: data_dir/deecodex.pid',
-  '- 15 项诊断：服务状态、端口占用、配置完整性、网络连通性、上游可用性等',
-  '- 日志: data_dir/deecodex.log，用 get_logs/search_logs 读取',
-  '',
-  '## 自主修复模式',
-  '当用户说「修复」「自动修」「帮我修」等时，进入自主修复模式：',
-  '1. run_full_diagnostics 获取全貌',
-  '2. 对每个 fail 项分析原因，按优先级排序',
-  '3. L2 操作直接执行修复（start_service / save_config / switch_account / calibrate_threads）',
-  '4. L3 操作先简要说明 + 获取确认',
-  '5. 修复后重新诊断验证',
-  '6. 最后用表格报告「修复前 → 修复后」',
-  '',
-  '## 主动建议',
-  '完成诊断或分析后，主动给出建议：',
-  '- 如有 fail 项 → 建议修复方案并询问是否执行',
-  '- 如有 warn 项 → 列出风险和建议',
-  '- 如一切正常 → 一句话确认 + 可选优化建议',
-  '- 用 analyze_requests 分析请求模式，提示异常（成功率<95%、延迟突增）',
-  '',
-  '## 常见问题修复速查',
-  '| 问题 | 诊断信号 | 修复操作 |',
-  '|------|---------|---------|',
-  '| 服务未启动 | 诊断 fail:"服务未运行" | start_service |',
-  '| 端口冲突 | 诊断 fail:"端口被占用" | detect_ports → save_config 改端口 → start_service |',
-  '| Codex 路由丢失 | 诊断 fail:"未路由到 deecodex" | save_config(codex_auto_inject:true) |',
-  '| 账号连通失败 | 诊断 fail:"上游不可达" | test_upstream_connectivity → 如果另一个账号通就 switch_account |',
-  '| 线程冲突 | 诊断 warn:"差异" | calibrate_threads |',
-  '| 上游模型不足 | fetch_upstream_models 返回空 | 检查 upstream/api_key 是否正确 |',
-  '| Codex 未安装 | 诊断 fail:"Codex 未安装" | 提示用户安装 Codex CLI |',
-  '| 余额不足 | fetch_balance 余额低 | 提示用户充值或切换账号 |',
-  '| 注入失效 | 诊断 fail:"注入" | save_config 触发 codex_auto_inject；如不行，提示重启 Codex |',
-  '| 配置不一致 | 诊断 warn:"不一致" | get_config 获取当前配置 → save_config 修正 |',
-  '',
-  '## 回复风格（务必遵守）',
-      '- 使用中文回复',
-      '- **极度精简**：每句话都有信息量，不寒暄、不废话。结果用一行说清楚',
-      '- 先说结论，细节可省略。表格、列表优先于大段文字',
-      '- L2 操作直接执行并一句话报告结果，不写长篇说明',
-      '- L3 操作说明原因后等待确认即可',
-      '- 不重复用户已知信息，不啰嗦解释显而易见的操作',
+  '## 安全边界',
+  '- 文件读取限制在 ~/.deecodex、~/.codex、/tmp 和当前工作区。',
+  '- Shell 属于 L3；用户明确要求执行时，直接发起 execute_shell 工具调用，由前端内联确认，不要用普通文本确认代替。',
+  '- 不泄露 api_key、authorization、token、secret、password 等敏感信息。',
+  '- 插件工具通过统一代理执行，遵循同一安全分级。'
 ].join('\n');
+
+function dexBuildSystemPrompt() {
+  var caps = (DEX_CAPABILITIES || []).filter(function(c) { return c.enabled; }).map(function(c) {
+    return '- ' + c.id + '：' + c.label + '（' + (c.tool_count || 0) + ' 个工具）';
+  }).join('\n') || '- 使用默认能力包';
+  var ctx = DEX_WORKSPACE_CONTEXT || {};
+  var ctxLines = [];
+  if (ctx.cwd) ctxLines.push('- 当前工作区: ' + ctx.cwd);
+  if (ctx.project_types && ctx.project_types.length) ctxLines.push('- 项目类型: ' + ctx.project_types.join(', '));
+  if (ctx.config_files && ctx.config_files.length) ctxLines.push('- 关键文件: ' + ctx.config_files.join(', '));
+  if (ctx.git && ctx.git.is_repo) ctxLines.push('- Git: ' + (ctx.git.branch || '未知分支') + '，未提交变更 ' + (ctx.git.dirty_count || 0) + ' 项');
+  if (ctx.active_account) ctxLines.push('- 活跃账号: ' + (ctx.active_account.name || ctx.active_account.provider || '未知') + ' / ' + (ctx.active_account.provider || 'custom'));
+  var toolLines = (DEX_TOOLS || []).slice(0, 80).map(function(t) {
+    return '- ' + t.name + ' [L' + (t.level || 0) + ' / ' + (t.source || 'builtin') + ' / ' + (t.capability || 'core') + ']：' + (t.description || '');
+  });
+  if ((DEX_TOOLS || []).length > toolLines.length) {
+    toolLines.push('- 另有 ' + ((DEX_TOOLS || []).length - toolLines.length) + ' 个工具，按需从工具清单调用。');
+  }
+  return [
+    DEX_SYSTEM_PROMPT,
+    '',
+    '## 当前启用能力包',
+    caps,
+    '',
+    '## 工作区上下文',
+    ctxLines.join('\n') || '- 暂无工作区上下文',
+    '',
+    '## 当前可用工具',
+    toolLines.join('\n') || '- 工具清单尚未加载；请等待后端动态注册表返回。',
+    '',
+    '## DEX 2.0 工具调用规则',
+    '- 工具定义来自后端动态注册表，工具可能来自内置能力包或插件。',
+    '- 你必须优先调用工具获取实时状态，尤其是诊断、配置、日志、线程、插件和工作区问题。',
+    '- L3 操作必须发起对应工具调用，由前端显示内联确认；不要先用普通文本询问“是否确认”。',
+    '- 不要泄露 api_key、authorization、token、secret、password 等敏感信息。',
+  ].join('\n');
+}
 
 function dexNormalizePluginArgs(args) {
   var normalized = Object.assign({}, args || {});
@@ -937,20 +143,22 @@ window.dexAgent = {
   selectedModel: 'auto',
 
   init: function () {
-    this.messages = [{ role: 'system', content: DEX_SYSTEM_PROMPT }];
+    this.messages = [{ role: 'system', content: dexBuildSystemPrompt() }];
     this.isProcessing = false;
     this.roundCount = 0;
     this._lastErrorKey = null;
     this._toolCache = {};
+    this._pendingConfirm = null;
     this.saveHistory();
   },
 
   clear: function () {
-    this.messages = [{ role: 'system', content: DEX_SYSTEM_PROMPT }];
+    this.messages = [{ role: 'system', content: dexBuildSystemPrompt() }];
     this.isProcessing = false;
     this.roundCount = 0;
     this._lastErrorKey = null;
     this._toolCache = {};
+    dexResolveInlineConfirm(null, false);
     this.saveHistory();
   },
 
@@ -1082,6 +290,11 @@ window.dexAgent = {
           for (var i = 0; i < msg.tool_calls.length; i++) {
             var tc = msg.tool_calls[i];
             var toolResult = await this.executeTool(tc);
+            if (toolResult && toolResult.cancelled) {
+              this.messages.pop();
+              this.saveHistory();
+              break;
+            }
             // 发回 LLM 时精简：诊断/配置/日志等大结果用摘要代替
             var compact = toolResult;
             if (toolResult && toolResult.success) {
@@ -1096,6 +309,7 @@ window.dexAgent = {
             if (resultStr.length > 2000) resultStr = resultStr.substring(0, 2000) + '…';
             this.messages.push({ role: 'tool', tool_call_id: tc.id, content: resultStr });
           }
+          if (toolResult && toolResult.cancelled) break;
           this.saveHistory();
           continue;
         }
@@ -1146,13 +360,14 @@ window.dexAgent = {
       return cached;
     }
 
-    var statusEl = dexAppendMessage('tool-start', fnName, { args: fnArgs });
+    var statusEl = dexAppendMessage('tool-start', fnName, { args: fnArgs, toolDef: toolDef });
 
-    if (toolDef.level === 3 && toolDef.confirm) {
-      var confirmed = await dexShowInlineConfirm(fnName, toolDef.confirm, toolCall.id, fnArgs);
+    if (toolDef.level >= 3) {
+      var confirmText = toolDef.confirm || ('确定要执行高风险工具 ' + fnName + ' 吗？');
+      var confirmed = await dexShowInlineConfirm(fnName, confirmText, toolCall.id, fnArgs);
       if (!confirmed) {
         dexUpdateMessage(statusEl, 'tool-error', fnName + ': 用户取消了操作', { error: '用户取消了 L3 操作' });
-        return { error: '用户取消了 L3 操作: ' + fnName };
+        return { cancelled: true, error: '用户取消了 L3 操作: ' + fnName };
       }
       if (fnName === 'execute_shell') fnArgs.confirmed = true;
     }
@@ -1179,7 +394,11 @@ window.dexAgent = {
     var lastError = null;
     for (var retry = 0; retry < 3; retry++) {
       try {
-        var result = await DeeCodexTauri.invoke(toolDef.tauriCmd, fnArgs);
+        var result = await DeeCodexTauri.invoke('dex_execute_tool', {
+          name: fnName,
+          args: fnArgs,
+          confirmed: toolDef.level >= 3 ? true : undefined
+        });
         this._lastErrorKey = null;
         this._toolCache[cacheKey] = { success: true, data: result };
         dexUpdateMessage(statusEl, 'tool-result', fnName, { result: result, success: true });
@@ -1191,7 +410,7 @@ window.dexAgent = {
         var isTransient = /timeout|timed.?out|network|connection|ECONN|abort/i.test(String(e.message || e || ''));
         if (!isTransient) break;
         console.warn('[dexAgent] 瞬态错误，重试 ' + (retry + 1) + '/3:', fnName, e);
-        if (retry < 2) dexUpdateMessage(statusEl, 'tool-start', fnName + ': 第' + (retry + 1) + '次尝试失败，正在重试…', { args: fnArgs });
+      if (retry < 2) dexUpdateMessage(statusEl, 'tool-start', fnName + ': 第' + (retry + 1) + '次尝试失败，正在重试…', { args: fnArgs, toolDef: toolDef });
       }
     }
     this._lastErrorKey = errKey;
@@ -1227,7 +446,7 @@ window.dexAgent = {
       var raw = window.deeStorage.getItem('dex_chat_history');
       if (raw) {
         var history = JSON.parse(raw);
-        this.messages = [{ role: 'system', content: DEX_SYSTEM_PROMPT }];
+        this.messages = [{ role: 'system', content: dexBuildSystemPrompt() }];
         for (var i = 0; i < history.length; i++) this.messages.push(history[i]);
         return history;
       }
@@ -1236,6 +455,50 @@ window.dexAgent = {
   }
 };
 
+async function dexLoadDynamicContext() {
+  try {
+    var result = await Promise.all([
+      DeeCodexTauri.invoke('dex_list_capabilities', {}),
+      DeeCodexTauri.invoke('dex_list_tools', {}),
+      DeeCodexTauri.invoke('dex_get_workspace_context', {})
+    ]);
+    DEX_CAPABILITIES = result[0] || [];
+    if (Array.isArray(result[1])) {
+      DEX_TOOLS = result[1];
+    }
+    DEX_WORKSPACE_CONTEXT = result[2] || null;
+    window.dexAgent.messages[0] = { role: 'system', content: dexBuildSystemPrompt() };
+    dexRenderCapabilityChips();
+  } catch (e) {
+    DEX_TOOLS = [];
+    console.warn('[dexAgent] 动态工具加载失败，当前不暴露工具清单:', e);
+  }
+}
+
+function dexRenderCapabilityChips() {
+  var el = document.getElementById('dexCapabilityChips');
+  if (!el) return;
+  if (!DEX_CAPABILITIES || !DEX_CAPABILITIES.length) {
+    el.innerHTML = '<span class="dex-cap-chip">默认能力</span>';
+    return;
+  }
+  el.innerHTML = DEX_CAPABILITIES.map(function(c) {
+    var cls = c.enabled ? 'dex-cap-chip on' : 'dex-cap-chip off';
+    return '<button class="' + cls + '" onclick="dexToggleCapability(\'' + escAttr(c.id) + '\',' + (!c.enabled) + ')" title="' + escAttr(c.description || '') + '">' + esc(c.label || c.id) + ' · ' + (c.tool_count || 0) + '</button>';
+  }).join('');
+}
+
+async function dexToggleCapability(id, enabled) {
+  try {
+    await DeeCodexTauri.invoke('dex_update_capability_state', { capabilityId: id, capability_id: id, enabled: enabled });
+    await dexLoadDynamicContext();
+    window.dexAgent.messages[0] = { role: 'system', content: dexBuildSystemPrompt() };
+    showToast((enabled ? '已启用 ' : '已停用 ') + id, 'success');
+  } catch (e) {
+    showToast('能力包切换失败: ' + (e.message || e), 'error');
+  }
+}
+
 // ── Chat UI 渲染 ──
 function renderDexAssistant() {
   window._dexInitialized = false;
@@ -1243,6 +506,10 @@ function renderDexAssistant() {
     if (window._dexInitialized) return;
     window._dexInitialized = true;
     if (window.dexAgent.messages.length === 0) window.dexAgent.init();
+
+    dexLoadDynamicContext().then(function () {
+      dexUpdateTokenCount();
+    });
 
     dexLoadModels();
 
@@ -1274,6 +541,7 @@ function renderDexAssistant() {
           } catch (e) { dexAppendMessage('tool-result', toolName, { result: msg.content, history: true }); }
         }
       }
+      dexRenderPendingConfirm();
       dexScrollToBottom();
     }
 
@@ -1325,7 +593,7 @@ function renderDexAssistant() {
     dexBindShortcuts();
   }, 0);
 
-  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title"><h3 title="DEX助手 — AI工具运维专家">DEX助手 — AI工具运维专家</h3>'
+  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title"><h3 title="DEX助手 2.0 — AI工具工作台">DEX助手 2.0 — AI工具工作台</h3>'
     + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span> <span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
     + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型 ▾</button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexExportChat()" title="导出对话" aria-label="导出对话">⇩<span class="dex-sr-only">导出对话</span></button>'
@@ -1333,6 +601,7 @@ function renderDexAssistant() {
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexNewChat()" title="新对话" aria-label="新对话">＋<span class="dex-sr-only">新对话</span></button>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexClearChat()" title="清空对话" aria-label="清空对话">⌫<span class="dex-sr-only">清空对话</span></button></div></div>'
     + '<div class="dex-search-bar" id="dexSearchBar" style="display:none"><input id="dexSearchInput" placeholder="搜索对话..." /><span class="dex-search-count" id="dexSearchCount"></span><button class="btn btn-ghost btn-sm" onclick="dexCloseSearch()">关闭</button></div>'
+    + '<div class="dex-cap-chips" id="dexCapabilityChips"></div>'
     + '<div class="dex-chat-messages" id="dexMessages">' + dexWelcomeHTML() + '</div>'
     + '<div class="dex-input-area" id="dexInputAreaWrap">'
     + '<div id="dexToolPreview" class="dex-tool-preview" style="display:none"></div>'
@@ -1347,14 +616,15 @@ function renderDexAssistant() {
 
 function dexWelcomeHTML() {
   return '<div class="dex-msg dex-msg-assistant"><div class="dex-bubble"><div class="dex-bubble-text">'
-    + '<p>DEX助手 就绪。直接描述问题，或快速操作：</p></div>'
+    + '<p>DEX助手 2.0 就绪。直接描述 AI 工具链问题，或快速操作：</p></div>'
     + '<div class="dex-quick-actions">'
     + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'运行完整诊断，自动修复所有发现的问题\')">一键修复</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'运行完整诊断，分析结果\')">诊断</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'服务状态\')">服务状态</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'测连通性\')">测连通性</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查余额\')">查余额</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">读日志</button></div></div></div>';
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'健康概览，指出当前 AI 工具链风险\')">健康概览</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Codex、Claude、MCP 和模型账号环境\')">AI工具诊断</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Claude Code MCP 集成状态\')">MCP检查</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查看插件状态和可用插件能力\')">插件状态</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'分析当前项目工作区环境\')">项目环境</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">日志异常</button></div></div></div>';
 }
 
 // ── UI 交互 ──
@@ -1385,9 +655,11 @@ function dexAppendMessage(type, content, meta) {
       el.innerHTML = '<div class="dex-system-msg">' + esc(content) + '</div>';
       break;
     case 'tool-start':
+      var toolMeta = meta && meta.toolDef ? '<span class="dex-tool-summary">' + esc((meta.toolDef.source || 'builtin') + ' · ' + (meta.toolDef.capability || 'core')) + '</span>' : '';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-start">'
         + (isHistory ? '<span class="dex-tool-icon">🔧</span>' : '<span class="dex-spinner"></span>')
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
+        + toolMeta
         + (meta && meta.args && Object.keys(meta.args).length > 0 ? ' <span class="dex-tool-args">' + esc(JSON.stringify(meta.args)) + '</span>' : '')
         + '</div>';
       break;
@@ -1445,10 +717,12 @@ function dexUpdateMessage(el, type, content, meta) {
         + '</div>';
       break;
     case 'tool-start':
+      var toolMeta = meta && meta.toolDef ? '<span class="dex-tool-summary">' + esc((meta.toolDef.source || 'builtin') + ' · ' + (meta.toolDef.capability || 'core')) + '</span>' : '';
       el.className = 'dex-msg dex-msg-tool-start';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-start">'
         + '<span class="dex-spinner"></span>'
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
+        + toolMeta
         + (meta && meta.args && Object.keys(meta.args).length > 0 ? ' <span class="dex-tool-args">' + esc(JSON.stringify(meta.args)) + '</span>' : '')
         + '</div>';
       break;
@@ -1507,6 +781,7 @@ function dexToolSummary(fnName, result) {
     case 'thread_cleanup': if (data && data.removed !== undefined) return '清理 ' + data.removed + ' 条'; return '完成';
     case 'auto_tune': if (data && data.applied) return '已应用 ' + data.applied + ' 项优化'; return '已分析';
     case 'claude_mcp_check': if (data && data.ok !== undefined) return data.ok ? 'MCP正常' : 'MCP异常'; return '已检查';
+    case 'claude_env_overview': return data && data.installed ? 'Claude 已安装' : 'Claude 未检测到';
     case 'network_topology': if (data && data.nodes) return data.nodes + ' 节点'; return '已分析';
     case 'ssl_check': if (data && data.valid !== undefined) return data.valid ? '证书有效' : '证书异常'; return '已检查';
     case 'export_report': if (data && data.path) return '已导出: ' + data.path; return '已导出';
@@ -1519,27 +794,56 @@ function dexToolSummary(fnName, result) {
   return '完成';
 }
 
+function dexRenderPendingConfirm() {
+  var pending = window.dexAgent && window.dexAgent._pendingConfirm;
+  var container = document.getElementById('dexMessages');
+  if (!pending || !container) return;
+  var id = 'dexConfirm-' + pending.id;
+  var existing = document.getElementById(id);
+  if (existing) existing.remove();
+  var commandPreview = '';
+  if (pending.toolName === 'execute_shell' && pending.fnArgs && pending.fnArgs.command) {
+    commandPreview = '<pre class="dex-confirm-command">' + esc(pending.fnArgs.command) + '</pre>';
+  }
+  var el = document.createElement('div');
+  el.className = 'dex-msg dex-msg-confirm-inline';
+  el.id = id;
+  el.innerHTML = '<div class="dex-confirm-card"><div class="dex-confirm-header">⚠ 需要确认操作</div>'
+    + '<div class="dex-confirm-body"><div class="dex-confirm-tool">' + esc(pending.toolName) + '</div>'
+    + '<div class="dex-confirm-msg">' + esc(pending.message) + '</div>' + commandPreview + '</div>'
+    + '<div class="dex-confirm-actions">'
+    + '<button class="btn btn-primary btn-sm dex-confirm-ok">确认执行</button>'
+    + '<button class="btn btn-ghost btn-sm dex-confirm-cancel">取消</button></div></div>';
+  container.appendChild(el);
+  el.querySelector('.dex-confirm-ok').onclick = function () { dexResolveInlineConfirm(pending.id, true); };
+  el.querySelector('.dex-confirm-cancel').onclick = function () { dexResolveInlineConfirm(pending.id, false); };
+  dexScrollToBottom();
+}
+
+function dexResolveInlineConfirm(id, confirmed) {
+  var pending = window.dexAgent && window.dexAgent._pendingConfirm;
+  if (!pending) return;
+  if (id && pending.id !== id) return;
+  var el = document.getElementById('dexConfirm-' + pending.id);
+  if (el) el.remove();
+  window.dexAgent._pendingConfirm = null;
+  if (typeof pending.resolve === 'function') pending.resolve(confirmed);
+}
+
 function dexShowInlineConfirm(toolName, message, toolCallId, fnArgs) {
   return new Promise(function (resolve) {
-    var container = document.getElementById('dexMessages');
-    if (!container) { resolve(false); return; }
-    var el = document.createElement('div');
-    el.className = 'dex-msg dex-msg-confirm-inline';
-    el.id = 'dexConfirm-' + (toolCallId || Date.now());
-    var commandPreview = '';
-    if (toolName === 'execute_shell' && fnArgs && fnArgs.command) {
-      commandPreview = '<pre class="dex-confirm-command">' + esc(fnArgs.command) + '</pre>';
+    var id = String(toolCallId || Date.now());
+    if (window.dexAgent && window.dexAgent._pendingConfirm) {
+      dexResolveInlineConfirm(null, false);
     }
-    el.innerHTML = '<div class="dex-confirm-card"><div class="dex-confirm-header">⚠ 需要确认操作</div>'
-      + '<div class="dex-confirm-body"><div class="dex-confirm-tool">' + esc(toolName) + '</div>'
-      + '<div class="dex-confirm-msg">' + esc(message) + '</div>' + commandPreview + '</div>'
-      + '<div class="dex-confirm-actions">'
-      + '<button class="btn btn-primary btn-sm dex-confirm-ok">确认执行</button>'
-      + '<button class="btn btn-ghost btn-sm dex-confirm-cancel">取消</button></div></div>';
-    container.appendChild(el);
-    dexScrollToBottom();
-    el.querySelector('.dex-confirm-ok').onclick = function () { el.remove(); resolve(true); };
-    el.querySelector('.dex-confirm-cancel').onclick = function () { el.remove(); resolve(false); };
+    window.dexAgent._pendingConfirm = {
+      id: id,
+      toolName: toolName,
+      message: message,
+      fnArgs: fnArgs || {},
+      resolve: resolve
+    };
+    dexRenderPendingConfirm();
   });
 }
 
@@ -1694,7 +998,11 @@ function dexClearChat() {
   dexScrollToBottom(); showToast('对话已清空', 'success');
 }
 
-function dexRefreshChat() { var c = document.getElementById('dexMessages'); if (c) c.innerHTML = dexWelcomeHTML(); }
+function dexRefreshChat() {
+  var c = document.getElementById('dexMessages');
+  if (c) c.innerHTML = dexWelcomeHTML();
+  dexRenderPendingConfirm();
+}
 
 // ── 自定义模型下拉 ──
 window.dexAgent.selectedModel = 'auto';
@@ -1890,8 +1198,12 @@ var DEX_SLASH_COMMANDS = {
   '/diag': '运行完整诊断，分析结果',
   '/fix': '自动修复所有发现的问题',
   '/health': '健康概览',
+  '/mcp': '检查 Claude Code MCP 集成状态',
+  '/workspace': '分析当前项目工作区环境',
+  '/plugins': '查看插件状态和可用插件能力',
   '/cost': '分析请求成本',
   '/status': '服务状态',
+  '/logs': '读日志，检查异常',
   '/log': '读日志，检查异常',
   '/help': '你能做什么'
 };
@@ -1931,7 +1243,7 @@ var DEX_TOOL_KEYWORDS = [
   { keywords: ['速度', 'speed', '延迟', 'latency', '测速', '连通'], tools: 'speed_test, test_upstream_connectivity' },
   { keywords: ['成本', 'cost', 'token', '花费', '消耗'], tools: 'token_cost, analyze_requests' },
   { keywords: ['安全', 'ssl', '证书', 'tls', '网络'], tools: 'ssl_check, network_topology' },
-  { keywords: ['claude', 'mcp', '集成'], tools: 'claude_mcp_check' },
+  { keywords: ['claude', 'mcp', '集成'], tools: 'claude_env_overview, claude_mcp_check' },
   { keywords: ['升级', 'upgrade', '更新', '版本'], tools: 'check_upgrade, run_upgrade' }
 ];
 

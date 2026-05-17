@@ -81,6 +81,63 @@ fn test_manifest_validation_good() {
 }
 
 #[test]
+fn test_manifest_dex_tools_parse_and_validate() {
+    let json = r#"{
+        "id": "tool-plugin",
+        "name": "Tool Plugin",
+        "version": "1.0.0",
+        "description": "DEX tool provider",
+        "author": "unit test",
+        "entry": { "runtime": "node", "script": "main.js" },
+        "dex_tools": [{
+            "name": "echo_status",
+            "description": "回显状态",
+            "level": 1,
+            "method": "echo.status",
+            "capability": "plugins.dynamic",
+            "parameters": {
+                "type": "object",
+                "properties": { "message": { "type": "string" } },
+                "required": ["message"]
+            }
+        }]
+    }"#;
+    let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+    assert!(manifest.validate().is_ok());
+    assert_eq!(manifest.dex_tools.len(), 1);
+    assert_eq!(manifest.dex_tools[0].name, "echo_status");
+    assert_eq!(manifest.dex_tools[0].method, "echo.status");
+    assert_eq!(manifest.dex_tools[0].level, 1);
+}
+
+#[test]
+fn test_manifest_dex_tools_reject_invalid_level_and_name() {
+    let bad_level = r#"{
+        "id": "bad-tool-plugin",
+        "name": "Bad Tool Plugin",
+        "version": "1.0.0",
+        "description": "bad",
+        "author": "unit test",
+        "entry": { "runtime": "node", "script": "main.js" },
+        "dex_tools": [{ "name": "bad", "description": "bad", "level": 9, "method": "bad.run" }]
+    }"#;
+    let manifest: PluginManifest = serde_json::from_str(bad_level).unwrap();
+    assert!(manifest.validate().is_err());
+
+    let bad_name = r#"{
+        "id": "bad-name-plugin",
+        "name": "Bad Name Plugin",
+        "version": "1.0.0",
+        "description": "bad",
+        "author": "unit test",
+        "entry": { "runtime": "node", "script": "main.js" },
+        "dex_tools": [{ "name": "bad.name", "description": "bad", "level": 1, "method": "bad.run" }]
+    }"#;
+    let manifest: PluginManifest = serde_json::from_str(bad_name).unwrap();
+    assert!(manifest.validate().is_err());
+}
+
+#[test]
 fn test_rpc_message_roundtrip() {
     use deecodex_plugin_host::rpc::{
         JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,

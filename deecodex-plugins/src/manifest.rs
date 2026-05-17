@@ -15,7 +15,30 @@ pub struct PluginManifest {
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
     #[serde(default)]
+    pub dex_tools: Vec<DexToolManifest>,
+    #[serde(default)]
     pub min_deecodex_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DexToolManifest {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_parameters_schema")]
+    pub parameters: serde_json::Value,
+    #[serde(default)]
+    pub level: u8,
+    pub method: String,
+    #[serde(default = "default_plugin_capability")]
+    pub capability: String,
+}
+
+fn default_parameters_schema() -> serde_json::Value {
+    serde_json::json!({ "type": "object", "properties": {}, "required": [] })
+}
+
+fn default_plugin_capability() -> String {
+    "plugins.dynamic".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +85,24 @@ impl PluginManifest {
         if let Some(ref min_ver) = self.min_deecodex_version {
             semver::Version::parse(min_ver)
                 .with_context(|| format!("min_deecodex_version 格式无效: {min_ver}"))?;
+        }
+        for tool in &self.dex_tools {
+            if tool.name.is_empty() {
+                anyhow::bail!("dex_tools.name 不能为空");
+            }
+            if tool.method.is_empty() {
+                anyhow::bail!("dex_tools.method 不能为空");
+            }
+            if tool.level > 3 {
+                anyhow::bail!("dex_tools.level 只能是 0..3，当前: {}", tool.level);
+            }
+            if !tool
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                anyhow::bail!("dex_tools.name 只能包含 ASCII 字母、数字、下划线或短横线");
+            }
         }
         Ok(())
     }
