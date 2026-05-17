@@ -2420,6 +2420,96 @@ async fn do_test_connectivity_with_kind(
     }
 }
 
+fn build_vision_probe_url(upstream: &str, vision_path: &str) -> Result<String, String> {
+    let upstream = upstream.trim().trim_end_matches('/');
+    if upstream.is_empty() {
+        return Err("视觉上游 URL 为空".into());
+    }
+    deecodex::handlers::validate_upstream(upstream)
+        .map_err(|e| format!("视觉上游 URL 无效: {e}"))?;
+
+    let path = vision_path.trim().trim_start_matches('/');
+    if path.is_empty() {
+        return Err("视觉端点路径为空".into());
+    }
+
+    let base = if upstream.ends_with("/v1") && path.starts_with("v1/") {
+        upstream.trim_end_matches("/v1")
+    } else {
+        upstream
+    };
+    Ok(format!("{base}/{path}"))
+}
+
+fn classify_minimax_vlm_probe(status: u16, body: &Value) -> (bool, Option<String>, Option<String>) {
+    let base_status = body["base_resp"]["status_code"].as_i64();
+    let base_msg = body["base_resp"]["status_msg"].as_str().unwrap_or("");
+    let content = body["content"].as_str().unwrap_or("");
+
+    if status >= 500 {
+        return (
+            false,
+            None,
+            Some(format!("HTTP {status}: {}", truncate_for_ui(base_msg, 180))),
+        );
+    }
+
+    if matches!(base_status, Some(2049))
+        || base_msg.to_ascii_lowercase().contains("invalid api key")
+    {
+        return (
+            false,
+            base_status.map(|code| format!("MiniMax base_resp={code}")),
+            Some("MiniMax API Key 无效或与当前 API Host 不匹配".into()),
+        );
+    }
+
+    if !content.is_empty() || base_status == Some(0) {
+        return (
+            true,
+            Some("MiniMax VLM 返回 content，视觉端点可用".into()),
+            None,
+        );
+    }
+
+    if matches!(base_status, Some(2013 | 1026)) {
+        return (
+            true,
+            Some(format!(
+                "MiniMax VLM 鉴权通过，探测图片被上游校验拒绝: {base_status:?} {base_msg}"
+            )),
+            None,
+        );
+    }
+
+    if status < 500 {
+        return (
+            true,
+            Some(format!(
+                "MiniMax VLM 返回 HTTP {status}，base_resp={}",
+                base_status
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "未知".into())
+            )),
+            None,
+        );
+    }
+
+    (false, None, Some("视觉端点探测失败".into()))
+}
+
+fn truncate_for_ui(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn model_probe_request(
     client: &reqwest::Client,
     url: &str,
@@ -2444,6 +2534,75 @@ fn model_probe_request(
         req = req.bearer_auth(api_key);
     }
     req
+}
+
+/// 测试胶水视觉 API 端点连通性
+#[tauri::command]
+pub async fn test_vision_connectivity(
+    upstream: String,
+    api_key: String,
+    vision_path: Option<String>,
+    adapter_id: Option<String>,
+) -> Result<Value, String> {
+    let adapter = adapter_id.unwrap_or_else(|| "minimax_coding_plan_vlm".into());
+    if adapter != "minimax_coding_plan_vlm" {
+        return Ok(json!({
+            "ok": false,
+            "status": 0,
+            "latency_ms": 0,
+            "endpoint": "",
+            "adapter": adapter,
+            "detail": null,
+            "error": "当前版本仅实现 MiniMax Coding Plan VLM 胶水适配器"
+        }));
+    }
+
+    let endpoint = build_vision_probe_url(
+        &upstream,
+        vision_path.as_deref().unwrap_or("v1/coding_plan/vlm"),
+    )?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let mut req = client
+        .post(&endpoint)
+        .header("Content-Type", "application/json")
+        .json(&json!({
+            "prompt": "deecodex vision connectivity probe",
+            "image_url": "https://example.invalid/deecodex-vision-probe.png"
+        }));
+    if !api_key.trim().is_empty() {
+        req = req.bearer_auth(api_key.trim());
+    }
+
+    let start = std::time::Instant::now();
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.json::<Value>().await.unwrap_or_else(|_| json!({}));
+            let (ok, detail, error) = classify_minimax_vlm_probe(status, &body);
+            Ok(json!({
+                "ok": ok,
+                "status": status,
+                "latency_ms": start.elapsed().as_millis(),
+                "endpoint": endpoint,
+                "adapter": adapter,
+                "base_status": body["base_resp"]["status_code"],
+                "detail": detail,
+                "error": error,
+            }))
+        }
+        Err(e) => Ok(json!({
+            "ok": false,
+            "status": 0,
+            "latency_ms": start.elapsed().as_millis(),
+            "endpoint": endpoint,
+            "adapter": adapter,
+            "detail": null,
+            "error": e.to_string(),
+        })),
+    }
 }
 
 /// 测试上游 API 端点连通性
@@ -2756,9 +2915,13 @@ mod tests {
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: Default::default(),
+            provider_options: Default::default(),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
+            wire_protocol: Default::default(),
             endpoints: Vec::new(),
         }
     }
@@ -2876,6 +3039,48 @@ mod tests {
             "https://active-selected.example/v1"
         );
         assert_eq!(other_endpoint.base_url, "https://other-default.example/v1");
+    }
+
+    #[test]
+    fn minimax_vision_probe_url_avoids_duplicate_v1() {
+        assert_eq!(
+            build_vision_probe_url("https://api.minimaxi.com", "v1/coding_plan/vlm").unwrap(),
+            "https://api.minimaxi.com/v1/coding_plan/vlm"
+        );
+        assert_eq!(
+            build_vision_probe_url("https://api.minimaxi.com/v1", "v1/coding_plan/vlm").unwrap(),
+            "https://api.minimaxi.com/v1/coding_plan/vlm"
+        );
+    }
+
+    #[test]
+    fn minimax_vlm_probe_treats_validation_response_as_connected() {
+        let body = json!({
+            "base_resp": {
+                "status_code": 2013,
+                "status_msg": "invalid params, invalid image URL"
+            },
+            "content": ""
+        });
+        let (ok, detail, error) = classify_minimax_vlm_probe(200, &body);
+
+        assert!(ok);
+        assert!(detail.unwrap().contains("鉴权通过"));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn minimax_vlm_probe_rejects_invalid_api_key() {
+        let body = json!({
+            "base_resp": {
+                "status_code": 2049,
+                "status_msg": "invalid api key"
+            }
+        });
+        let (ok, _, error) = classify_minimax_vlm_probe(200, &body);
+
+        assert!(!ok);
+        assert!(error.unwrap().contains("API Key"));
     }
 
     #[test]

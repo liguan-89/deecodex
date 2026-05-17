@@ -239,7 +239,7 @@ function renderAccountList() {
         <div class="card-name">${esc(a.name)}</div>
         <div class="card-key">${esc(maskKey(a.api_key) || '(未配置)')}</div>
         <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
-        <div class="card-context" title="活跃端点">${esc(ep?.name || '默认端点')} · ${esc(endpointKindLabel(ep?.kind))}</div>
+        <div class="card-context" title="协议模式">${esc(endpointKindLabel(ep?.kind))}</div>
         ${caps.map(label => `<div class="card-context">${esc(label)}</div>`).join('')}
         <div class="card-context" title="视觉模式">${esc(visionModeLabel(visionMode))}</div>
         <div class="card-balance" id="balance-${escAttr(a.id)}">
@@ -328,7 +328,7 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">账号凭据</div>
-        <div class="account-section-desc">同一个 API Key 下可以配置多个端点。</div>
+        <div class="account-section-desc">一个账号就是一组供应商、协议、URL 和 Key；同一个 Key 可创建多个账号分别保存。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -341,7 +341,7 @@ function renderAccountDetail() {
             <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
             <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
           </div>
-          <span class="hint">账号级凭据，切换端点时复用。</span>
+          <span class="hint">账号级凭据；同一个 Key 可新建多个账号保存不同上游。</span>
         </div>
         <div class="config-field wide">
           <label>上游 URL</label>
@@ -356,17 +356,12 @@ function renderAccountDetail() {
 
     <section class="account-edit-section">
       <div class="account-section-head">
-        <div class="section-sub-label">端点</div>
-        <div class="account-section-desc">端点决定协议、URL、路径和余额探测。</div>
+        <div class="section-sub-label">上游</div>
+        <div class="account-section-desc">配置当前账号的协议模式、上游 URL 和余额探测。</div>
       </div>
-      ${renderEndpointControls(a, ep)}
-      <div class="config-fields endpoint-detail-fields">
+      <div class="config-fields">
         <div class="config-field">
-          <label>端点名称</label>
-          <input type="text" id="edit_endpoint_name" value="${escAttr(ep.name || '')}" placeholder="例如主模型端点 / 备用端点">
-        </div>
-        <div class="config-field">
-          <label>端点协议</label>
+          <label>协议模式</label>
           <select id="edit_endpoint_kind">
             <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>Chat 兼容（Responses → Chat）</option>
             <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>Responses 直连</option>
@@ -375,11 +370,6 @@ function renderAccountDetail() {
             <option value="custom_responses" ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? 'selected' : ''}>自定义 Responses</option>
           </select>
           <span class="hint">选择当前上游真实支持的 API 协议。</span>
-        </div>
-        <div class="config-field">
-          <label>端点路径 <span class="optional-label">可选</span></label>
-          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空使用协议默认路径">
-          <span class="hint">例如 chat/completions、responses、messages。</span>
         </div>
         <div class="config-field">
           <label>余额查询 URL <span class="optional-label">可选</span></label>
@@ -449,7 +439,7 @@ function renderAccountDetail() {
           </div>
           <div class="config-field">
             <label>视觉上游 URL</label>
-            <input type="text" id="edit_vision_upstream" value="${escAttr(ep.vision?.base_url || a.vision_upstream || '')}" placeholder="https://api.minimax.chat">
+            <input type="text" id="edit_vision_upstream" value="${escAttr(ep.vision?.base_url || a.vision_upstream || '')}" placeholder="https://api.minimaxi.com">
           </div>
           <div class="config-field">
             <label>视觉 API Key</label>
@@ -460,7 +450,7 @@ function renderAccountDetail() {
           </div>
           <div class="config-field">
             <label>视觉模型名</label>
-            <input type="text" id="edit_vision_model" value="${escAttr(ep.vision?.model || a.vision_model || '')}" placeholder="MiniMax-M1">
+            <input type="text" id="edit_vision_model" value="${escAttr(ep.vision?.model || a.vision_model || '')}" placeholder="MiniMax-M2.7">
           </div>
           <div class="config-field">
             <label>视觉端点路径</label>
@@ -477,7 +467,7 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">运行参数</div>
-        <div class="account-section-desc">按端点覆盖上下文窗口和推理预算。</div>
+        <div class="account-section-desc">按账号覆盖上下文窗口和推理预算。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -485,7 +475,7 @@ function renderAccountDetail() {
             <input type="checkbox" id="edit_cw_enabled" ${contextWindow ? 'checked' : ''} onchange="toggleContextWindowFields()">
             上下文窗口覆盖
           </label>
-          <span class="hint">勾选后 Codex 使用下方 token 数作为该端点上下文。</span>
+          <span class="hint">勾选后 Codex 使用下方 token 数作为该账号上下文。</span>
         </div>
         <div class="config-field" id="cwSizeField" style="${contextWindow ? '' : 'display:none;'}">
           <label>上下文窗口大小 (token)</label>
@@ -497,7 +487,7 @@ function renderAccountDetail() {
             <input type="checkbox" id="edit_reasoning_enabled" ${reasoningEffort ? 'checked' : ''} onchange="toggleReasoningFields()">
             推理强度覆盖
           </label>
-          <span class="hint">用于 Claude、R1 等需要固定思考预算的端点。</span>
+          <span class="hint">用于 Claude、R1 等需要固定思考预算的账号。</span>
         </div>
       </div>
       <div id="reasoningFields" style="${reasoningEffort ? '' : 'display:none;'}">
@@ -570,72 +560,6 @@ function renderAccountDetail() {
     <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
     <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
   </div>
-  </div>`;
-}
-
-function renderEndpointControls(a, ep) {
-  const endpoints = ensureAccountEndpoints(a);
-  const active = a.id === (accountsData.active_account_id || accountsData.active_id);
-  const currentId = ep?.id || selectedEndpointId(a) || '';
-  const isSavedAccount = Boolean(a.id);
-  const isCurrentActiveEndpoint = active && currentId === accountsData.active_endpoint_id;
-  const applyDisabled = !isSavedAccount || !currentId || isCurrentActiveEndpoint;
-  const applyLabel = !isSavedAccount ? '保存后可应用' : '应用端点';
-  const templateOptions = (endpointTemplates || []).map(t =>
-    `<option value="${escAttr(t.id)}">${esc(t.label)}</option>`
-  ).join('');
-  const endpointOptions = endpoints.map(endpoint => {
-    const isCurrent = endpoint.id === currentId;
-    const isActiveEndpoint = active && endpoint.id === accountsData.active_endpoint_id;
-    const suffix = isActiveEndpoint ? '（活跃）' : '';
-    return `<option value="${escAttr(endpoint.id)}" ${isCurrent ? 'selected' : ''}>${esc(endpoint.name || endpointKindLabel(endpoint.kind))}${suffix}</option>`;
-  }).join('');
-  const endpointName = ep?.name || '默认端点';
-  const endpointKind = endpointKindLabel(ep?.kind);
-  const endpointState = isCurrentActiveEndpoint ? '正在使用' : (active ? '未应用' : '账号未应用');
-  const endpointPath = ep?.path || '协议默认路径';
-  const endpointBaseUrl = ep?.base_url || a.upstream || '';
-  const applyAction = isCurrentActiveEndpoint
-    ? ''
-    : `<button class="btn btn-primary" onclick="applyCurrentEndpoint()" ${applyDisabled ? 'disabled' : ''}>${applyLabel}</button>`;
-  const deleteAction = endpoints.length > 1
-    ? '<button class="btn btn-danger" onclick="deleteCurrentEndpoint()">删除</button>'
-    : '';
-  const currentEndpointControl = endpoints.length > 1
-    ? `<div class="endpoint-switch-row">
-        <label for="edit_endpoint_id">正在编辑</label>
-        <select id="edit_endpoint_id" onchange="selectEditingEndpoint(this.value)">${endpointOptions}</select>
-      </div>`
-    : '';
-  const manageClass = endpoints.length > 1 ? 'endpoint-manage-panel' : 'endpoint-manage-panel single';
-
-  return `<div class="endpoint-box">
-    <div class="endpoint-current-panel">
-      <div class="endpoint-status-main">
-        <div class="endpoint-status-name">${esc(endpointName)}</div>
-        <div class="endpoint-status-sub" title="${escAttr(endpointBaseUrl)}">${esc(endpointKind)} · ${esc(trunc(endpointBaseUrl || '未设置 URL', 58))}</div>
-      </div>
-      <div class="endpoint-status-tags">
-        <span class="${isCurrentActiveEndpoint ? 'active' : ''}">${esc(endpointState)}</span>
-        <span>${esc(endpointPath)}</span>
-      </div>
-      <div class="endpoint-actions">
-        ${applyAction}
-        <button class="btn btn-ghost" onclick="duplicateCurrentEndpoint()" ${currentId ? '' : 'disabled'}>复制</button>
-        ${deleteAction}
-      </div>
-    </div>
-    <div class="${manageClass}">
-      ${currentEndpointControl}
-      <div class="endpoint-add-panel">
-        <div class="endpoint-control-group endpoint-control-template">
-          <label for="new_endpoint_template">添加备用端点</label>
-          <select id="new_endpoint_template" title="选择要新增的协议端点">${templateOptions || '<option value="">Chat 兼容端点</option>'}</select>
-          <span class="endpoint-add-hint">用于同一账号下配置备用协议或备用上游。</span>
-        </div>
-        <button class="btn btn-ghost" onclick="addEndpointFromSelectedTemplate()">添加</button>
-      </div>
-    </div>
   </div>`;
 }
 
@@ -739,7 +663,7 @@ async function loadEndpointTemplates() {
   try {
     endpointTemplates = await invoke('get_endpoint_templates');
   } catch (e) {
-    showToast('加载端点模板失败: ' + e, 'error');
+    showToast('加载协议模板失败: ' + e, 'error');
   }
 }
 
@@ -775,7 +699,7 @@ function syncEditingDraftFromForm() {
   if (!ep) return;
 
   const endpointName = document.getElementById('edit_endpoint_name');
-  if (endpointName) ep.name = endpointName.value.trim() || ep.name || '默认端点';
+  if (endpointName) ep.name = endpointName.value.trim() || ep.name || '默认配置';
   const endpointKind = document.getElementById('edit_endpoint_kind');
   if (endpointKind) ep.kind = endpointKind.value;
   const upstream = document.getElementById('edit_upstream');
@@ -861,76 +785,6 @@ function syncEditingDraftFromForm() {
     a.max_retries = ep.max_retries;
   }
   a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
-}
-
-function selectEditingEndpoint(endpointId) {
-  if (!editingAccount) return;
-  syncEditingDraftFromForm();
-  editingAccount._editing_endpoint_id = endpointId;
-  upstreamModels = [];
-  renderMainContent();
-}
-
-function addEndpointFromSelectedTemplate() {
-  if (!editingAccount) return;
-  syncEditingDraftFromForm();
-  const templateId = document.getElementById('new_endpoint_template')?.value;
-  const template = (endpointTemplates || []).find(t => t.id === templateId) || providerDefaultTemplate(editingAccount.provider);
-  const endpoint = createEndpointFromTemplate(template, editingAccount);
-  ensureAccountEndpoints(editingAccount).push(endpoint);
-  editingAccount._editing_endpoint_id = endpoint.id;
-  renderMainContent();
-}
-
-function duplicateCurrentEndpoint() {
-  if (!editingAccount) return;
-  syncEditingDraftFromForm();
-  const ep = currentEndpoint(editingAccount);
-  if (!ep) return;
-  const copy = JSON.parse(JSON.stringify(ep));
-  copy.id = newEndpointId();
-  copy.name = (copy.name || endpointKindLabel(copy.kind)) + ' 副本';
-  ensureAccountEndpoints(editingAccount).push(copy);
-  editingAccount._editing_endpoint_id = copy.id;
-  renderMainContent();
-}
-
-async function deleteCurrentEndpoint() {
-  if (!editingAccount) return;
-  syncEditingDraftFromForm();
-  const endpoints = ensureAccountEndpoints(editingAccount);
-  const ep = currentEndpoint(editingAccount);
-  if (!ep || endpoints.length <= 1) return;
-  if (!await showConfirm('确定要删除当前端点吗？')) return;
-  editingAccount.endpoints = endpoints.filter(item => item.id !== ep.id);
-  editingAccount._editing_endpoint_id = editingAccount.endpoints[0]?.id || null;
-  renderMainContent();
-}
-
-async function applyCurrentEndpoint() {
-  if (!editingAccount?.id) {
-    showToast('请先保存账号后再应用端点', 'error');
-    return;
-  }
-  const ep = currentEndpoint(editingAccount);
-  if (!ep) return;
-  try {
-    await saveAccount({ silent: true, stay: true });
-    await invoke('switch_endpoint', { accountId: editingAccount.id, endpointId: ep.id });
-    showToast('已应用端点', 'success');
-    accountsData.active_id = editingAccount.id;
-    accountsData.active_account_id = editingAccount.id;
-    accountsData.active_endpoint_id = ep.id;
-    await loadAccountsData();
-    editingAccount = accountsData.accounts.find(ac => ac.id === editingAccount.id);
-    if (editingAccount) {
-      editingAccount = JSON.parse(JSON.stringify(editingAccount));
-      editingAccount._editing_endpoint_id = ep.id;
-    }
-    renderMainContent();
-  } catch (e) {
-    showToast('应用端点失败: ' + e, 'error');
-  }
 }
 
 function showSuggestions(input) {
@@ -1142,6 +996,7 @@ async function saveAccount(options = {}) {
   }
   const ep = currentEndpoint(a);
   if (ep) {
+    ep.name = endpointKindLabel(ep.kind);
     a.upstream = ep.base_url || a.upstream;
     a.balance_url = ep.balance_url || '';
     a.model_map = ep.model_map || {};
@@ -1152,6 +1007,8 @@ async function saveAccount(options = {}) {
     a.request_timeout_secs = ep.request_timeout_secs ?? null;
     a.max_retries = ep.max_retries ?? null;
     a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
+    a.endpoints = [ep];
+    a._editing_endpoint_id = ep.id;
   }
   const editingEndpointId = ep?.id || selectedEndpointId(a);
   a.updated_at = Math.floor(Date.now() / 1000);
@@ -1278,11 +1135,13 @@ async function testVisionConnectivity() {
   const resultEl = document.getElementById('visionConnectivityResult');
   if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
   try {
-    const result = await invoke('test_upstream_connectivity', { upstream, apiKey });
+    const visionPath = document.getElementById('edit_vision_endpoint')?.value?.trim() || 'v1/coding_plan/vlm';
+    const adapterId = document.getElementById('edit_vision_adapter')?.value || 'minimax_coding_plan_vlm';
+    const result = await invoke('test_vision_connectivity', { upstream, apiKey, visionPath, adapterId });
     if (result.ok) {
-      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
-      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
-      showToast(`视觉上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+      const detail = result.detail ? `，${esc(result.detail)}` : '';
+      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${detail})</span>`;
+      showToast(`视觉上游连通正常 (${result.latency_ms}ms)`, 'success');
     } else if (result.error) {
       if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(result.error)}</span>`;
       showToast('视觉上游连通失败: ' + result.error, 'error');
