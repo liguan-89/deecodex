@@ -7,6 +7,7 @@ mod cdp;
 mod codex_config;
 mod codex_threads;
 mod config;
+mod dev_pipeline;
 mod executor;
 mod files;
 mod handlers;
@@ -591,6 +592,18 @@ async fn main() -> Result<()> {
         translate_enabled: true,
         capability_enabled: false,
         capability_account_id: None,
+        dev_pipeline_enabled: false,
+        dev_pipeline_trigger_mode: Default::default(),
+        dev_pipeline_command: "/dev-pipeline".into(),
+        dev_pipeline_architect_account_id: None,
+        dev_pipeline_implementer_account_id: None,
+        dev_pipeline_reviewer_account_id: None,
+        dev_pipeline_tool_mode: Default::default(),
+        dev_pipeline_max_iterations: 3,
+        dev_pipeline_show_trace: false,
+        dev_pipeline_architect_instruction: String::new(),
+        dev_pipeline_implementer_instruction: String::new(),
+        dev_pipeline_reviewer_instruction: String::new(),
         endpoints: Vec::new(),
     };
     default_account.normalize_v2();

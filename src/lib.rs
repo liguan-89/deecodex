@@ -7,6 +7,7 @@ pub mod cdp;
 pub mod codex_config;
 pub mod codex_threads;
 pub mod config;
+pub mod dev_pipeline;
 pub mod executor;
 pub mod files;
 pub mod handlers;

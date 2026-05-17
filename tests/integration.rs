@@ -8,8 +8,8 @@ use axum::{
 };
 use deecodex::{
     accounts::{
-        Account, AccountStore, EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode,
-        UnsupportedImagePolicy, VisionMode,
+        Account, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode, EndpointKind,
+        GlueVisionStrategy, ModelProfile, ModelVisionMode, UnsupportedImagePolicy, VisionMode,
     },
     cache::RequestCache,
     handlers::{build_router, AppState},
@@ -90,6 +90,18 @@ fn test_state() -> AppState {
                 translate_enabled: true,
                 capability_enabled: false,
                 capability_account_id: None,
+                dev_pipeline_enabled: false,
+                dev_pipeline_trigger_mode: Default::default(),
+                dev_pipeline_command: "/dev-pipeline".into(),
+                dev_pipeline_architect_account_id: None,
+                dev_pipeline_implementer_account_id: None,
+                dev_pipeline_reviewer_account_id: None,
+                dev_pipeline_tool_mode: Default::default(),
+                dev_pipeline_max_iterations: 3,
+                dev_pipeline_show_trace: false,
+                dev_pipeline_architect_instruction: String::new(),
+                dev_pipeline_implementer_instruction: String::new(),
+                dev_pipeline_reviewer_instruction: String::new(),
                 endpoints: Vec::new(),
             }],
             active_id: Some("test-account".into()),
@@ -123,6 +135,18 @@ fn test_state() -> AppState {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: Default::default(),
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: Default::default(),
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         })),
         reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
@@ -3159,6 +3183,14 @@ struct CaptureRequestState {
     captured: Arc<Mutex<Vec<CapturedRequest>>>,
 }
 
+type JsonResponseSequence = Arc<Mutex<Vec<(StatusCode, &'static str)>>>;
+
+#[derive(Clone)]
+struct CaptureSequenceState {
+    responses: JsonResponseSequence,
+    captured: Arc<Mutex<Vec<CapturedRequest>>>,
+}
+
 async fn capture_json_handler(State(state): State<CaptureJsonState>, body: Body) -> Response<Body> {
     let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
@@ -3187,6 +3219,38 @@ async fn capture_request_handler(
         body,
     });
     let mut response = Response::new(Body::from(state.response_body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+async fn capture_sequence_handler(
+    State(state): State<CaptureSequenceState>,
+    req: Request<Body>,
+) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    let headers = req.headers().clone();
+    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push(CapturedRequest {
+        path,
+        headers,
+        body,
+    });
+    let (status, response_body) = {
+        let mut responses = state.responses.lock().unwrap();
+        if responses.len() > 1 {
+            responses.remove(0)
+        } else {
+            responses[0]
+        }
+    };
+    let mut response = Response::new(Body::from(response_body));
+    *response.status_mut() = status;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
@@ -3240,6 +3304,281 @@ async fn capture_any_json_upstream(
         reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
         captured,
     )
+}
+
+async fn capture_sequence_json_upstream(
+    responses: Vec<(StatusCode, &'static str)>,
+) -> (reqwest::Url, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = CaptureSequenceState {
+        responses: Arc::new(Mutex::new(responses)),
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .fallback(post(capture_sequence_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (
+        reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
+        captured,
+    )
+}
+
+fn dev_pipeline_test_account(
+    seed: &Account,
+    id: &str,
+    name: &str,
+    model: &str,
+    upstream: &reqwest::Url,
+) -> Account {
+    let mut account = seed.clone();
+    account.id = id.into();
+    account.name = name.into();
+    account.provider = "custom".into();
+    account.upstream = upstream.to_string();
+    account.api_key = format!("sk-{id}");
+    account.model_map = std::collections::HashMap::from([("gpt-5".into(), model.into())]);
+    account.endpoints.clear();
+    account.normalize_v2();
+    account
+}
+
+async fn configure_dev_pipeline_accounts(state: &mut AppState, upstream: &reqwest::Url) {
+    let seed = state.active_account.read().await.clone();
+    let mut active =
+        dev_pipeline_test_account(&seed, "active-main", "活跃主账号", "active-model", upstream);
+    active.dev_pipeline_enabled = true;
+    active.dev_pipeline_trigger_mode = DevPipelineTriggerMode::Manual;
+    active.dev_pipeline_command = "/dev-pipeline".into();
+    active.dev_pipeline_architect_account_id = Some("architect-account".into());
+    active.dev_pipeline_implementer_account_id = None;
+    active.dev_pipeline_reviewer_account_id = Some("reviewer-account".into());
+    active.dev_pipeline_tool_mode = DevPipelineToolMode::FullAgent;
+    active.dev_pipeline_max_iterations = 3;
+
+    let architect = dev_pipeline_test_account(
+        &seed,
+        "architect-account",
+        "方案账号",
+        "architect-model",
+        upstream,
+    );
+    let reviewer = dev_pipeline_test_account(
+        &seed,
+        "reviewer-account",
+        "验收账号",
+        "reviewer-model",
+        upstream,
+    );
+
+    *state.active_account.write().await = active.clone();
+    *state.account_store.write().await = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        accounts: vec![active, architect, reviewer],
+        active_id: Some("active-main".into()),
+        active_account_id: Some("active-main".into()),
+        active_endpoint_id: None,
+    };
+}
+
+#[tokio::test]
+async fn test_dev_pipeline_non_streaming_uses_role_accounts_and_persists() {
+    let (upstream, captured) = capture_sequence_json_upstream(vec![
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"plan output"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"impl output"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"final review"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+    ])
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    configure_dev_pipeline_accounts(&mut state, &upstream).await;
+    let sessions = state.sessions.clone();
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"/dev-pipeline 开发一个任务面板","store":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let response_id = json["id"].as_str().unwrap();
+    assert_eq!(json["status"], "completed");
+    assert_eq!(json["model"], "reviewer-model");
+    assert_eq!(json["output"][0]["content"][0]["text"], "final review");
+    assert_eq!(json["metadata"]["x_deecodex_dev_pipeline"], "true");
+    assert_eq!(
+        json["metadata"]["x_deecodex_dev_pipeline_stages"][0]["account_id"],
+        "architect-account"
+    );
+    assert_eq!(
+        json["metadata"]["x_deecodex_dev_pipeline_stages"][1]["account_id"],
+        "active-main"
+    );
+    assert_eq!(
+        json["metadata"]["x_deecodex_dev_pipeline_stages"][2]["account_id"],
+        "reviewer-account"
+    );
+
+    {
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 3);
+        assert!(captured.iter().all(|req| req.path == "/chat/completions"));
+        assert_eq!(captured[0].body["model"], "architect-model");
+        assert_eq!(captured[1].body["model"], "active-model");
+        assert_eq!(captured[2].body["model"], "reviewer-model");
+        assert!(captured[1].body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("plan output"));
+        assert!(captured[2].body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("impl output"));
+    }
+
+    assert!(sessions.get_response(response_id).is_some());
+    let input_items = sessions.get_input_items(response_id).unwrap();
+    assert_eq!(
+        input_items[0]["content"][0]["text"],
+        "/dev-pipeline 开发一个任务面板"
+    );
+    let history = request_history.list(10).await;
+    assert!(history
+        .iter()
+        .any(|entry| entry.id == response_id && entry.upstream_url == "dev-pipeline://local"));
+}
+
+#[tokio::test]
+async fn test_dev_pipeline_streaming_returns_sse_and_persists() {
+    let (upstream, _captured) = capture_sequence_json_upstream(vec![
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"plan output"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"impl output"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"stream final"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        ),
+    ])
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    configure_dev_pipeline_accounts(&mut state, &upstream).await;
+    let sessions = state.sessions.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"/dev-pipeline 开发一个任务面板","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let events = parse_sse_events(&body);
+    let json_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| !name.is_empty())
+        .cloned()
+        .collect();
+    assert_sequence_numbers(&json_events);
+    let completed = events
+        .iter()
+        .find(|(name, _)| name == "response.completed")
+        .expect("completed event");
+    let response_id = completed.1["response"]["id"].as_str().unwrap();
+    assert_eq!(
+        completed.1["response"]["output"][0]["content"][0]["text"],
+        "stream final"
+    );
+    assert_eq!(
+        completed.1["response"]["metadata"]["x_deecodex_dev_pipeline"],
+        "true"
+    );
+    assert!(sessions.get_response(response_id).is_some());
+    assert!(sessions.get_input_items(response_id).is_some());
+}
+
+#[tokio::test]
+async fn test_dev_pipeline_failure_falls_back_to_main_model_path() {
+    let (upstream, captured) = capture_sequence_json_upstream(vec![
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"pipeline failed"}}"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{"choices":[{"message":{"role":"assistant","content":"fallback answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#,
+        ),
+    ])
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    configure_dev_pipeline_accounts(&mut state, &upstream).await;
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"/dev-pipeline 开发一个任务面板"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "fallback answer");
+    assert_ne!(json["metadata"]["x_deecodex_dev_pipeline"], "true");
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].body["model"], "architect-model");
+    assert_eq!(captured[1].body["model"], "active-model");
 }
 
 #[tokio::test]

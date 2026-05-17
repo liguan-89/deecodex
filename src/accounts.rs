@@ -266,6 +266,42 @@ pub struct Account {
     /// 能力补全账号 ID，通常选择支持原生工具/多模态能力的 OpenAI/GPT 账号。
     #[serde(default)]
     pub capability_account_id: Option<String>,
+    /// 是否启用开发协作编排。触发后按角色账号依次完成方案、实现草稿和验收收口。
+    #[serde(default)]
+    pub dev_pipeline_enabled: bool,
+    /// 开发协作编排触发方式：手动命令或始终触发。
+    #[serde(default)]
+    pub dev_pipeline_trigger_mode: DevPipelineTriggerMode,
+    /// 手动触发命令，默认 /dev-pipeline。
+    #[serde(default = "default_dev_pipeline_command")]
+    pub dev_pipeline_command: String,
+    /// 方案设计角色账号 ID。None 或 "active" 表示使用当前活跃账号。
+    #[serde(default)]
+    pub dev_pipeline_architect_account_id: Option<String>,
+    /// 代码/内容实现角色账号 ID。None 或 "active" 表示使用当前活跃账号。
+    #[serde(default)]
+    pub dev_pipeline_implementer_account_id: Option<String>,
+    /// 验收收口角色账号 ID。None 或 "active" 表示使用当前活跃账号。
+    #[serde(default)]
+    pub dev_pipeline_reviewer_account_id: Option<String>,
+    /// 实现阶段工具能力模式，先进入配置与提示词，后续可扩为多轮工具 agent。
+    #[serde(default)]
+    pub dev_pipeline_tool_mode: DevPipelineToolMode,
+    /// 最大修正轮数，避免开发编排无限循环。
+    #[serde(default = "default_dev_pipeline_max_iterations")]
+    pub dev_pipeline_max_iterations: u32,
+    /// 是否在最终回答中显示阶段摘要。
+    #[serde(default)]
+    pub dev_pipeline_show_trace: bool,
+    /// 方案设计角色的附加指令。
+    #[serde(default)]
+    pub dev_pipeline_architect_instruction: String,
+    /// 实现角色的附加指令。
+    #[serde(default)]
+    pub dev_pipeline_implementer_instruction: String,
+    /// 验收角色的附加指令。
+    #[serde(default)]
+    pub dev_pipeline_reviewer_instruction: String,
     /// v2: 同一账号下的端点配置。旧字段仍保留用于兼容迁移和老 GUI。
     #[serde(default)]
     pub endpoints: Vec<EndpointConfig>,
@@ -273,6 +309,31 @@ pub struct Account {
 
 fn default_translate_enabled() -> bool {
     true
+}
+
+fn default_dev_pipeline_command() -> String {
+    "/dev-pipeline".into()
+}
+
+fn default_dev_pipeline_max_iterations() -> u32 {
+    3
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DevPipelineTriggerMode {
+    #[default]
+    Manual,
+    Always,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DevPipelineToolMode {
+    PatchOnly,
+    #[default]
+    ControlledTools,
+    FullAgent,
 }
 
 impl Account {
@@ -690,6 +751,42 @@ pub fn validate_capability_links(store: &AccountStore) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub fn validate_dev_pipeline_links(store: &AccountStore) -> Result<()> {
+    for account in &store.accounts {
+        if !account.dev_pipeline_enabled {
+            continue;
+        }
+        for (role, maybe_id) in [
+            (
+                "方案设计",
+                account.dev_pipeline_architect_account_id.as_deref(),
+            ),
+            (
+                "实现",
+                account.dev_pipeline_implementer_account_id.as_deref(),
+            ),
+            ("验收", account.dev_pipeline_reviewer_account_id.as_deref()),
+        ] {
+            let Some(id) = maybe_id else {
+                continue;
+            };
+            if id.trim().is_empty() || id == "active" {
+                continue;
+            }
+            if !store.accounts.iter().any(|candidate| candidate.id == id) {
+                anyhow::bail!("账号 '{}' 的开发协作编排 {} 账号不存在", account.name, role);
+            }
+        }
+        if account.dev_pipeline_command.trim().is_empty()
+            && account.dev_pipeline_trigger_mode == DevPipelineTriggerMode::Manual
+        {
+            anyhow::bail!("账号 '{}' 的开发协作编排触发命令不能为空", account.name);
+        }
+    }
+    Ok(())
+}
+
 // ── 工具函数 ────────────────────────────────────────────────────────────────
 
 pub fn generate_id() -> String {
@@ -775,6 +872,20 @@ mod provider_tests {
         assert!(account.translate_enabled);
         assert!(account.provider_options.contains_key("capability_labels"));
         assert!(account.custom_headers.is_empty());
+        assert!(!account.dev_pipeline_enabled);
+        assert_eq!(
+            account.dev_pipeline_trigger_mode,
+            DevPipelineTriggerMode::Manual
+        );
+        assert_eq!(account.dev_pipeline_command, "/dev-pipeline");
+        assert_eq!(account.dev_pipeline_architect_account_id, None);
+        assert_eq!(account.dev_pipeline_implementer_account_id, None);
+        assert_eq!(account.dev_pipeline_reviewer_account_id, None);
+        assert_eq!(
+            account.dev_pipeline_tool_mode,
+            DevPipelineToolMode::ControlledTools
+        );
+        assert_eq!(account.dev_pipeline_max_iterations, 3);
     }
 }
 
@@ -811,6 +922,18 @@ mod capability_tests {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: default_dev_pipeline_command(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: default_dev_pipeline_max_iterations(),
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         }
     }
@@ -862,6 +985,65 @@ mod capability_tests {
 
         assert!(validate_capability_links(&store).is_ok());
     }
+
+    #[test]
+    fn legacy_account_defaults_dev_pipeline_disabled() {
+        let account: Account = serde_json::from_value(json!({
+            "id": "a1",
+            "name": "legacy",
+            "provider": "deepseek",
+            "upstream": "https://api.deepseek.com/v1",
+            "api_key": "sk-test"
+        }))
+        .unwrap();
+
+        assert!(!account.dev_pipeline_enabled);
+        assert_eq!(
+            account.dev_pipeline_trigger_mode,
+            DevPipelineTriggerMode::Manual
+        );
+        assert_eq!(account.dev_pipeline_command, "/dev-pipeline");
+        assert_eq!(
+            account.dev_pipeline_tool_mode,
+            DevPipelineToolMode::ControlledTools
+        );
+        assert_eq!(account.dev_pipeline_max_iterations, 3);
+    }
+
+    #[test]
+    fn validate_dev_pipeline_links_rejects_missing_role_account() {
+        let mut account = base_account("a1");
+        account.dev_pipeline_enabled = true;
+        account.dev_pipeline_architect_account_id = Some("missing".into());
+        let store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            accounts: vec![account],
+            active_id: Some("a1".into()),
+            active_account_id: Some("a1".into()),
+            active_endpoint_id: None,
+        };
+
+        assert!(validate_dev_pipeline_links(&store).is_err());
+    }
+
+    #[test]
+    fn validate_dev_pipeline_links_allows_active_and_existing_role_accounts() {
+        let mut main = base_account("a1");
+        main.dev_pipeline_enabled = true;
+        main.dev_pipeline_architect_account_id = Some("active".into());
+        main.dev_pipeline_implementer_account_id = None;
+        main.dev_pipeline_reviewer_account_id = Some("a2".into());
+        let helper = base_account("a2");
+        let store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            accounts: vec![main, helper],
+            active_id: Some("a1".into()),
+            active_account_id: Some("a1".into()),
+            active_endpoint_id: None,
+        };
+
+        assert!(validate_dev_pipeline_links(&store).is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -896,6 +1078,18 @@ mod tests {
             translate_enabled,
             capability_enabled: false,
             capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: default_dev_pipeline_command(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: default_dev_pipeline_max_iterations(),
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         }
     }

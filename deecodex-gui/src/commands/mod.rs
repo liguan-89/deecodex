@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
 
-use deecodex::accounts::AccountStore;
+use deecodex::accounts::{AccountStore, DevPipelineToolMode, DevPipelineTriggerMode};
 use deecodex::config::Args;
 use deecodex::handlers;
 use deecodex::{files, metrics, vector_stores};
@@ -292,6 +292,18 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 translate_enabled: true,
                 capability_enabled: false,
                 capability_account_id: None,
+                dev_pipeline_enabled: false,
+                dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+                dev_pipeline_command: "/dev-pipeline".into(),
+                dev_pipeline_architect_account_id: None,
+                dev_pipeline_implementer_account_id: None,
+                dev_pipeline_reviewer_account_id: None,
+                dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+                dev_pipeline_max_iterations: 3,
+                dev_pipeline_show_trace: false,
+                dev_pipeline_architect_instruction: String::new(),
+                dev_pipeline_implementer_instruction: String::new(),
+                dev_pipeline_reviewer_instruction: String::new(),
                 endpoints: Vec::new(),
             };
             tracing::info!("从 config.json 导入旧配置账号: provider={}", provider);
@@ -342,6 +354,18 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         };
         tracing::info!("创建默认 OpenRouter 空账号");
@@ -1367,6 +1391,18 @@ pub async fn add_account(
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         }
     };
@@ -1375,6 +1411,7 @@ pub async fn add_account(
     let mut candidate_store = store.clone();
     candidate_store.accounts.push(new_account.clone());
     deecodex::accounts::validate_capability_links(&candidate_store).map_err(|e| e.to_string())?;
+    deecodex::accounts::validate_dev_pipeline_links(&candidate_store).map_err(|e| e.to_string())?;
 
     // 如果没有活跃账号，自动设为活跃
     let became_active = store.active_id.is_none();
@@ -1449,6 +1486,7 @@ pub async fn update_account(
         || store.active_id.as_ref() == Some(&account.id);
     store.accounts[pos] = account.clone();
     deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+    deecodex::accounts::validate_dev_pipeline_links(&store).map_err(|e| e.to_string())?;
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
@@ -1505,6 +1543,7 @@ pub async fn delete_account(
     }
 
     deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+    deecodex::accounts::validate_dev_pipeline_links(&store).map_err(|e| e.to_string())?;
 
     if was_active {
         if let Some(active_id) = store.active_id.as_deref() {
@@ -1550,6 +1589,7 @@ pub(crate) async fn switch_account_inner(
     target.sync_legacy_from_endpoint(&target_endpoint);
 
     deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
+    deecodex::accounts::validate_dev_pipeline_links(&store).map_err(|e| e.to_string())?;
 
     store.active_id = Some(id.clone());
     store.active_account_id = Some(id.clone());
@@ -2242,7 +2282,7 @@ fn account_to_value_with_endpoint(
     let balance_url = endpoint
         .map(|endpoint| endpoint.balance_url.as_str())
         .unwrap_or(&a.balance_url);
-    json!({
+    let mut value = json!({
         "id": a.id,
         "name": a.name,
         "provider": a.provider,
@@ -2273,7 +2313,20 @@ fn account_to_value_with_endpoint(
         "balance_url": balance_url,
         "created_at": a.created_at,
         "updated_at": a.updated_at,
-    })
+    });
+    value["dev_pipeline_enabled"] = json!(a.dev_pipeline_enabled);
+    value["dev_pipeline_trigger_mode"] = json!(a.dev_pipeline_trigger_mode);
+    value["dev_pipeline_command"] = json!(a.dev_pipeline_command);
+    value["dev_pipeline_architect_account_id"] = json!(a.dev_pipeline_architect_account_id);
+    value["dev_pipeline_implementer_account_id"] = json!(a.dev_pipeline_implementer_account_id);
+    value["dev_pipeline_reviewer_account_id"] = json!(a.dev_pipeline_reviewer_account_id);
+    value["dev_pipeline_tool_mode"] = json!(a.dev_pipeline_tool_mode);
+    value["dev_pipeline_max_iterations"] = json!(a.dev_pipeline_max_iterations);
+    value["dev_pipeline_show_trace"] = json!(a.dev_pipeline_show_trace);
+    value["dev_pipeline_architect_instruction"] = json!(a.dev_pipeline_architect_instruction);
+    value["dev_pipeline_implementer_instruction"] = json!(a.dev_pipeline_implementer_instruction);
+    value["dev_pipeline_reviewer_instruction"] = json!(a.dev_pipeline_reviewer_instruction);
+    value
 }
 
 // ── 线程聚合 ──────────────────────────────────────────────────────────────
@@ -2899,6 +2952,7 @@ mod tests {
             id: id.into(),
             name: "Test".into(),
             provider: "deepseek".into(),
+            wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
             model_map: Default::default(),
@@ -2921,7 +2975,18 @@ mod tests {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
-            wire_protocol: Default::default(),
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         }
     }
@@ -2990,6 +3055,18 @@ mod tests {
             translate_enabled: true,
             capability_enabled: true,
             capability_account_id: Some("helper".into()),
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         };
 

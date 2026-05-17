@@ -18,7 +18,10 @@ use crate::vision::{
     build_minimax_vlm_body, handle_minimax_vlm, request_minimax_vlm_text,
     strip_images_from_chat_request, VlmArgs,
 };
-use crate::{capability, files, prompts, providers, stream, translate, vector_stores};
+use crate::{
+    capability, dev_pipeline, files, prompts, providers, sse::SseState, stream, translate,
+    vector_stores,
+};
 use anyhow::{bail, Result};
 use axum::{
     extract::{Multipart, Path, Query, Request, State},
@@ -158,6 +161,17 @@ struct UpstreamFailureArgs<'a> {
     code: String,
     message: String,
     status: StatusCode,
+}
+
+struct DevPipelineResponseArgs<'a> {
+    state: AppState,
+    req: &'a ResponsesRequest,
+    output: dev_pipeline::DevPipelineOutput,
+    request_input_items: Vec<Value>,
+    store_response: bool,
+    conversation_id: Option<String>,
+    response_extra: Value,
+    start: Instant,
 }
 
 async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) {
@@ -2351,6 +2365,45 @@ async fn handle_responses_inner(
         );
     }
 
+    if let Some(trigger) = dev_pipeline::detect_trigger(&req, &account) {
+        let pipeline_start = Instant::now();
+        let pipeline_store = state.account_store.read().await.clone();
+        let pipeline_ctx = dev_pipeline::DevPipelineContext {
+            client: state.client.clone(),
+            store: pipeline_store,
+            active_account: account.clone(),
+            active_endpoint_id: state.account_store.read().await.active_endpoint_id.clone(),
+            requested_model: original_model.clone(),
+            temperature: req.temperature,
+            top_p: req.top_p,
+            max_output_tokens: req.max_output_tokens,
+            chinese_thinking: state.chinese_thinking,
+        };
+        match dev_pipeline::run(trigger, pipeline_ctx).await {
+            Ok(output) => {
+                return dev_pipeline_response(DevPipelineResponseArgs {
+                    state,
+                    req: &req,
+                    output,
+                    request_input_items,
+                    store_response,
+                    conversation_id,
+                    response_extra,
+                    start: pipeline_start,
+                })
+                .await;
+            }
+            Err(err) => {
+                warn!(
+                    account_id = %account.id,
+                    account_name = %account.name,
+                    error = %err,
+                    "开发协作编排失败，回退普通主模型路径"
+                );
+            }
+        }
+    }
+
     // Debug: log raw tool definitions to understand what Codex sends
     if !req.tools.is_empty() {
         debug!(
@@ -2877,6 +2930,170 @@ async fn build_capability_observation(
         message,
         suppress_vision_route: true,
     }
+}
+
+async fn dev_pipeline_response(args: DevPipelineResponseArgs<'_>) -> Response {
+    let DevPipelineResponseArgs {
+        state,
+        req,
+        output,
+        request_input_items,
+        store_response,
+        conversation_id,
+        response_extra,
+        start,
+    } = args;
+    let response_id = state.sessions.new_id();
+    if store_response {
+        state
+            .sessions
+            .save_input_items(response_id.clone(), request_input_items.clone());
+    }
+
+    let item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
+    let mut value = enrich_response_object(
+        json!({
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "model": output.final_model,
+            "output": [{
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": output.final_text,
+                    "annotations": []
+                }]
+            }],
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0
+            }
+        }),
+        req,
+    );
+    value["metadata"]["x_deecodex_dev_pipeline"] = json!("true");
+    value["metadata"]["x_deecodex_dev_pipeline_elapsed_ms"] = json!(output.elapsed_ms.to_string());
+    value["metadata"]["x_deecodex_dev_pipeline_stages"] = json!(output
+        .traces
+        .iter()
+        .map(|trace| {
+            json!({
+                "role": trace.role,
+                "account_id": trace.account_id,
+                "account_name": trace.account_name,
+                "model": trace.model,
+                "elapsed_ms": trace.elapsed_ms
+            })
+        })
+        .collect::<Vec<_>>());
+    let value = response_with_extra(value, &response_extra);
+
+    if store_response {
+        save_response_unless_cancelled(&state.sessions, response_id.clone(), value.clone());
+    }
+    if let Some(id) = conversation_id.as_deref() {
+        let mut items = state.sessions.get_conversation_items(id);
+        if let Some(output_items) = value.get("output").and_then(Value::as_array) {
+            items.extend(output_items.iter().cloned());
+            state
+                .sessions
+                .save_conversation_items(id.to_string(), items);
+        }
+    }
+    let _ = state
+        .request_history
+        .record(
+            response_id,
+            now_unix_secs(),
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            "completed".into(),
+            0,
+            0,
+            start.elapsed().as_millis() as u64,
+            "dev-pipeline://local".into(),
+            String::new(),
+            false,
+        )
+        .await;
+
+    if req.stream {
+        dev_pipeline_stream_response(value)
+    } else {
+        Json(value).into_response()
+    }
+}
+
+fn dev_pipeline_stream_response(value: Value) -> Response {
+    let response_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("resp_dev_pipeline");
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("dev-pipeline");
+    let item = value
+        .get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .cloned()
+        .unwrap_or_else(
+            || json!({"id":"msg_dev_pipeline","type":"message","role":"assistant","content":[]}),
+        );
+    let item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("msg_dev_pipeline");
+    let text = item
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|parts| parts.first())
+        .and_then(|part| part.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut state = SseState::new();
+    let output_index = state.alloc_output_index();
+    let events = vec![
+        state.response_created(response_id, model),
+        state.response_in_progress(response_id),
+        state.output_item_added(
+            output_index,
+            item_id,
+            "message",
+            json!({"role": "assistant", "content": []}),
+        ),
+        state.content_part_added(
+            item_id,
+            output_index,
+            0,
+            json!({"type": "output_text", "text": "", "annotations": []}),
+        ),
+        state.output_text_delta(item_id, output_index, 0, text),
+        state.output_text_done(item_id, output_index, 0, text),
+        state.content_part_done(
+            item_id,
+            output_index,
+            0,
+            json!({"type": "output_text", "text": text, "annotations": []}),
+        ),
+        state.output_item_done(output_index, item),
+        state.response_completed(&value),
+    ];
+    let mut ok_events: Vec<Result<Event, std::convert::Infallible>> =
+        events.into_iter().filter_map(Result::ok).map(Ok).collect();
+    ok_events.push(Ok(Event::default().data("[DONE]")));
+    Sse::new(futures_util::stream::iter(ok_events))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
