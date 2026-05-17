@@ -5,8 +5,31 @@ function providerBadgeClass(p) {
 }
 
 function providerIcon(p) {
-  const icons = { openrouter: '◉', deepseek: '⬡', openai: '◆', anthropic: '◈', 'google-ai': '◎', custom: '…' };
+  const icons = { openrouter: '◉', deepseek: '⬡', kimi: '月', minimax: 'M', glm: '智', openai: '◆', anthropic: '◈', 'google-ai': '◎', custom: '…' };
   return icons[p] || '…';
+}
+
+function getProviderPreset(provider) {
+  return providerPresets.find(pp => pp.slug === provider) || null;
+}
+
+function accountCapabilityLabels(a) {
+  const fromAccount = a.provider_options && Array.isArray(a.provider_options.capability_labels)
+    ? a.provider_options.capability_labels
+    : null;
+  if (fromAccount) return fromAccount;
+  const preset = getProviderPreset(a.provider);
+  return preset && Array.isArray(preset.capability_labels) ? preset.capability_labels : [];
+}
+
+function wireProtocolLabel(value) {
+  const map = {
+    chat_completions: 'Chat 兼容',
+    responses: 'Responses 直连',
+    anthropic_messages: 'Anthropic 原生',
+    gemini_native: 'Gemini 原生'
+  };
+  return map[value] || 'Chat 兼容';
 }
 
 function navigateAccounts(view) {
@@ -35,6 +58,7 @@ function renderAccountList() {
   } else {
     cards = '<div class="accounts-grid">' + list.map(a => {
       const active = a.id === accountsData.active_id;
+      const caps = accountCapabilityLabels(a).slice(0, 3);
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-header">
           <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
@@ -44,6 +68,8 @@ function renderAccountList() {
         <div class="card-name">${esc(a.name)}</div>
         <div class="card-key">${esc(maskKey(a.api_key) || '(未配置)')}</div>
         <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
+        <div class="card-context" title="协议: ${escAttr(wireProtocolLabel(a.wire_protocol))}">协议 ${esc(wireProtocolLabel(a.wire_protocol))}</div>
+        ${caps.map(label => `<div class="card-context">${esc(label)}</div>`).join('')}
         <div class="card-balance" id="balance-${escAttr(a.id)}">
           <span class="balance-loading">—</span>
         </div>
@@ -80,10 +106,12 @@ function renderAddAccount() {
   } else {
     cards = '<div class="provider-grid">' + providerPresets.map(p => {
       const upstream = p.default_upstream || '(自定义)';
+      const caps = Array.isArray(p.capability_labels) ? p.capability_labels.slice(0, 3) : [];
       return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}')">
         <div class="provider-icon">${providerIcon(p.slug)}</div>
         <div class="provider-name">${esc(p.label)}</div>
         <div class="provider-desc">${esc(p.description)}</div>
+        <div class="provider-default-upstream">${caps.map(label => esc(label)).join(' · ')}</div>
         <div class="provider-default-upstream" title="${escAttr(upstream)}">${esc(trunc(upstream, 42))}</div>
       </div>`;
     }).join('') + '</div>';
@@ -103,6 +131,8 @@ function renderAccountDetail() {
   if (!editingAccount) return '<div class="empty-state">账号数据丢失，请返回列表</div>';
   const a = editingAccount;
   const knownModels = getProviderKnownModels(a.provider);
+  const preset = getProviderPreset(a.provider);
+  const caps = accountCapabilityLabels(a);
 
   return `<div class="breadcrumb">
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
@@ -122,6 +152,16 @@ function renderAccountDetail() {
         <span class="hint">Chat Completions API 基础地址</span>
         <button class="btn btn-ghost" onclick="testUpstreamConnectivity()" style="font-size:11px;margin-top:4px;">🔌 测试连通性</button>
         <span id="connectivityResult" style="font-size:11px;margin-left:8px;"></span>
+      </div>
+      <div class="config-field">
+        <label>协议与能力</label>
+        <select id="edit_wire_protocol">
+          <option value="chat_completions" ${(a.wire_protocol || 'chat_completions') === 'chat_completions' ? 'selected' : ''}>Chat Completions 兼容</option>
+          <option value="responses" ${a.wire_protocol === 'responses' ? 'selected' : ''}>Responses 直连</option>
+          <option value="anthropic_messages" ${a.wire_protocol === 'anthropic_messages' ? 'selected' : ''}>Anthropic Messages（非流式）</option>
+          <option value="gemini_native" ${a.wire_protocol === 'gemini_native' ? 'selected' : ''}>Gemini Native（非流式）</option>
+        </select>
+        <span class="hint">${esc(caps.join(' · ') || (preset ? preset.description : '自定义 OpenAI Chat 兼容供应商'))}</span>
       </div>
       <div class="config-field">
         <label>API Key</label>
@@ -479,7 +519,9 @@ function addAccount(provider) {
     custom_headers: {},
     request_timeout_secs: null,
     max_retries: null,
-    translate_enabled: true,
+    wire_protocol: preset.wire_protocol || 'chat_completions',
+    provider_options: preset.provider_options || { capability_labels: preset.capability_labels || [] },
+    translate_enabled: (preset.wire_protocol || 'chat_completions') === 'chat_completions',
   };
   accountsView = 'edit';
   renderMainContent();
@@ -503,6 +545,7 @@ async function saveAccount() {
 
   a.name = document.getElementById('edit_name')?.value?.trim() || a.name;
   a.upstream = document.getElementById('edit_upstream')?.value?.trim() || a.upstream;
+  a.wire_protocol = document.getElementById('edit_wire_protocol')?.value || a.wire_protocol || 'chat_completions';
 
   const keyInput = document.getElementById('edit_api_key');
   if (keyInput) a.api_key = keyInput.value.trim();
@@ -578,6 +621,10 @@ async function saveAccount() {
 
   const translateEnabled = document.getElementById('edit_translate_enabled');
   if (translateEnabled) a.translate_enabled = translateEnabled.checked;
+  const preset = getProviderPreset(a.provider);
+  if (!a.provider_options || Object.keys(a.provider_options).length === 0) {
+    a.provider_options = { capability_labels: preset ? (preset.capability_labels || []) : [] };
+  }
 
   a.model_map = collectModelMap();
   a.updated_at = Math.floor(Date.now() / 1000);

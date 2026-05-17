@@ -54,6 +54,7 @@ pub struct StreamArgs {
     pub max_retries: Option<u32>,
     pub request_history: Arc<RequestHistoryStore>,
     pub upstream_url: String,
+    pub allow_missing_done: bool,
     pub start: std::time::Instant,
 }
 
@@ -121,8 +122,6 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
     } else {
         let tool_name = if name == "apply_patch" {
             "exec_command".to_string()
-        } else if name == "exec_command" {
-            "apply_patch".to_string()
         } else {
             name.to_string()
         };
@@ -216,6 +215,43 @@ fn parse_local_mcp_arguments(raw: &str) -> LocalMcpCall {
     }
 }
 
+fn reasoning_delta_text(delta: &crate::types::ChatDelta) -> Option<String> {
+    if let Some(text) = delta.reasoning_content.as_deref().filter(|s| !s.is_empty()) {
+        return Some(text.to_string());
+    }
+    let details = delta.reasoning_details.as_ref()?;
+    let mut chunks = Vec::new();
+    collect_reasoning_detail_text(details, &mut chunks);
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks.join(""))
+    }
+}
+
+fn collect_reasoning_detail_text(value: &Value, chunks: &mut Vec<String>) {
+    match value {
+        Value::String(s) => chunks.push(s.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_reasoning_detail_text(item, chunks);
+            }
+        }
+        Value::Object(map) => {
+            for key in ["text", "content", "summary", "reasoning", "delta"] {
+                if let Some(s) = map.get(key).and_then(Value::as_str) {
+                    chunks.push(s.to_string());
+                    return;
+                }
+            }
+            for value in map.values() {
+                collect_reasoning_detail_text(value, chunks);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn translate_stream(
     args: StreamArgs,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
@@ -246,6 +282,7 @@ pub fn translate_stream(
         max_retries: account_max_retries,
         request_history,
         upstream_url,
+        allow_missing_done,
         start,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
@@ -445,7 +482,7 @@ pub fn translate_stream(
                                 final_usage = chunk.usage;
                             }
                             for choice in &chunk.choices {
-                                if let Some(rc) = choice.delta.reasoning_content.as_deref() {
+                                if let Some(rc) = reasoning_delta_text(&choice.delta) {
                                     if !rc.is_empty() {
                                         if !emitted_reasoning_item {
                                             yield event_with_sequence(
@@ -459,7 +496,7 @@ pub fn translate_stream(
                                             );
                                             emitted_reasoning_item = true;
                                         }
-                                        accumulated_reasoning.push_str(rc);
+                                        accumulated_reasoning.push_str(&rc);
                                         yield event_with_sequence(
                                             &mut seq,
                                             "response.reasoning_summary_text.delta",
@@ -662,8 +699,42 @@ pub fn translate_stream(
                 ).await;
                 return;
             }
-            // 上游未发送 [DONE] 但流干净结束（如 MiniMax），视为正常完成
-            stream_completed = true;
+            if allow_missing_done {
+                // 部分兼容接口（如 MiniMax）会干净结束 SSE 但不发送 [DONE]。
+                stream_completed = true;
+            } else {
+                let message = "upstream stream ended without [DONE]".to_string();
+                error!("upstream stream incomplete: {message}");
+                if store_response {
+                    let mut failed = json!({
+                        "id": &response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "model": &model,
+                        "output": [],
+                        "error": {"code": "stream_incomplete", "message": message.clone()}
+                    });
+                    merge_response_extra(&mut failed, &response_extra);
+                    sessions.save_response(response_id.clone(), failed);
+                }
+                yield event_with_sequence(
+                    &mut seq,
+                    "response.failed",
+                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
+                );
+                let _ = request_history.record(
+                    response_id,
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                    model,
+                    "failed".into(),
+                    0, 0,
+                    start.elapsed().as_millis() as u64,
+                    upstream_url,
+                    message,
+                    false,
+                ).await;
+                return;
+            }
         }
 
         // Log streaming token usage

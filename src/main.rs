@@ -10,7 +10,9 @@ mod files;
 mod handlers;
 mod inject;
 mod metrics;
+mod native_protocols;
 mod prompts;
+mod providers;
 mod ratelimit;
 mod request_history;
 mod session;
@@ -561,6 +563,7 @@ async fn main() -> Result<()> {
         id: generate_id(),
         name: "默认账号".into(),
         provider: crate::accounts::guess_provider(&args.upstream).into(),
+        wire_protocol: Default::default(),
         upstream: args.upstream.clone(),
         api_key: args.api_key.clone(),
         model_map: model_map.clone(),
@@ -577,6 +580,9 @@ async fn main() -> Result<()> {
         reasoning_effort_override: None,
         thinking_tokens: None,
         custom_headers: HashMap::new(),
+        provider_options: crate::providers::provider_options_for_slug(
+            crate::accounts::guess_provider(&args.upstream),
+        ),
         request_timeout_secs: None,
         max_retries: None,
         translate_enabled: true,

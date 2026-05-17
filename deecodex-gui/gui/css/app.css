@@ -926,6 +926,9 @@ body {
   letter-spacing: 0.05em; text-transform: uppercase;
 }
 .badge-deepseek { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+.badge-kimi { background: rgba(88,166,255,0.10); color: #58a6ff; border: 1px solid rgba(88,166,255,0.22); }
+.badge-minimax { background: rgba(168,123,255,0.10); color: #a87bff; border: 1px solid rgba(168,123,255,0.22); }
+.badge-glm { background: rgba(0,214,143,0.10); color: var(--green); border: 1px solid rgba(0,214,143,0.22); }
 .badge-openai { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
 .badge-openrouter { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,200,232,0.2); }
 .badge-anthropic { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
@@ -1948,4 +1951,3 @@ body {
 [data-theme="light"] .dex-confirm-body { color: #1e293b; }
 [data-theme="light"] .dex-chat-messages::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); }
 [data-theme="light"] #dexStopBtn { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
-

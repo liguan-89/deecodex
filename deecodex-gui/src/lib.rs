@@ -192,8 +192,11 @@ fn load_env() {
 }
 
 pub fn run() {
-    // 单实例控制：检测已有 GUI 实例，避免重复启动
-    {
+    // 单实例控制：检测已有 GUI 实例，避免重复启动。
+    // 开发调试可通过环境变量允许并行窗口，避免影响已安装版本。
+    let allow_multi_instance = cfg!(debug_assertions)
+        && std::env::var("DEECODEX_GUI_ALLOW_MULTI_INSTANCE").as_deref() == Ok("1");
+    if !allow_multi_instance {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
         // 扫描同名进程（排除自身）
