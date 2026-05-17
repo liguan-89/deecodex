@@ -1,13 +1,16 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, HeaderValue, Method, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::post,
     Router,
 };
 use deecodex::{
-    accounts::{Account, AccountStore},
+    accounts::{
+        Account, AccountStore, EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode,
+        UnsupportedImagePolicy, VisionMode,
+    },
     cache::RequestCache,
     handlers::{build_router, AppState},
     session::SessionStore,
@@ -59,6 +62,7 @@ fn test_state() -> AppState {
         )),
         data_dir: Arc::new(std::path::PathBuf::from(".deecodex")),
         account_store: Arc::new(tokio::sync::RwLock::new(AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
             accounts: vec![Account {
                 id: "test-account".into(),
                 name: "测试账号".into(),
@@ -86,8 +90,11 @@ fn test_state() -> AppState {
                 translate_enabled: true,
                 capability_enabled: false,
                 capability_account_id: None,
+                endpoints: Vec::new(),
             }],
             active_id: Some("test-account".into()),
+            active_account_id: Some("test-account".into()),
+            active_endpoint_id: None,
         })),
         active_account: Arc::new(tokio::sync::RwLock::new(Account {
             id: "test-account".into(),
@@ -116,6 +123,7 @@ fn test_state() -> AppState {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            endpoints: Vec::new(),
         })),
         reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
         thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
@@ -141,45 +149,6 @@ async fn one_shot_upstream(response_body: &'static str) -> reqwest::Url {
             response_body
         );
         socket.write_all(response.as_bytes()).await.unwrap();
-    });
-    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
-}
-
-async fn capturing_upstream(
-    response_body: &'static str,
-    captured: Arc<Mutex<Option<Value>>>,
-) -> reqwest::Url {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut buf = vec![0_u8; 64 * 1024];
-        let n = socket.read(&mut buf).await.unwrap();
-        let request = String::from_utf8_lossy(&buf[..n]);
-        if let Some((_, body)) = request.split_once("\r\n\r\n") {
-            if let Ok(value) = serde_json::from_str::<Value>(body) {
-                *captured.lock().unwrap() = Some(value);
-            }
-        }
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            response_body.len(),
-            response_body
-        );
-        socket.write_all(response.as_bytes()).await.unwrap();
-    });
-    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
-}
-
-async fn unused_upstream(hit_count: Arc<AtomicUsize>) -> reqwest::Url {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        if let Ok((mut socket, _)) = listener.accept().await {
-            hit_count.fetch_add(1, Ordering::SeqCst);
-            let response = "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-            let _ = socket.write_all(response.as_bytes()).await;
-        }
     });
     reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
 }
@@ -770,61 +739,6 @@ async fn test_vector_store_file_batches_cancel() {
     let result: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(result["id"], batch_id);
     assert_eq!(result["object"], "vector_store.file_batch");
-}
-
-#[tokio::test]
-async fn test_models_endpoint_normalizes_gemini_model_discovery() {
-    async fn gemini_models_handler() -> Response<Body> {
-        Response::new(Body::from(
-            json!({
-                "models": [
-                    {"name": "models/gemini-2.0-flash"},
-                    {"name": "models/gemini-pro"}
-                ]
-            })
-            .to_string(),
-        ))
-    }
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let app = Router::new().route("/models", get(gemini_models_handler));
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-
-    let state = test_state();
-    {
-        let mut account = state.active_account.write().await;
-        account.provider = "google-ai".into();
-        account.upstream = format!("http://{addr}");
-        account.api_key = "gemini-key".into();
-    }
-    let app = build_router(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/models")
-                .method(Method::GET)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    let ids: Vec<&str> = json["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|m| m["id"].as_str())
-        .collect();
-    assert_eq!(ids, vec!["gemini-2.0-flash", "gemini-pro"]);
 }
 
 #[tokio::test]
@@ -1536,49 +1450,6 @@ async fn start_mock_sse(body: String) -> reqwest::Url {
 }
 
 #[derive(Clone)]
-struct CapturingSseState {
-    body: SseBody,
-    captured: Arc<Mutex<Option<Value>>>,
-}
-
-async fn capturing_sse_handler(
-    State(state): State<CapturingSseState>,
-    body: Body,
-) -> Response<Body> {
-    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
-    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-        *state.captured.lock().unwrap() = Some(value);
-    }
-    let mut resp = Response::new(Body::from(state.body.as_str().to_string()));
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream"),
-    );
-    resp
-}
-
-async fn start_capturing_mock_sse(
-    body: String,
-    captured: Arc<Mutex<Option<Value>>>,
-) -> reqwest::Url {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let state = CapturingSseState {
-        body: Arc::new(body),
-        captured,
-    };
-    tokio::spawn(async move {
-        let app = Router::new()
-            .route("/v1/chat/completions", post(capturing_sse_handler))
-            .with_state(state);
-        axum::serve(listener, app.into_make_service())
-            .await
-            .unwrap();
-    });
-    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
-}
-
-#[derive(Clone)]
 struct RetryState {
     sse_body: String,
     call_count: Arc<AtomicUsize>,
@@ -1742,7 +1613,7 @@ fn make_stream_args(
                 .unwrap(),
         ),
         upstream_url: url.to_string(),
-        allow_missing_done: true,
+        allow_missing_done: false,
         start: std::time::Instant::now(),
     }
 }
@@ -1794,7 +1665,7 @@ fn make_stream_args_custom(
                 .unwrap(),
         ),
         upstream_url: url.to_string(),
-        allow_missing_done: true,
+        allow_missing_done: false,
         start: std::time::Instant::now(),
     }
 }
@@ -2061,35 +1932,6 @@ async fn test_translate_stream_cache_store_and_replay() {
 }
 
 #[tokio::test]
-async fn test_translate_stream_missing_done_respects_provider_capability() {
-    let sse_body = build_sse_body(vec![
-        r#"data: {"choices":[{"delta":{"content":"No done"},"finish_reason":"stop"}]}"#,
-    ]);
-
-    let url = start_mock_sse(sse_body).await;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let mut args = make_stream_args(client, url.as_str(), false, None, None);
-    args.allow_missing_done = false;
-    let bytes = axum::body::to_bytes(
-        translate_stream(args).into_response().into_body(),
-        usize::MAX,
-    )
-    .await
-    .unwrap();
-    let events = parse_sse_events(&bytes);
-
-    assert_eq!(events.last().unwrap().0, "response.failed");
-    assert_eq!(
-        events.last().unwrap().1["response"]["error"]["code"],
-        "stream_incomplete"
-    );
-}
-
-#[tokio::test]
 async fn test_translate_cached_reasoning_completed_output_matches_live_shape() {
     let replay_sse = translate_cached(CachedArgs {
         response_id: "replay_reasoning".into(),
@@ -2171,64 +2013,106 @@ async fn test_responses_blocking_text() {
 }
 
 #[tokio::test]
-async fn test_capability_observation_is_injected_into_main_request() {
-    let helper_capture = Arc::new(Mutex::new(None));
-    let main_capture = Arc::new(Mutex::new(None));
-    let helper_url = capturing_upstream(
+async fn test_responses_rejects_image_when_vision_off() {
+    let app = build_router(test_state());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看这张图"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_disabled");
+}
+
+#[tokio::test]
+async fn test_responses_rejects_image_when_not_last_input_item() {
+    let app = build_router(test_state());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "请看这张图"},
+                                    {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                                ]
+                            },
+                            {
+                                "role": "user",
+                                "content": "最后一项只是文本"
+                            }
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_disabled");
+}
+
+#[tokio::test]
+async fn test_chat_strip_policy_removes_image_and_continues() {
+    let (upstream, captured) = capture_any_json_upstream(
         r#"{
-            "choices": [{"message": {"role": "assistant", "content": "图片里有一张蓝色状态卡"}}],
+            "choices": [
+                {"message": {"role": "assistant", "content": "stripped ok"}}
+            ],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
         }"#,
-        helper_capture.clone(),
-    )
-    .await;
-    let main_url = capturing_upstream(
-        r#"{
-            "choices": [{"message": {"role": "assistant", "content": "已结合能力观察回答"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-        }"#,
-        main_capture.clone(),
     )
     .await;
 
     let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.upstream = main_url.to_string();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("helper-account".into());
-    let helper_account = Account {
-        id: "helper-account".into(),
-        name: "能力账号".into(),
-        provider: "openai".into(),
-        upstream: helper_url.to_string(),
-        api_key: "helper-key".into(),
-        model_map: std::collections::HashMap::new(),
-        vision_upstream: String::new(),
-        vision_api_key: String::new(),
-        vision_model: String::new(),
-        vision_endpoint: String::new(),
-        vision_enabled: false,
-        from_codex_config: false,
-        balance_url: String::new(),
-        created_at: 0,
-        updated_at: 0,
-        context_window_override: None,
-        reasoning_effort_override: None,
-        thinking_tokens: None,
-        custom_headers: std::collections::HashMap::new(),
-        request_timeout_secs: None,
-        max_retries: None,
-        translate_enabled: true,
-        capability_enabled: false,
-        capability_account_id: None,
-    };
-    let sessions = state.sessions.clone();
-    *state.active_account.write().await = main_account.clone();
-    *state.account_store.write().await = AccountStore {
-        accounts: vec![main_account, helper_account],
-        active_id: Some("test-account".into()),
-    };
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].vision.unsupported_image_policy =
+            UnsupportedImagePolicy::StripWithWarning;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
 
     let app = build_router(state);
     let response = app
@@ -2243,8 +2127,8 @@ async fn test_capability_observation_is_injected_into_main_request() {
                         "input": [{
                             "role": "user",
                             "content": [
-                                {"type":"input_text","text":"请描述图片"},
-                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                                {"type": "input_text", "text": "只保留文本"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
                             ]
                         }]
                     }"#,
@@ -2255,55 +2139,47 @@ async fn test_capability_observation_is_injected_into_main_request() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let response_body = response.into_body().collect().await.unwrap().to_bytes();
-    let response_json: Value = serde_json::from_slice(&response_body).unwrap();
-    let response_id = response_json["id"].as_str().unwrap();
-    let helper_body = helper_capture.lock().unwrap().clone().unwrap();
-    assert_eq!(helper_body["stream"], false);
-    let main_body = main_capture.lock().unwrap().clone().unwrap();
-    let messages = main_body["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"].as_str().is_some_and(|text| {
-                text.contains("deecodex 能力通道观察结果") && text.contains("蓝色状态卡")
-            })
-    }));
-    let input_items = sessions.get_input_items(response_id).unwrap();
-    assert!(input_items.iter().any(|item| {
-        item["role"] == "system"
-            && item["metadata"]["x_deecodex_kind"] == "capability_observation"
-            && item["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("蓝色状态卡"))
-    }));
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("只保留文本"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("image_url"));
 }
 
 #[tokio::test]
-async fn test_capability_failure_suppresses_legacy_vision_route() {
-    let main_capture = Arc::new(Mutex::new(None));
-    let vision_hits = Arc::new(AtomicUsize::new(0));
-    let main_url = capturing_upstream(
+async fn test_model_profile_native_vision_overrides_endpoint_off() {
+    let (upstream, captured) = capture_any_json_upstream(
         r#"{
-            "choices": [{"message": {"role": "assistant", "content": "主模型回退回答"}}],
-            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12}
+            "choices": [
+                {"message": {"role": "assistant", "content": "native saw image"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
         }"#,
-        main_capture.clone(),
     )
     .await;
-    let vision_url = unused_upstream(vision_hits.clone()).await;
 
     let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
-    state.vision_upstream = Arc::new(tokio::sync::RwLock::new(Some(vision_url)));
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.upstream = main_url.to_string();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("missing-helper".into());
-    *state.active_account.write().await = main_account.clone();
-    *state.account_store.write().await = AccountStore {
-        accounts: vec![main_account],
-        active_id: Some("test-account".into()),
-    };
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].model_profiles.insert(
+            "gpt-5".into(),
+            ModelProfile {
+                vision_mode: ModelVisionMode::Native,
+            },
+        );
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
 
     let app = build_router(state);
     let response = app
@@ -2318,8 +2194,8 @@ async fn test_capability_failure_suppresses_legacy_vision_route() {
                         "input": [{
                             "role": "user",
                             "content": [
-                                {"type":"input_text","text":"请描述图片"},
-                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
                             ]
                         }]
                     }"#,
@@ -2330,148 +2206,47 @@ async fn test_capability_failure_suppresses_legacy_vision_route() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(main_capture.lock().unwrap().is_some());
-    assert_eq!(vision_hits.load(Ordering::SeqCst), 0);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("data:image/png;base64,abc"));
 }
 
 #[tokio::test]
-async fn test_capability_plain_text_does_not_call_helper() {
-    let main_capture = Arc::new(Mutex::new(None));
-    let helper_hits = Arc::new(AtomicUsize::new(0));
-    let main_url = capturing_upstream(
+async fn test_caption_then_main_routes_final_answer_to_main_endpoint() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
         r#"{
-            "choices": [{"message": {"role": "assistant", "content": "普通文本回答"}}],
-            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12}
-        }"#,
-        main_capture.clone(),
-    )
-    .await;
-    let helper_url = unused_upstream(helper_hits.clone()).await;
-
-    let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.upstream = main_url.to_string();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("helper-account".into());
-    let helper_account = Account {
-        id: "helper-account".into(),
-        name: "能力账号".into(),
-        provider: "openai".into(),
-        upstream: helper_url.to_string(),
-        api_key: "helper-key".into(),
-        model_map: std::collections::HashMap::new(),
-        vision_upstream: String::new(),
-        vision_api_key: String::new(),
-        vision_model: String::new(),
-        vision_endpoint: String::new(),
-        vision_enabled: false,
-        from_codex_config: false,
-        balance_url: String::new(),
-        created_at: 0,
-        updated_at: 0,
-        context_window_override: None,
-        reasoning_effort_override: None,
-        thinking_tokens: None,
-        custom_headers: std::collections::HashMap::new(),
-        request_timeout_secs: None,
-        max_retries: None,
-        translate_enabled: true,
-        capability_enabled: false,
-        capability_account_id: None,
-    };
-    *state.active_account.write().await = main_account.clone();
-    *state.account_store.write().await = AccountStore {
-        accounts: vec![main_account, helper_account],
-        active_id: Some("test-account".into()),
-    };
-
-    let app = build_router(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"model":"gpt-5","input":"只是普通文本"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(helper_hits.load(Ordering::SeqCst), 0);
-    let main_body = main_capture.lock().unwrap().clone().unwrap();
-    let messages = main_body["messages"].as_array().unwrap();
-    assert!(!messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("deecodex 能力通道观察结果"))
-    }));
-}
-
-#[tokio::test]
-async fn test_capability_observation_streaming_saves_state() {
-    let helper_capture = Arc::new(Mutex::new(None));
-    let main_capture = Arc::new(Mutex::new(None));
-    let helper_url = capturing_upstream(
-        r#"{
-            "choices": [{"message": {"role": "assistant", "content": "流式图片观察: 控制台显示已启动"}}],
+            "choices": [
+                {"message": {"role": "assistant", "content": "main used caption"}}
+            ],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
         }"#,
-        helper_capture.clone(),
     )
     .await;
-    let main_url = start_capturing_mock_sse(
-        build_sse_body(vec![
-            r#"data: {"choices":[{"delta":{"content":"流式最终回答"},"finish_reason":null}]}"#,
-            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}}"#,
-            "data: [DONE]",
-        ]),
-        main_capture.clone(),
-    )
-    .await;
+    let (vision_upstream, vision_captured) =
+        capture_any_json_upstream(r#"{"content":"这是一张测试图片"}"#).await;
 
     let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
-    let sessions = state.sessions.clone();
-    let request_history = state.request_history.clone();
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.upstream = main_url.to_string();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("helper-account".into());
-    let helper_account = Account {
-        id: "helper-account".into(),
-        name: "能力账号".into(),
-        provider: "openai".into(),
-        upstream: helper_url.to_string(),
-        api_key: "helper-key".into(),
-        model_map: std::collections::HashMap::new(),
-        vision_upstream: String::new(),
-        vision_api_key: String::new(),
-        vision_model: String::new(),
-        vision_endpoint: String::new(),
-        vision_enabled: false,
-        from_codex_config: false,
-        balance_url: String::new(),
-        created_at: 0,
-        updated_at: 0,
-        context_window_override: None,
-        reasoning_effort_override: None,
-        thinking_tokens: None,
-        custom_headers: std::collections::HashMap::new(),
-        request_timeout_secs: None,
-        max_retries: None,
-        translate_enabled: true,
-        capability_enabled: false,
-        capability_account_id: None,
-    };
-    *state.active_account.write().await = main_account.clone();
-    *state.account_store.write().await = AccountStore {
-        accounts: vec![main_account, helper_account],
-        active_id: Some("test-account".into()),
-    };
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.api_key = "main-key".into();
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.glue_strategy = GlueVisionStrategy::CaptionThenMain;
+        account.endpoints[0].vision.base_url = vision_upstream.to_string();
+        account.endpoints[0].vision.api_key = "vision-key".into();
+        account.endpoints[0].vision.model = "MiniMax-M1".into();
+        account.endpoints[0].vision.path = "v1/coding_plan/vlm".into();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
 
     let app = build_router(state);
     let response = app
@@ -2483,12 +2258,11 @@ async fn test_capability_observation_streaming_saves_state() {
                 .body(Body::from(
                     r#"{
                         "model": "gpt-5",
-                        "stream": true,
                         "input": [{
                             "role": "user",
                             "content": [
-                                {"type":"input_text","text":"请描述当前图片"},
-                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
                             ]
                         }]
                     }"#,
@@ -2500,113 +2274,61 @@ async fn test_capability_observation_streaming_saves_state() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    let events = parse_sse_events(&body);
-    assert!(!events.is_empty());
-    assert_eq!(events.last().unwrap().0, "response.completed");
-    let response_id = events[0].1["response"]["id"].as_str().unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "main used caption");
 
-    let helper_body = helper_capture.lock().unwrap().clone().unwrap();
-    assert_eq!(helper_body["stream"], false);
-    let main_body = main_capture.lock().unwrap().clone().unwrap();
-    let messages = main_body["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"].as_str().is_some_and(|text| {
-                text.contains("deecodex 能力通道观察结果") && text.contains("控制台显示已启动")
-            })
-    }));
+    let vision_captured = vision_captured.lock().unwrap();
+    assert_eq!(vision_captured.len(), 1);
+    assert_eq!(vision_captured[0].path, "/v1/coding_plan/vlm");
+    assert_eq!(vision_captured[0].body["prompt"], "请看图回答");
+    assert_eq!(
+        vision_captured[0].body["image_url"],
+        "data:image/png;base64,abc"
+    );
 
-    let input_items = sessions.get_input_items(response_id).unwrap();
-    assert!(input_items.iter().any(|item| {
-        item["role"] == "system"
-            && item["metadata"]["x_deecodex_kind"] == "capability_observation"
-            && item["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("控制台显示已启动"))
-    }));
-    let saved = sessions.get_response(response_id).unwrap();
-    assert_eq!(saved["status"], "completed");
-    assert_eq!(saved["output"][0]["content"][0]["text"], "流式最终回答");
-
-    let history = request_history.list(10).await;
-    assert!(history.iter().any(|entry| {
-        entry.id == response_id && entry.status == "completed" && entry.input_tokens == 11
-    }));
+    let main_captured = main_captured.lock().unwrap();
+    assert_eq!(main_captured.len(), 1);
+    assert_eq!(main_captured[0].path, "/chat/completions");
+    let messages = main_captured[0].body["messages"].as_array().unwrap();
+    let joined = serde_json::to_string(messages).unwrap();
+    assert!(joined.contains("这是一张测试图片"));
+    assert!(!joined.contains("data:image/png"));
 }
 
 #[tokio::test]
-async fn test_capability_observation_respects_tool_policy() {
-    let main_capture = Arc::new(Mutex::new(None));
-    let helper_url = one_shot_upstream(
+async fn test_glue_final_answer_uses_vision_endpoint_only() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
         r#"{
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_unsafe",
-                        "type": "function",
-                        "function": {
-                            "name": "local_mcp_call",
-                            "arguments": "{\"server_label\":\"unsafe\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"/tmp/secret.txt\"}}"
-                        }
-                    }]
-                }
-            }],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+            "choices": [
+                {"message": {"role": "assistant", "content": "should not run"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         }"#,
     )
     .await;
-    let main_url = capturing_upstream(
-        r#"{
-            "choices": [{"message": {"role": "assistant", "content": "已遵循能力观察回答"}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-        }"#,
-        main_capture.clone(),
-    )
-    .await;
+    let (vision_upstream, vision_captured) =
+        capture_any_json_upstream(r#"{"content":"视觉模型直接回答"}"#).await;
 
     let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
-    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
-        allowed_mcp_servers: vec!["safe".into()],
-        ..Default::default()
-    }));
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.upstream = main_url.to_string();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("helper-account".into());
-    let helper_account = Account {
-        id: "helper-account".into(),
-        name: "能力账号".into(),
-        provider: "openai".into(),
-        upstream: helper_url.to_string(),
-        api_key: "helper-key".into(),
-        model_map: std::collections::HashMap::new(),
-        vision_upstream: String::new(),
-        vision_api_key: String::new(),
-        vision_model: String::new(),
-        vision_endpoint: String::new(),
-        vision_enabled: false,
-        from_codex_config: false,
-        balance_url: String::new(),
-        created_at: 0,
-        updated_at: 0,
-        context_window_override: None,
-        reasoning_effort_override: None,
-        thinking_tokens: None,
-        custom_headers: std::collections::HashMap::new(),
-        request_timeout_secs: None,
-        max_retries: None,
-        translate_enabled: true,
-        capability_enabled: false,
-        capability_account_id: None,
-    };
-    *state.active_account.write().await = main_account.clone();
-    *state.account_store.write().await = AccountStore {
-        accounts: vec![main_account, helper_account],
-        active_id: Some("test-account".into()),
-    };
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.glue_strategy = GlueVisionStrategy::FinalAnswer;
+        account.endpoints[0].vision.base_url = vision_upstream.to_string();
+        account.endpoints[0].vision.api_key = "vision-key".into();
+        account.endpoints[0].vision.model = "MiniMax-M1".into();
+        account.endpoints[0].vision.path = "v1/coding_plan/vlm".into();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
 
     let app = build_router(state);
     let response = app
@@ -2618,8 +2340,13 @@ async fn test_capability_observation_respects_tool_policy() {
                 .body(Body::from(
                     r#"{
                         "model": "gpt-5",
-                        "input": "请读取文件",
-                        "tools": [{"type":"mcp","server_label":"safe"}]
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
                     }"#,
                 ))
                 .unwrap(),
@@ -2628,15 +2355,530 @@ async fn test_capability_observation_respects_tool_policy() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let main_body = main_capture.lock().unwrap().clone().unwrap();
-    let messages = main_body["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"].as_str().is_some_and(|text| {
-                text.contains("MCP 结果: status=failed")
-                    && text.contains("MCP server 'unsafe' is not allowed by local tool policy")
-            })
-    }));
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "视觉模型直接回答");
+    assert!(main_captured.lock().unwrap().is_empty());
+    let vision_captured = vision_captured.lock().unwrap();
+    assert_eq!(vision_captured.len(), 1);
+    assert_eq!(vision_captured[0].path, "/v1/coding_plan/vlm");
+}
+
+#[tokio::test]
+async fn test_model_profile_glue_vision_overrides_endpoint_off() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "should not run"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#,
+    )
+    .await;
+    let (vision_upstream, vision_captured) =
+        capture_any_json_upstream(r#"{"content":"模型覆盖胶水回答"}"#).await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].vision.base_url = vision_upstream.to_string();
+        account.endpoints[0].vision.api_key = "vision-key".into();
+        account.endpoints[0].vision.model = "MiniMax-M1".into();
+        account.endpoints[0].vision.path = "v1/coding_plan/vlm".into();
+        account.endpoints[0].model_profiles.insert(
+            "gpt-5".into(),
+            ModelProfile {
+                vision_mode: ModelVisionMode::Glue,
+            },
+        );
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "模型覆盖胶水回答");
+    assert!(main_captured.lock().unwrap().is_empty());
+    assert_eq!(vision_captured.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_chat_glue_vision_requires_configured_vision_endpoint() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "should not run"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.base_url = String::new();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_glue_not_configured");
+    assert!(main_captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_chat_glue_vision_rejects_invalid_vision_url() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "should not run"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.base_url = "not a url".into();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_glue_invalid_url");
+    assert!(main_captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_chat_glue_vision_rejects_reserved_adapter() {
+    let (main_upstream, main_captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "should not run"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#,
+    )
+    .await;
+    let (vision_upstream, vision_captured) =
+        capture_any_json_upstream(r#"{"content":"unused"}"#).await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.base_url = vision_upstream.to_string();
+        account.endpoints[0].vision.adapter_id = "future_adapter".into();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_adapter_reserved");
+    assert!(main_captured.lock().unwrap().is_empty());
+    assert!(vision_captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_responses_bypass_rejects_image_when_vision_off() {
+    let (upstream, captured) = capture_any_json_upstream(r#"{"id":"resp_upstream"}"#).await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].vision.unsupported_image_policy = UnsupportedImagePolicy::Reject;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看这张图"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "vision_disabled");
+    assert!(captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_responses_bypass_strip_policy_removes_image_and_continues() {
+    let (upstream, captured) = capture_any_json_upstream(r#"{"id":"resp_upstream"}"#).await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].vision.unsupported_image_policy =
+            UnsupportedImagePolicy::StripWithWarning;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "只保留文本"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("只保留文本"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("input_image"));
+}
+
+#[tokio::test]
+async fn test_responses_bypass_caption_then_main_patches_responses_body() {
+    let (main_upstream, main_captured) =
+        capture_any_json_upstream(r#"{"id":"resp_upstream","status":"completed","output":[]}"#)
+            .await;
+    let (vision_upstream, vision_captured) =
+        capture_any_json_upstream(r#"{"content":"直连图片描述"}"#).await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+        account.endpoints[0].base_url = main_upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Glue;
+        account.endpoints[0].vision.glue_strategy = GlueVisionStrategy::CaptionThenMain;
+        account.endpoints[0].vision.base_url = vision_upstream.to_string();
+        account.endpoints[0].vision.api_key = "vision-key".into();
+        account.endpoints[0].vision.model = "MiniMax-M1".into();
+        account.endpoints[0].vision.path = "v1/coding_plan/vlm".into();
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "请看图回答"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let vision_captured = vision_captured.lock().unwrap();
+    assert_eq!(vision_captured.len(), 1);
+    assert_eq!(vision_captured[0].path, "/v1/coding_plan/vlm");
+    assert_eq!(vision_captured[0].body["prompt"], "请看图回答");
+    assert_eq!(
+        vision_captured[0].body["image_url"],
+        "data:image/png;base64,abc"
+    );
+
+    let main_captured = main_captured.lock().unwrap();
+    assert_eq!(main_captured.len(), 1);
+    assert_eq!(main_captured[0].path, "/responses");
+    let sent = serde_json::to_string(&main_captured[0].body).unwrap();
+    assert!(sent.contains("直连图片描述"));
+    assert!(!sent.contains("data:image/png"));
+}
+
+#[tokio::test]
+async fn test_anthropic_messages_endpoint_builds_messages_request() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "content": [{"type":"text", "text":"Claude says hi"}],
+            "usage": {"input_tokens": 5, "output_tokens": 6}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
+    {
+        let mut account = state.active_account.write().await;
+        account.provider = "anthropic".into();
+        account.api_key = "anthropic-key".into();
+        account.normalize_v2();
+        account.endpoints[0].kind = EndpointKind::AnthropicMessages;
+        account.endpoints[0].name = "Claude Messages".into();
+        account.endpoints[0].path = "messages".into();
+        account.endpoints[0]
+            .model_map
+            .insert("gpt-5".into(), "claude-sonnet-4-5".into());
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+        };
+    }
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "instructions": "system prompt",
+                        "input": "Hello Claude",
+                        "max_output_tokens": 123
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "completed");
+    assert_eq!(json["model"], "claude-sonnet-4-5");
+    assert_eq!(json["output"][0]["content"][0]["text"], "Claude says hi");
+    assert_eq!(json["usage"]["input_tokens"], 5);
+    assert_eq!(json["usage"]["output_tokens"], 6);
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/messages");
+    assert_eq!(
+        captured[0].headers["x-api-key"].to_str().unwrap(),
+        "anthropic-key"
+    );
+    assert_eq!(
+        captured[0].headers["anthropic-version"].to_str().unwrap(),
+        "2023-06-01"
+    );
+    assert_eq!(captured[0].body["model"], "claude-sonnet-4-5");
+    assert_eq!(captured[0].body["system"], "system prompt");
+    assert_eq!(captured[0].body["max_tokens"], 123);
+    assert_eq!(captured[0].body["messages"][0]["role"], "user");
+    assert_eq!(
+        captured[0].body["messages"][0]["content"][0]["text"],
+        "Hello Claude"
+    );
 }
 
 #[tokio::test]
@@ -2904,10 +3146,46 @@ struct CaptureJsonState {
     captured: Arc<Mutex<Vec<Value>>>,
 }
 
+#[derive(Clone, Debug)]
+struct CapturedRequest {
+    path: String,
+    headers: HeaderMap,
+    body: Value,
+}
+
+#[derive(Clone)]
+struct CaptureRequestState {
+    response_body: &'static str,
+    captured: Arc<Mutex<Vec<CapturedRequest>>>,
+}
+
 async fn capture_json_handler(State(state): State<CaptureJsonState>, body: Body) -> Response<Body> {
     let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
     state.captured.lock().unwrap().push(value);
+    let mut response = Response::new(Body::from(state.response_body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+async fn capture_request_handler(
+    State(state): State<CaptureRequestState>,
+    req: Request<Body>,
+) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    let headers = req.headers().clone();
+    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push(CapturedRequest {
+        path,
+        headers,
+        body,
+    });
     let mut response = Response::new(Body::from(state.response_body));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -2940,63 +3218,19 @@ async fn capture_json_upstream(
     )
 }
 
-type CapturedNativeRequests = Arc<Mutex<Vec<(String, Value, Vec<(String, String)>)>>>;
-
-#[derive(Clone)]
-struct CaptureJsonWithPathState {
+async fn capture_any_json_upstream(
     response_body: &'static str,
-    captured: CapturedNativeRequests,
-}
-
-async fn capture_json_with_path_handler(
-    State(state): State<CaptureJsonWithPathState>,
-    request: Request<Body>,
-) -> Response<Body> {
-    let path = request
-        .uri()
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| request.uri().path().to_string());
-    let headers = request
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_string(), value.to_string()))
-        })
-        .collect::<Vec<_>>();
-    let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let value: Value = serde_json::from_slice(&bytes).unwrap();
-    state.captured.lock().unwrap().push((path, value, headers));
-    let mut response = Response::new(Body::from(state.response_body));
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    response
-}
-
-async fn capture_native_upstream(
-    route: &'static str,
-    response_body: &'static str,
-) -> (
-    reqwest::Url,
-    Arc<Mutex<Vec<(String, Value, Vec<(String, String)>)>>>,
-) {
+) -> (reqwest::Url, Arc<Mutex<Vec<CapturedRequest>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let captured = Arc::new(Mutex::new(Vec::new()));
-    let state = CaptureJsonWithPathState {
+    let state = CaptureRequestState {
         response_body,
         captured: captured.clone(),
     };
     tokio::spawn(async move {
         let app = Router::new()
-            .route(route, post(capture_json_with_path_handler))
+            .fallback(post(capture_request_handler))
             .with_state(state);
         axum::serve(listener, app.into_make_service())
             .await
@@ -3006,156 +3240,6 @@ async fn capture_native_upstream(
         reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
         captured,
     )
-}
-
-#[tokio::test]
-async fn test_anthropic_native_non_stream_response_roundtrip() {
-    let (upstream, captured) = capture_native_upstream(
-        "/messages",
-        r#"{
-            "id": "msg_1",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type":"text","text":"Anthropic native OK"}],
-            "usage": {"input_tokens": 8, "output_tokens": 5}
-        }"#,
-    )
-    .await;
-    let upstream_text = upstream.to_string();
-    let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
-    state.api_key = Arc::new(tokio::sync::RwLock::new("anthropic-key".into()));
-    {
-        let mut account = state.active_account.write().await;
-        account.provider = "anthropic".into();
-        account.wire_protocol = deecodex::providers::WireProtocol::AnthropicMessages;
-        account.upstream = upstream_text.clone();
-        account.api_key = "anthropic-key".into();
-    }
-    let app = build_router(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"claude-sonnet-4-5","instructions":"be concise","input":"hello"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        json["output"][0]["content"][0]["text"],
-        "Anthropic native OK"
-    );
-    assert_eq!(json["usage"]["input_tokens"], 8);
-
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured[0].0, "/messages");
-    assert_eq!(captured[0].1["model"], "claude-sonnet-4-5");
-    assert_eq!(captured[0].1["system"], "be concise");
-    assert_eq!(captured[0].1["messages"][0]["role"], "user");
-    assert!(captured[0]
-        .2
-        .iter()
-        .any(|(name, value)| name == "x-api-key" && value == "anthropic-key"));
-    assert!(captured[0]
-        .2
-        .iter()
-        .any(|(name, value)| name == "anthropic-version" && value == "2023-06-01"));
-}
-
-#[tokio::test]
-async fn test_gemini_native_non_stream_response_roundtrip() {
-    let (upstream, captured) = capture_native_upstream(
-        "/models/gemini-2.0-flash:generateContent",
-        r#"{
-            "candidates": [{"content": {"parts": [{"text":"Gemini native OK"}]}}],
-            "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 7, "totalTokenCount": 13}
-        }"#,
-    )
-    .await;
-    let upstream_text = upstream.to_string();
-    let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
-    state.api_key = Arc::new(tokio::sync::RwLock::new("gemini-key".into()));
-    {
-        let mut account = state.active_account.write().await;
-        account.provider = "google-ai".into();
-        account.wire_protocol = deecodex::providers::WireProtocol::GeminiNative;
-        account.upstream = upstream_text.clone();
-        account.api_key = "gemini-key".into();
-    }
-    let app = build_router(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"gemini-2.0-flash","instructions":"be concise","input":"hello"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["output"][0]["content"][0]["text"], "Gemini native OK");
-    assert_eq!(json["usage"]["output_tokens"], 7);
-
-    let captured = captured.lock().unwrap();
-    assert_eq!(
-        captured[0].0,
-        "/models/gemini-2.0-flash:generateContent?key=gemini-key"
-    );
-    assert_eq!(
-        captured[0].1["systemInstruction"]["parts"][0]["text"],
-        "be concise"
-    );
-    assert_eq!(captured[0].1["contents"][0]["role"], "user");
-}
-
-#[tokio::test]
-async fn test_native_protocol_stream_returns_unsupported() {
-    let state = test_state();
-    {
-        let mut account = state.active_account.write().await;
-        account.provider = "google-ai".into();
-        account.wire_protocol = deecodex::providers::WireProtocol::GeminiNative;
-        account.upstream = "http://127.0.0.1:1".into();
-    }
-    let app = build_router(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"model":"gemini-2.0-flash","input":"hello","stream":true}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["error"]["param"], "stream");
 }
 
 #[tokio::test]

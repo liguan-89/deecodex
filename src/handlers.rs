@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use crate::accounts::{Account, AccountStore};
+use crate::accounts::{
+    Account, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
+    UnsupportedImagePolicy, VisionMode,
+};
+use crate::anthropic;
 use crate::cache::RequestCache;
 use crate::config::Args;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
@@ -10,9 +14,11 @@ use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
-use crate::{
-    capability, files, native_protocols, prompts, providers, stream, translate, vector_stores,
+use crate::vision::{
+    build_minimax_vlm_body, handle_minimax_vlm, request_minimax_vlm_text,
+    strip_images_from_chat_request, VlmArgs,
 };
+use crate::{capability, files, prompts, providers, stream, translate, vector_stores};
 use anyhow::{bail, Result};
 use axum::{
     extract::{Multipart, Path, Query, Request, State},
@@ -92,19 +98,22 @@ struct BlockingArgs<'a> {
     url: String,
     model: String,
     api_key: String,
+    custom_headers: HashMap<String, String>,
+    request_timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
     response_id: String,
     store_response: bool,
     conversation_id: Option<String>,
     response_extra: Value,
     req: &'a ResponsesRequest,
     start: Instant,
-    profile: providers::ProviderProfile,
 }
 
 struct BypassArgs {
     state: AppState,
     body: axum::body::Bytes,
     upstream_url: Url,
+    endpoint_path: String,
     api_key: String,
     custom_headers: HashMap<String, String>,
     timeout_secs: Option<u64>,
@@ -112,24 +121,57 @@ struct BypassArgs {
     response_id: String,
     store_response: bool,
     model: String,
-    profile: providers::ProviderProfile,
-}
-
-struct VlmArgs {
-    state: AppState,
-    url: String,
-    api_key: String,
-    vlm_body: Value,
-    model: String,
-    stream_response: bool,
-    store_response: bool,
-    request_input_items: Vec<Value>,
-    response_extra: Value,
 }
 
 struct CapabilityObservationResult {
     message: Option<ChatMessage>,
     suppress_vision_route: bool,
+}
+
+struct AnthropicArgs<'a> {
+    state: AppState,
+    chat_req: ChatRequest,
+    url: String,
+    model: String,
+    api_key: String,
+    custom_headers: HashMap<String, String>,
+    request_timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
+    thinking_tokens: Option<u32>,
+    response_id: String,
+    store_response: bool,
+    conversation_id: Option<String>,
+    response_extra: Value,
+    req: &'a ResponsesRequest,
+    start: Instant,
+}
+
+struct UpstreamFailureArgs<'a> {
+    state: &'a AppState,
+    response_id: String,
+    model: String,
+    url: String,
+    store_response: bool,
+    req: &'a ResponsesRequest,
+    response_extra: Value,
+    start: Instant,
+    code: String,
+    message: String,
+    status: StatusCode,
+}
+
+async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) {
+    let mut account = state.active_account.read().await.clone();
+    account.normalize_v2();
+    let endpoint_id = state.account_store.read().await.active_endpoint_id.clone();
+    let mut endpoint = account
+        .active_endpoint(endpoint_id.as_deref())
+        .cloned()
+        .unwrap_or_else(|| account.endpoints[0].clone());
+    // AppState 的热字段仍是运行时真值；测试和托盘切换都会直接更新它。
+    endpoint.base_url = state.upstream.read().await.to_string();
+    account.sync_legacy_from_endpoint(&endpoint);
+    (account, endpoint)
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -827,34 +869,17 @@ async fn handle_models(State(state): State<AppState>) -> Response {
             .collect();
         return Json(json!({ "object": "list", "data": data })).into_response();
     }
-    // fallback: proxy to upstream using provider profile metadata
-    let active_account = state.active_account.read().await.clone();
-    let profile = providers::profile_for_account(&active_account);
-    let Some(url) =
-        providers::model_discovery_url(&profile, &active_account.upstream, &active_account.api_key)
-    else {
-        warn!(provider = %profile.slug, "provider model discovery disabled");
-        return Json(serde_json::json!({ "object": "list", "data": [] })).into_response();
-    };
+    // fallback: proxy to upstream
+    let upstream = state.upstream.read().await;
+    let url = format!("{}models", join_base(&upstream));
     let mut builder = state.client.get(&url);
-    for (name, value) in providers::request_headers(&profile, &active_account.api_key) {
-        builder = builder.header(name, value);
+    let api_key = state.api_key.read().await;
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
     match builder.send().await {
         Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
-            Ok(body) => {
-                let models = providers::parse_models_response(&profile, &body);
-                if models.is_empty() {
-                    warn!(provider = %profile.slug, "upstream models response parsed empty");
-                    Json(body).into_response()
-                } else {
-                    let data: Vec<_> = models
-                        .into_iter()
-                        .map(|id| json!({ "id": id, "object": "model", "owned_by": profile.slug }))
-                        .collect();
-                    Json(json!({ "object": "list", "data": data })).into_response()
-                }
-            }
+            Ok(body) => Json(body).into_response(),
             Err(e) => {
                 warn!("upstream models parse error: {e}");
                 Json(serde_json::json!({ "object": "list", "data": [] })).into_response()
@@ -1208,22 +1233,23 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         }
     };
     let model = req.model.clone();
-    let active_account = state.active_account.read().await.clone();
-    let translate_enabled = active_account.translate_enabled;
-    let upstream = active_account.upstream.clone();
-    let profile = providers::profile_for_account(&active_account);
-    let mode = if translate_enabled {
-        "translate"
-    } else {
-        "bypass"
+    let (_account, endpoint) = active_account_endpoint(&state).await;
+    let mode = match endpoint.kind {
+        EndpointKind::OpenAiChat | EndpointKind::CustomChat => "translate",
+        EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => "bypass",
+        EndpointKind::AnthropicMessages => "anthropic",
     };
-    tracing::info!("⇢ {mode} provider={} {model} → {upstream}", profile.slug);
+    tracing::info!(
+        "⇢ {mode} {model} → {} ({})",
+        endpoint.base_url,
+        endpoint.kind.label()
+    );
     if let Some(response) = validate_response_include(req.include.as_deref()) {
         return response;
     }
 
     // 直连模式：仅做模型映射，其他全部透传
-    if !translate_enabled {
+    if endpoint.kind.is_responses_like() {
         return handle_responses_bypass(state, req, body).await;
     }
 
@@ -1435,6 +1461,214 @@ fn patch_body_model_field(
     serde_json::to_vec(&v).map(axum::body::Bytes::from)
 }
 
+fn response_input_has_new_image(input: &ResponsesInput) -> bool {
+    match input {
+        ResponsesInput::Text(text) => text.contains("data:image/"),
+        ResponsesInput::Messages(items) => items.iter().any(response_item_has_image),
+    }
+}
+
+fn response_item_has_image(item: &Value) -> bool {
+    if item.get("image_url").is_some() || item.get("screenshot").is_some() {
+        return true;
+    }
+    match item.get("content") {
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("image_url" | "input_image")
+            ) || part
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("data:image/"))
+        }),
+        Some(Value::String(text)) => text.contains("data:image/"),
+        _ => false,
+    }
+}
+
+fn strip_images_from_responses_body(
+    body: &axum::body::Bytes,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    strip_images_from_value(&mut value);
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn add_caption_to_responses_body(
+    body: &axum::body::Bytes,
+    caption: &str,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    strip_images_from_value(&mut value);
+    let caption_text =
+        format!("图片内容由视觉模型识别如下，请结合上下文继续完成原始任务：\n{caption}");
+    if let Some(obj) = value.as_object_mut() {
+        match obj.get_mut("input") {
+            Some(Value::String(text)) => {
+                text.push('\n');
+                text.push_str(&caption_text);
+            }
+            Some(Value::Array(items)) => items.push(json!({
+                "role": "user",
+                "content": [{"type": "input_text", "text": caption_text}]
+            })),
+            _ => {
+                obj.insert("input".into(), Value::String(caption_text));
+            }
+        }
+    }
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn strip_images_from_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("image_url");
+            map.remove("screenshot");
+            if let Some(Value::Array(parts)) = map.get_mut("content") {
+                parts.retain(|part| {
+                    !matches!(
+                        part.get("type").and_then(Value::as_str),
+                        Some("image_url" | "input_image")
+                    )
+                });
+            }
+            for value in map.values_mut() {
+                strip_images_from_value(value);
+            }
+        }
+        Value::Array(items) => {
+            for value in items {
+                strip_images_from_value(value);
+            }
+        }
+        Value::String(text) => {
+            if let Some(pos) = text.find("data:image/") {
+                *text = text[..pos].trim().to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn handle_responses_vlm_final_answer(
+    state: AppState,
+    req: &ResponsesRequest,
+    endpoint: &EndpointConfig,
+    model_map: &ModelMap,
+    store_response: bool,
+    request_input_items: Vec<Value>,
+    response_extra: Value,
+) -> Response {
+    let vu = match parse_glue_vision_base_url(endpoint) {
+        Ok(url) => url,
+        Err(response) => return *response,
+    };
+    if let Err(response) = ensure_minimax_glue_adapter(endpoint) {
+        return *response;
+    }
+
+    let translated = translate::to_chat_request(
+        req,
+        Vec::new(),
+        &state.sessions,
+        model_map,
+        state.chinese_thinking,
+    );
+    let url = format!("{}{}", join_base(&vu), endpoint.vision.path.as_str());
+    let vlm_body = build_minimax_vlm_body(&translated.chat);
+    handle_minimax_vlm(VlmArgs {
+        state,
+        url,
+        api_key: endpoint.vision.api_key.clone(),
+        vlm_body,
+        model: endpoint.vision.model.clone(),
+        stream_response: req.stream,
+        store_response,
+        request_input_items,
+        response_extra,
+    })
+    .await
+}
+
+async fn caption_then_patch_responses_body(
+    state: &AppState,
+    req: &ResponsesRequest,
+    body: &axum::body::Bytes,
+    endpoint: &EndpointConfig,
+    model_map: &ModelMap,
+) -> Result<axum::body::Bytes, Response> {
+    let vu = parse_glue_vision_base_url(endpoint).map_err(|response| *response)?;
+    ensure_minimax_glue_adapter(endpoint).map_err(|response| *response)?;
+
+    let translated = translate::to_chat_request(
+        req,
+        Vec::new(),
+        &state.sessions,
+        model_map,
+        state.chinese_thinking,
+    );
+    let url = format!("{}{}", join_base(&vu), endpoint.vision.path.as_str());
+    let vlm_body = build_minimax_vlm_body(&translated.chat);
+    let caption =
+        request_minimax_vlm_text(state, &url, &endpoint.vision.api_key, &vlm_body).await?;
+    Ok(add_caption_to_responses_body(body, &caption).unwrap_or_else(|_| body.clone()))
+}
+
+fn parse_glue_vision_base_url(endpoint: &EndpointConfig) -> Result<Url, Box<Response>> {
+    if endpoint.vision.base_url.trim().is_empty() {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": "当前端点启用了胶水多模态，但未配置视觉上游 URL。",
+                        "type": "invalid_request_error",
+                        "code": "vision_glue_not_configured"
+                    }
+                })),
+            )
+                .into_response(),
+        ));
+    }
+
+    Url::parse(endpoint.vision.base_url.trim()).map_err(|_| {
+        Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": "当前端点的视觉上游 URL 无效。",
+                        "type": "invalid_request_error",
+                        "code": "vision_glue_invalid_url"
+                    }
+                })),
+            )
+                .into_response(),
+        )
+    })
+}
+
+fn ensure_minimax_glue_adapter(endpoint: &EndpointConfig) -> Result<(), Box<Response>> {
+    if endpoint.vision.adapter_id != "minimax_coding_plan_vlm" {
+        return Err(Box::new(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(json!({
+                    "error": {
+                        "message": "当前版本仅实现 MiniMax coding_plan/vlm 胶水视觉适配器。",
+                        "type": "unsupported_vision_adapter",
+                        "code": "vision_adapter_reserved"
+                    }
+                })),
+            )
+                .into_response(),
+        ));
+    }
+    Ok(())
+}
+
 async fn handle_responses_bypass(
     state: AppState,
     mut req: ResponsesRequest,
@@ -1456,26 +1690,16 @@ async fn handle_responses_bypass(
     }
 
     // 模型映射（直连模式下仅此一项处理）
-    let model_map = state.model_map.read().await.clone();
+    let (account, endpoint) = active_account_endpoint(&state).await;
+    let model_map = endpoint.model_map.clone();
     let model = resolve_model(&req.model, &model_map);
-    let body = if model != req.model {
+    let mut body = if model != req.model {
         patch_body_model_field(&body, &model).unwrap_or(body)
     } else {
         body
     };
     req.model = model.clone();
 
-    let account = state.active_account.read().await;
-    let profile = providers::profile_for_account(&account);
-    let upstream = account.upstream.clone();
-    let api_key = account.api_key.clone();
-    let custom_headers = account.custom_headers.clone();
-    let timeout_secs = account.request_timeout_secs;
-    let max_retries = account.max_retries;
-    drop(account);
-
-    let upstream_url =
-        Url::parse(&upstream).unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
     let conversation_id = conversation_id_from_request(&req);
     let store_response = req.store.unwrap_or(true);
 
@@ -1492,6 +1716,64 @@ async fn handle_responses_bypass(
         )
             .into_response();
     }
+
+    let has_new_image = response_input_has_new_image(&req.input);
+    let vision_mode = endpoint.model_vision_mode(&model);
+    if has_new_image && vision_mode == VisionMode::Off {
+        match endpoint.vision.unsupported_image_policy {
+            UnsupportedImagePolicy::Reject => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "message": "当前 Responses 直连端点未启用视觉能力，无法处理图片输入。请在账号端点中选择原生多模态，或改为剥离图片后继续。",
+                            "type": "unsupported_image",
+                            "code": "vision_disabled"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            UnsupportedImagePolicy::StripWithWarning => {
+                warn!("Responses 直连端点未启用视觉能力，已按配置剥离图片后继续请求");
+                body = strip_images_from_responses_body(&body).unwrap_or(body);
+            }
+        }
+    } else if has_new_image && vision_mode == VisionMode::Glue {
+        match endpoint.vision.glue_strategy {
+            GlueVisionStrategy::FinalAnswer => {
+                return handle_responses_vlm_final_answer(
+                    state,
+                    &req,
+                    &endpoint,
+                    &model_map,
+                    store_response,
+                    response_input_items(&req),
+                    response_extra_fields(&req, conversation_id.as_deref()),
+                )
+                .await;
+            }
+            GlueVisionStrategy::CaptionThenMain => {
+                body = match caption_then_patch_responses_body(
+                    &state, &req, &body, &endpoint, &model_map,
+                )
+                .await
+                {
+                    Ok(body) => body,
+                    Err(resp) => return resp,
+                };
+            }
+        }
+    }
+
+    let api_key = account.api_key.clone();
+    let custom_headers = endpoint.custom_headers.clone();
+    let timeout_secs = endpoint.request_timeout_secs;
+    let max_retries = endpoint.max_retries;
+
+    let upstream_url =
+        Url::parse(&endpoint.base_url).unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+    let endpoint_path = endpoint.effective_path().to_string();
 
     // 存储 conversation items
     if store_response {
@@ -1511,6 +1793,7 @@ async fn handle_responses_bypass(
         state: state.clone(),
         body,
         upstream_url,
+        endpoint_path,
         api_key,
         custom_headers,
         timeout_secs,
@@ -1518,7 +1801,6 @@ async fn handle_responses_bypass(
         response_id,
         store_response,
         model,
-        profile,
     };
 
     let start = std::time::Instant::now();
@@ -1536,6 +1818,7 @@ async fn bypass_stream_forward(
         state,
         body,
         upstream_url,
+        endpoint_path,
         api_key,
         custom_headers,
         timeout_secs,
@@ -1543,10 +1826,9 @@ async fn bypass_stream_forward(
         response_id,
         store_response: _,
         model,
-        profile,
     }: BypassArgs,
 ) -> Response {
-    let url = format!("{}responses", join_base(&upstream_url));
+    let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
     let start = std::time::Instant::now();
 
     let mut builder = state
@@ -1554,8 +1836,8 @@ async fn bypass_stream_forward(
         .post(&url)
         .header("Content-Type", "application/json");
 
-    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
-        builder = builder.header(name, value);
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
 
     for (k, v) in &custom_headers {
@@ -1576,7 +1858,40 @@ async fn bypass_stream_forward(
     let mut delay_ms: u64 = 500;
 
     let resp = loop {
-        match builder.try_clone().unwrap().body(body.clone()).send().await {
+        let Some(request) = builder.try_clone() else {
+            let message = "failed to clone upstream request builder".to_string();
+            error!("bypass stream upstream request build error: {message}");
+            let _ = state
+                .request_history
+                .record(
+                    response_id.clone(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model.clone(),
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url.clone(),
+                    message.clone(),
+                    false,
+                )
+                .await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "code": "request_builder_clone_failed",
+                        "message": message,
+                        "type": "internal_error"
+                    }
+                })),
+            )
+                .into_response();
+        };
+        match request.body(body.clone()).send().await {
             Err(e) => {
                 if attempt < max_retries {
                     attempt += 1;
@@ -1731,6 +2046,7 @@ async fn bypass_send_request(
         state,
         body,
         upstream_url,
+        endpoint_path,
         api_key,
         custom_headers,
         timeout_secs,
@@ -1738,10 +2054,9 @@ async fn bypass_send_request(
         response_id,
         store_response,
         model,
-        profile,
     }: BypassArgs,
 ) -> Response {
-    let url = format!("{}responses", join_base(&upstream_url));
+    let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
     let start = std::time::Instant::now();
 
     let mut builder = state
@@ -1749,8 +2064,8 @@ async fn bypass_send_request(
         .post(&url)
         .header("Content-Type", "application/json");
 
-    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
-        builder = builder.header(name, value);
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
 
     for (k, v) in &custom_headers {
@@ -1771,7 +2086,51 @@ async fn bypass_send_request(
     let mut delay_ms: u64 = 500;
 
     let result = loop {
-        match builder.try_clone().unwrap().body(body.clone()).send().await {
+        let Some(request) = builder.try_clone() else {
+            let message = "failed to clone upstream request builder";
+            error!("bypass non-stream upstream request build error: {message}");
+            if store_response {
+                state.sessions.save_response(
+                    response_id.clone(),
+                    json!({
+                        "id": response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "error": {"code": "request_builder_clone_failed", "message": message}
+                    }),
+                );
+            }
+            let _ = state
+                .request_history
+                .record(
+                    response_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    url,
+                    message.into(),
+                    false,
+                )
+                .await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": message,
+                        "type": "internal_error",
+                        "code": "request_builder_clone_failed"
+                    }
+                })),
+            )
+                .into_response();
+        };
+        match request.body(body.clone()).send().await {
             Err(e) => {
                 if attempt < max_retries {
                     attempt += 1;
@@ -1893,7 +2252,7 @@ async fn bypass_send_request(
                         cache_hit,
                     )
                     .await;
-            };
+            }
 
             (
                 if status.is_success() {
@@ -1935,27 +2294,33 @@ async fn handle_responses_inner(
     let original_model = req.model.clone();
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
-    let model_map = state.model_map.read().await.clone();
+    let (account, endpoint) = active_account_endpoint(&state).await;
+    let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
     let store_response = req.store.unwrap_or(true);
     let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
     if !local_output_prefix_items.is_empty() {
         response_extra[LOCAL_OUTPUT_PREFIX_ITEMS_KEY] = json!(local_output_prefix_items);
     }
+    if store_response {
+        if let Some(id) = conversation_id.as_deref() {
+            let mut items = state.sessions.get_conversation_items(id);
+            items.extend(request_input_items.clone());
+            state
+                .sessions
+                .save_conversation_items(id.to_string(), items);
+        }
+    }
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
     let (mut reasoning_effort, mut thinking) = map_effort(effort);
 
-    // 账号级推理配置覆盖
-    {
-        let account = state.active_account.read().await;
-        if let Some(ref forced) = account.reasoning_effort_override {
-            reasoning_effort = Some(forced.clone());
-            thinking = Some(serde_json::json!({"type": "enabled"}));
-        }
-        if let Some(budget) = account.thinking_tokens {
-            if let Some(ref mut t) = thinking {
-                t["budget_tokens"] = serde_json::json!(budget);
-            }
+    if let Some(ref forced) = endpoint.reasoning_effort_override {
+        reasoning_effort = Some(forced.clone());
+        thinking = Some(serde_json::json!({"type": "enabled"}));
+    }
+    if let Some(budget) = endpoint.thinking_tokens {
+        if let Some(ref mut t) = thinking {
+            t["budget_tokens"] = serde_json::json!(budget);
         }
     }
 
@@ -2002,15 +2367,9 @@ async fn handle_responses_inner(
         state.chinese_thinking,
     );
     let mut chat_req = translated.chat;
-    chat_req.reasoning_effort = reasoning_effort.clone();
-    chat_req.thinking = thinking.clone();
-    let active_account = state.active_account.read().await.clone();
-    let profile = providers::profile_for_account(&active_account);
-    providers::adapt_chat_request(&profile, &mut chat_req);
 
     let capability_observation = build_capability_observation(&state, &req).await;
     if let Some(observation) = capability_observation.message {
-        request_input_items.push(capability_observation_input_item(&observation));
         let insert_at = if chat_req
             .messages
             .first()
@@ -2022,104 +2381,101 @@ async fn handle_responses_inner(
         };
         chat_req.messages.insert(insert_at, observation);
     }
-    if store_response {
-        if let Some(id) = conversation_id.as_deref() {
-            let mut items = state.sessions.get_conversation_items(id);
-            items.extend(request_input_items.clone());
-            state
-                .sessions
-                .save_conversation_items(id.to_string(), items);
-        }
-    }
 
     // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
-    let has_new_image = match &req.input {
-        ResponsesInput::Text(t) => t.contains("data:image/"),
-        ResponsesInput::Messages(items) => items.last().is_some_and(|item| {
-            let content = match item.get("content") {
-                Some(c) => c,
-                None => return item.get("image_url").is_some(),
-            };
-            match content {
-                Value::Array(parts) => parts.iter().any(|p| {
-                    let typ = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    typ == "image_url" || typ == "input_image"
-                }),
-                Value::String(s) => s.contains("data:image/"),
-                _ => false,
-            }
-        }),
+    let has_new_image = response_input_has_new_image(&req.input);
+    let vision_mode = if is_review_model {
+        VisionMode::Off
+    } else {
+        endpoint.model_vision_mode(&mapped_model)
     };
-    let vision_upstream_val = state.vision_upstream.read().await.clone();
     let route_to_vision = translated.has_images
-        && vision_upstream_val.is_some()
-        && !is_review_model
         && has_new_image
+        && vision_mode == VisionMode::Glue
         && !capability_observation.suppress_vision_route;
-    drop(vision_upstream_val);
+    let native_vision = translated.has_images && has_new_image && vision_mode == VisionMode::Native;
     info!(
-        "route_to_vision: has_images={} review={} new_image={} capability={} msgs={} route={}",
+        "route_to_vision: has_images={} review={} new_image={} msgs={} mode={:?} route={}",
         translated.has_images,
         is_review_model,
         has_new_image,
-        capability_observation.suppress_vision_route,
         chat_req.messages.len(),
+        vision_mode,
         route_to_vision
     );
 
-    // Strip image_url content when NOT routing to VLM (DeepSeek rejects it)
-    if !route_to_vision {
-        for msg in &mut chat_req.messages {
-            if let Some(ref content) = msg.content {
-                if let Some(parts) = content.as_array() {
-                    let text_parts: Vec<&str> = parts
-                        .iter()
-                        .filter_map(|p| {
-                            if p.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                p.get("text").and_then(|t| t.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    msg.content = Some(Value::String(text_parts.join("")));
-                } else if let Some(s) = content.as_str() {
-                    if let Some(pos) = s.find("data:image/") {
-                        let stripped = s[..pos].trim().to_string();
-                        msg.content = Some(Value::String(stripped));
-                    }
-                }
+    if translated.has_images && has_new_image && vision_mode == VisionMode::Off {
+        match endpoint.vision.unsupported_image_policy {
+            UnsupportedImagePolicy::Reject => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": {
+                            "message": "当前端点未启用视觉能力，无法处理图片输入。请在账号端点中选择原生多模态或胶水多模态。",
+                            "type": "unsupported_image",
+                            "code": "vision_disabled"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            UnsupportedImagePolicy::StripWithWarning => {
+                warn!("当前端点未启用视觉能力，已按配置剥离图片后继续请求");
             }
         }
     }
 
-    let vision_upstream_val = state.vision_upstream.read().await.clone();
-    let vision_endpoint = state.vision_endpoint.read().await.clone();
-    let vision_model_val = state.vision_model.read().await.clone();
-    let vision_api_key_val = state.vision_api_key.read().await.clone();
+    // 非原生视觉端点必须剥离 image_url，否则 DeepSeek 等上游会拒绝。
+    if !route_to_vision && !native_vision {
+        strip_images_from_chat_request(&mut chat_req);
+    }
 
+    let mut use_vision_transport = route_to_vision;
     let (url, api_key) = if route_to_vision {
-        let vu = vision_upstream_val
-            .as_ref()
-            .expect("vision_upstream must be set");
-        let use_vlm = vision_endpoint.contains("vlm");
-        let url = format!("{}{}", join_base(vu), vision_endpoint.as_str());
-        let vmodel = vision_model_val.clone();
+        let vu = match parse_glue_vision_base_url(&endpoint) {
+            Ok(url) => url,
+            Err(response) => return *response,
+        };
+        if let Err(response) = ensure_minimax_glue_adapter(&endpoint) {
+            return *response;
+        }
+        let url = format!("{}{}", join_base(&vu), endpoint.vision.path.as_str());
+        let vmodel = endpoint.vision.model.clone();
         info!(
-            "📷 routing to vision upstream: {} model={} endpoint={} vlm={}",
+            "📷 routing to vision upstream: {} model={} endpoint={} adapter={}",
             vu,
             vmodel,
-            vision_endpoint.as_str(),
-            use_vlm
+            endpoint.vision.path.as_str(),
+            endpoint.vision.adapter_id
         );
 
-        if use_vlm {
-            let vlm_body = build_vlm_body(&chat_req);
-            return handle_vlm(VlmArgs {
+        let vlm_body = build_minimax_vlm_body(&chat_req);
+        if endpoint.vision.glue_strategy == GlueVisionStrategy::CaptionThenMain {
+            match request_minimax_vlm_text(&state, &url, &endpoint.vision.api_key, &vlm_body).await
+            {
+                Ok(caption) => {
+                    strip_images_from_chat_request(&mut chat_req);
+                    chat_req.messages.push(ChatMessage {
+                        role: "user".into(),
+                        content: Some(Value::String(format!(
+                            "图片内容由视觉模型识别如下，请结合上下文继续完成原始任务：\n{}",
+                            caption
+                        ))),
+                        reasoning_content: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    });
+                    use_vision_transport = false;
+                }
+                Err(resp) => return resp,
+            }
+        } else {
+            return handle_minimax_vlm(VlmArgs {
                 state,
                 url,
-                api_key: vision_api_key_val.clone(),
+                api_key: endpoint.vision.api_key.clone(),
                 vlm_body,
                 model: vmodel,
                 stream_response: req.stream,
@@ -2130,40 +2486,23 @@ async fn handle_responses_inner(
             .await;
         }
 
-        chat_req.model = vmodel;
-        (url, vision_api_key_val.clone())
+        if use_vision_transport {
+            chat_req.model = vmodel;
+            (url, endpoint.vision.api_key.clone())
+        } else {
+            let upstream = Url::parse(&endpoint.base_url)
+                .unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+            let url = format!("{}{}", join_base(&upstream), endpoint.effective_path());
+            (url, account.api_key.clone())
+        }
     } else {
-        let upstream = state.upstream.read().await;
-        let api_key = state.api_key.read().await;
-        let url = match profile.wire_protocol {
-            providers::WireProtocol::ChatCompletions => {
-                format!("{}chat/completions", join_base(&upstream))
-            }
-            providers::WireProtocol::AnthropicMessages | providers::WireProtocol::GeminiNative => {
-                match native_protocols::native_endpoint(
-                    &profile.wire_protocol,
-                    upstream.as_str(),
-                    &chat_req.model,
-                    req.stream,
-                    &api_key,
-                ) {
-                    Some(url) => url,
-                    None => {
-                        return unsupported_param("wire_protocol", "当前供应商协议尚未接入翻译路径")
-                    }
-                }
-            }
-            providers::WireProtocol::Responses => {
-                return unsupported_param(
-                    "wire_protocol",
-                    "Responses 直连请关闭请求翻译，原生翻译路径不处理 Responses 协议",
-                )
-            }
-        };
-        (url, api_key.clone())
+        let upstream = Url::parse(&endpoint.base_url)
+            .unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+        let url = format!("{}{}", join_base(&upstream), endpoint.effective_path());
+        (url, account.api_key.clone())
     };
 
-    let vision_label = if route_to_vision { " 📷" } else { "" };
+    let vision_label = if use_vision_transport { " 📷" } else { "" };
     let tool_names: Vec<&str> = chat_req
         .tools
         .iter()
@@ -2174,10 +2513,8 @@ async fn handle_responses_inner(
         })
         .collect();
     info!(
-        "→ {} provider={} protocol={:?} effort={} thinking={} msgs={} tools={} names=[{}]{}",
+        "→ {} effort={} thinking={} msgs={} tools={} names=[{}]{}",
         mapped_model,
-        profile.slug,
-        profile.wire_protocol,
         fmt_effort(&reasoning_effort),
         fmt_thinking(&thinking),
         msg_count,
@@ -2186,11 +2523,48 @@ async fn handle_responses_inner(
         vision_label
     );
 
-    if req.stream && profile.wire_protocol != providers::WireProtocol::ChatCompletions {
-        return unsupported_param(
-            "stream",
-            "Anthropic/Gemini 原生协议 adapter 当前仅支持非流式请求；请关闭 stream 或使用 Chat Completions 兼容供应商",
-        );
+    if endpoint.kind == EndpointKind::AnthropicMessages {
+        if req.stream || req.background == Some(true) {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(json!({
+                    "error": {
+                        "message": "Anthropic Messages 端点当前支持非流式请求；流式与后台模式将在后续版本接入",
+                        "type": "unsupported_endpoint_mode",
+                        "code": "anthropic_messages_stream_reserved"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        let response_id = state.sessions.new_id();
+        if store_response {
+            state
+                .sessions
+                .save_input_items(response_id.clone(), request_input_items.clone());
+        }
+        let upstream = Url::parse(&endpoint.base_url)
+            .unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+        let url = format!("{}{}", join_base(&upstream), endpoint.effective_path());
+        return handle_anthropic_messages(AnthropicArgs {
+            state,
+            chat_req,
+            url,
+            model: mapped_model,
+            api_key: account.api_key.clone(),
+            custom_headers: endpoint.custom_headers.clone(),
+            request_timeout_secs: endpoint.request_timeout_secs,
+            max_retries: endpoint.max_retries,
+            thinking_tokens: endpoint.thinking_tokens,
+            response_id,
+            store_response,
+            conversation_id,
+            response_extra,
+            req: &req,
+            start: Instant::now(),
+        })
+        .await;
     }
 
     if req.background == Some(true) {
@@ -2248,6 +2622,9 @@ async fn handle_responses_inner(
         let task_id = response_id.clone();
         let cleanup_id = task_id.clone();
         let bg_conversation_id = conversation_id.clone();
+        let bg_custom_headers = endpoint.custom_headers.clone();
+        let bg_timeout = endpoint.request_timeout_secs;
+        let bg_max_retries = endpoint.max_retries;
         let handle = tokio::spawn(async move {
             if store_response {
                 if let Some(mut in_progress) = bg_state.sessions.get_response(&bg_id) {
@@ -2261,13 +2638,15 @@ async fn handle_responses_inner(
                 url,
                 model: mapped_model,
                 api_key,
+                custom_headers: bg_custom_headers,
+                request_timeout_secs: bg_timeout,
+                max_retries: bg_max_retries,
                 response_id: bg_id,
                 store_response,
                 conversation_id: bg_conversation_id,
                 response_extra: response_extra.clone(),
                 req: &bg_req,
                 start: Instant::now(),
-                profile,
             })
             .await;
             task_cleanup.remove(&cleanup_id);
@@ -2371,12 +2750,14 @@ async fn handle_responses_inner(
                 .await
                 .allowed_computer_displays
                 .clone(),
-            custom_headers: state.custom_headers.read().await.clone(),
-            request_timeout_secs: *state.request_timeout_secs.read().await,
-            max_retries: state.active_account.read().await.max_retries,
+            custom_headers: endpoint.custom_headers.clone(),
+            request_timeout_secs: endpoint.request_timeout_secs,
+            max_retries: endpoint.max_retries,
             request_history: state.request_history.clone(),
             upstream_url: url,
-            allow_missing_done: profile.capabilities.allow_missing_done,
+            allow_missing_done: providers::profile_for_account(&account)
+                .capabilities
+                .allow_missing_done,
             start,
         });
         let mut resp = sse.into_response();
@@ -2402,13 +2783,15 @@ async fn handle_responses_inner(
             url,
             model: mapped_model,
             api_key,
+            custom_headers: endpoint.custom_headers.clone(),
+            request_timeout_secs: endpoint.request_timeout_secs,
+            max_retries: endpoint.max_retries,
             response_id,
             store_response,
             conversation_id,
             response_extra,
             req: &req,
             start,
-            profile,
         })
         .await;
         let elapsed = start.elapsed();
@@ -2431,6 +2814,7 @@ async fn build_capability_observation(
             suppress_vision_route: false,
         };
     }
+
     let helper_account = {
         let store = state.account_store.read().await;
         main_account
@@ -2502,25 +2886,25 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         url,
         model,
         api_key,
+        custom_headers,
+        request_timeout_secs,
+        max_retries,
         response_id,
         store_response,
         conversation_id,
         response_extra,
         req,
         start,
-        profile,
     } = args;
     let mut builder = state
         .client
         .post(&url)
         .header("Content-Type", "application/json");
 
-    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
-        builder = builder.header(name, value);
+    if !api_key.is_empty() {
+        builder = builder.bearer_auth(api_key.as_str());
     }
 
-    // 注入账号级自定义 HTTP 头
-    let custom_headers = state.custom_headers.read().await.clone();
     for (k, v) in &custom_headers {
         if let (Ok(name), Ok(value)) = (
             header::HeaderName::from_bytes(k.as_bytes()),
@@ -2530,25 +2914,31 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         }
     }
 
-    // 账号级请求超时
-    if let Some(secs) = *state.request_timeout_secs.read().await {
+    if let Some(secs) = request_timeout_secs {
         builder = builder.timeout(std::time::Duration::from_secs(secs));
     }
 
-    let max_retries = state.active_account.read().await.max_retries.unwrap_or(3) as usize;
+    let max_retries = max_retries.unwrap_or(3) as usize;
     let mut attempt: usize = 0;
     let mut delay_ms: u64 = 500;
-    let upstream_body = native_protocols::to_native_request(&profile.wire_protocol, &chat_req)
-        .unwrap_or_else(|| serde_json::to_value(&chat_req).unwrap_or_else(|_| json!({})));
-
     let result = loop {
-        match builder
-            .try_clone()
-            .unwrap()
-            .json(&upstream_body)
-            .send()
-            .await
-        {
+        let Some(request) = builder.try_clone() else {
+            return upstream_failure_response(UpstreamFailureArgs {
+                state: &state,
+                response_id,
+                model,
+                url,
+                store_response,
+                req,
+                response_extra,
+                start,
+                code: "request_builder_clone_failed".into(),
+                message: "failed to clone upstream request builder".into(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            })
+            .await;
+        };
+        match request.json(&chat_req).send().await {
             Err(e) => {
                 if attempt < max_retries {
                     attempt += 1;
@@ -2670,7 +3060,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             )
                 .into_response()
         }
-        Ok(r) => match parse_blocking_response(r, &profile).await {
+        Ok(r) => match r.json::<ChatResponse>().await {
             Err(e) => {
                 error!("parse error: {e}");
                 if store_response {
@@ -2825,26 +3215,274 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
     }
 }
 
-async fn parse_blocking_response(
-    response: reqwest::Response,
-    profile: &providers::ProviderProfile,
-) -> Result<ChatResponse, String> {
-    match profile.wire_protocol {
-        providers::WireProtocol::ChatCompletions => response
-            .json::<ChatResponse>()
-            .await
-            .map_err(|err| err.to_string()),
-        providers::WireProtocol::AnthropicMessages | providers::WireProtocol::GeminiNative => {
-            let body = response
-                .json::<Value>()
-                .await
-                .map_err(|err| err.to_string())?;
-            native_protocols::native_response_to_chat(&profile.wire_protocol, body)
-        }
-        providers::WireProtocol::Responses => {
-            Err("Responses 直连不支持 blocking Chat 响应解析".into())
+async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
+    let AnthropicArgs {
+        state,
+        chat_req,
+        url,
+        model,
+        api_key,
+        custom_headers,
+        request_timeout_secs,
+        max_retries,
+        thinking_tokens,
+        response_id,
+        store_response,
+        conversation_id,
+        response_extra,
+        req,
+        start,
+    } = args;
+
+    let body = anthropic::to_messages_body(&chat_req, thinking_tokens);
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("anthropic-version", "2023-06-01");
+
+    if !api_key.is_empty() {
+        builder = builder.header("x-api-key", api_key.as_str());
+    }
+    for (k, v) in &custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
         }
     }
+    if let Some(secs) = request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let max_retries = max_retries.unwrap_or(3) as usize;
+    let mut attempt = 0;
+    let mut delay_ms = 500;
+    let result = loop {
+        let Some(request) = builder.try_clone() else {
+            return upstream_failure_response(UpstreamFailureArgs {
+                state: &state,
+                response_id,
+                model,
+                url,
+                store_response,
+                req,
+                response_extra,
+                start,
+                code: "request_builder_clone_failed".into(),
+                message: "failed to clone anthropic request builder".into(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            })
+            .await;
+        };
+        match request.json(&body).send().await {
+            Err(e) => {
+                if attempt < max_retries {
+                    attempt += 1;
+                    warn!("anthropic upstream connection error (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                    continue;
+                }
+                break Err(e);
+            }
+            Ok(r) => break Ok(r),
+        }
+    };
+
+    match result {
+        Err(e) => {
+            upstream_failure_response(UpstreamFailureArgs {
+                state: &state,
+                response_id,
+                model,
+                url,
+                store_response,
+                req,
+                response_extra,
+                start,
+                code: "connection_error".into(),
+                message: format!("anthropic upstream connection error: {e}"),
+                status: StatusCode::BAD_GATEWAY,
+            })
+            .await
+        }
+        Ok(r) if !r.status().is_success() => {
+            let status = r.status();
+            let body_text = r.text().await.unwrap_or_default();
+            error!("anthropic upstream {}: {}", status.as_u16(), body_text);
+            upstream_failure_response(UpstreamFailureArgs {
+                state: &state,
+                response_id,
+                model,
+                url,
+                store_response,
+                req,
+                response_extra,
+                start,
+                code: status.as_u16().to_string(),
+                message: body_text,
+                status: StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+            })
+            .await
+        }
+        Ok(r) => match r.json::<Value>().await {
+            Err(e) => {
+                error!("anthropic parse error: {e}");
+                upstream_failure_response(UpstreamFailureArgs {
+                    state: &state,
+                    response_id,
+                    model,
+                    url,
+                    store_response,
+                    req,
+                    response_extra,
+                    start,
+                    code: "parse_error".into(),
+                    message: e.to_string(),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                })
+                .await
+            }
+            Ok(value) => {
+                let chat_resp = anthropic::response_to_chat(value);
+                let usage_str = format_usage(chat_resp.usage.as_ref());
+                info!("↑ anthropic done {}", usage_str);
+                let assistant_msg = chat_resp
+                    .choices
+                    .first()
+                    .map(|c| c.message.clone())
+                    .unwrap_or_else(|| ChatMessage {
+                        role: "assistant".into(),
+                        content: Some(Value::String(String::new())),
+                        reasoning_content: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    });
+
+                let mut full_history = chat_req.messages.clone();
+                full_history.push(assistant_msg);
+                if store_response {
+                    state
+                        .sessions
+                        .save_with_id(response_id.clone(), full_history.clone());
+                }
+                if let Some(id) = conversation_id.as_deref() {
+                    state
+                        .sessions
+                        .save_conversation(id.to_string(), full_history);
+                }
+
+                let input_tokens = chat_resp
+                    .usage
+                    .as_ref()
+                    .map(|u| u.prompt_tokens)
+                    .unwrap_or(0);
+                let output_tokens = chat_resp
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens)
+                    .unwrap_or(0);
+                let _ = state
+                    .request_history
+                    .record(
+                        response_id.clone(),
+                        now_unix_secs(),
+                        model.clone(),
+                        "completed".into(),
+                        input_tokens,
+                        output_tokens,
+                        start.elapsed().as_millis() as u64,
+                        url,
+                        String::new(),
+                        false,
+                    )
+                    .await;
+
+                let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
+                match serde_json::to_value(&resp) {
+                    Ok(value) => {
+                        let mut value = enrich_response_object(value, req);
+                        value["status"] = json!("completed");
+                        let value = response_with_extra(value, &response_extra);
+                        if store_response {
+                            save_response_unless_cancelled(
+                                &state.sessions,
+                                resp.id.clone(),
+                                value.clone(),
+                            );
+                        }
+                        Json(value).into_response()
+                    }
+                    Err(_) => Json(resp).into_response(),
+                }
+            }
+        },
+    }
+}
+
+async fn upstream_failure_response(args: UpstreamFailureArgs<'_>) -> Response {
+    let UpstreamFailureArgs {
+        state,
+        response_id,
+        model,
+        url,
+        store_response,
+        req,
+        response_extra,
+        start,
+        code,
+        message,
+        status,
+    } = args;
+    if store_response {
+        save_response_unless_cancelled(
+            &state.sessions,
+            response_id.clone(),
+            response_with_extra(
+                enrich_response_object(
+                    json!({
+                        "id": response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "model": model,
+                        "output": [],
+                        "error": {"code": code, "message": message}
+                    }),
+                    req,
+                ),
+                &response_extra,
+            ),
+        );
+    }
+    let _ = state
+        .request_history
+        .record(
+            response_id,
+            now_unix_secs(),
+            model,
+            "failed".into(),
+            0,
+            0,
+            start.elapsed().as_millis() as u64,
+            url,
+            message.clone(),
+            false,
+        )
+        .await;
+    (
+        status,
+        Json(json!({
+            "error": {
+                "code": code,
+                "message": message,
+                "type": "upstream_error"
+            }
+        })),
+    )
+        .into_response()
 }
 
 fn save_response_unless_cancelled(sessions: &SessionStore, id: String, response: Value) {
@@ -3339,26 +3977,6 @@ fn response_input_items(req: &ResponsesRequest) -> Vec<Value> {
     }
 }
 
-fn capability_observation_input_item(message: &ChatMessage) -> Value {
-    let text = match &message.content {
-        Some(Value::String(text)) => text.clone(),
-        Some(value) => serde_json::to_string(value).unwrap_or_default(),
-        None => String::new(),
-    };
-    json!({
-        "id": format!("item_capability_{}", uuid::Uuid::new_v4().simple()),
-        "type": "message",
-        "role": "system",
-        "content": [{
-            "type": "input_text",
-            "text": text,
-        }],
-        "metadata": {
-            "x_deecodex_kind": "capability_observation"
-        }
-    })
-}
-
 fn is_tool_output_input_item(item_type: &str) -> bool {
     matches!(
         item_type,
@@ -3406,190 +4024,6 @@ fn input_token_text(req: &ResponsesRequest) -> String {
         }
     }
     text
-}
-
-/// Extract prompt text and image data URL for MiniMax VLM endpoint.
-fn build_vlm_body(chat_req: &ChatRequest) -> Value {
-    let mut prompt = String::new();
-    let mut image_url = String::new();
-
-    for msg in chat_req.messages.iter().rev() {
-        if msg.role != "user" {
-            continue;
-        }
-        if let Some(ref content) = msg.content {
-            match content {
-                Value::String(s) => {
-                    if let Some(pos) = s.find("data:image/") {
-                        if image_url.is_empty() {
-                            image_url = s[pos..].trim().to_string();
-                        }
-                        let text = s[..pos].trim();
-                        if !text.is_empty() && prompt.is_empty() {
-                            prompt = text.to_string();
-                        }
-                    } else if prompt.is_empty() && !s.starts_with("data:") {
-                        prompt = s.clone();
-                    }
-                }
-                Value::Array(parts) => {
-                    for p in parts {
-                        match p.get("type").and_then(|t| t.as_str()) {
-                            Some("text") if prompt.is_empty() => {
-                                if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
-                                    prompt = t.to_string();
-                                }
-                            }
-                            Some("image_url") if image_url.is_empty() => {
-                                image_url = p
-                                    .get("image_url")
-                                    .and_then(|u| u.get("url"))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if prompt.is_empty() {
-        prompt = "Describe the image.".into();
-    }
-
-    json!({ "prompt": prompt, "image_url": image_url })
-}
-
-/// Handle MiniMax VLM request: send prompt + image_url, return SSE stream.
-async fn handle_vlm(args: VlmArgs) -> Response {
-    let VlmArgs {
-        state,
-        url,
-        api_key,
-        vlm_body,
-        model,
-        stream_response,
-        store_response,
-        request_input_items,
-        response_extra,
-    } = args;
-    let mut builder = state
-        .client
-        .post(&url)
-        .header("Content-Type", "application/json");
-    if !api_key.is_empty() {
-        builder = builder.bearer_auth(api_key.as_str());
-    }
-
-    let vlm_result = match builder.json(&vlm_body).send().await {
-        Err(e) => {
-            error!("vlm upstream error: {e}");
-            return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
-        }
-        Ok(r) if !r.status().is_success() => {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            error!("vlm upstream {}: {}", status.as_u16(), body);
-            return (
-                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                body,
-            )
-                .into_response();
-        }
-        Ok(r) => match r.json::<Value>().await {
-            Err(e) => {
-                error!("vlm parse error: {e}");
-                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-            }
-            Ok(resp) => resp,
-        },
-    };
-
-    let text = vlm_result
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    info!("↑ vlm done text_len={}", text.len());
-
-    let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
-    let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
-    if store_response {
-        state
-            .sessions
-            .save_input_items(response_id.clone(), request_input_items);
-    }
-
-    let mut response_obj = json!({
-        "id": &response_id,
-        "object": "response",
-        "created_at": now_unix_secs(),
-        "status": "completed",
-        "background": false,
-        "error": null,
-        "incomplete_details": null,
-        "model": &model,
-        "output": [{
-            "type": "message",
-            "id": &msg_id,
-            "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": &text, "annotations": [], "logprobs": []}]
-        }],
-        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    });
-    merge_response_extra(&mut response_obj, &response_extra);
-    if store_response {
-        state
-            .sessions
-            .save_response(response_id.clone(), response_obj.clone());
-    }
-
-    if !stream_response {
-        return Json(response_obj).into_response();
-    }
-
-    use crate::sse::SseState;
-    use axum::response::sse::{Event, KeepAlive, Sse};
-    let mut vss = SseState::new();
-    let vlm_oi = vss.alloc_output_index();
-
-    let events: Vec<Result<Event, std::convert::Infallible>> = vec![
-        vss.response_created(&response_id, &model),
-        vss.response_in_progress(&response_id),
-        vss.output_item_added(
-            vlm_oi, &msg_id, "message",
-            json!({"role": "assistant", "content": []})
-        ),
-        vss.content_part_added(
-            &msg_id, vlm_oi, 0,
-            json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []})
-        ),
-        vss.output_text_delta(&msg_id, vlm_oi, 0, &text),
-        vss.output_text_done(&msg_id, vlm_oi, 0, &text),
-        vss.content_part_done(&msg_id, vlm_oi, 0, json!({
-            "type": "output_text",
-            "text": &text,
-            "annotations": [],
-            "logprobs": []
-        })),
-        vss.output_item_done(vlm_oi, json!({
-            "type": "message",
-            "id": &msg_id,
-            "role": "assistant",
-            "status": "completed",
-            "content": [{"type": "output_text", "text": &text, "annotations": [], "logprobs": []}]
-        })),
-        vss.response_completed(&response_obj),
-    ];
-
-    Sse::new(futures_util::stream::iter(events))
-        .keep_alive(KeepAlive::default())
-        .into_response()
 }
 
 /// GET /api/tool-policy — 获取当前工具安全策略

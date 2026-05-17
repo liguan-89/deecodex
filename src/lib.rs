@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod anthropic;
 pub mod backup_store;
 pub mod cache;
 pub mod capability;
@@ -25,3 +26,4 @@ pub mod types;
 pub mod utils;
 pub mod validate;
 pub mod vector_stores;
+pub mod vision;

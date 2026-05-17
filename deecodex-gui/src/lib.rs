@@ -201,8 +201,11 @@ pub fn run() {
     // 单实例控制：检测已有 GUI 实例，避免重复启动。
     // 开发调试可通过环境变量允许并行窗口，避免影响已安装版本。
     let allow_multi_instance = cfg!(debug_assertions)
-        && (env_flag_enabled(std::env::var("DEECODEX_GUI_ALLOW_MULTI_INSTANCE").ok().as_deref())
-            || env_flag_enabled(std::env::var("DEECODEX_GUI_ALLOW_MULTIPLE").ok().as_deref()));
+        && (env_flag_enabled(
+            std::env::var("DEECODEX_GUI_ALLOW_MULTI_INSTANCE")
+                .ok()
+                .as_deref(),
+        ) || env_flag_enabled(std::env::var("DEECODEX_GUI_ALLOW_MULTIPLE").ok().as_deref()));
     if !allow_multi_instance {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
@@ -460,6 +463,8 @@ pub fn run() {
             commands::switch_account,
             commands::import_codex_config,
             commands::get_provider_presets,
+            commands::get_endpoint_templates,
+            commands::switch_endpoint,
             commands::fetch_upstream_models,
             commands::fetch_balance,
             commands::test_upstream_connectivity,

@@ -33,3 +33,8 @@ git push origin release/v<版本号>
 - 此工作区对应公开仓库 `origin`（`liguan-89/deecodex`）
 - 源码分支为 `deecodex-gui`，编译时有平台差异需在此分支上调整
 - `target/` 已隔离为 `target-mac/`，与其他编译工作区互不干扰
+
+## 功能文档
+
+- [多账户、端点隔离与视觉策略](docs/ACCOUNT_ENDPOINT_VISION.md)
+- [多账户端点视觉验收清单](docs/ACCEPTANCE_CHECKLIST.md)

@@ -400,6 +400,7 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             translate_enabled: true,
             capability_enabled: false,
             capability_account_id: None,
+            endpoints: Vec::new(),
         };
 
         tracing::info!(

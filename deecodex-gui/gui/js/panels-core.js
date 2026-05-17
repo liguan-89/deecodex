@@ -8,14 +8,19 @@ function renderStatus() {
     : '<span class="card-badge off">未启用</span>';
 
   // 激活账号（与账号管理页面字段一致，优化排版对齐）
-  const activeAcc = (accountsData.accounts || []).find(a => a.id === accountsData.active_id);
+  const activeAcc = (accountsData.accounts || []).find(a => a.id === (accountsData.active_account_id || accountsData.active_id));
+  const activeEndpoint = typeof currentEndpoint === 'function' ? currentEndpoint(activeAcc) : null;
   const hasAccount = !!activeAcc;
 
   // 构建 extra 标签行
   let extraTags = [];
-  if (activeAcc?.context_window_override) extraTags.push('<span style="font-size:9px;color:var(--text-muted);">⇄ ' + activeAcc.context_window_override.toLocaleString() + ' tokens</span>');
-  if (activeAcc?.vision_enabled) extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 多模态</span>');
-  if (activeAcc?.reasoning_effort_override) extraTags.push('<span style="font-size:9px;color:var(--amber);">🧠 ' + esc(activeAcc.reasoning_effort_override) + '</span>');
+  const contextWindow = activeEndpoint?.context_window_override || activeAcc?.context_window_override;
+  const visionMode = activeEndpoint?.vision?.mode || (activeAcc?.vision_enabled ? 'glue' : 'off');
+  const reasoningEffort = activeEndpoint?.reasoning_effort_override || activeAcc?.reasoning_effort_override;
+  if (contextWindow) extraTags.push('<span style="font-size:9px;color:var(--text-muted);">⇄ ' + contextWindow.toLocaleString() + ' tokens</span>');
+  if (visionMode === 'native' || visionMode === 'Native') extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 原生</span>');
+  if (visionMode === 'glue' || visionMode === 'Glue') extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 胶水</span>');
+  if (reasoningEffort) extraTags.push('<span style="font-size:9px;color:var(--amber);">🧠 ' + esc(reasoningEffort) + '</span>');
 
   const accHtml = hasAccount
     ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
@@ -23,7 +28,7 @@ function renderStatus() {
          <span class="card-badge on" style="margin-top:0;">活跃</span>
        </div>
        <div class="card-value" style="font-size:13px;margin-bottom:4px;">${esc(activeAcc.name)}</div>
-       <div class="card-upstream" style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;" title="${escAttr(activeAcc.upstream)}">${esc(trunc(activeAcc.upstream, 36))}</div>
+       <div class="card-upstream" style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;" title="${escAttr(activeEndpoint?.base_url || activeAcc.upstream)}">${esc(trunc(activeEndpoint?.base_url || activeAcc.upstream, 36))}</div>
        <div class="card-balance" id="balance-${escAttr(activeAcc.id)}" style="margin-bottom:4px;">
          <span class="balance-loading" style="font-size:10px;color:var(--text-muted)">—</span>
        </div>
@@ -389,9 +394,10 @@ function toggleContextWindowFields() {
 
 function toggleVisionFields() {
   const cb = document.getElementById('edit_vision_enabled');
+  const mode = document.getElementById('edit_vision_mode');
   const vf = document.getElementById('visionFields');
-  if (cb && vf) {
-    vf.style.display = cb.checked ? '' : 'none';
+  if (vf) {
+    vf.style.display = mode ? (mode.value === 'glue' ? '' : 'none') : (cb && cb.checked ? '' : 'none');
   }
 }
 
