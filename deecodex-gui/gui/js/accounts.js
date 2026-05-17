@@ -42,6 +42,24 @@ function toggleCapabilityFields() {
   if (fields) fields.style.display = enabled ? '' : 'none';
 }
 
+function renderDevPipelineAccountOptions(current, selected) {
+  const list = accountsData.accounts || [];
+  const options = [`<option value="" ${!selected ? 'selected' : ''}>活跃账号（当前主账号）</option>`];
+  list
+    .filter(account => account.id)
+    .forEach(account => {
+      const isSelected = account.id === selected ? 'selected' : '';
+      options.push(`<option value="${escAttr(account.id)}" ${isSelected}>${esc(account.name)} · ${esc(account.provider)}</option>`);
+    });
+  return options.join('');
+}
+
+function toggleDevPipelineFields() {
+  const enabled = document.getElementById('edit_dev_pipeline_enabled')?.checked;
+  const fields = document.getElementById('devPipelineFields');
+  if (fields) fields.style.display = enabled ? '' : 'none';
+}
+
 function currentEndpoint(a) {
   const endpoints = Array.isArray(a?.endpoints) ? a.endpoints : [];
   const selectedId = selectedEndpointId(a);
@@ -227,6 +245,7 @@ function renderAccountList() {
         ${visionMode === 'native' || visionMode === 'Native' ? '<div class="card-context" title="当前模型原生支持图片输入">👁 原生</div>' : ''}
         ${reasoningEffort ? `<div class="card-context" title="推理强度: ${reasoningEffort}${thinkingTokens ? ', 思考预算: ' + thinkingTokens.toLocaleString() + ' tokens' : ''}">🧠 ${reasoningEffort}</div>` : ''}
         ${a.capability_enabled ? `<div class="card-context" title="能力补全账号: ${escAttr(capabilityAccount ? capabilityAccount.name : '未找到')}">能力补全: ${esc(capabilityAccount ? capabilityAccount.name : '未配置')}</div>` : ''}
+        ${a.dev_pipeline_enabled ? `<div class="card-context" title="开发协作编排触发: ${escAttr(a.dev_pipeline_command || '/dev-pipeline')}">开发协作: ${esc(a.dev_pipeline_trigger_mode === 'always' ? '始终' : (a.dev_pipeline_command || '/dev-pipeline'))}</div>` : ''}
         <div class="card-actions-row">
           <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
           ${active
@@ -509,6 +528,80 @@ function renderAccountDetail() {
         <div class="config-field" id="capabilityFields" style="${a.capability_enabled ? '' : 'display:none;'}">
           <label>能力账号</label>
           <select id="edit_capability_account_id">${renderCapabilityAccountOptions(a)}</select>
+        </div>
+      </div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">开发协作编排</div>
+        <div class="account-section-desc">用角色账号协作完成开发任务：方案设计、实现填充、验收收口；不绑定任何固定供应商。</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_dev_pipeline_enabled" ${a.dev_pipeline_enabled ? 'checked' : ''} onchange="toggleDevPipelineFields()">
+            启用开发协作编排
+          </label>
+          <span class="hint">Codex 中输入触发命令即可进入协作流程，默认以当前活跃账号为主。</span>
+        </div>
+        <div id="devPipelineFields" style="${a.dev_pipeline_enabled ? '' : 'display:none;'}">
+          <div class="config-fields nested-fields">
+            <div class="config-field">
+              <label>触发方式</label>
+              <select id="edit_dev_pipeline_trigger_mode">
+                <option value="manual" ${(a.dev_pipeline_trigger_mode || 'manual') === 'manual' ? 'selected' : ''}>手动触发</option>
+                <option value="always" ${a.dev_pipeline_trigger_mode === 'always' ? 'selected' : ''}>始终触发</option>
+              </select>
+            </div>
+            <div class="config-field">
+              <label>触发命令</label>
+              <input type="text" id="edit_dev_pipeline_command" value="${escAttr(a.dev_pipeline_command || '/dev-pipeline')}" placeholder="/dev-pipeline">
+            </div>
+            <div class="config-field">
+              <label>方案设计账号</label>
+              <select id="edit_dev_pipeline_architect_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_architect_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>实现填充账号</label>
+              <select id="edit_dev_pipeline_implementer_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_implementer_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>验收收口账号</label>
+              <select id="edit_dev_pipeline_reviewer_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_reviewer_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>实现阶段工具能力</label>
+              <select id="edit_dev_pipeline_tool_mode">
+                <option value="controlled_tools" ${(a.dev_pipeline_tool_mode || 'controlled_tools') === 'controlled_tools' ? 'selected' : ''}>受控工具执行</option>
+                <option value="patch_only" ${a.dev_pipeline_tool_mode === 'patch_only' ? 'selected' : ''}>仅生成补丁</option>
+                <option value="full_agent" ${a.dev_pipeline_tool_mode === 'full_agent' ? 'selected' : ''}>完整 Codex 执行能力</option>
+              </select>
+              <span class="hint">当前版本会把能力模式注入阶段指令；工具执行仍继承 deecodex 的安全策略。</span>
+            </div>
+            <div class="config-field">
+              <label>最大修正轮数</label>
+              <input type="number" id="edit_dev_pipeline_max_iterations" value="${Number(a.dev_pipeline_max_iterations || 3)}" min="1" max="10" step="1">
+            </div>
+            <div class="config-field">
+              <label class="toggle-label">
+                <input type="checkbox" id="edit_dev_pipeline_show_trace" ${a.dev_pipeline_show_trace ? 'checked' : ''}>
+                在最终回答中显示阶段摘要
+              </label>
+            </div>
+            <div class="config-field">
+              <label>方案角色附加指令</label>
+              <textarea id="edit_dev_pipeline_architect_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_architect_instruction || '')}</textarea>
+            </div>
+            <div class="config-field">
+              <label>实现角色附加指令</label>
+              <textarea id="edit_dev_pipeline_implementer_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_implementer_instruction || '')}</textarea>
+            </div>
+            <div class="config-field">
+              <label>验收角色附加指令</label>
+              <textarea id="edit_dev_pipeline_reviewer_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_reviewer_instruction || '')}</textarea>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1067,6 +1160,18 @@ function addAccount(provider) {
     translate_enabled: true,
     capability_enabled: false,
     capability_account_id: null,
+    dev_pipeline_enabled: false,
+    dev_pipeline_trigger_mode: 'manual',
+    dev_pipeline_command: '/dev-pipeline',
+    dev_pipeline_architect_account_id: null,
+    dev_pipeline_implementer_account_id: null,
+    dev_pipeline_reviewer_account_id: null,
+    dev_pipeline_tool_mode: 'controlled_tools',
+    dev_pipeline_max_iterations: 3,
+    dev_pipeline_show_trace: false,
+    dev_pipeline_architect_instruction: '',
+    dev_pipeline_implementer_instruction: '',
+    dev_pipeline_reviewer_instruction: '',
   };
   editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
   editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
@@ -1111,6 +1216,25 @@ async function saveAccount(options = {}) {
       showToast('能力补全账号不能选择当前账号', 'error');
       return;
     }
+  }
+  const devPipelineEnabled = document.getElementById('edit_dev_pipeline_enabled');
+  if (devPipelineEnabled) a.dev_pipeline_enabled = devPipelineEnabled.checked;
+  const devTriggerMode = document.getElementById('edit_dev_pipeline_trigger_mode');
+  a.dev_pipeline_trigger_mode = devTriggerMode ? devTriggerMode.value : (a.dev_pipeline_trigger_mode || 'manual');
+  const devCommand = document.getElementById('edit_dev_pipeline_command');
+  a.dev_pipeline_command = devCommand ? (devCommand.value.trim() || '/dev-pipeline') : (a.dev_pipeline_command || '/dev-pipeline');
+  a.dev_pipeline_architect_account_id = document.getElementById('edit_dev_pipeline_architect_account_id')?.value || null;
+  a.dev_pipeline_implementer_account_id = document.getElementById('edit_dev_pipeline_implementer_account_id')?.value || null;
+  a.dev_pipeline_reviewer_account_id = document.getElementById('edit_dev_pipeline_reviewer_account_id')?.value || null;
+  a.dev_pipeline_tool_mode = document.getElementById('edit_dev_pipeline_tool_mode')?.value || (a.dev_pipeline_tool_mode || 'controlled_tools');
+  a.dev_pipeline_max_iterations = Math.max(1, Math.min(10, Number(document.getElementById('edit_dev_pipeline_max_iterations')?.value || a.dev_pipeline_max_iterations || 3)));
+  a.dev_pipeline_show_trace = Boolean(document.getElementById('edit_dev_pipeline_show_trace')?.checked);
+  a.dev_pipeline_architect_instruction = document.getElementById('edit_dev_pipeline_architect_instruction')?.value || '';
+  a.dev_pipeline_implementer_instruction = document.getElementById('edit_dev_pipeline_implementer_instruction')?.value || '';
+  a.dev_pipeline_reviewer_instruction = document.getElementById('edit_dev_pipeline_reviewer_instruction')?.value || '';
+  if (a.dev_pipeline_enabled && a.dev_pipeline_trigger_mode === 'manual' && !a.dev_pipeline_command.trim()) {
+    showToast('开发协作编排触发命令不能为空', 'error');
+    return;
   }
   const ep = currentEndpoint(a);
   if (ep) {

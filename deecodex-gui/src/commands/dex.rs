@@ -467,7 +467,8 @@ pub async fn dex_execute_tool(
                         manager,
                         account_id,
                         opt_string(&args, "upstream"),
-                        opt_string(&args, "api_key")
+                        opt_string(&args, "api_key"),
+                        opt_string(&args, "endpoint_kind"),
                     )
                     .await?
                 )
@@ -488,11 +489,16 @@ pub async fn dex_execute_tool(
                     )
                 } else {
                     let data_dir = manager.data_dir.lock().await.clone();
-                    let (upstream, api_key, _) = get_active_account_info(&data_dir)
+                    let (upstream, api_key, _, _, _) = get_active_account_info(&data_dir)
                         .ok_or("缺少 upstream/api_key，且没有活跃账号")?;
                     (upstream, api_key)
                 };
-                crate::commands::test_upstream_connectivity(upstream, api_key).await?
+                crate::commands::test_upstream_connectivity(
+                    upstream,
+                    api_key,
+                    opt_string(&args, "endpoint_kind"),
+                )
+                .await?
             }
             "list_sessions" => crate::commands::list_sessions(manager).await?,
             "delete_session" => {
