@@ -4,9 +4,32 @@ function providerBadgeClass(p) {
   return 'badge-provider badge-' + (p || 'custom');
 }
 
-function providerIcon(p) {
-  const icons = { openrouter: '◉', deepseek: '⬡', kimi: '月', minimax: 'M', glm: '智', openai: '◆', anthropic: '◈', 'google-ai': '◎', custom: '…' };
-  return icons[p] || '…';
+function providerLogoSlug(p) {
+  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai'].includes(p)
+    ? p
+    : 'custom';
+}
+
+function providerLogoSrc(p) {
+  const files = {
+    deepseek: 'deepseek.png',
+    kimi: 'kimi.png',
+    minimax: 'minimax.png',
+    anthropic: 'anthropic.png',
+    glm: 'glm-wordmark.png',
+    openai: 'openai-wordmark.png',
+  };
+  const slug = providerLogoSlug(p);
+  return `assets/provider-logos/${files[slug] || slug + '.svg'}`;
+}
+
+function providerIcon(p, label) {
+  return `<img class="provider-logo-img" src="${providerLogoSrc(p)}" alt="${escAttr(label || p || '自定义')}">`;
+}
+
+function renderProviderBadge(p) {
+  const slug = p || 'custom';
+  return `<span class="${providerBadgeClass(slug)}"><img src="${providerLogoSrc(slug)}" alt="" aria-hidden="true">${esc(slug)}</span>`;
 }
 
 function getProviderPreset(provider) {
@@ -209,7 +232,7 @@ function renderAccountList() {
         : null;
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-header">
-          <span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span>
+          ${renderProviderBadge(a.provider)}
           ${active ? '<span class="active-badge">✓ 活跃</span>' : ''}
           <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
         </div>
@@ -258,7 +281,7 @@ function renderAddAccount() {
     cards = '<div class="provider-grid">' + providerPresets.map(p => {
       const upstream = p.default_upstream || '(自定义)';
       return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}')">
-        <div class="provider-icon">${providerIcon(p.slug)}</div>
+        <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
         <div class="provider-name">${esc(p.label)}</div>
         <div class="provider-desc">${esc(p.description)}</div>
         <div class="provider-default-upstream" title="${escAttr(upstream)}">${esc(trunc(upstream, 42))}</div>
@@ -294,7 +317,12 @@ function renderAccountDetail() {
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / ${esc(a.name)}</span>
   </div>
-  <div class="page-header"><h2>${esc(a.name)}</h2><p><span class="${providerBadgeClass(a.provider)}">${esc(a.provider)}</span></p></div>
+  <div class="page-header account-detail-header">
+    <div class="account-detail-title">
+      <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
+      <div><h2>${esc(a.name)}</h2><p>${renderProviderBadge(a.provider)}</p></div>
+    </div>
+  </div>
 
   <div class="account-form">
     <section class="account-edit-section">
@@ -314,6 +342,14 @@ function renderAccountDetail() {
             <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
           </div>
           <span class="hint">账号级凭据，切换端点时复用。</span>
+        </div>
+        <div class="config-field wide">
+          <label>上游 URL</label>
+          <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
+          <div class="inline-test-row">
+            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
+            <span id="connectivityResult"></span>
+          </div>
         </div>
       </div>
     </section>
@@ -339,14 +375,6 @@ function renderAccountDetail() {
             <option value="custom_responses" ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? 'selected' : ''}>自定义 Responses</option>
           </select>
           <span class="hint">选择当前上游真实支持的 API 协议。</span>
-        </div>
-        <div class="config-field wide">
-          <label>上游 URL</label>
-          <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
-          <div class="inline-test-row">
-            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
-            <span id="connectivityResult"></span>
-          </div>
         </div>
         <div class="config-field">
           <label>端点路径 <span class="optional-label">可选</span></label>

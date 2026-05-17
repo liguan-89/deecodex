@@ -337,8 +337,15 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 
 		function fmtTokens(n) {
 		  if (!n) return '0';
-		  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+		  if (n >= 1000000000) return compactNumber(n / 1000000000) + 'B';
+		  if (n >= 1000000) return compactNumber(n / 1000000) + 'M';
+		  if (n >= 1000) return compactNumber(n / 1000) + 'k';
 		  return n.toString();
+		}
+
+		function compactNumber(value) {
+		  const digits = value >= 100 ? 1 : value >= 10 ? 1 : 2;
+		  return value.toFixed(digits).replace(/\.0$/, '');
 		}
 
 		function fmtDuration(ms) {

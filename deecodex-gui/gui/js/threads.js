@@ -94,7 +94,7 @@ async function refreshThreads() {
   } catch (err) {
     showToast('加载线程数据失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--red);">加载失败: ' + esc(String(err)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
   }
 }
 

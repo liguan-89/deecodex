@@ -33,18 +33,18 @@ function showWizardBar() {
   const bar = document.createElement('div');
   bar.id = 'setupWizard';
   const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-  bar.style.cssText = 'position:fixed;top:0;left:268px;right:0;z-index:100;'
+  bar.style.cssText = 'position:fixed;top:0;left:var(--sidebar-w);right:0;z-index:100;'
     + (isLight ? 'background:rgba(255,255,255,0.95);' : 'background:var(--bg-elevated);')
-    + 'border-bottom:2px solid var(--accent);'
-    + 'padding:7px 20px;display:flex;align-items:center;gap:14px;'
-    + 'font-family:var(--font-mono);font-size:11px;'
+    + 'border-bottom:1px solid var(--accent);'
+    + 'padding:5px 12px;display:flex;align-items:center;gap:8px;'
+    + 'font-family:var(--font-mono);font-size:10.5px;'
     + 'box-shadow:0 2px 12px ' + (isLight ? 'rgba(217,79,58,0.15)' : 'rgba(0,200,232,0.2)') + ';'
     + 'animation:wzPulse 3s ease-in-out infinite;'
     + (isLight ? 'color:#1a1a2e;' : 'color:var(--text-primary);');
   document.body.appendChild(bar);
   // 主内容区下移避免遮挡
   const main = document.getElementById('mainContent');
-  if (main) main.style.paddingTop = '40px';
+  if (main) main.style.paddingTop = '30px';
   renderWizardBar(bar);
 
   // 第一步强提醒：弹出一个醒目的 toast
@@ -87,24 +87,24 @@ function renderWizardBar(bar) {
 
   let btnHtml = '';
   if (s.quick) {
-    btnHtml = '<button id="wzAct" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+    btnHtml = '<button id="wzAct" style="flex-shrink:0;padding:2px 9px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
       + 'background:var(--accent-dim);border:1px solid ' + accentHex + ';color:var(--accent);font-family:var(--font-mono);">执行</button>';
   }
 
   bar.innerHTML = ''
     + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + s.icon + '</span>'
     + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
-    + '<div style="flex-shrink:0;width:60px;height:2px;background:' + progBg + ';border-radius:1px;">'
+    + '<div style="flex-shrink:0;width:52px;height:2px;background:' + progBg + ';border-radius:1px;">'
     +   '<div style="width:' + pct + '%;height:100%;background:var(--accent);border-radius:1px;transition:width 300ms;"></div>'
     + '</div>'
     + '<b style="flex-shrink:0;color:' + tc + ';">' + s.title + '</b>'
     + '<span style="flex:1;color:' + tc2 + ';min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.desc + '</span>'
     + btnHtml
-    + (!isFirst ? '<button id="wzPrev" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+    + (!isFirst ? '<button id="wzPrev" style="flex-shrink:0;padding:2px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
       + 'background:' + prevBg + ';border:1px solid ' + prevBorder + ';color:' + tc2 + ';font-family:var(--font-mono);">←</button>' : '')
-    + (!isLast ? '<button id="wzNext" style="flex-shrink:0;padding:3px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+    + (!isLast ? '<button id="wzNext" style="flex-shrink:0;padding:2px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
       + 'background:var(--accent);border:1px solid var(--accent);color:#fff;font-family:var(--font-mono);">→</button>'
-      : '<button id="wzDone" style="flex-shrink:0;padding:3px 10px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
+      : '<button id="wzDone" style="flex-shrink:0;padding:2px 9px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
       + 'background:var(--green);border:1px solid var(--green);color:#fff;font-family:var(--font-mono);">完成</button>')
     + '<button id="wzClose" style="flex-shrink:0;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px;">×</button>';
 

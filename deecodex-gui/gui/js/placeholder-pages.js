@@ -1381,7 +1381,12 @@ function dexBindShortcuts() {
 // 个人中心
 // ═══════════════════════════════════════════════════════════════
 function renderProfile() {
-  return '<div class="page-header"><h2>个人中心</h2><p>账户信息与偏好设置</p></div><div class="empty-state">即将推出</div>';
+  return '<div class="page-header"><h2>个人中心</h2><p>账户信息与偏好设置</p></div>'
+    + '<div class="profile-empty">'
+    + '<div class="profile-empty-icon">◎</div>'
+    + '<h3>个人中心正在准备中</h3>'
+    + '<p>后续会集中展示账户身份、偏好设置与本机使用概览。当前版本先保留入口，避免空白页造成误判。</p>'
+    + '</div>';
 }
 
 
