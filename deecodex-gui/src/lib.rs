@@ -193,7 +193,7 @@ fn load_env() {
 
 pub fn run() {
     // 单实例控制：检测已有 GUI 实例，避免重复启动
-    {
+    if std::env::var("DEECODEX_GUI_ALLOW_MULTI_INSTANCE").as_deref() != Ok("1") {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
         // 扫描同名进程（排除自身）
@@ -476,6 +476,11 @@ pub fn run() {
             commands::get_plugin_qrcode,
             commands::plugin_login_cancel,
             commands::dex::dex_chat,
+            commands::dex::dex_list_capabilities,
+            commands::dex::dex_list_tools,
+            commands::dex::dex_execute_tool,
+            commands::dex::dex_get_workspace_context,
+            commands::dex::dex_update_capability_state,
             commands::dex::dex_read_file,
             commands::dex::dex_list_directory,
             commands::dex::dex_detect_processes,
@@ -493,6 +498,7 @@ pub fn run() {
             commands::dex::dex_thread_cleanup,
             commands::dex::dex_auto_tune,
             commands::dex::dex_claude_mcp_check,
+            commands::dex::dex_claude_env_overview,
             commands::dex::dex_network_topology,
             commands::dex::dex_ssl_check,
             commands::dex::dex_export_report,

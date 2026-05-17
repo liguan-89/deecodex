@@ -1824,7 +1824,7 @@ async fn bypass_send_request(
                     .save_response(response_id.clone(), response_body.clone());
             }
 
-            let _ = {
+            {
                 let usage = response_body.get("usage");
                 let input_tokens = usage
                     .and_then(|u| u.get("input_tokens"))
@@ -1836,7 +1836,7 @@ async fn bypass_send_request(
                     .unwrap_or(0) as u32;
                 let cache_hit = usage
                     .and_then(|u| u.as_object())
-                    .map(|u| is_cache_hit(u))
+                    .map(is_cache_hit)
                     .unwrap_or(false);
                 state
                     .request_history

@@ -76,6 +76,7 @@ function renderPluginCard(p) {
   var running = p.state === 'running';
   var stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
   var sc = running ? 'var(--green)' : 'var(--text-muted)';
+  var dexTools = p.dex_tools || [];
 
   return `<div class="plugin-card${running ? ' running' : ''}" onclick="showPluginDetail('${escAttr(p.id)}')">
     <span class="plugin-card-status">
@@ -88,6 +89,7 @@ function renderPluginCard(p) {
         <span class="plugin-state-badge ${running ? 'on' : 'off'}"><span class="dot"></span>${stateLabel}</span>
       </div>
       ${p.description ? `<div class="plugin-card-desc">${esc(p.description)}</div>` : ''}
+      <div class="plugin-card-desc">DEX工具：${dexTools.length} 个</div>
     </div>
     <div class="plugin-card-actions" onclick="event.stopPropagation()">
       ${running
@@ -119,6 +121,7 @@ function renderPluginDetail() {
   var sc = running ? 'var(--green)' : 'var(--text-muted)';
   var perms = p.permissions || [];
   var accounts = p.accounts || [];
+  var dexTools = p.dex_tools || [];
 
   var accountsHtml = '';
   if (accounts.length) {
@@ -172,6 +175,13 @@ function renderPluginDetail() {
     <h3>权限</h3>
     <div class="plugin-perm-tags">${perms.map(perm => `<span class="plugin-perm-tag">${esc(perm)}</span>`).join('')}</div>
   </div>` : ''}
+
+  <div class="plugin-detail-section">
+    <h3>DEX助手工具</h3>
+    ${dexTools.length
+      ? `<div class="plugin-perm-tags">${dexTools.map(t => `<span class="plugin-perm-tag" title="${escAttr(t.description || '')}">${esc(t.name)} · L${Number(t.level || 0)}</span>`).join('')}</div>`
+      : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">未向 DEX 暴露工具</div>'}
+  </div>
 
   <div class="plugin-detail-section">
     <h3>账号</h3>

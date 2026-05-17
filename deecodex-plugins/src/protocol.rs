@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::DexToolManifest;
+
 // ── RPC method 名称常量 ──────────────────────────────────────────────────────
 
 /// deecodex → 插件：握手初始化
@@ -90,6 +92,7 @@ pub struct PluginInfo {
     pub installed_at: u64,
     pub config: serde_json::Value,
     pub config_schema: Option<serde_json::Value>,
+    pub dex_tools: Vec<DexToolManifest>,
 }
 
 #[derive(Debug, Clone, Serialize)]

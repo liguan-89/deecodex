@@ -370,6 +370,7 @@ impl PluginManager {
                     installed_at: record.installed_at,
                     config: record.config.clone(),
                     config_schema: record.manifest.config_schema.clone(),
+                    dex_tools: record.manifest.dex_tools.clone(),
                 }
             })
             .collect()
