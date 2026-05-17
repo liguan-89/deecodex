@@ -93,10 +93,12 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  let html = '';
 		  for (const e of show) {
 		    const inputRatio = e.total_tokens > 0 ? Math.round((e.input_tokens || 0) / e.total_tokens * 100) : 50;
+		    const providerLabel = e.provider_profile || e.provider || '';
 		    html += `<div class="history-card${e.status === 'failed' ? ' failed' : ''}">
 		      <div class="hc-row">
 		        <span class="hc-time">${fmtTime(e.created_at)}</span>
 		        <span class="hc-model">${esc(e.model)}</span>
+		        ${providerLabel ? `<span class="hc-model" title="Provider profile">${esc(providerLabel)}</span>` : ''}
 		        ${statusBadge(e.status)}
 		        <span class="hc-dur">${fmtDuration(e.duration_ms)}</span>
 		      </div>

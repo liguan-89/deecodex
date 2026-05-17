@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::accounts;
 use crate::codex_config;
 use crate::config::{self, Args};
+use crate::providers;
 
 // ── 新诊断类型 ────────────────────────────────────────────────────────────────
 
@@ -177,6 +178,7 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
             items: vec![
                 check_deecodex_config(ctx),
                 check_accounts_config(ctx),
+                check_provider_profile(ctx),
                 check_model_mapping(ctx),
                 check_upstream_connectivity_sync(ctx),
             ],
@@ -892,6 +894,62 @@ fn check_accounts_config(ctx: &DiagnosticContext) -> DiagnosticItem {
                 path.display(),
                 active_name
             )),
+            suggestion: None,
+        }
+    }
+}
+
+fn check_provider_profile(ctx: &DiagnosticContext) -> DiagnosticItem {
+    let store = accounts::load_accounts(&ctx.data_dir);
+    let Some(active) = store
+        .active_id
+        .as_ref()
+        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
+        .or_else(|| store.accounts.first())
+    else {
+        return DiagnosticItem {
+            status: Status::Info,
+            check_name: "供应商适配".into(),
+            message: "暂无账号，无法检查 provider profile".into(),
+            detail: None,
+            suggestion: Some("请先在「账号管理」中添加账号".into()),
+        };
+    };
+
+    let guessed = providers::guess_provider(&active.upstream);
+    let profile = providers::profile_for_account(active);
+    let labels = providers::capability_labels(&profile).join(", ");
+    let detail = format!(
+        "账号 provider: {}, URL 推断: {}, profile: {}, protocol: {:?}, 能力: {}",
+        active.provider, guessed, profile.slug, profile.wire_protocol, labels
+    );
+
+    if active.provider == "custom" {
+        return DiagnosticItem {
+            status: Status::Info,
+            check_name: "供应商适配".into(),
+            message: "当前账号使用自定义 OpenAI Chat 兼容 profile".into(),
+            detail: Some(detail),
+            suggestion: Some(
+                "若上游是 Kimi、MiniMax、GLM 或 DeepSeek，建议切换到对应供应商预设".into(),
+            ),
+        };
+    }
+
+    if guessed != "custom" && guessed != active.provider {
+        DiagnosticItem {
+            status: Status::Warn,
+            check_name: "供应商适配".into(),
+            message: "账号 provider 与上游 URL 推断结果不一致".into(),
+            detail: Some(detail),
+            suggestion: Some("请检查账号供应商选择和上游 URL 是否匹配".into()),
+        }
+    } else {
+        DiagnosticItem {
+            status: Status::Pass,
+            check_name: "供应商适配".into(),
+            message: format!("已加载 {} provider profile", profile.label),
+            detail: Some(detail),
             suggestion: None,
         }
     }

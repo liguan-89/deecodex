@@ -263,6 +263,8 @@ pub struct ChatDelta {
     #[serde(default)]
     pub reasoning_content: Option<String>,
     #[serde(default)]
+    pub reasoning_details: Option<Value>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<DeltaToolCall>>,
 }
 

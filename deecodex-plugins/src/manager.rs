@@ -315,17 +315,22 @@ impl PluginManager {
 
     /// 停止插件：shutdown notification → 等待 → kill
     pub async fn stop(&self, plugin_id: &str) -> Result<()> {
-        let mut instance = self
-            .instances
-            .get_mut(plugin_id)
-            .with_context(|| format!("插件 '{}' 未在运行", plugin_id))?;
+        let handle = {
+            let mut instance = self
+                .instances
+                .get_mut(plugin_id)
+                .with_context(|| format!("插件 '{}' 未在运行", plugin_id))?;
+            instance.handle.take()
+        };
 
-        if let Some(handle) = instance.handle.take() {
+        if let Some(handle) = handle {
             process::shutdown_plugin(handle).await?;
         }
 
-        instance.state = PluginState::Stopped;
-        instance.accounts.clear();
+        if let Some(mut instance) = self.instances.get_mut(plugin_id) {
+            instance.state = PluginState::Stopped;
+            instance.accounts.clear();
+        }
 
         let _ = self.events_tx.send(PluginEvent::Log {
             plugin_id: plugin_id.into(),

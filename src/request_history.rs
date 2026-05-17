@@ -16,6 +16,8 @@ pub struct HistoryEntry {
     pub total_tokens: u32,
     pub duration_ms: u64,
     pub upstream_url: String,
+    pub provider: String,
+    pub provider_profile: String,
     pub error_msg: String,
     pub cache_hit: bool,
 }
@@ -48,6 +50,8 @@ impl RequestHistoryStore {
                 total_tokens INTEGER DEFAULT 0,
                 duration_ms INTEGER DEFAULT 0,
                 upstream_url TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                provider_profile TEXT DEFAULT '',
                 error_msg TEXT DEFAULT '',
                 cache_hit INTEGER DEFAULT 0
             );
@@ -65,6 +69,11 @@ impl RequestHistoryStore {
         // 迁移：为已有数据库添加 cache_hit 列（列已存在时忽略错误）
         let _ = conn
             .execute_batch("ALTER TABLE request_history ADD COLUMN cache_hit INTEGER DEFAULT 0;");
+        let _ =
+            conn.execute_batch("ALTER TABLE request_history ADD COLUMN provider TEXT DEFAULT '';");
+        let _ = conn.execute_batch(
+            "ALTER TABLE request_history ADD COLUMN provider_profile TEXT DEFAULT '';",
+        );
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
         })
@@ -85,11 +94,13 @@ impl RequestHistoryStore {
         cache_hit: bool,
     ) {
         let total = input_tokens + output_tokens;
+        let provider = crate::providers::guess_provider(&upstream_url).to_string();
+        let provider_profile = crate::providers::profile_by_slug(&provider).slug;
         let db = self.db.lock().await;
         let _ = db.execute(
             "INSERT OR REPLACE INTO request_history
-             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg, cache_hit)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 created_at,
@@ -100,6 +111,8 @@ impl RequestHistoryStore {
                 total,
                 duration_ms,
                 upstream_url,
+                provider,
+                provider_profile,
                 error_msg,
                 cache_hit
             ],
@@ -138,7 +151,7 @@ impl RequestHistoryStore {
     pub async fn list(&self, limit: usize) -> Vec<HistoryEntry> {
         let db = self.db.lock().await;
         let mut stmt = match db.prepare(
-            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, error_msg, cache_hit
+            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit
              FROM request_history ORDER BY created_at DESC LIMIT ?1",
         ) {
             Ok(s) => s,
@@ -155,8 +168,10 @@ impl RequestHistoryStore {
                 total_tokens: row.get(6)?,
                 duration_ms: row.get(7)?,
                 upstream_url: row.get(8)?,
-                error_msg: row.get(9)?,
-                cache_hit: row.get(10)?,
+                provider: row.get(9)?,
+                provider_profile: row.get(10)?,
+                error_msg: row.get(11)?,
+                cache_hit: row.get(12)?,
             })
         });
         match rows {
@@ -250,8 +265,37 @@ mod tests {
         assert_eq!(entries[0].status, "failed");
         assert_eq!(entries[0].total_tokens, 5);
         assert_eq!(entries[0].duration_ms, 1_500);
+        assert_eq!(entries[0].provider, "custom");
+        assert_eq!(entries[0].provider_profile, "custom");
         assert_eq!(entries[0].error_msg, "HTTP 429");
         assert!(entries[0].cache_hit);
+    }
+
+    #[tokio::test]
+    async fn records_provider_profile_from_upstream() {
+        let store = RequestHistoryStore::new(Path::new(":memory:")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        store
+            .record(
+                "kimi".into(),
+                now,
+                "kimi-k2".into(),
+                "completed".into(),
+                1,
+                2,
+                3,
+                "https://api.moonshot.ai/v1/chat/completions".into(),
+                String::new(),
+                false,
+            )
+            .await;
+
+        let entries = store.list(10).await;
+        assert_eq!(entries[0].provider, "kimi");
+        assert_eq!(entries[0].provider_profile, "kimi");
     }
 
     #[tokio::test]

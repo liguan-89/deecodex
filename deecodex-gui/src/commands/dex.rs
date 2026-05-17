@@ -7,6 +7,14 @@ use serde_json::{json, Value};
 use tauri::{Emitter, State};
 use tracing;
 
+type DexAccountInfo = (
+    String,
+    String,
+    HashMap<String, String>,
+    String,
+    deecodex::providers::ProviderProfile,
+);
+
 use crate::commands::load_args;
 use crate::ServerManager;
 
@@ -35,20 +43,21 @@ fn codex_is_installed() -> bool {
     false
 }
 
-/// 获取活跃账号的 (upstream, api_key, model_map)
-fn get_active_account_info(
-    data_dir: &std::path::Path,
-) -> Option<(String, String, HashMap<String, String>)> {
+/// 获取活跃账号及 provider profile 信息
+fn get_active_account_info(data_dir: &std::path::Path) -> Option<DexAccountInfo> {
     let store = deecodex::accounts::load_accounts(data_dir);
     let active = store
         .active_id
         .as_ref()
         .and_then(|id| store.accounts.iter().find(|a| &a.id == id))?;
+    let profile = deecodex::providers::profile_for_account(active);
 
     Some((
         active.upstream.clone(),
         active.api_key.clone(),
         active.model_map.clone(),
+        active.provider.clone(),
+        profile,
     ))
 }
 
@@ -107,7 +116,7 @@ pub async fn dex_chat(
 
     let data_dir = manager.data_dir.lock().await.clone();
 
-    let (upstream, api_key, model_map) = get_active_account_info(&data_dir)
+    let (upstream, api_key, model_map, provider, profile) = get_active_account_info(&data_dir)
         .ok_or_else(|| "请先在账号管理中配置一个活跃账号".to_string())?;
 
     // 模型映射：优先使用传入的 model，否则用默认 "gpt-5.5"
@@ -124,21 +133,77 @@ pub async fn dex_chat(
         .unwrap_or_else(|| requested.to_string());
 
     let base = upstream.trim_end_matches('/');
-    let url = format!("{base}/chat/completions");
 
-    let body = json!({
-        "model": mapped_model,
-        "messages": messages,
-        "tools": tools,
-        "stream": stream_mode,
-    });
+    let mut chat_req = deecodex::types::ChatRequest {
+        model: mapped_model.clone(),
+        messages: messages
+            .into_iter()
+            .filter_map(|m| serde_json::from_value(m).ok())
+            .collect(),
+        tools: tools.unwrap_or_default(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: stream_mode,
+        reasoning_effort: None,
+        thinking: None,
+        tool_choice: None,
+        parallel_tool_calls: None,
+        response_format: None,
+        user: None,
+        stream_options: None,
+        web_search_options: None,
+    };
+    deecodex::providers::adapt_chat_request(&profile, &mut chat_req);
+    let msg_count = chat_req.messages.len();
 
-    tracing::info!(url = %url, model = %mapped_model, msg_count = messages.len(), stream = stream_mode, "dex_chat 发送请求");
+    if stream_mode && profile.wire_protocol != deecodex::providers::WireProtocol::ChatCompletions {
+        return Err(
+            "DEX 助手暂不支持 Anthropic/Gemini 原生协议流式请求，请关闭流式或切换 Chat 兼容供应商"
+                .into(),
+        );
+    }
+
+    let (url, body) = match profile.wire_protocol {
+        deecodex::providers::WireProtocol::ChatCompletions => (
+            format!("{base}/chat/completions"),
+            serde_json::to_value(&chat_req).map_err(|e| format!("序列化请求失败: {e}"))?,
+        ),
+        deecodex::providers::WireProtocol::AnthropicMessages
+        | deecodex::providers::WireProtocol::GeminiNative => {
+            let url = deecodex::native_protocols::native_endpoint(
+                &profile.wire_protocol,
+                &upstream,
+                &chat_req.model,
+                false,
+                &api_key,
+            )
+            .ok_or_else(|| "当前供应商原生协议尚未接入 DEX 助手".to_string())?;
+            let body =
+                deecodex::native_protocols::to_native_request(&profile.wire_protocol, &chat_req)
+                    .ok_or_else(|| "无法构造原生协议请求".to_string())?;
+            (url, body)
+        }
+        deecodex::providers::WireProtocol::Responses => {
+            return Err("DEX 助手不支持 Responses 直连账号，请切换 Chat 兼容或原生供应商".into());
+        }
+    };
+
+    tracing::info!(
+        url = %url,
+        provider = %provider,
+        profile = %profile.slug,
+        protocol = ?profile.wire_protocol,
+        model = %mapped_model,
+        msg_count,
+        stream = stream_mode,
+        "dex_chat 发送请求"
+    );
 
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(&body);
-    if !api_key.is_empty() {
-        req = req.bearer_auth(&api_key);
+    for (name, value) in deecodex::providers::request_headers(&profile, &api_key) {
+        req = req.header(name, value);
     }
 
     let resp = req.send().await.map_err(|e| {
@@ -191,8 +256,7 @@ pub async fn dex_chat(
                     continue;
                 }
 
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         break 'stream_loop;
                     }
@@ -234,25 +298,40 @@ pub async fn dex_chat(
             "usage": usage,
         }))
     } else {
-        // ── 非流式模式（保持原有行为）──
         let resp_body: Value = resp
             .json()
             .await
             .map_err(|e| format!("解析响应失败: {e}"))?;
 
-        let choice = resp_body["choices"]
-            .as_array()
-            .and_then(|choices| choices.first())
-            .ok_or_else(|| "响应中没有 choices 数据".to_string())?;
+        if profile.wire_protocol == deecodex::providers::WireProtocol::ChatCompletions {
+            let choice = resp_body["choices"]
+                .as_array()
+                .and_then(|choices| choices.first())
+                .ok_or_else(|| "响应中没有 choices 数据".to_string())?;
 
-        let message = &choice["message"];
-        let finish_reason = choice["finish_reason"].as_str().unwrap_or("");
+            let message = &choice["message"];
+            let finish_reason = choice["finish_reason"].as_str().unwrap_or("");
 
-        // 透传完整 message 对象，保留 reasoning_content 等上游特有字段
+            return Ok(json!({
+                "choices": [{
+                    "message": message.clone(),
+                    "finish_reason": finish_reason,
+                }]
+            }));
+        }
+
+        let chat_resp =
+            deecodex::native_protocols::native_response_to_chat(&profile.wire_protocol, resp_body)
+                .map_err(|e| format!("解析原生协议响应失败: {e}"))?;
+        let message = chat_resp
+            .choices
+            .first()
+            .map(|choice| serde_json::to_value(&choice.message).unwrap_or_else(|_| json!({})))
+            .unwrap_or_else(|| json!({"role":"assistant","content":""}));
         Ok(json!({
             "choices": [{
-                "message": message.clone(),
-                "finish_reason": finish_reason,
+                "message": message,
+                "finish_reason": "stop",
             }]
         }))
     }
@@ -697,7 +776,7 @@ pub fn dex_search_logs(query: String, context_lines: Option<usize>) -> Result<Va
         }
         if line.to_lowercase().contains(&query_lower) {
             // 收集上下文
-            let start = if i >= ctx { i - ctx } else { 0 };
+            let start = i.saturating_sub(ctx);
             let end = (i + ctx + 1).min(all_lines.len());
             let context: Vec<String> = all_lines[start..end]
                 .iter()
@@ -779,18 +858,26 @@ pub async fn dex_health_summary(manager: State<'_, ServerManager>) -> Result<Val
     // 账号信息
     let store = deecodex::accounts::load_accounts(&data_dir);
     let account_count = store.accounts.len();
-    let (account_ok, provider) =
-        if let Some((upstream, api_key, _)) = get_active_account_info(&data_dir) {
+    let (account_ok, provider, profile_slug, wire_protocol, capability_labels) =
+        if let Some((upstream, api_key, _, provider, profile)) = get_active_account_info(&data_dir)
+        {
             let ok = !upstream.is_empty() && !api_key.is_empty();
-            let prov = store
-                .active_id
-                .as_ref()
-                .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
-                .map(|a| a.provider.clone())
-                .unwrap_or_default();
-            (ok, prov)
+            let labels = deecodex::providers::capability_labels(&profile);
+            (
+                ok,
+                provider,
+                profile.slug,
+                format!("{:?}", profile.wire_protocol),
+                labels,
+            )
         } else {
-            (false, String::new())
+            (
+                false,
+                String::new(),
+                String::new(),
+                String::new(),
+                Vec::new(),
+            )
         };
 
     // 最近错误计数
@@ -810,7 +897,14 @@ pub async fn dex_health_summary(manager: State<'_, ServerManager>) -> Result<Val
 
     Ok(json!({
         "service": { "running": running, "port": port },
-        "account": { "ok": account_ok, "provider": provider, "count": account_count },
+        "account": {
+            "ok": account_ok,
+            "provider": provider,
+            "profile": profile_slug,
+            "wire_protocol": wire_protocol,
+            "capabilities": capability_labels,
+            "count": account_count
+        },
         "codex_installed": codex_ok,
         "recent_errors": recent_errors,
         "data_dir": args.data_dir.to_string_lossy(),
@@ -1082,16 +1176,9 @@ pub fn dex_config_diff() -> Result<Value, String> {
     let data_dir = &args.data_dir;
 
     let deecodex_port = args.port;
-    let store = deecodex::accounts::load_accounts(data_dir);
     let (deecodex_upstream, deecodex_model_count, deecodex_provider) =
-        if let Some((up, _, mm)) = get_active_account_info(data_dir) {
-            let prov = store
-                .active_id
-                .as_ref()
-                .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
-                .map(|a| a.provider.clone())
-                .unwrap_or_default();
-            (up, mm.len(), prov)
+        if let Some((up, _, mm, provider, _)) = get_active_account_info(data_dir) {
+            (up, mm.len(), provider)
         } else {
             (String::new(), 0, String::new())
         };
@@ -1230,7 +1317,7 @@ pub async fn dex_token_cost(manager: State<'_, ServerManager>) -> Result<Value, 
 #[tauri::command]
 pub async fn dex_speed_test() -> Result<Value, String> {
     let args = load_args();
-    let (upstream, api_key, model_map) = get_active_account_info(&args.data_dir)
+    let (upstream, api_key, model_map, provider, profile) = get_active_account_info(&args.data_dir)
         .ok_or_else(|| "请先在账号管理中配置一个活跃账号".to_string())?;
 
     let base = upstream.trim_end_matches('/');
@@ -1239,23 +1326,70 @@ pub async fn dex_speed_test() -> Result<Value, String> {
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
+    let provider_profile = profile.slug.clone();
+    let wire_protocol = format!("{:?}", profile.wire_protocol);
     let mut results = Vec::new();
     // 最多测 5 个模型，减少 API 开销
     let model_pairs: Vec<(&String, &String)> = model_map.iter().take(5).collect();
 
     for (deecodex_model, upstream_model) in &model_pairs {
-        let url = format!("{base}/chat/completions");
-        let body = json!({
-            "model": upstream_model,
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-            "stream": false,
-        });
+        let mut chat_req = deecodex::types::ChatRequest {
+            model: (*upstream_model).clone(),
+            messages: vec![deecodex::types::ChatMessage {
+                role: "user".into(),
+                content: Some(json!("hi")),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(1),
+            stream: false,
+            reasoning_effort: None,
+            thinking: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+        deecodex::providers::adapt_chat_request(&profile, &mut chat_req);
+        let (url, body) = match profile.wire_protocol {
+            deecodex::providers::WireProtocol::ChatCompletions => (
+                format!("{base}/chat/completions"),
+                serde_json::to_value(&chat_req).unwrap_or_else(|_| json!({})),
+            ),
+            deecodex::providers::WireProtocol::AnthropicMessages
+            | deecodex::providers::WireProtocol::GeminiNative => {
+                let url = deecodex::native_protocols::native_endpoint(
+                    &profile.wire_protocol,
+                    &upstream,
+                    &chat_req.model,
+                    false,
+                    &api_key,
+                )
+                .unwrap_or_else(|| format!("{base}/chat/completions"));
+                let body = deecodex::native_protocols::to_native_request(
+                    &profile.wire_protocol,
+                    &chat_req,
+                )
+                .unwrap_or_else(|| json!({}));
+                (url, body)
+            }
+            deecodex::providers::WireProtocol::Responses => (
+                format!("{base}/responses"),
+                serde_json::to_value(&chat_req).unwrap_or_else(|_| json!({})),
+            ),
+        };
 
         let start = std::time::Instant::now();
         let mut req = client.post(&url).json(&body);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(&api_key);
+        for (name, value) in deecodex::providers::request_headers(&profile, &api_key) {
+            req = req.header(name, value);
         }
 
         match req.send().await {
@@ -1265,6 +1399,8 @@ pub async fn dex_speed_test() -> Result<Value, String> {
                 results.push(json!({
                     "model": deecodex_model,
                     "upstream_model": upstream_model,
+                    "provider": &provider,
+                    "provider_profile": &provider_profile,
                     "latency_ms": latency_ms,
                     "status": if code == 200 { "ok".to_string() } else { format!("http_{}", code) },
                 }));
@@ -1274,6 +1410,8 @@ pub async fn dex_speed_test() -> Result<Value, String> {
                 results.push(json!({
                     "model": deecodex_model,
                     "upstream_model": upstream_model,
+                    "provider": &provider,
+                    "provider_profile": &provider_profile,
                     "latency_ms": latency_ms,
                     "status": format!("error: {}", e),
                 }));
@@ -1282,6 +1420,9 @@ pub async fn dex_speed_test() -> Result<Value, String> {
     }
 
     Ok(json!({
+        "provider": provider,
+        "provider_profile": provider_profile,
+        "wire_protocol": wire_protocol,
         "results": results,
         "upstream": upstream,
     }))
@@ -1540,8 +1681,7 @@ fn get_dns_servers() -> Vec<String> {
 
 fn parse_ping_latency(stdout: &str) -> Option<u64> {
     for part in stdout.split_whitespace() {
-        if part.starts_with("time=") {
-            let time_str = &part[5..];
+        if let Some(time_str) = part.strip_prefix("time=") {
             if let Ok(ms) = time_str.trim_end_matches("ms").trim().parse::<f64>() {
                 return Some(ms as u64);
             }
@@ -1560,8 +1700,10 @@ pub fn dex_ssl_check() -> Result<Value, String> {
         args.upstream.clone()
     };
 
-    let base = upstream.trim_end_matches('/');
-    let check_url = format!("{base}/models");
+    let provider = deecodex::providers::guess_provider(&upstream);
+    let profile = deecodex::providers::profile_by_slug(provider);
+    let check_url = deecodex::providers::model_discovery_url(&profile, &upstream, "")
+        .unwrap_or_else(|| upstream.trim_end_matches('/').to_string());
 
     let output = std::process::Command::new("curl")
         .args(["-sI", "--max-time", "10", &check_url])
@@ -1630,7 +1772,7 @@ pub fn dex_export_report() -> Result<Value, String> {
     report.push_str("\n## 配置文件\n\n");
     let config_exists = data_dir.join("config.json").exists();
     let accounts_exists = data_dir.join("accounts.json").exists();
-    let codex_exists = codex_config_path().map_or(false, |p| p.exists());
+    let codex_exists = codex_config_path().is_some_and(|p| p.exists());
     report.push_str(&format!(
         "- config.json: {}\n",
         if config_exists { "存在" } else { "缺失" }

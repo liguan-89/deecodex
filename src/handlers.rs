@@ -10,7 +10,7 @@ use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
 use crate::utils::{limit_function_call_outputs, merge_response_extra};
-use crate::{files, prompts, stream, translate, vector_stores};
+use crate::{files, native_protocols, prompts, providers, stream, translate, vector_stores};
 use anyhow::{bail, Result};
 use axum::{
     extract::{Multipart, Path, Query, Request, State},
@@ -96,6 +96,7 @@ struct BlockingArgs<'a> {
     response_extra: Value,
     req: &'a ResponsesRequest,
     start: Instant,
+    profile: providers::ProviderProfile,
 }
 
 struct BypassArgs {
@@ -109,6 +110,7 @@ struct BypassArgs {
     response_id: String,
     store_response: bool,
     model: String,
+    profile: providers::ProviderProfile,
 }
 
 struct VlmArgs {
@@ -818,17 +820,34 @@ async fn handle_models(State(state): State<AppState>) -> Response {
             .collect();
         return Json(json!({ "object": "list", "data": data })).into_response();
     }
-    // fallback: proxy to upstream
-    let upstream = state.upstream.read().await;
-    let url = format!("{}models", join_base(&upstream));
+    // fallback: proxy to upstream using provider profile metadata
+    let active_account = state.active_account.read().await.clone();
+    let profile = providers::profile_for_account(&active_account);
+    let Some(url) =
+        providers::model_discovery_url(&profile, &active_account.upstream, &active_account.api_key)
+    else {
+        warn!(provider = %profile.slug, "provider model discovery disabled");
+        return Json(serde_json::json!({ "object": "list", "data": [] })).into_response();
+    };
     let mut builder = state.client.get(&url);
-    let api_key = state.api_key.read().await;
-    if !api_key.is_empty() {
-        builder = builder.bearer_auth(api_key.as_str());
+    for (name, value) in providers::request_headers(&profile, &active_account.api_key) {
+        builder = builder.header(name, value);
     }
     match builder.send().await {
         Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
-            Ok(body) => Json(body).into_response(),
+            Ok(body) => {
+                let models = providers::parse_models_response(&profile, &body);
+                if models.is_empty() {
+                    warn!(provider = %profile.slug, "upstream models response parsed empty");
+                    Json(body).into_response()
+                } else {
+                    let data: Vec<_> = models
+                        .into_iter()
+                        .map(|id| json!({ "id": id, "object": "model", "owned_by": profile.slug }))
+                        .collect();
+                    Json(json!({ "object": "list", "data": data })).into_response()
+                }
+            }
             Err(e) => {
                 warn!("upstream models parse error: {e}");
                 Json(serde_json::json!({ "object": "list", "data": [] })).into_response()
@@ -1182,14 +1201,16 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         }
     };
     let model = req.model.clone();
-    let translate_enabled = state.active_account.read().await.translate_enabled;
-    let upstream = state.active_account.read().await.upstream.clone();
+    let active_account = state.active_account.read().await.clone();
+    let translate_enabled = active_account.translate_enabled;
+    let upstream = active_account.upstream.clone();
+    let profile = providers::profile_for_account(&active_account);
     let mode = if translate_enabled {
         "translate"
     } else {
         "bypass"
     };
-    tracing::info!("⇢ {mode} {model} → {upstream}");
+    tracing::info!("⇢ {mode} provider={} {model} → {upstream}", profile.slug);
     if let Some(response) = validate_response_include(req.include.as_deref()) {
         return response;
     }
@@ -1438,6 +1459,7 @@ async fn handle_responses_bypass(
     req.model = model.clone();
 
     let account = state.active_account.read().await;
+    let profile = providers::profile_for_account(&account);
     let upstream = account.upstream.clone();
     let api_key = account.api_key.clone();
     let custom_headers = account.custom_headers.clone();
@@ -1489,6 +1511,7 @@ async fn handle_responses_bypass(
         response_id,
         store_response,
         model,
+        profile,
     };
 
     let start = std::time::Instant::now();
@@ -1513,6 +1536,7 @@ async fn bypass_stream_forward(
         response_id,
         store_response: _,
         model,
+        profile,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}responses", join_base(&upstream_url));
@@ -1523,8 +1547,8 @@ async fn bypass_stream_forward(
         .post(&url)
         .header("Content-Type", "application/json");
 
-    if !api_key.is_empty() {
-        builder = builder.bearer_auth(api_key.as_str());
+    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
+        builder = builder.header(name, value);
     }
 
     for (k, v) in &custom_headers {
@@ -1707,6 +1731,7 @@ async fn bypass_send_request(
         response_id,
         store_response,
         model,
+        profile,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}responses", join_base(&upstream_url));
@@ -1717,8 +1742,8 @@ async fn bypass_send_request(
         .post(&url)
         .header("Content-Type", "application/json");
 
-    if !api_key.is_empty() {
-        builder = builder.bearer_auth(api_key.as_str());
+    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
+        builder = builder.header(name, value);
     }
 
     for (k, v) in &custom_headers {
@@ -1824,7 +1849,7 @@ async fn bypass_send_request(
                     .save_response(response_id.clone(), response_body.clone());
             }
 
-            let _ = {
+            {
                 let usage = response_body.get("usage");
                 let input_tokens = usage
                     .and_then(|u| u.get("input_tokens"))
@@ -1836,7 +1861,7 @@ async fn bypass_send_request(
                     .unwrap_or(0) as u32;
                 let cache_hit = usage
                     .and_then(|u| u.as_object())
-                    .map(|u| is_cache_hit(u))
+                    .map(is_cache_hit)
                     .unwrap_or(false);
                 state
                     .request_history
@@ -1979,6 +2004,11 @@ async fn handle_responses_inner(
         state.chinese_thinking,
     );
     let mut chat_req = translated.chat;
+    chat_req.reasoning_effort = reasoning_effort.clone();
+    chat_req.thinking = thinking.clone();
+    let active_account = state.active_account.read().await.clone();
+    let profile = providers::profile_for_account(&active_account);
+    providers::adapt_chat_request(&profile, &mut chat_req);
 
     // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
@@ -2078,8 +2108,32 @@ async fn handle_responses_inner(
         (url, vision_api_key_val.clone())
     } else {
         let upstream = state.upstream.read().await;
-        let url = format!("{}chat/completions", join_base(&upstream));
         let api_key = state.api_key.read().await;
+        let url = match profile.wire_protocol {
+            providers::WireProtocol::ChatCompletions => {
+                format!("{}chat/completions", join_base(&upstream))
+            }
+            providers::WireProtocol::AnthropicMessages | providers::WireProtocol::GeminiNative => {
+                match native_protocols::native_endpoint(
+                    &profile.wire_protocol,
+                    upstream.as_str(),
+                    &chat_req.model,
+                    req.stream,
+                    &api_key,
+                ) {
+                    Some(url) => url,
+                    None => {
+                        return unsupported_param("wire_protocol", "当前供应商协议尚未接入翻译路径")
+                    }
+                }
+            }
+            providers::WireProtocol::Responses => {
+                return unsupported_param(
+                    "wire_protocol",
+                    "Responses 直连请关闭请求翻译，原生翻译路径不处理 Responses 协议",
+                )
+            }
+        };
         (url, api_key.clone())
     };
 
@@ -2094,8 +2148,10 @@ async fn handle_responses_inner(
         })
         .collect();
     info!(
-        "→ {} effort={} thinking={} msgs={} tools={} names=[{}]{}",
+        "→ {} provider={} protocol={:?} effort={} thinking={} msgs={} tools={} names=[{}]{}",
         mapped_model,
+        profile.slug,
+        profile.wire_protocol,
         fmt_effort(&reasoning_effort),
         fmt_thinking(&thinking),
         msg_count,
@@ -2103,6 +2159,13 @@ async fn handle_responses_inner(
         tool_names.join(", "),
         vision_label
     );
+
+    if req.stream && profile.wire_protocol != providers::WireProtocol::ChatCompletions {
+        return unsupported_param(
+            "stream",
+            "Anthropic/Gemini 原生协议 adapter 当前仅支持非流式请求；请关闭 stream 或使用 Chat Completions 兼容供应商",
+        );
+    }
 
     if req.background == Some(true) {
         if req.stream {
@@ -2178,6 +2241,7 @@ async fn handle_responses_inner(
                 response_extra: response_extra.clone(),
                 req: &bg_req,
                 start: Instant::now(),
+                profile,
             })
             .await;
             task_cleanup.remove(&cleanup_id);
@@ -2286,6 +2350,7 @@ async fn handle_responses_inner(
             max_retries: state.active_account.read().await.max_retries,
             request_history: state.request_history.clone(),
             upstream_url: url,
+            allow_missing_done: profile.capabilities.allow_missing_done,
             start,
         });
         let mut resp = sse.into_response();
@@ -2317,6 +2382,7 @@ async fn handle_responses_inner(
             response_extra,
             req: &req,
             start,
+            profile,
         })
         .await;
         let elapsed = start.elapsed();
@@ -2338,14 +2404,15 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         response_extra,
         req,
         start,
+        profile,
     } = args;
     let mut builder = state
         .client
         .post(&url)
         .header("Content-Type", "application/json");
 
-    if !api_key.is_empty() {
-        builder = builder.bearer_auth(api_key.as_str());
+    for (name, value) in providers::request_headers(&profile, api_key.as_str()) {
+        builder = builder.header(name, value);
     }
 
     // 注入账号级自定义 HTTP 头
@@ -2367,8 +2434,17 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
     let max_retries = state.active_account.read().await.max_retries.unwrap_or(3) as usize;
     let mut attempt: usize = 0;
     let mut delay_ms: u64 = 500;
+    let upstream_body = native_protocols::to_native_request(&profile.wire_protocol, &chat_req)
+        .unwrap_or_else(|| serde_json::to_value(&chat_req).unwrap_or_else(|_| json!({})));
+
     let result = loop {
-        match builder.try_clone().unwrap().json(&chat_req).send().await {
+        match builder
+            .try_clone()
+            .unwrap()
+            .json(&upstream_body)
+            .send()
+            .await
+        {
             Err(e) => {
                 if attempt < max_retries {
                     attempt += 1;
@@ -2490,7 +2566,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             )
                 .into_response()
         }
-        Ok(r) => match r.json::<ChatResponse>().await {
+        Ok(r) => match parse_blocking_response(r, &profile).await {
             Err(e) => {
                 error!("parse error: {e}");
                 if store_response {
@@ -2642,6 +2718,28 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 Json(resp).into_response()
             }
         },
+    }
+}
+
+async fn parse_blocking_response(
+    response: reqwest::Response,
+    profile: &providers::ProviderProfile,
+) -> Result<ChatResponse, String> {
+    match profile.wire_protocol {
+        providers::WireProtocol::ChatCompletions => response
+            .json::<ChatResponse>()
+            .await
+            .map_err(|err| err.to_string()),
+        providers::WireProtocol::AnthropicMessages | providers::WireProtocol::GeminiNative => {
+            let body = response
+                .json::<Value>()
+                .await
+                .map_err(|err| err.to_string())?;
+            native_protocols::native_response_to_chat(&profile.wire_protocol, body)
+        }
+        providers::WireProtocol::Responses => {
+            Err("Responses 直连不支持 blocking Chat 响应解析".into())
+        }
     }
 }
 

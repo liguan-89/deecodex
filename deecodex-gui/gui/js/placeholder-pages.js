@@ -1843,7 +1843,10 @@ function dexRefreshStatus() {
     var acctOk = data.account && data.account.ok;
     var errCount = data.recent_errors || 0;
     var m = window.dexAgent.selectedModel;
-    var modelLabel = (m && m !== 'auto') ? m : (data.account && data.account.provider) || '';
+    var accountProvider = (data.account && data.account.provider) || '';
+    var accountProfile = (data.account && data.account.profile) || '';
+    var modelLabel = (m && m !== 'auto') ? m : accountProvider;
+    var profileLabel = accountProfile && accountProfile !== accountProvider ? accountProfile : '';
     var parts = [];
     if (svcOk) parts.push('🟢服务');
     else parts.push('🔴服务');
@@ -1851,6 +1854,7 @@ function dexRefreshStatus() {
     else parts.push('账号异常');
     if (errCount > 0) parts.push(errCount + 'err');
     if (modelLabel) parts.push(modelLabel);
+    if (profileLabel) parts.push(profileLabel);
     text.textContent = parts.join(' · ');
     if (!svcOk || !acctOk) { dot.className = 'dex-status-dot dex-status-err'; }
     else if (errCount > 0) { dot.className = 'dex-status-dot dex-status-warn'; }

@@ -255,6 +255,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 id: generate_id(),
                 name: "旧配置导入".into(),
                 provider: provider.to_string(),
+                wire_protocol: Default::default(),
                 upstream: file_args.upstream.clone(),
                 api_key: file_args.api_key.clone(),
                 model_map,
@@ -271,6 +272,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 reasoning_effort_override: None,
                 thinking_tokens: None,
                 custom_headers: HashMap::new(),
+                provider_options: deecodex::providers::provider_options_for_slug(provider),
                 request_timeout_secs: None,
                 max_retries: None,
                 translate_enabled: true,
@@ -300,6 +302,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             id: generate_id(),
             name: "默认账号".into(),
             provider: "openrouter".into(),
+            wire_protocol: openrouter.wire_protocol.clone(),
             upstream: openrouter.default_upstream.clone(),
             api_key: String::new(),
             model_map: HashMap::new(),
@@ -316,6 +319,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: HashMap::new(),
+            provider_options: deecodex::providers::provider_options_for_slug("openrouter"),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
@@ -1229,6 +1233,9 @@ pub async fn add_account(
         if a.provider.is_empty() {
             a.provider = guess_provider(&a.upstream).to_string();
         }
+        if a.provider_options.is_empty() {
+            a.provider_options = deecodex::providers::provider_options_for_slug(&a.provider);
+        }
         a.created_at = now_secs();
         a.updated_at = now_secs();
         a
@@ -1243,6 +1250,7 @@ pub async fn add_account(
             id: generate_id(),
             name: format!("{} 账号", preset.label),
             provider: provider.clone(),
+            wire_protocol: preset.wire_protocol.clone(),
             upstream: preset.default_upstream.clone(),
             api_key: String::new(),
             model_map: Default::default(),
@@ -1259,6 +1267,7 @@ pub async fn add_account(
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: HashMap::new(),
+            provider_options: deecodex::providers::provider_options_for_slug(&provider),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
@@ -1303,6 +1312,10 @@ pub async fn update_account(
     if account.provider.is_empty() {
         account.provider = guess_provider(&account.upstream).to_string();
     }
+    if account.provider_options.is_empty() {
+        account.provider_options =
+            deecodex::providers::provider_options_for_slug(&account.provider);
+    }
     account.updated_at = now_secs();
 
     store.accounts[pos] = account.clone();
@@ -1312,7 +1325,31 @@ pub async fn update_account(
 
     // 如果保存的是活跃账号，重新注入 codex config（上下文窗口覆盖可能已变更）
     if store.active_id.as_ref() == Some(&account.id) {
-        if let Some(_app_state) = manager.app_state.lock().await.as_ref() {
+        if let Some(app_state) = manager.app_state.lock().await.as_ref() {
+            let upstream_url = deecodex::handlers::validate_upstream(&account.upstream)
+                .map_err(|e| format!("账号上游 URL 无效: {e}"))?;
+            *app_state.upstream.write().await = upstream_url;
+            *app_state.api_key.write().await = account.api_key.clone();
+            *app_state.model_map.write().await = account.model_map.clone();
+            let vision_upstream = if account.vision_upstream.is_empty() {
+                None
+            } else {
+                Some(
+                    deecodex::handlers::validate_upstream(&account.vision_upstream)
+                        .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
+                )
+            };
+            *app_state.vision_upstream.write().await = vision_upstream;
+            *app_state.vision_api_key.write().await = account.vision_api_key.clone();
+            *app_state.vision_model.write().await = account.vision_model.clone();
+            *app_state.vision_endpoint.write().await = account.vision_endpoint.clone();
+            *app_state.custom_headers.write().await = account.custom_headers.clone();
+            *app_state.request_timeout_secs.write().await = account.request_timeout_secs;
+            *app_state.reasoning_effort_override.write().await =
+                account.reasoning_effort_override.clone();
+            *app_state.thinking_tokens.write().await = account.thinking_tokens;
+            *app_state.active_account.write().await = account.clone();
+            *app_state.account_store.write().await = store.clone();
             let port = *manager.port.lock().await;
             deecodex::codex_config::inject(port, account.context_window_override);
         }
@@ -1476,6 +1513,12 @@ pub fn get_provider_presets() -> Result<Value, String> {
                 "default_upstream": p.default_upstream,
                 "known_models": p.known_models,
                 "default_api_key_env": p.default_api_key_env,
+                "wire_protocol": p.wire_protocol,
+                "auth_scheme": p.auth_scheme,
+                "model_discovery": p.model_discovery,
+                "capabilities": p.capabilities,
+                "capability_labels": p.capability_labels,
+                "provider_options": p.provider_options,
             })
         })
         .collect();
@@ -1492,7 +1535,7 @@ pub async fn fetch_upstream_models(
     upstream: Option<String>,
     api_key: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let (upstream, api_key) = if let Some(id) = account_id {
+    let (upstream, api_key, profile) = if let Some(id) = account_id {
         let data_dir = manager.data_dir.lock().await.clone();
         let store = deecodex::accounts::load_accounts(&data_dir);
         let account = store
@@ -1500,16 +1543,24 @@ pub async fn fetch_upstream_models(
             .iter()
             .find(|a| a.id == id)
             .ok_or_else(|| "账号不存在".to_string())?;
-        (account.upstream.clone(), account.api_key.clone())
-    } else {
         (
-            upstream.ok_or("缺少 upstream 参数")?,
+            account.upstream.clone(),
+            account.api_key.clone(),
+            deecodex::providers::profile_for_account(account),
+        )
+    } else {
+        let upstream = upstream.ok_or("缺少 upstream 参数")?;
+        let provider = deecodex::providers::guess_provider(&upstream).to_string();
+        (
+            upstream,
             api_key.unwrap_or_default(),
+            deecodex::providers::profile_by_slug(&provider),
         )
     };
 
-    let base = upstream.trim_end_matches('/');
-    let urls = vec![format!("{base}/models")];
+    let urls = deecodex::providers::model_discovery_url(&profile, &upstream, &api_key)
+        .map(|url| vec![url])
+        .ok_or_else(|| format!("{} 不支持模型列表拉取", profile.label))?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -1518,26 +1569,19 @@ pub async fn fetch_upstream_models(
         .map_err(|e| format!("创建客户端失败: {e}"))?;
     for url in &urls {
         let mut req = client.get(url);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(&api_key);
+        for (name, value) in deecodex::providers::request_headers(&profile, &api_key) {
+            req = req.header(name, value);
         }
-        tracing::info!("获取上游模型: GET {url}");
+        tracing::info!(provider = %profile.slug, "获取上游模型: GET {url}");
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
                 let body: Value = resp.json().await.map_err(|e| format!("解析失败: {e}"))?;
-                let models: Vec<String> = body["data"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|m| m["id"].as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let models = deecodex::providers::parse_models_response(&profile, &body);
                 if !models.is_empty() {
-                    tracing::info!("获取上游模型成功: {} 个模型", models.len());
+                    tracing::info!(provider = %profile.slug, "获取上游模型成功: {} 个模型", models.len());
                     return Ok(models);
                 }
-                tracing::info!("上游模型响应中 data 为空: {:?}", body);
+                tracing::info!(provider = %profile.slug, "上游模型响应解析为空: {:?}", body);
             }
             Ok(resp) => {
                 let status = resp.status();
@@ -1591,6 +1635,7 @@ pub async fn fetch_balance(
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| "账号不存在".to_string())?;
+    let profile = deecodex::providers::profile_for_account(account);
     let upstream = account.upstream.trim_end_matches('/').to_string();
     let api_key = account.api_key.clone();
 
@@ -1613,8 +1658,8 @@ pub async fn fetch_balance(
     if !account.balance_url.is_empty() {
         let url = account.balance_url.trim_end_matches('/').to_string();
         let mut req = client.get(&url);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(&api_key);
+        for (name, value) in deecodex::providers::request_headers(&profile, &api_key) {
+            req = req.header(name, value);
         }
         tracing::info!("使用自定义 balance_url 探测: {}", url);
         match req.send().await {
@@ -1824,8 +1869,8 @@ pub async fn fetch_balance(
         for base in &bases {
             let url = format!("{}{}", base, probe);
             let mut req = client.get(&url);
-            if !api_key.is_empty() {
-                req = req.bearer_auth(&api_key);
+            for (name, value) in deecodex::providers::request_headers(&profile, &api_key) {
+                req = req.header(name, value);
             }
             match req.send().await {
                 Ok(resp) => {
@@ -1990,6 +2035,7 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "id": a.id,
         "name": a.name,
         "provider": a.provider,
+        "wire_protocol": a.wire_protocol,
         "upstream": a.upstream,
         "api_key": a.api_key.clone(),
         "model_map": a.model_map,
@@ -2002,6 +2048,7 @@ fn account_to_value(a: &deecodex::accounts::Account) -> Value {
         "reasoning_effort_override": a.reasoning_effort_override,
         "thinking_tokens": a.thinking_tokens,
         "custom_headers": a.custom_headers,
+        "provider_options": a.provider_options,
         "request_timeout_secs": a.request_timeout_secs,
         "max_retries": a.max_retries,
         "translate_enabled": a.translate_enabled,
@@ -2108,15 +2155,17 @@ struct ConnectivityResult {
 
 /// 执行上游连通性检测（内部使用）
 async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<ConnectivityResult, String> {
-    let base = upstream.trim_end_matches('/');
-    let url = format!("{base}/models");
+    let provider = deecodex::providers::guess_provider(upstream);
+    let profile = deecodex::providers::profile_by_slug(provider);
+    let url = deecodex::providers::model_discovery_url(&profile, upstream, api_key)
+        .ok_or_else(|| format!("{} 不支持模型列表探测", profile.label))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     let mut req = client.get(&url);
-    if !api_key.is_empty() {
-        req = req.bearer_auth(api_key);
+    for (name, value) in deecodex::providers::request_headers(&profile, api_key) {
+        req = req.header(name, value);
     }
     let start = std::time::Instant::now();
     match req.send().await {
@@ -2126,7 +2175,8 @@ async fn do_test_connectivity(upstream: &str, api_key: &str) -> Result<Connectiv
             let body = resp.text().await.unwrap_or_default();
             let model_count = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
-                .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()));
+                .map(|v| deecodex::providers::parse_models_response(&profile, &v).len())
+                .filter(|count| *count > 0);
             Ok(ConnectivityResult {
                 ok: status < 500,
                 status_code: status,

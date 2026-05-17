@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::{header, HeaderValue, Method, Request, Response, StatusCode},
     response::IntoResponse,
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use deecodex::{
@@ -63,6 +63,7 @@ fn test_state() -> AppState {
                 id: "test-account".into(),
                 name: "测试账号".into(),
                 provider: "custom".into(),
+                wire_protocol: Default::default(),
                 upstream: "https://example.com".into(),
                 api_key: "test".into(),
                 model_map: std::collections::HashMap::new(),
@@ -79,6 +80,7 @@ fn test_state() -> AppState {
                 reasoning_effort_override: None,
                 thinking_tokens: None,
                 custom_headers: std::collections::HashMap::new(),
+                provider_options: std::collections::HashMap::new(),
                 request_timeout_secs: None,
                 max_retries: None,
                 translate_enabled: true,
@@ -89,6 +91,7 @@ fn test_state() -> AppState {
             id: "test-account".into(),
             name: "测试账号".into(),
             provider: "custom".into(),
+            wire_protocol: Default::default(),
             upstream: "https://example.com".into(),
             api_key: "test".into(),
             model_map: std::collections::HashMap::new(),
@@ -105,6 +108,7 @@ fn test_state() -> AppState {
             reasoning_effort_override: None,
             thinking_tokens: None,
             custom_headers: std::collections::HashMap::new(),
+            provider_options: std::collections::HashMap::new(),
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
@@ -723,6 +727,61 @@ async fn test_vector_store_file_batches_cancel() {
     let result: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(result["id"], batch_id);
     assert_eq!(result["object"], "vector_store.file_batch");
+}
+
+#[tokio::test]
+async fn test_models_endpoint_normalizes_gemini_model_discovery() {
+    async fn gemini_models_handler() -> Response<Body> {
+        Response::new(Body::from(
+            json!({
+                "models": [
+                    {"name": "models/gemini-2.0-flash"},
+                    {"name": "models/gemini-pro"}
+                ]
+            })
+            .to_string(),
+        ))
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new().route("/models", get(gemini_models_handler));
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let state = test_state();
+    {
+        let mut account = state.active_account.write().await;
+        account.provider = "google-ai".into();
+        account.upstream = format!("http://{addr}");
+        account.api_key = "gemini-key".into();
+    }
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["gemini-2.0-flash", "gemini-pro"]);
 }
 
 #[tokio::test]
@@ -1597,6 +1656,7 @@ fn make_stream_args(
                 .unwrap(),
         ),
         upstream_url: url.to_string(),
+        allow_missing_done: true,
         start: std::time::Instant::now(),
     }
 }
@@ -1648,6 +1708,7 @@ fn make_stream_args_custom(
                 .unwrap(),
         ),
         upstream_url: url.to_string(),
+        allow_missing_done: true,
         start: std::time::Instant::now(),
     }
 }
@@ -1911,6 +1972,35 @@ async fn test_translate_stream_cache_store_and_replay() {
     assert_eq!(replay_events[2].0, "response.output_text.delta");
     assert_eq!(replay_events[2].1["delta"], "Cached response");
     assert_eq!(replay_events.last().unwrap().0, "response.completed");
+}
+
+#[tokio::test]
+async fn test_translate_stream_missing_done_respects_provider_capability() {
+    let sse_body = build_sse_body(vec![
+        r#"data: {"choices":[{"delta":{"content":"No done"},"finish_reason":"stop"}]}"#,
+    ]);
+
+    let url = start_mock_sse(sse_body).await;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let mut args = make_stream_args(client, url.as_str(), false, None, None);
+    args.allow_missing_done = false;
+    let bytes = axum::body::to_bytes(
+        translate_stream(args).into_response().into_body(),
+        usize::MAX,
+    )
+    .await
+    .unwrap();
+    let events = parse_sse_events(&bytes);
+
+    assert_eq!(events.last().unwrap().0, "response.failed");
+    assert_eq!(
+        events.last().unwrap().1["response"]["error"]["code"],
+        "stream_incomplete"
+    );
 }
 
 #[tokio::test]
@@ -2293,6 +2383,224 @@ async fn capture_json_upstream(
         reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
         captured,
     )
+}
+
+type CapturedNativeRequests = Arc<Mutex<Vec<(String, Value, Vec<(String, String)>)>>>;
+
+#[derive(Clone)]
+struct CaptureJsonWithPathState {
+    response_body: &'static str,
+    captured: CapturedNativeRequests,
+}
+
+async fn capture_json_with_path_handler(
+    State(state): State<CaptureJsonWithPathState>,
+    request: Request<Body>,
+) -> Response<Body> {
+    let path = request
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| request.uri().path().to_string());
+    let headers = request
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect::<Vec<_>>();
+    let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push((path, value, headers));
+    let mut response = Response::new(Body::from(state.response_body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+async fn capture_native_upstream(
+    route: &'static str,
+    response_body: &'static str,
+) -> (
+    reqwest::Url,
+    Arc<Mutex<Vec<(String, Value, Vec<(String, String)>)>>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = CaptureJsonWithPathState {
+        response_body,
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route(route, post(capture_json_with_path_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (
+        reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
+        captured,
+    )
+}
+
+#[tokio::test]
+async fn test_anthropic_native_non_stream_response_roundtrip() {
+    let (upstream, captured) = capture_native_upstream(
+        "/messages",
+        r#"{
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type":"text","text":"Anthropic native OK"}],
+            "usage": {"input_tokens": 8, "output_tokens": 5}
+        }"#,
+    )
+    .await;
+    let upstream_text = upstream.to_string();
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
+    state.api_key = Arc::new(tokio::sync::RwLock::new("anthropic-key".into()));
+    {
+        let mut account = state.active_account.write().await;
+        account.provider = "anthropic".into();
+        account.wire_protocol = deecodex::providers::WireProtocol::AnthropicMessages;
+        account.upstream = upstream_text.clone();
+        account.api_key = "anthropic-key".into();
+    }
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-5","instructions":"be concise","input":"hello"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["output"][0]["content"][0]["text"],
+        "Anthropic native OK"
+    );
+    assert_eq!(json["usage"]["input_tokens"], 8);
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured[0].0, "/messages");
+    assert_eq!(captured[0].1["model"], "claude-sonnet-4-5");
+    assert_eq!(captured[0].1["system"], "be concise");
+    assert_eq!(captured[0].1["messages"][0]["role"], "user");
+    assert!(captured[0]
+        .2
+        .iter()
+        .any(|(name, value)| name == "x-api-key" && value == "anthropic-key"));
+    assert!(captured[0]
+        .2
+        .iter()
+        .any(|(name, value)| name == "anthropic-version" && value == "2023-06-01"));
+}
+
+#[tokio::test]
+async fn test_gemini_native_non_stream_response_roundtrip() {
+    let (upstream, captured) = capture_native_upstream(
+        "/models/gemini-2.0-flash:generateContent",
+        r#"{
+            "candidates": [{"content": {"parts": [{"text":"Gemini native OK"}]}}],
+            "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 7, "totalTokenCount": 13}
+        }"#,
+    )
+    .await;
+    let upstream_text = upstream.to_string();
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream));
+    state.api_key = Arc::new(tokio::sync::RwLock::new("gemini-key".into()));
+    {
+        let mut account = state.active_account.write().await;
+        account.provider = "google-ai".into();
+        account.wire_protocol = deecodex::providers::WireProtocol::GeminiNative;
+        account.upstream = upstream_text.clone();
+        account.api_key = "gemini-key".into();
+    }
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gemini-2.0-flash","instructions":"be concise","input":"hello"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "Gemini native OK");
+    assert_eq!(json["usage"]["output_tokens"], 7);
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(
+        captured[0].0,
+        "/models/gemini-2.0-flash:generateContent?key=gemini-key"
+    );
+    assert_eq!(
+        captured[0].1["systemInstruction"]["parts"][0]["text"],
+        "be concise"
+    );
+    assert_eq!(captured[0].1["contents"][0]["role"], "user");
+}
+
+#[tokio::test]
+async fn test_native_protocol_stream_returns_unsupported() {
+    let state = test_state();
+    {
+        let mut account = state.active_account.write().await;
+        account.provider = "google-ai".into();
+        account.wire_protocol = deecodex::providers::WireProtocol::GeminiNative;
+        account.upstream = "http://127.0.0.1:1".into();
+    }
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gemini-2.0-flash","input":"hello","stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["param"], "stream");
 }
 
 #[tokio::test]
