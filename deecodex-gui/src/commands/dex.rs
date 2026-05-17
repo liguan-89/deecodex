@@ -191,8 +191,7 @@ pub async fn dex_chat(
                     continue;
                 }
 
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         break 'stream_loop;
                     }
@@ -697,7 +696,7 @@ pub fn dex_search_logs(query: String, context_lines: Option<usize>) -> Result<Va
         }
         if line.to_lowercase().contains(&query_lower) {
             // 收集上下文
-            let start = if i >= ctx { i - ctx } else { 0 };
+            let start = i.saturating_sub(ctx);
             let end = (i + ctx + 1).min(all_lines.len());
             let context: Vec<String> = all_lines[start..end]
                 .iter()
@@ -1540,8 +1539,7 @@ fn get_dns_servers() -> Vec<String> {
 
 fn parse_ping_latency(stdout: &str) -> Option<u64> {
     for part in stdout.split_whitespace() {
-        if part.starts_with("time=") {
-            let time_str = &part[5..];
+        if let Some(time_str) = part.strip_prefix("time=") {
             if let Ok(ms) = time_str.trim_end_matches("ms").trim().parse::<f64>() {
                 return Some(ms as u64);
             }
@@ -1630,7 +1628,7 @@ pub fn dex_export_report() -> Result<Value, String> {
     report.push_str("\n## 配置文件\n\n");
     let config_exists = data_dir.join("config.json").exists();
     let accounts_exists = data_dir.join("accounts.json").exists();
-    let codex_exists = codex_config_path().map_or(false, |p| p.exists());
+    let codex_exists = codex_config_path().is_some_and(|p| p.exists());
     report.push_str(&format!(
         "- config.json: {}\n",
         if config_exists { "存在" } else { "缺失" }

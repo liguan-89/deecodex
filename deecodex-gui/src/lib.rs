@@ -25,6 +25,12 @@ impl<W: Write> Write for FlushWriter<W> {
     }
 }
 
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    value
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 pub struct ServerManager {
     pub shutdown_tx: Mutex<Option<tokio::sync::watch::Sender<()>>>,
     pub handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -193,7 +199,7 @@ fn load_env() {
 
 pub fn run() {
     // 单实例控制：检测已有 GUI 实例，避免重复启动
-    {
+    if !env_flag_enabled(std::env::var("DEECODEX_GUI_ALLOW_MULTIPLE").ok().as_deref()) {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
         // 扫描同名进程（排除自身）
@@ -511,4 +517,24 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_flag_enabled;
+
+    #[test]
+    fn gui_allow_multiple_flag_accepts_common_truthy_values() {
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("true")));
+        assert!(env_flag_enabled(Some(" YES ")));
+    }
+
+    #[test]
+    fn gui_allow_multiple_flag_rejects_empty_and_falsey_values() {
+        assert!(!env_flag_enabled(None));
+        assert!(!env_flag_enabled(Some("")));
+        assert!(!env_flag_enabled(Some("false")));
+        assert!(!env_flag_enabled(Some("0")));
+    }
 }

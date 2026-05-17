@@ -82,6 +82,8 @@ fn test_state() -> AppState {
                 request_timeout_secs: None,
                 max_retries: None,
                 translate_enabled: true,
+                capability_enabled: false,
+                capability_account_id: None,
             }],
             active_id: Some("test-account".into()),
         })),
@@ -108,6 +110,8 @@ fn test_state() -> AppState {
             request_timeout_secs: None,
             max_retries: None,
             translate_enabled: true,
+            capability_enabled: false,
+            capability_account_id: None,
         })),
         reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
         thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
@@ -133,6 +137,45 @@ async fn one_shot_upstream(response_body: &'static str) -> reqwest::Url {
             response_body
         );
         socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
+}
+
+async fn capturing_upstream(
+    response_body: &'static str,
+    captured: Arc<Mutex<Option<Value>>>,
+) -> reqwest::Url {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0_u8; 64 * 1024];
+        let n = socket.read(&mut buf).await.unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        if let Some((_, body)) = request.split_once("\r\n\r\n") {
+            if let Ok(value) = serde_json::from_str::<Value>(body) {
+                *captured.lock().unwrap() = Some(value);
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
+}
+
+async fn unused_upstream(hit_count: Arc<AtomicUsize>) -> reqwest::Url {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            hit_count.fetch_add(1, Ordering::SeqCst);
+            let response = "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
     });
     reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
 }
@@ -1434,6 +1477,49 @@ async fn start_mock_sse(body: String) -> reqwest::Url {
 }
 
 #[derive(Clone)]
+struct CapturingSseState {
+    body: SseBody,
+    captured: Arc<Mutex<Option<Value>>>,
+}
+
+async fn capturing_sse_handler(
+    State(state): State<CapturingSseState>,
+    body: Body,
+) -> Response<Body> {
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        *state.captured.lock().unwrap() = Some(value);
+    }
+    let mut resp = Response::new(Body::from(state.body.as_str().to_string()));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    resp
+}
+
+async fn start_capturing_mock_sse(
+    body: String,
+    captured: Arc<Mutex<Option<Value>>>,
+) -> reqwest::Url {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = CapturingSseState {
+        body: Arc::new(body),
+        captured,
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/v1/chat/completions", post(capturing_sse_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
+}
+
+#[derive(Clone)]
 struct RetryState {
     sse_body: String,
     call_count: Arc<AtomicUsize>,
@@ -1992,6 +2078,475 @@ async fn test_responses_blocking_text() {
     assert_eq!(json["usage"]["input_tokens"], 10);
     assert_eq!(json["usage"]["output_tokens"], 20);
     assert_eq!(json["usage"]["total_tokens"], 30);
+}
+
+#[tokio::test]
+async fn test_capability_observation_is_injected_into_main_request() {
+    let helper_capture = Arc::new(Mutex::new(None));
+    let main_capture = Arc::new(Mutex::new(None));
+    let helper_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "图片里有一张蓝色状态卡"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+        helper_capture.clone(),
+    )
+    .await;
+    let main_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "已结合能力观察回答"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#,
+        main_capture.clone(),
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.upstream = main_url.to_string();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("helper-account".into());
+    let helper_account = Account {
+        id: "helper-account".into(),
+        name: "能力账号".into(),
+        provider: "openai".into(),
+        upstream: helper_url.to_string(),
+        api_key: "helper-key".into(),
+        model_map: std::collections::HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: 0,
+        updated_at: 0,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
+    };
+    let sessions = state.sessions.clone();
+    *state.active_account.write().await = main_account.clone();
+    *state.account_store.write().await = AccountStore {
+        accounts: vec![main_account, helper_account],
+        active_id: Some("test-account".into()),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type":"input_text","text":"请描述图片"},
+                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    let response_json: Value = serde_json::from_slice(&response_body).unwrap();
+    let response_id = response_json["id"].as_str().unwrap();
+    let helper_body = helper_capture.lock().unwrap().clone().unwrap();
+    assert_eq!(helper_body["stream"], false);
+    let main_body = main_capture.lock().unwrap().clone().unwrap();
+    let messages = main_body["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"].as_str().is_some_and(|text| {
+                text.contains("deecodex 能力通道观察结果") && text.contains("蓝色状态卡")
+            })
+    }));
+    let input_items = sessions.get_input_items(response_id).unwrap();
+    assert!(input_items.iter().any(|item| {
+        item["role"] == "system"
+            && item["metadata"]["x_deecodex_kind"] == "capability_observation"
+            && item["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("蓝色状态卡"))
+    }));
+}
+
+#[tokio::test]
+async fn test_capability_failure_suppresses_legacy_vision_route() {
+    let main_capture = Arc::new(Mutex::new(None));
+    let vision_hits = Arc::new(AtomicUsize::new(0));
+    let main_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "主模型回退回答"}}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12}
+        }"#,
+        main_capture.clone(),
+    )
+    .await;
+    let vision_url = unused_upstream(vision_hits.clone()).await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
+    state.vision_upstream = Arc::new(tokio::sync::RwLock::new(Some(vision_url)));
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.upstream = main_url.to_string();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("missing-helper".into());
+    *state.active_account.write().await = main_account.clone();
+    *state.account_store.write().await = AccountStore {
+        accounts: vec![main_account],
+        active_id: Some("test-account".into()),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type":"input_text","text":"请描述图片"},
+                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(main_capture.lock().unwrap().is_some());
+    assert_eq!(vision_hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn test_capability_plain_text_does_not_call_helper() {
+    let main_capture = Arc::new(Mutex::new(None));
+    let helper_hits = Arc::new(AtomicUsize::new(0));
+    let main_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "普通文本回答"}}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12}
+        }"#,
+        main_capture.clone(),
+    )
+    .await;
+    let helper_url = unused_upstream(helper_hits.clone()).await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.upstream = main_url.to_string();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("helper-account".into());
+    let helper_account = Account {
+        id: "helper-account".into(),
+        name: "能力账号".into(),
+        provider: "openai".into(),
+        upstream: helper_url.to_string(),
+        api_key: "helper-key".into(),
+        model_map: std::collections::HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: 0,
+        updated_at: 0,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
+    };
+    *state.active_account.write().await = main_account.clone();
+    *state.account_store.write().await = AccountStore {
+        accounts: vec![main_account, helper_account],
+        active_id: Some("test-account".into()),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-5","input":"只是普通文本"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(helper_hits.load(Ordering::SeqCst), 0);
+    let main_body = main_capture.lock().unwrap().clone().unwrap();
+    let messages = main_body["messages"].as_array().unwrap();
+    assert!(!messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("deecodex 能力通道观察结果"))
+    }));
+}
+
+#[tokio::test]
+async fn test_capability_observation_streaming_saves_state() {
+    let helper_capture = Arc::new(Mutex::new(None));
+    let main_capture = Arc::new(Mutex::new(None));
+    let helper_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "流式图片观察: 控制台显示已启动"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+        helper_capture.clone(),
+    )
+    .await;
+    let main_url = start_capturing_mock_sse(
+        build_sse_body(vec![
+            r#"data: {"choices":[{"delta":{"content":"流式最终回答"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":6,"total_tokens":17}}"#,
+            "data: [DONE]",
+        ]),
+        main_capture.clone(),
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
+    let sessions = state.sessions.clone();
+    let request_history = state.request_history.clone();
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.upstream = main_url.to_string();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("helper-account".into());
+    let helper_account = Account {
+        id: "helper-account".into(),
+        name: "能力账号".into(),
+        provider: "openai".into(),
+        upstream: helper_url.to_string(),
+        api_key: "helper-key".into(),
+        model_map: std::collections::HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: 0,
+        updated_at: 0,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
+    };
+    *state.active_account.write().await = main_account.clone();
+    *state.account_store.write().await = AccountStore {
+        accounts: vec![main_account, helper_account],
+        active_id: Some("test-account".into()),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "stream": true,
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type":"input_text","text":"请描述当前图片"},
+                                {"type":"input_image","image_url":"data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let events = parse_sse_events(&body);
+    assert!(!events.is_empty());
+    assert_eq!(events.last().unwrap().0, "response.completed");
+    let response_id = events[0].1["response"]["id"].as_str().unwrap();
+
+    let helper_body = helper_capture.lock().unwrap().clone().unwrap();
+    assert_eq!(helper_body["stream"], false);
+    let main_body = main_capture.lock().unwrap().clone().unwrap();
+    let messages = main_body["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"].as_str().is_some_and(|text| {
+                text.contains("deecodex 能力通道观察结果") && text.contains("控制台显示已启动")
+            })
+    }));
+
+    let input_items = sessions.get_input_items(response_id).unwrap();
+    assert!(input_items.iter().any(|item| {
+        item["role"] == "system"
+            && item["metadata"]["x_deecodex_kind"] == "capability_observation"
+            && item["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("控制台显示已启动"))
+    }));
+    let saved = sessions.get_response(response_id).unwrap();
+    assert_eq!(saved["status"], "completed");
+    assert_eq!(saved["output"][0]["content"][0]["text"], "流式最终回答");
+
+    let history = request_history.list(10).await;
+    assert!(history.iter().any(|entry| {
+        entry.id == response_id && entry.status == "completed" && entry.input_tokens == 11
+    }));
+}
+
+#[tokio::test]
+async fn test_capability_observation_respects_tool_policy() {
+    let main_capture = Arc::new(Mutex::new(None));
+    let helper_url = one_shot_upstream(
+        r#"{
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_unsafe",
+                        "type": "function",
+                        "function": {
+                            "name": "local_mcp_call",
+                            "arguments": "{\"server_label\":\"unsafe\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"/tmp/secret.txt\"}}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+    )
+    .await;
+    let main_url = capturing_upstream(
+        r#"{
+            "choices": [{"message": {"role": "assistant", "content": "已遵循能力观察回答"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }"#,
+        main_capture.clone(),
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_url.clone()));
+    state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
+        allowed_mcp_servers: vec!["safe".into()],
+        ..Default::default()
+    }));
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.upstream = main_url.to_string();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("helper-account".into());
+    let helper_account = Account {
+        id: "helper-account".into(),
+        name: "能力账号".into(),
+        provider: "openai".into(),
+        upstream: helper_url.to_string(),
+        api_key: "helper-key".into(),
+        model_map: std::collections::HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: 0,
+        updated_at: 0,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: std::collections::HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
+    };
+    *state.active_account.write().await = main_account.clone();
+    *state.account_store.write().await = AccountStore {
+        accounts: vec![main_account, helper_account],
+        active_id: Some("test-account".into()),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": "请读取文件",
+                        "tools": [{"type":"mcp","server_label":"safe"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let main_body = main_capture.lock().unwrap().clone().unwrap();
+    let messages = main_body["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"].as_str().is_some_and(|text| {
+                text.contains("MCP 结果: status=failed")
+                    && text.contains("MCP server 'unsafe' is not allowed by local tool policy")
+            })
+    }));
 }
 
 #[tokio::test]

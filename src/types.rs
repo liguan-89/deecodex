@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Responses API (inbound from Codex CLI) ──────────────────────────────────
 
 #[allow(dead_code)] // reserved fields for API compat
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ResponsesRequest {
     pub model: String,
     #[serde(default)]
@@ -69,7 +69,7 @@ pub struct ResponsesRequest {
 }
 
 #[allow(dead_code)] // reserved fields for API compat
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ReasoningConfig {
     #[serde(default)]
     pub effort: Option<String>,
@@ -77,7 +77,7 @@ pub struct ReasoningConfig {
     pub summary: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum ResponsesInput {
     Text(String),

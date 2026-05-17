@@ -228,10 +228,12 @@ impl PluginManager {
                 // 从 handle 取出 exit_rx 用于进程退出监控
                 let exit_rx = handle.exit_rx.take();
 
-                let mut instance = self.instances.get_mut(plugin_id).context("实例状态丢失")?;
-                instance.state = PluginState::Running;
-                instance.handle = Some(handle);
-                instance.restart_count = 0;
+                {
+                    let mut instance = self.instances.get_mut(plugin_id).context("实例状态丢失")?;
+                    instance.state = PluginState::Running;
+                    instance.handle = Some(handle);
+                    instance.restart_count = 0;
+                }
 
                 // 后台监控：进程退出时更新状态
                 if let Some(rx) = exit_rx {
@@ -240,10 +242,14 @@ impl PluginManager {
                     tokio::spawn(async move {
                         let _ = rx.await;
                         if let Some(mut inst) = instances.get_mut(&pid) {
-                            inst.state = PluginState::Error;
-                            inst.handle = None;
+                            if inst.handle.is_some() {
+                                inst.state = PluginState::Error;
+                                inst.handle = None;
+                                tracing::warn!(plugin_id = %pid, "插件进程意外退出");
+                            }
+                        } else {
+                            tracing::warn!(plugin_id = %pid, "插件进程退出但实例状态已不存在");
                         }
-                        tracing::warn!(plugin_id = %pid, "插件进程意外退出");
                     });
                 }
 
@@ -315,17 +321,20 @@ impl PluginManager {
 
     /// 停止插件：shutdown notification → 等待 → kill
     pub async fn stop(&self, plugin_id: &str) -> Result<()> {
-        let mut instance = self
-            .instances
-            .get_mut(plugin_id)
-            .with_context(|| format!("插件 '{}' 未在运行", plugin_id))?;
+        let handle = {
+            let mut instance = self
+                .instances
+                .get_mut(plugin_id)
+                .with_context(|| format!("插件 '{}' 未在运行", plugin_id))?;
+            let handle = instance.handle.take();
+            instance.state = PluginState::Stopped;
+            instance.accounts.clear();
+            handle
+        };
 
-        if let Some(handle) = instance.handle.take() {
+        if let Some(handle) = handle {
             process::shutdown_plugin(handle).await?;
         }
-
-        instance.state = PluginState::Stopped;
-        instance.accounts.clear();
 
         let _ = self.events_tx.send(PluginEvent::Log {
             plugin_id: plugin_id.into(),

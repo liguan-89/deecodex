@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod backup_store;
 pub mod cache;
+pub mod capability;
 pub mod cdp;
 pub mod codex_config;
 pub mod codex_threads;

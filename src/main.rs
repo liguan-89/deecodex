@@ -1,6 +1,7 @@
 mod accounts;
 mod backup_store;
 mod cache;
+mod capability;
 mod cdp;
 mod codex_config;
 mod codex_threads;
@@ -580,6 +581,8 @@ async fn main() -> Result<()> {
         request_timeout_secs: None,
         max_retries: None,
         translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
     };
 
     let state = handlers::AppState {
