@@ -101,15 +101,15 @@ function currentEndpointIndex(a) {
 function endpointKindLabel(kind) {
   const labels = {
     open_ai_chat: 'Chat 兼容',
-    open_ai_responses: 'Responses 直连',
+    open_ai_responses: 'OpenAI Responses 直连',
     anthropic_messages: 'Anthropic Messages',
-    custom_chat: '自定义 Chat',
-    custom_responses: '自定义 Responses',
+    custom_chat: 'Chat 兼容',
+    custom_responses: 'Responses 直连',
     OpenAiChat: 'Chat 兼容',
-    OpenAiResponses: 'Responses 直连',
+    OpenAiResponses: 'OpenAI Responses 直连',
     AnthropicMessages: 'Anthropic Messages',
-    CustomChat: '自定义 Chat',
-    CustomResponses: '自定义 Responses',
+    CustomChat: 'Chat 兼容',
+    CustomResponses: 'Responses 直连',
   };
   return labels[kind] || kind || 'Chat 兼容';
 }
@@ -243,38 +243,51 @@ function renderAccountList() {
       const visionMode = ep?.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
       const contextWindow = ep?.context_window_override ?? null;
       const reasoningEffort = ep?.reasoning_effort_override ?? null;
-      const thinkingTokens = ep?.thinking_tokens ?? null;
-      const caps = accountCapabilityLabels(a).slice(0, 3);
+      const caps = accountCapabilityLabels(a).slice(0, 2);
       const capabilityAccount = a.capability_account_id
         ? list.find(candidate => candidate.id === a.capability_account_id)
         : null;
+      const primaryTags = [
+        endpointKindLabel(ep?.kind),
+        ...caps,
+        visionModeLabel(visionMode),
+      ];
+      const advancedTags = [];
+      if (contextWindow) advancedTags.push(`上下文 ${contextWindow.toLocaleString()}`);
+      if (reasoningEffort) advancedTags.push(`推理 ${reasoningEffort}`);
+      if (a.capability_enabled) advancedTags.push(`能力 ${capabilityAccount ? capabilityAccount.name : '未配置'}`);
+      if (a.dev_pipeline_enabled) advancedTags.push(`开发 ${a.dev_pipeline_trigger_mode === 'always' ? '始终' : (a.dev_pipeline_command || '/dev-pipeline')}`);
       return `<div class="account-card${active ? ' active' : ''}">
-        <div class="account-card-header">
-          ${renderProviderBadge(a.provider)}
-          ${active ? '<span class="active-badge">✓ 活跃</span>' : ''}
-          <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
-        </div>
-        <div class="card-name">${esc(a.name)}</div>
-        <div class="card-key">${esc(maskKey(a.api_key) || '(未配置)')}</div>
-        <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 36))}</div>
-        <div class="card-context" title="协议模式">${esc(endpointKindLabel(ep?.kind))}</div>
-        ${caps.map(label => `<div class="card-context">${esc(label)}</div>`).join('')}
-        <div class="card-context" title="视觉模式">${esc(visionModeLabel(visionMode))}</div>
-        <div class="card-balance" id="balance-${escAttr(a.id)}">
-          <span class="balance-loading">—</span>
-        </div>
-        ${contextWindow ? `<div class="card-context" title="上下文窗口: ${contextWindow.toLocaleString()} tokens">⇄ ${contextWindow.toLocaleString()} tokens</div>` : ''}
-        ${visionMode === 'glue' || visionMode === 'Glue' ? '<div class="card-context" title="已启用胶水多模态">👁 胶水</div>' : ''}
-        ${visionMode === 'native' || visionMode === 'Native' ? '<div class="card-context" title="当前模型原生支持图片输入">👁 原生</div>' : ''}
-        ${reasoningEffort ? `<div class="card-context" title="推理强度: ${reasoningEffort}${thinkingTokens ? ', 思考预算: ' + thinkingTokens.toLocaleString() + ' tokens' : ''}">🧠 ${reasoningEffort}</div>` : ''}
-        ${a.capability_enabled ? `<div class="card-context" title="能力补全账号: ${escAttr(capabilityAccount ? capabilityAccount.name : '未找到')}">能力补全: ${esc(capabilityAccount ? capabilityAccount.name : '未配置')}</div>` : ''}
-        ${a.dev_pipeline_enabled ? `<div class="card-context" title="开发协作编排触发: ${escAttr(a.dev_pipeline_command || '/dev-pipeline')}">开发协作: ${esc(a.dev_pipeline_trigger_mode === 'always' ? '始终' : (a.dev_pipeline_command || '/dev-pipeline'))}</div>` : ''}
-        <div class="card-actions-row">
-          <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
-          ${active
-            ? '<button class="account-action account-applied" disabled>已应用</button>'
-            : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
-          <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
+        <div class="account-card-mainline">
+          <div class="account-card-primary">
+            <div class="account-card-header">
+              <div class="account-card-titlebar">
+                ${renderProviderBadge(a.provider)}
+                ${active ? '<span class="active-badge">活跃</span>' : ''}
+              </div>
+              <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
+            </div>
+            <div class="account-card-body">
+              <div class="account-card-main">
+                <div class="card-name">${esc(a.name)}</div>
+                <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 64))}</div>
+              </div>
+              <div class="card-key">${esc(maskKey(a.api_key) || '未配置')}</div>
+            </div>
+            <div class="account-meta-tags">${primaryTags.map(label => `<span class="card-context">${esc(label)}</span>`).join('')}${advancedTags.length ? `<span class="card-context tag-muted">+${advancedTags.length}</span>` : ''}</div>
+          </div>
+          <div class="account-card-side">
+            <div class="card-balance" id="balance-${escAttr(a.id)}">
+              <span class="balance-loading">—</span>
+            </div>
+            <div class="card-actions-row">
+              <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
+              ${active
+                ? '<button class="account-action account-applied" disabled>已应用</button>'
+                : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
+              <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
+            </div>
+          </div>
         </div>
       </div>`;
     }).join('') + '</div>';
@@ -339,7 +352,12 @@ function renderAccountDetail() {
   <div class="page-header account-detail-header">
     <div class="account-detail-title">
       <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
-      <div><h2>${esc(a.name)}</h2><p>${renderProviderBadge(a.provider)}</p></div>
+      <div>
+        <div class="account-detail-heading">
+          <h2>${esc(a.name)}</h2>
+          ${renderProviderBadge(a.provider)}
+        </div>
+      </div>
     </div>
   </div>
 
@@ -350,23 +368,26 @@ function renderAccountDetail() {
         <div class="account-section-desc">一个账号就是一组供应商、协议、URL 和 Key；同一个 Key 可创建多个账号分别保存。</div>
       </div>
       <div class="config-fields">
-        <div class="config-field">
+        <div class="config-field account-name-field">
           <label>账号名称</label>
           <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
         </div>
-        <div class="config-field">
+        <div class="config-field account-key-field">
           <label>API Key</label>
           <div class="pass-group">
             <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
-            <button type="button" onclick="togglePass('edit_api_key', this)" title="显示/隐藏">⊙</button>
+            <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+            </button>
           </div>
-          <span class="hint">账号级凭据；同一个 Key 可新建多个账号保存不同上游。</span>
         </div>
         <div class="config-field wide">
           <label>上游 URL</label>
-          <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
-          <div class="inline-test-row">
+          <div class="upstream-test-group">
+            <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
             <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
+          </div>
+          <div class="inline-test-result">
             <span id="connectivityResult"></span>
           </div>
         </div>
@@ -380,15 +401,15 @@ function renderAccountDetail() {
       </div>
       <div class="config-fields">
         <div class="config-field">
-          <label>协议模式</label>
+          <label>上游 API 类型</label>
           <select id="edit_endpoint_kind">
-            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>Chat 兼容（Responses → Chat）</option>
-            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>Responses 直连</option>
+            ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? '<option value="custom_chat" selected hidden>OpenAI Chat 兼容（自定义路径）</option>' : ''}
+            ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? '<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>' : ''}
+            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
+            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
             <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
-            <option value="custom_chat" ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? 'selected' : ''}>自定义 Chat</option>
-            <option value="custom_responses" ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? 'selected' : ''}>自定义 Responses</option>
           </select>
-          <span class="hint">选择当前上游真实支持的 API 协议。</span>
+          <span class="hint">DeepSeek、OpenRouter 这类一般选 OpenAI Chat 兼容；只有上游原生支持 Responses API 时才选直连。</span>
         </div>
         <div class="config-field">
           <label>余额查询 URL <span class="optional-label">可选</span></label>
@@ -464,7 +485,9 @@ function renderAccountDetail() {
             <label>视觉 API Key</label>
             <div class="pass-group">
               <input type="password" id="edit_vision_api_key" value="${escAttr(ep.vision?.api_key || a.vision_api_key || '')}" placeholder="视觉模型密钥" autocomplete="off">
-              <button type="button" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏">⊙</button>
+              <button type="button" class="pass-toggle" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏视觉 API Key" aria-label="显示或隐藏视觉 API Key">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+              </button>
             </div>
           </div>
           <div class="config-field">
@@ -556,14 +579,14 @@ function renderAccountDetail() {
         <div class="account-section-desc">用角色账号协作完成开发任务：方案设计、实现填充、验收收口；不绑定任何固定供应商。</div>
       </div>
       <div class="config-fields">
-        <div class="config-field">
+        <div class="config-field wide">
           <label class="toggle-label">
             <input type="checkbox" id="edit_dev_pipeline_enabled" ${a.dev_pipeline_enabled ? 'checked' : ''} onchange="toggleDevPipelineFields()">
             启用开发协作编排
           </label>
           <span class="hint">Codex 中输入触发命令即可进入协作流程，默认以当前活跃账号为主。</span>
         </div>
-        <div id="devPipelineFields" style="${a.dev_pipeline_enabled ? '' : 'display:none;'}">
+        <div class="dev-pipeline-fields" id="devPipelineFields" style="${a.dev_pipeline_enabled ? '' : 'display:none;'}">
           <div class="config-fields nested-fields">
             <div class="config-field">
               <label>触发方式</label>
@@ -625,11 +648,16 @@ function renderAccountDetail() {
     </section>
 
   <div class="collapsible-section">
-    <button class="collapsible-toggle${Object.keys(customHeaders).length > 0 || requestTimeout ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
-      <span class="arrow">▸</span> 高级（自定义头 / 超时）
+    <button class="collapsible-toggle${Object.keys(customHeaders).length > 0 || requestTimeout || ep.path ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+      <span class="arrow">▸</span> 高级端点
     </button>
-    <div class="collapsible-content${Object.keys(customHeaders).length > 0 || requestTimeout ? ' open' : ''}">
+    <div class="collapsible-content${Object.keys(customHeaders).length > 0 || requestTimeout || ep.path ? ' open' : ''}">
       <div class="config-fields nested-fields">
+        <div class="config-field">
+          <label>请求路径 <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空自动使用所选 API 类型">
+          <span class="hint">私有代理或非标准网关才需要填写，例如 /v1/chat/completions。</span>
+        </div>
         <div class="config-field">
           <label>自定义 HTTP 头 <span class="optional-label">可选</span></label>
           <textarea class="mono-textarea" id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123">${escAttr(Object.entries(customHeaders).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
@@ -1077,6 +1105,7 @@ async function saveAccount(options = {}) {
   if (!editingAccount) return;
   if (options instanceof Event) options = {};
   const a = editingAccount;
+  const isNewAccount = !a.id;
 
   syncEditingDraftFromForm();
   const preset = getProviderPreset(a.provider);
@@ -1139,7 +1168,7 @@ async function saveAccount(options = {}) {
 
   try {
     let result;
-    if (!a.id) {
+    if (isNewAccount) {
       // 新账号
       result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: JSON.stringify(a) });
       if (!options.silent) showToast('账号已创建', 'success');
@@ -1152,6 +1181,10 @@ async function saveAccount(options = {}) {
     if (editingAccount) {
       editingAccount = JSON.parse(JSON.stringify(editingAccount));
       editingAccount._editing_endpoint_id = editingEndpointId;
+    }
+    if (isNewAccount && !options.stay) {
+      accountsView = 'list';
+      editingAccount = null;
     }
     if (!options.stay) renderMainContent();
     return result;

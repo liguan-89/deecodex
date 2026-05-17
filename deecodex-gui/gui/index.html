@@ -25,9 +25,15 @@
         <span id="connLabel">服务运行中</span>
       </div>
       <div class="theme-toggle" id="themeToggle">
-        <button class="theme-toggle-btn active" data-theme="dark" title="深色模式">◉</button>
-        <button class="theme-toggle-btn" data-theme="light" title="亮色模式">◎</button>
-        <button class="theme-toggle-btn" data-theme="auto" title="自动切换">◐</button>
+        <button class="theme-toggle-btn active" data-theme="dark" title="深色模式" aria-label="深色模式">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A7.5 7.5 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg>
+        </button>
+        <button class="theme-toggle-btn" data-theme="light" title="亮色模式" aria-label="亮色模式">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 3v2"></path><path d="M12 19v2"></path><path d="M3 12h2"></path><path d="M19 12h2"></path><path d="M5.6 5.6 7 7"></path><path d="M17 17l1.4 1.4"></path><path d="M18.4 5.6 17 7"></path><path d="M7 17l-1.4 1.4"></path></svg>
+        </button>
+        <button class="theme-toggle-btn" data-theme="auto" title="自动切换" aria-label="自动切换">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 4a8 8 0 0 1 0 16z"></path></svg>
+        </button>
       </div>
       <button class="save-btn" id="sidebarSaveBtn" onclick="saveConfig()">保存配置</button>
       <div class="sidebar-status" id="sidebarMsg"></div>

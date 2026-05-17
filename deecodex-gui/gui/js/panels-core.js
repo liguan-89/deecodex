@@ -3,6 +3,18 @@
 function renderStatus() {
   const s = window._statusData || {};
   const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
+  const tokenStats = s.token_stats || {};
+  const fmtStatusTokens = (n) => {
+    const value = Number(n || 0);
+    if (value >= 1000000000) return compactStatusNumber(value / 1000000000) + 'B';
+    if (value >= 1000000) return compactStatusNumber(value / 1000000) + 'M';
+    if (value >= 1000) return compactStatusNumber(value / 1000) + 'k';
+    return String(value);
+  };
+  const compactStatusNumber = (value) => {
+    const digits = value >= 10 ? 1 : 2;
+    return value.toFixed(digits).replace(/\.0$/, '');
+  };
   const badge = (cond) => cond
     ? '<span class="card-badge on">启用</span>'
     : '<span class="card-badge off">未启用</span>';
@@ -17,22 +29,22 @@ function renderStatus() {
   const contextWindow = activeEndpoint?.context_window_override || activeAcc?.context_window_override;
   const visionMode = activeEndpoint?.vision?.mode || (activeAcc?.vision_enabled ? 'glue' : 'off');
   const reasoningEffort = activeEndpoint?.reasoning_effort_override || activeAcc?.reasoning_effort_override;
-  if (contextWindow) extraTags.push('<span style="font-size:9px;color:var(--text-muted);">⇄ ' + contextWindow.toLocaleString() + ' tokens</span>');
-  if (visionMode === 'native' || visionMode === 'Native') extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 原生</span>');
-  if (visionMode === 'glue' || visionMode === 'Glue') extraTags.push('<span style="font-size:9px;color:var(--accent);">👁 胶水</span>');
-  if (reasoningEffort) extraTags.push('<span style="font-size:9px;color:var(--amber);">🧠 ' + esc(reasoningEffort) + '</span>');
+  if (contextWindow) extraTags.push('<span>⇄ ' + contextWindow.toLocaleString() + ' tokens</span>');
+  if (visionMode === 'native' || visionMode === 'Native') extraTags.push('<span class="accent">原生视觉</span>');
+  if (visionMode === 'glue' || visionMode === 'Glue') extraTags.push('<span class="accent">胶水视觉</span>');
+  if (reasoningEffort) extraTags.push('<span class="amber">思考 ' + esc(reasoningEffort) + '</span>');
 
   const accHtml = hasAccount
     ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-         <span class="${providerBadgeClass(activeAcc.provider)}" style="font-size:10px;">${esc(activeAcc.provider)}</span>
+         <span class="${providerBadgeClass(activeAcc.provider)}">${esc(activeAcc.provider)}</span>
          <span class="card-badge on" style="margin-top:0;">活跃</span>
        </div>
        <div class="card-value" style="font-size:13px;margin-bottom:4px;">${esc(activeAcc.name)}</div>
-       <div class="card-upstream" style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;" title="${escAttr(activeEndpoint?.base_url || activeAcc.upstream)}">${esc(trunc(activeEndpoint?.base_url || activeAcc.upstream, 36))}</div>
-       <div class="card-balance" id="balance-${escAttr(activeAcc.id)}" style="margin-bottom:4px;">
-         <span class="balance-loading" style="font-size:10px;color:var(--text-muted)">—</span>
+       <div class="card-upstream" style="margin-bottom:4px;" title="${escAttr(activeEndpoint?.base_url || activeAcc.upstream)}">${esc(trunc(activeEndpoint?.base_url || activeAcc.upstream, 36))}</div>
+       <div class="card-balance status-balance" id="balance-${escAttr(activeAcc.id)}" style="margin-bottom:4px;">
+         <span class="balance-loading">—</span>
        </div>
-       ${extraTags.length ? '<div style="display:flex;align-items:center;gap:8px;">' + extraTags.join('') + '</div>' : ''}`
+       ${extraTags.length ? '<div class="status-extra-tags">' + extraTags.join('') + '</div>' : ''}`
     : `<div class="card-icon">▣ 未配置</div>
        <div class="card-value" style="cursor:pointer;color:var(--accent)" onclick="event.stopPropagation();switchPanel(\'accounts\')">← 第一步请配置账号</div>
        <div class="card-label">点击跳转到账号管理</div>
@@ -76,6 +88,18 @@ function renderStatus() {
         <div class="card-value">${esc(port)}</div>
         <div class="card-label">${esc(addr)}</div>
         <span class="card-badge" style="visibility:hidden">—</span>
+      </div>
+      <div class="status-card token-usage-card" onclick="switchPanel('sessions')" style="cursor:pointer;">
+        <div class="card-icon">Token 消耗</div>
+        <div class="token-usage-main">
+          <span class="token-usage-value">${esc(fmtStatusTokens(tokenStats.total_tokens))}</span>
+          <span class="token-usage-unit">今日累计</span>
+        </div>
+        <div class="status-token-breakdown">
+          <span><b>输入</b>${esc(fmtStatusTokens(tokenStats.input_tokens))}</span>
+          <span><b>输出</b>${esc(fmtStatusTokens(tokenStats.output_tokens))}</span>
+          <span><b>请求</b>${esc(Number(tokenStats.total || 0))}</span>
+        </div>
       </div>
       <div class="status-card" onclick="goToConfig('basic')" style="cursor:pointer;">
         <div class="card-icon">◈ 思考</div>
@@ -149,7 +173,8 @@ function renderConfig() {
 
 function renderField(f) {
   const val = currentConfig[f.key] !== undefined ? currentConfig[f.key] : '';
-  const wide = (f.type === 'json' || f.type === 'textarea') ? ' wide' : '';
+  const layout = f.layout || ((f.type === 'json' || f.type === 'textarea') ? 'wide' : 'half');
+  const layoutClass = ` ${layout}`;
 
   let inputHtml = '';
   switch (f.type) {
@@ -157,7 +182,9 @@ function renderField(f) {
       inputHtml = `
         <div class="pass-group">
           <input type="password" id="field_${f.key}" name="${f.key}" value="${escAttr(String(val))}" placeholder="${escAttr(f.placeholder || '')}" autocomplete="off">
-          <button type="button" onclick="togglePass('field_${f.key}', this)" title="显示/隐藏">⊙</button>
+          <button type="button" class="pass-toggle" onclick="togglePass('field_${f.key}', this)" title="显示/隐藏" aria-label="显示或隐藏">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+          </button>
         </div>`;
       break;
     case 'number':
@@ -183,11 +210,11 @@ function renderField(f) {
   }
 
   if (f.type === 'checkbox') {
-    return `<div class="config-field${wide}">${inputHtml}<span class="hint">${esc(f.hint)}</span></div>`;
+    return `<div class="config-field checkbox-field${layoutClass}">${inputHtml}<span class="hint">${esc(f.hint)}</span></div>`;
   }
 
   return `
-    <div class="config-field${wide}">
+    <div class="config-field${layoutClass}">
       <label for="field_${f.key}">${esc(f.label)}</label>
       ${inputHtml}
       <span class="hint">${esc(f.hint)}</span>
@@ -469,9 +496,14 @@ async function loadConfig() {
 
 async function loadStatus() {
   try {
-    const [status, cfg] = await Promise.all([
+    const todayStart = (() => {
+      const now = new Date();
+      return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+    })();
+    const [status, cfg, tokenStats] = await Promise.all([
       invoke('get_service_status').catch(() => null),
       invoke('get_config').catch(() => null),
+      invoke('get_request_stats_since', { since: todayStart }).catch(() => null),
     ]);
 
     // 更新侧边栏版本号（保留黄点更新指示器）
@@ -493,6 +525,7 @@ async function loadStatus() {
       chinese_thinking: cfg ? cfg.chinese_thinking : false,
       cdp_port: cfg ? cfg.cdp_port : 9222,
       codex_launch_with_cdp: cfg ? cfg.codex_launch_with_cdp : false,
+      token_stats: tokenStats || {},
     };
 
     // 更新侧边栏连接指示器

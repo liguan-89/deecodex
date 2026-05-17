@@ -21,7 +21,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    <p>持久化的 API 请求记录（模型、Token 用量、耗时）</p>
 		  </div>
 		  <div id="historyStats" class="history-stats">
-		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">总请求数</div></div>
+		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">今日请求数</div></div>
 		    <div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div>
 		    <div class="history-stat accent"><div class="stat-value">—</div><div class="stat-label">Token 消耗</div></div>
 		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div>
@@ -73,6 +73,29 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    successRate: total > 0 ? Math.round(completed / total * 100) : 0,
 		    totalTokens,
 		    avgMs: total > 0 ? Math.round(totalMs / total) : 0,
+		    cacheHitRate: total > 0 ? Math.round(cacheHits / total * 100) : 0
+		  };
+		}
+
+		function todayStartUnixSecs() {
+		  const now = new Date();
+		  return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+		}
+
+		function filterToday(entries) {
+		  const start = todayStartUnixSecs();
+		  return (entries || []).filter(e => (e.created_at || 0) >= start);
+		}
+
+		function statsFromAggregate(raw) {
+		  const total = Number(raw?.total || 0);
+		  const success = Number(raw?.success_count || 0);
+		  const cacheHits = Number(raw?.cache_hit_count || 0);
+		  return {
+		    total,
+		    successRate: total > 0 ? Math.round(success / total * 100) : 0,
+		    totalTokens: Number(raw?.total_tokens || 0),
+		    avgMs: Number(raw?.avg_duration_ms || 0),
 		    cacheHitRate: total > 0 ? Math.round(cacheHits / total * 100) : 0
 		  };
 		}
@@ -228,9 +251,10 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  const barsEl = document.getElementById('historyChartBars');
 		  const cardsEl = document.getElementById('historyCardsContainer');
 		  try {
-		    const [entries, monthlyStats] = await Promise.all([
+		    const [entries, monthlyStats, todayStats] = await Promise.all([
 		      invoke('list_request_history', { limit: 3000 }),
 		      invoke('get_monthly_stats', { limit: 6 }),
+		      invoke('get_request_stats_since', { since: todayStartUnixSecs() }),
 		    ]);
 		    _historyEntries = entries || [];
 		    _historyMonthlyStats = monthlyStats || [];
@@ -239,11 +263,11 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    stopReconnectPolling();
 		    hideHistoryOfflineBanner();;
 		    if (_historyEntries.length) {
-		      if (statsEl) updateStats(computeStats(_historyEntries));
+		      if (statsEl) updateStats(statsFromAggregate(todayStats));
 		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
 		      if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
 		    } else {
-		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">总请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div><div class="history-stat cache"><div class="stat-value">—</div><div class="stat-label">命中缓存</div></div>';
+		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">今日请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div><div class="history-stat cache"><div class="stat-value">—</div><div class="stat-label">命中缓存</div></div>';
 		      if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">暂无数据</div>';
 		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无请求记录，发送一次 API 请求后会自动出现</div>';
 		    }
@@ -256,7 +280,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		      showHistoryOfflineBanner();
 		      startReconnectPolling();
 		      if (_historyEntries.length) {
-		        if (statsEl) updateStats(computeStats(_historyEntries));
+		        if (statsEl) updateStats(computeStats(filterToday(_historyEntries)));
 		        if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
 		        if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
 		      } else {

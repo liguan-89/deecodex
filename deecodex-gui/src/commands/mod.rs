@@ -2730,6 +2730,24 @@ pub async fn get_monthly_stats(
 }
 
 #[tauri::command]
+pub async fn get_request_stats_since(
+    manager: State<'_, ServerManager>,
+    since: Option<u64>,
+) -> Result<Value, String> {
+    let since_secs = since.unwrap_or(0);
+    let rh = manager.request_history.lock().await;
+    if let Some(store) = rh.as_ref() {
+        let stats = store.stats_since(since_secs).await;
+        return Ok(serde_json::to_value(stats).unwrap_or_default());
+    }
+    drop(rh);
+    let guard = manager.app_state.lock().await;
+    let state = guard.as_ref().ok_or("服务未启动")?;
+    let stats = state.request_history.stats_since(since_secs).await;
+    Ok(serde_json::to_value(stats).unwrap_or_default())
+}
+
+#[tauri::command]
 pub async fn browse_file() -> Result<Option<String>, String> {
     let path = rfd::AsyncFileDialog::new()
         .add_filter("插件包", &["zip"])

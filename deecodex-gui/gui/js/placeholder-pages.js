@@ -13,7 +13,7 @@
       '.dex-header-title{min-width:0;flex:1 1 auto}',
       '.dex-header-title h3{overflow:hidden;text-overflow:ellipsis}',
       '.dex-header-actions{flex:0 1 auto;justify-content:flex-end}',
-      '.dex-header-actions .dex-icon-btn{width:30px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1}',
+      '.dex-header-actions .dex-icon-btn{width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1}',
       '.dex-tool-msg{flex-wrap:wrap;align-items:flex-start}',
       '.dex-tool-name{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}',
       '.dex-tool-args{flex:1 1 160px;min-width:0;max-width:none}',
@@ -26,24 +26,24 @@
       '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
       '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
       '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
-      '.dex-cap-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
-      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.18);color:var(--text-secondary,#6b7fa8);border-radius:4px;padding:3px 7px;font-size:11px;line-height:1.4;cursor:pointer}',
+      '.dex-cap-chips{display:flex;flex-wrap:wrap;gap:6px;padding:6px 16px 8px;border-bottom:1px solid rgba(148,163,184,0.12)}',
+      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.12);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:4px 8px;font-size:11px;line-height:1.35;cursor:pointer}',
       '.dex-cap-chip.on{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.32);background:rgba(0,200,232,0.08)}',
       '.dex-cap-chip.off{opacity:0.55}',
-      '.dex-mode-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
-      '.dex-mode-tab{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.16);color:var(--text-secondary,#6b7fa8);border-radius:4px;padding:4px 8px;font-size:11px;line-height:1.4;cursor:pointer}',
+      '.dex-mode-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 6px;border-bottom:1px solid rgba(148,163,184,0.10)}',
+      '.dex-mode-tab{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.10);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:5px 10px;font-size:11px;line-height:1.35;cursor:pointer}',
       '.dex-mode-tab.active{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.4);background:rgba(0,200,232,0.1)}',
-      '.dex-tool-catalog{margin-top:8px;border-top:1px solid rgba(148,163,184,0.14);padding-top:6px;font-size:11px;color:var(--text-secondary,#6b7fa8)}',
+      '.dex-tool-catalog{padding:5px 16px;border-bottom:1px solid rgba(148,163,184,0.10);font-size:11px;color:var(--text-secondary,#6b7fa8)}',
       '.dex-tool-catalog summary{cursor:pointer;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-catalog-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px;margin-top:6px;max-height:220px;overflow:auto}',
-      '.dex-tool-catalog-item{border:1px solid rgba(148,163,184,0.16);border-radius:4px;padding:5px 6px;background:rgba(0,0,0,0.12);min-width:0}',
+      '.dex-tool-catalog-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:5px;margin-top:5px;max-height:180px;overflow:auto}',
+      '.dex-tool-catalog-item{border:1px solid rgba(148,163,184,0.16);border-radius:4px;padding:4px 6px;background:rgba(0,0,0,0.12);min-width:0}',
       '.dex-tool-catalog-name{display:block;color:var(--text-primary,#c4d0e4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dex-tool-catalog-meta{display:block;margin-top:2px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);margin-top:2px;font-style:italic}',
+      '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);padding:0 0 6px;font-style:italic}',
       '.dex-tool-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;font-size:10px;color:var(--text-secondary,#6b7fa8);white-space:nowrap}',
       '.dex-tool-actions{flex:1 0 100%;display:flex;gap:6px;margin-top:6px}',
       '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
-      '@media (max-width:900px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{flex-wrap:wrap}.dex-input-row textarea{flex-basis:100%}.dex-input-row .btn{flex:1 1 96px}}'
+      '@media (max-width:720px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{grid-template-columns:1fr}.dex-input-row .btn{width:100%;min-height:40px}}'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -663,8 +663,9 @@ function renderDexAssistant() {
     dexBindShortcuts();
   }, 0);
 
-  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title"><h3 title="DEX助手 2.0 — AI工具工作台">DEX助手 2.0 — AI工具工作台</h3>'
-    + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span> <span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
+  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title">'
+    + '<div class="dex-title-row"><span class="dex-title-mark"></span><h3 title="DEX助手 2.0">DEX助手 2.0</h3><span class="dex-title-sub">AI 工具工作台</span></div>'
+    + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span><span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
     + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型 ▾</button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexExportChat()" title="导出对话" aria-label="导出对话">⇩<span class="dex-sr-only">导出对话</span></button>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话" aria-label="搜索对话">⌕<span class="dex-sr-only">搜索对话</span></button>'
@@ -679,7 +680,7 @@ function renderDexAssistant() {
     + '<div id="dexToolPreview" class="dex-tool-preview" style="display:none"></div>'
     + '<div class="dex-input-row">'
     + '<textarea id="dexInput" placeholder="输入消息…（Enter 发送，Shift+Enter 换行 / /diag /fix 快捷指令）" rows="2"></textarea>'
-    + '<button class="btn btn-primary" id="dexSendBtn" onclick="dexSendMessage()">发送</button>'
+    + '<button class="btn btn-primary dex-send-btn" id="dexSendBtn" onclick="dexSendMessage()">发送</button>'
     + '<button class="btn btn-danger" id="dexStopBtn" onclick="dexStopAgent()" style="display:none">停止</button>'
     + '</div>'
     + '<div class="dex-input-foot"><span class="dex-token-count" id="dexTokenCount">~0 tokens</span></div>'
@@ -687,8 +688,8 @@ function renderDexAssistant() {
 }
 
 function dexWelcomeHTML() {
-  return '<div class="dex-msg dex-msg-assistant"><div class="dex-bubble"><div class="dex-bubble-text">'
-    + '<p>DEX助手 2.0 就绪。直接描述 AI 工具链问题，或快速操作：</p></div>'
+  return '<div class="dex-msg dex-msg-assistant dex-welcome"><div class="dex-bubble dex-bubble-assistant dex-welcome-bubble"><div class="dex-bubble-text">'
+    + '<p>DEX助手 2.0 就绪。描述问题，或选择一个快速操作：</p></div>'
     + '<div class="dex-quick-actions">'
     + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'运行完整诊断，自动修复所有发现的问题\')">一键修复</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'健康概览，指出当前 AI 工具链风险\')">健康概览</button>'
@@ -1262,15 +1263,17 @@ function dexRefreshStatus() {
     var accountProfile = (data.account && data.account.profile) || '';
     var modelLabel = (m && m !== 'auto') ? m : accountProvider;
     var profileLabel = accountProfile && accountProfile !== accountProvider ? accountProfile : '';
-    var parts = [];
-    if (svcOk) parts.push('🟢服务');
-    else parts.push('🔴服务');
-    if (acctOk) parts.push('账号正常');
-    else parts.push('账号异常');
-    if (errCount > 0) parts.push(errCount + 'err');
-    if (modelLabel) parts.push(modelLabel);
-    if (profileLabel) parts.push(profileLabel);
-    text.textContent = parts.join(' · ');
+    var parts = [
+      { label: svcOk ? '服务运行' : '服务停止', tone: svcOk ? 'ok' : 'error' },
+      { label: acctOk ? '账号正常' : '账号异常', tone: acctOk ? 'ok' : 'error' },
+    ];
+    if (errCount > 0) parts.push({ label: errCount + ' err', tone: 'warn' });
+    if (modelLabel) parts.push({ label: modelLabel, tone: 'muted' });
+    if (profileLabel) parts.push({ label: profileLabel, tone: 'muted' });
+    text.innerHTML = parts.map(function(part, index) {
+      return (index ? '<span class="dex-status-sep">/</span>' : '')
+        + '<span class="dex-status-item dex-status-' + part.tone + '">' + esc(part.label) + '</span>';
+    }).join('');
     if (!svcOk || !acctOk) { dot.className = 'dex-status-dot dex-status-err'; }
     else if (errCount > 0) { dot.className = 'dex-status-dot dex-status-warn'; }
     else { dot.className = 'dex-status-dot dex-status-ok'; }

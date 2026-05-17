@@ -475,6 +475,7 @@ pub fn run() {
             commands::list_request_history,
             commands::clear_request_history,
             commands::get_monthly_stats,
+            commands::get_request_stats_since,
             commands::get_threads_status,
             commands::list_threads,
             commands::migrate_threads,

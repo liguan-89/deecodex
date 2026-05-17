@@ -533,6 +533,9 @@ pub async fn dex_execute_tool(
             "get_monthly_stats" => {
                 crate::commands::get_monthly_stats(manager, opt_usize(&args, "limit")).await?
             }
+            "get_request_stats_since" => {
+                crate::commands::get_request_stats_since(manager, opt_u64(&args, "since")).await?
+            }
             "list_plugins" => json!(crate::commands::list_plugins(manager).await?),
             "install_plugin" => {
                 crate::commands::install_plugin(manager, opt_string(&args, "path"), None, None)

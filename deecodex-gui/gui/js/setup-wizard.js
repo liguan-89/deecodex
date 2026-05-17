@@ -1,12 +1,12 @@
 const WIZARD_STEPS = [
-  { id: 'wz1', icon: '▣', title: '添加账号', desc: '点「+ 添加账号」选择供应商', panel: 'accounts', quick: '' },
-  { id: 'wz2', icon: '🔑', title: '填写 API Key 和上游地址', desc: '保存后点「应用」激活', panel: 'accounts', quick: '' },
-  { id: 'wz3', icon: '⬇', title: '获取在线模型列表', desc: '拉取上游可用模型', panel: 'accounts', quick: 'fetchUpstreamModels' },
-  { id: 'wz4', icon: '⚙', title: '预设 GPT 模型映射', desc: '账号管理→模板预设 OpenAI→上游对照', panel: 'accounts', quick: 'presetModelMap' },
-  { id: 'wz5', icon: '💾', title: '保存配置', desc: '账号管理→模板预设→保存配置', panel: 'accounts', quick: 'saveConfig' },
-  { id: 'wz6', icon: '⚠', title: '重要提醒', desc: '先启 deecodex → 再开 Codex，不配第三方代理', panel: '', quick: '' },
-  { id: 'wz7', icon: '▶', title: '启动服务', desc: '确认状态变绿后再开 Codex', panel: 'status', quick: 'startService' },
-  { id: 'wz8', icon: '◇', title: '运行诊断', desc: '验证上游连通与模型可用', panel: 'diagnostics', quick: '' },
+  { id: 'wz1', step: '01', title: '添加账号', desc: '选择供应商并创建账号', panel: 'accounts', quick: '' },
+  { id: 'wz2', step: '02', title: '填写密钥', desc: '填入 API Key 和上游 URL', panel: 'accounts', quick: '' },
+  { id: 'wz3', step: '03', title: '同步模型', desc: '拉取上游可用模型', panel: 'accounts', quick: 'fetchUpstreamModels' },
+  { id: 'wz4', step: '04', title: '模型映射', desc: '设置 Codex 模型到上游模型的对应关系', panel: 'accounts', quick: 'presetModelMap' },
+  { id: 'wz5', step: '05', title: '保存配置', desc: '写入当前账号配置', panel: 'accounts', quick: 'saveConfig' },
+  { id: 'wz6', step: '06', title: '启动顺序', desc: '先启动 deecodex，再打开 Codex', panel: '', quick: '' },
+  { id: 'wz7', step: '07', title: '启动服务', desc: '确认服务状态正常', panel: 'status', quick: 'startService' },
+  { id: 'wz8', step: '08', title: '运行诊断', desc: '验证上游连通与模型可用', panel: 'diagnostics', quick: '' },
 ];
 let wizardIdx = 0;
 let wizardVer = '';
@@ -32,24 +32,16 @@ function showWizardBar() {
 
   const bar = document.createElement('div');
   bar.id = 'setupWizard';
-  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-  bar.style.cssText = 'position:fixed;top:0;left:var(--sidebar-w);right:0;z-index:100;'
-    + (isLight ? 'background:rgba(255,255,255,0.95);' : 'background:var(--bg-elevated);')
-    + 'border-bottom:1px solid var(--accent);'
-    + 'padding:5px 12px;display:flex;align-items:center;gap:8px;'
-    + 'font-family:var(--font-mono);font-size:10.5px;'
-    + 'box-shadow:0 2px 12px ' + (isLight ? 'rgba(217,79,58,0.15)' : 'rgba(0,200,232,0.2)') + ';'
-    + 'animation:wzPulse 3s ease-in-out infinite;'
-    + (isLight ? 'color:#1a1a2e;' : 'color:var(--text-primary);');
+  bar.className = 'setup-wizard';
   document.body.appendChild(bar);
   // 主内容区下移避免遮挡
   const main = document.getElementById('mainContent');
-  if (main) main.style.paddingTop = '30px';
+  if (main) main.style.paddingTop = '26px';
   renderWizardBar(bar);
 
   // 第一步强提醒：弹出一个醒目的 toast
   if (wizardIdx === 0) {
-    showToast('✦ 欢迎！跟随顶部引导完成首次配置', 'info');
+    showToast('欢迎，跟随顶部引导完成首次配置', 'info');
   }
 
   // 监听面板切换
@@ -76,37 +68,24 @@ function renderWizardBar(bar) {
   const isFirst = wizardIdx === 0;
   const isLast = wizardIdx === WIZARD_STEPS.length - 1;
   const pct = Math.round((wizardIdx + 1) / WIZARD_STEPS.length * 100);
-  const isLightWz = document.documentElement.getAttribute('data-theme') === 'light';
-  const tc = isLightWz ? '#1a1a2e' : 'var(--text-primary)';
-  const tc2 = isLightWz ? '#4a5568' : 'var(--text-secondary)';
-  const tc3 = isLightWz ? '#718096' : 'var(--text-muted)';
-  const progBg = isLightWz ? '#e2e8f0' : 'var(--border-subtle)';
-  const prevBg = isLightWz ? '#e2e8f0' : 'var(--bg-input)';
-  const prevBorder = isLightWz ? '#cbd5e0' : 'var(--border-default)';
-  const accentHex = isLightWz ? 'rgba(217,79,58,0.25)' : 'rgba(0,200,232,0.25)';
-
   let btnHtml = '';
   if (s.quick) {
-    btnHtml = '<button id="wzAct" style="flex-shrink:0;padding:2px 9px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:var(--accent-dim);border:1px solid ' + accentHex + ';color:var(--accent);font-family:var(--font-mono);">执行</button>';
+    btnHtml = '<button id="wzAct" class="setup-wizard-btn setup-wizard-btn-act">执行</button>';
   }
 
   bar.innerHTML = ''
-    + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + s.icon + '</span>'
-    + '<span style="color:' + tc3 + ';flex-shrink:0;font-size:10px;">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
-    + '<div style="flex-shrink:0;width:52px;height:2px;background:' + progBg + ';border-radius:1px;">'
-    +   '<div style="width:' + pct + '%;height:100%;background:var(--accent);border-radius:1px;transition:width 300ms;"></div>'
+    + '<span class="setup-wizard-icon">' + s.step + '</span>'
+    + '<span class="setup-wizard-count">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
+    + '<div class="setup-wizard-progress">'
+    +   '<div style="width:' + pct + '%"></div>'
     + '</div>'
-    + '<b style="flex-shrink:0;color:' + tc + ';">' + s.title + '</b>'
-    + '<span style="flex:1;color:' + tc2 + ';min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.desc + '</span>'
+    + '<b class="setup-wizard-title">' + s.title + '</b>'
+    + '<span class="setup-wizard-desc">' + s.desc + '</span>'
     + btnHtml
-    + (!isFirst ? '<button id="wzPrev" style="flex-shrink:0;padding:2px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:' + prevBg + ';border:1px solid ' + prevBorder + ';color:' + tc2 + ';font-family:var(--font-mono);">←</button>' : '')
-    + (!isLast ? '<button id="wzNext" style="flex-shrink:0;padding:2px 8px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:var(--accent);border:1px solid var(--accent);color:#fff;font-family:var(--font-mono);">→</button>'
-      : '<button id="wzDone" style="flex-shrink:0;padding:2px 9px;font-size:10px;border-radius:var(--radius-sm);cursor:pointer;'
-      + 'background:var(--green);border:1px solid var(--green);color:#fff;font-family:var(--font-mono);">完成</button>')
-    + '<button id="wzClose" style="flex-shrink:0;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:12px;padding:2px;">×</button>';
+    + (!isFirst ? '<button id="wzPrev" class="setup-wizard-btn setup-wizard-btn-prev">上一步</button>' : '')
+    + (!isLast ? '<button id="wzNext" class="setup-wizard-btn setup-wizard-btn-next">下一步</button>'
+      : '<button id="wzDone" class="setup-wizard-btn setup-wizard-btn-done">完成</button>')
+    + '<button id="wzClose" class="setup-wizard-close" aria-label="关闭引导">×</button>';
 
   // 事件绑定
   document.getElementById('wzClose').onclick = () => { bar.remove(); const m = document.getElementById('mainContent'); if (m) m.style.paddingTop = ''; };
@@ -138,10 +117,10 @@ function renderWizardBar(bar) {
           }
           await loadStatus(); renderPanel('status');
         }
-        actBtn.textContent = '✓'; actBtn.style.color = 'var(--green)'; actBtn.style.borderColor = 'var(--green)';
+        actBtn.textContent = '完成'; actBtn.style.color = 'var(--green)'; actBtn.style.borderColor = 'var(--green)';
         wizardCheer();
       } catch (e) {
-        actBtn.textContent = '✗'; actBtn.style.color = 'var(--red)'; actBtn.style.borderColor = 'var(--red)';
+        actBtn.textContent = '失败'; actBtn.style.color = 'var(--red)'; actBtn.style.borderColor = 'var(--red)';
         actBtn.title = String(e);
         setTimeout(() => { actBtn.textContent = '重试'; actBtn.style.color = ''; actBtn.style.borderColor = ''; actBtn.disabled = false; }, 3000);
       }
@@ -157,9 +136,9 @@ function wizardCheer() {
   if (bar) {
     bar.style.transition = 'background 0.3s';
     bar.style.background = 'rgba(0,214,143,0.3)';
-    setTimeout(() => { bar.style.background = 'rgba(255,255,255,0.95)'; }, 600);
+    setTimeout(() => { bar.style.background = ''; }, 600);
   }
-  showToast('✓ ' + msg, 'success');
+  showToast(msg, 'success');
 }
 
 function goWizardStep() {

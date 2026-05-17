@@ -449,6 +449,18 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             ),
         },
         BuiltinToolSpec {
+            name: "get_request_stats_since",
+            tauri_cmd: "get_request_stats_since",
+            level: 0,
+            confirm: None,
+            description: "按指定 Unix 秒时间点之后聚合请求统计",
+            capability: "deecodex.ops",
+            parameters: params(
+                json!({"since":{"type":"number","description":"起始 Unix 秒时间戳，省略则统计当前明细表全部记录"}}),
+                &[],
+            ),
+        },
+        BuiltinToolSpec {
             name: "list_plugins",
             tauri_cmd: "list_plugins",
             level: 0,

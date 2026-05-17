@@ -63,6 +63,8 @@ function loadNav() {
 
 function switchPanel(panelId) {
   currentPanel = panelId;
+  const main = document.getElementById('mainContent');
+  if (main) main.classList.toggle('dex-main', panelId === 'dex-assistant');
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.panel === panelId);
   });
@@ -87,6 +89,7 @@ function goToConfig(sectionId) {
 
 function renderPanel(panelId) {
   const container = document.getElementById('mainContent');
+  if (container) container.classList.toggle('dex-main', panelId === 'dex-assistant');
   switch (panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
     case 'config': container.innerHTML = renderConfig(); break;

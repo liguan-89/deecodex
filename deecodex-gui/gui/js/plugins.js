@@ -30,23 +30,25 @@ function renderPluginsPanel() {
     <h2>插件管理</h2>
     <p>安装和管理第三方通道插件</p>
   </div>
-  <div class="plugin-install-bar">
-    <input id="pluginZipPath" placeholder="插件包路径（.zip 文件）" style="flex:1;min-width:240px;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--radius-sm);color:var(--text-primary);font-size:13px;">
-    <button class="btn btn-ghost" onclick="browsePluginZip()">浏览</button>
-    <button class="btn btn-primary" onclick="installPluginFromPath()">安装</button>
+  <div class="plugin-console">
+    <div class="plugin-install-bar">
+      <input id="pluginZipPath" placeholder="插件包路径（.zip 文件）">
+      <button class="btn btn-ghost" onclick="browsePluginZip()">浏览</button>
+      <button class="btn btn-primary" onclick="installPluginFromPath()">安装</button>
+    </div>
+    <div class="plugin-controls">
+      <label class="history-toggle${_pluginsRefreshTimer ? ' on' : ''}" id="pluginAutoToggle" onclick="togglePluginAutoRefresh()">
+        <div class="toggle-dot"></div> 自动刷新
+      </label>
+      <select class="history-select" id="pluginIntervalSel" onchange="setPluginRefreshInterval(this.value)" style="${_pluginsRefreshTimer ? '' : 'display:none;'}">
+        <option value="5000" ${_pluginsRefreshMs === 5000 ? 'selected' : ''}>5s</option>
+        <option value="10000" ${_pluginsRefreshMs === 10000 || !_pluginsRefreshMs ? 'selected' : ''}>10s</option>
+        <option value="30000" ${_pluginsRefreshMs === 30000 ? 'selected' : ''}>30s</option>
+      </select>
+      <button class="btn btn-ghost" onclick="refreshPlugins()">刷新</button>
+    </div>
   </div>
-  <div class="plugin-controls">
-    <label class="history-toggle${_pluginsRefreshTimer ? ' on' : ''}" id="pluginAutoToggle" onclick="togglePluginAutoRefresh()">
-      <div class="toggle-dot"></div> 自动刷新
-    </label>
-    <select class="history-select" id="pluginIntervalSel" onchange="setPluginRefreshInterval(this.value)" style="${_pluginsRefreshTimer ? '' : 'display:none;'}">
-      <option value="5000" ${_pluginsRefreshMs === 5000 ? 'selected' : ''}>5s</option>
-      <option value="10000" ${_pluginsRefreshMs === 10000 || !_pluginsRefreshMs ? 'selected' : ''}>10s</option>
-      <option value="30000" ${_pluginsRefreshMs === 30000 ? 'selected' : ''}>30s</option>
-    </select>
-    <button class="btn btn-ghost" onclick="refreshPlugins()">⟳ 刷新</button>
-  </div>
-  <div id="pluginList"></div>`;
+  <div id="pluginList" class="plugin-list"></div>`;
 }
 
 async function loadPluginsData() {
@@ -89,7 +91,7 @@ function renderPluginCard(p) {
         <span class="plugin-state-badge ${running ? 'on' : 'off'}"><span class="dot"></span>${stateLabel}</span>
       </div>
       ${p.description ? `<div class="plugin-card-desc">${esc(p.description)}</div>` : ''}
-      <div class="plugin-card-desc">DEX工具：${dexTools.length} 个</div>
+      <div class="plugin-card-meta">DEX 工具 ${dexTools.length} 个</div>
     </div>
     <div class="plugin-card-actions" onclick="event.stopPropagation()">
       ${running
@@ -131,7 +133,7 @@ function renderPluginDetail() {
       return `<div class="pc-account-row">
         <span class="pc-account-name">${esc(a.name || a.account_id)}</span>
         <span class="pc-account-status" style="color:${asc}">
-          <span class="plugin-status-dot" style="color:${asc};background:${asc};box-shadow:0 0 5px ${asc}"></span>
+          <span class="plugin-status-dot" style="color:${asc};background:${asc};"></span>
           ${ACCOUNT_STATUS_LABEL[a.status] || a.status}
         </span>
         <span class="pc-account-actions">
@@ -144,21 +146,22 @@ function renderPluginDetail() {
       </div>`;
     }).join('');
   } else {
-    accountsHtml = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">暂无账号</div>';
+    accountsHtml = '<div class="plugin-empty-line">暂无账号</div>';
   }
 
   return `<button class="plugin-detail-back" onclick="backToPluginList()">← 插件管理</button>
 
+  <div class="plugin-detail-shell">
   <div class="plugin-detail-header">
     <div class="plugin-detail-title">
       <h2>
-        <span class="plugin-status-dot" style="color:${sc};background:${sc};box-shadow:0 0 8px ${sc};vertical-align:middle;margin-right:8px;"></span>
+        <span class="plugin-status-dot" style="color:${sc};background:${sc};"></span>
         ${esc(p.name)}
-        <span class="plugin-state-badge ${running ? 'on' : 'off'}" style="vertical-align:middle;margin-left:10px;"><span class="dot"></span>${stateLabel}</span>
       </h2>
       <div class="meta">
         <span>版本 v${esc(p.version)}</span>
         ${p.author ? `<span>作者 ${esc(p.author)}</span>` : ''}
+        <span class="plugin-state-badge ${running ? 'on' : 'off'}"><span class="dot"></span>${stateLabel}</span>
       </div>
     </div>
     ${running
@@ -168,7 +171,7 @@ function renderPluginDetail() {
 
   ${p.description ? `<div class="plugin-detail-section">
     <h3>简介</h3>
-    <p style="color:var(--text-secondary);font-size:13px;line-height:1.6;">${esc(p.description)}</p>
+    <p class="plugin-detail-text">${esc(p.description)}</p>
   </div>` : ''}
 
   ${perms.length ? `<div class="plugin-detail-section">
@@ -180,7 +183,7 @@ function renderPluginDetail() {
     <h3>DEX助手工具</h3>
     ${dexTools.length
       ? `<div class="plugin-perm-tags">${dexTools.map(t => `<span class="plugin-perm-tag" title="${escAttr(t.description || '')}">${esc(t.name)} · L${Number(t.level || 0)}</span>`).join('')}</div>`
-      : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">未向 DEX 暴露工具</div>'}
+      : '<div class="plugin-empty-line">未向 DEX 暴露工具</div>'}
   </div>
 
   <div class="plugin-detail-section">
@@ -195,8 +198,9 @@ function renderPluginDetail() {
 
   <div class="plugin-danger-zone">
     <h3>卸载插件</h3>
-    <p style="color:var(--text-muted);font-size:12px;margin-bottom:10px;">卸载后将删除插件所有文件，此操作不可恢复。</p>
+    <p class="plugin-detail-text">卸载后将删除插件所有文件，此操作不可恢复。</p>
     <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载插件</button>
+  </div>
   </div>`;
 }
 

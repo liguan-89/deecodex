@@ -32,6 +32,19 @@ pub struct MonthlyStats {
     pub avg_duration_ms: u64,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Serialize)]
+pub struct RequestStats {
+    pub total: u64,
+    pub success_count: u64,
+    pub cache_hit_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub total_duration_ms: u64,
+    pub avg_duration_ms: u64,
+}
+
 pub struct RequestHistoryStore {
     db: Arc<Mutex<Connection>>,
 }
@@ -206,6 +219,47 @@ impl RequestHistoryStore {
     }
 
     #[allow(dead_code)]
+    pub async fn stats_since(&self, since_secs: u64) -> RequestStats {
+        let db = self.db.lock().await;
+        let result = db.query_row(
+            "SELECT
+                 COUNT(*) as total,
+                 COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as success_count,
+                 COALESCE(SUM(CASE WHEN cache_hit != 0 THEN 1 ELSE 0 END), 0) as cache_hit_count,
+                 COALESCE(SUM(input_tokens), 0) as input_tokens,
+                 COALESCE(SUM(output_tokens), 0) as output_tokens,
+                 COALESCE(SUM(total_tokens), 0) as total_tokens,
+                 COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+                 COALESCE(CAST(AVG(duration_ms) AS INTEGER), 0) as avg_duration_ms
+             FROM request_history
+             WHERE created_at >= ?1",
+            params![since_secs as i64],
+            |row| {
+                Ok(RequestStats {
+                    total: row.get::<_, i64>(0)?.max(0) as u64,
+                    success_count: row.get::<_, i64>(1)?.max(0) as u64,
+                    cache_hit_count: row.get::<_, i64>(2)?.max(0) as u64,
+                    input_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+                    output_tokens: row.get::<_, i64>(4)?.max(0) as u64,
+                    total_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+                    total_duration_ms: row.get::<_, i64>(6)?.max(0) as u64,
+                    avg_duration_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                })
+            },
+        );
+        result.unwrap_or(RequestStats {
+            total: 0,
+            success_count: 0,
+            cache_hit_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            total_duration_ms: 0,
+            avg_duration_ms: 0,
+        })
+    }
+
+    #[allow(dead_code)]
     pub async fn clear(&self) -> Result<(), String> {
         let db = self.db.lock().await;
         db.execute("DELETE FROM request_history", [])
@@ -296,6 +350,45 @@ mod tests {
         let entries = store.list(10).await;
         assert_eq!(entries[0].provider, "kimi");
         assert_eq!(entries[0].provider_profile, "kimi");
+    }
+
+    #[tokio::test]
+    async fn stats_since_aggregates_without_list_limit() {
+        let store = RequestHistoryStore::new(Path::new(":memory:")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        for i in 0..5 {
+            store
+                .record(
+                    format!("req-{i}"),
+                    now + i,
+                    "deepseek-chat".into(),
+                    if i == 4 { "failed" } else { "completed" }.into(),
+                    10,
+                    20,
+                    100 + i,
+                    "https://api.example.test/v1/chat/completions".into(),
+                    String::new(),
+                    i == 1,
+                )
+                .await;
+        }
+
+        let recent = store.list(3).await;
+        assert_eq!(recent.len(), 3);
+
+        let stats = store.stats_since(now).await;
+        assert_eq!(stats.total, 5);
+        assert_eq!(stats.success_count, 4);
+        assert_eq!(stats.cache_hit_count, 1);
+        assert_eq!(stats.input_tokens, 50);
+        assert_eq!(stats.output_tokens, 100);
+        assert_eq!(stats.total_tokens, 150);
+        assert_eq!(stats.total_duration_ms, 510);
+        assert_eq!(stats.avg_duration_ms, 102);
     }
 
     #[tokio::test]

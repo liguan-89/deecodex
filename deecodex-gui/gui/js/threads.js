@@ -5,20 +5,22 @@ function renderThreads() {
     <h2>线程聚合</h2>
     <p>切换 Codex 侧边栏会话历史的 provider 归属</p>
   </div>
-  <div class="threads-summary" id="threadsSummary">
-    <div class="threads-stat"><div class="stat-value">—</div><div class="stat-label">总线程数</div></div>
-    <div class="threads-stat other"><div class="stat-value">—</div><div class="stat-label">非统一线程</div></div>
-    <div class="threads-stat migrated"><div class="stat-value">—</div><div class="stat-label">归属</div></div>
-  </div>
-  <div class="mgmt-actions" style="margin-bottom:20px;">
-    <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()">⟐ 聚合所有线程</button>
-    <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()">↩ 还原隔离模式</button>
-    <button class="btn btn-warning" id="btnCalibrate" onclick="doCalibrate()" style="display:none;">⟐ 校准</button>
-    <button class="btn btn-ghost" onclick="refreshThreads()">⟳ 刷新</button>
+  <div class="threads-console">
+    <div class="threads-summary" id="threadsSummary">
+      <div class="threads-stat"><span class="stat-label">总线程</span><span class="stat-value">—</span></div>
+      <div class="threads-stat other"><span class="stat-label">待统一</span><span class="stat-value">—</span></div>
+      <div class="threads-stat migrated"><span class="stat-label">归属</span><span class="stat-value">—</span></div>
+    </div>
+    <div class="threads-actions">
+      <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()">聚合所有线程</button>
+      <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()">还原隔离</button>
+      <button class="btn btn-warning" id="btnCalibrate" onclick="doCalibrate()" style="display:none;">校准</button>
+      <button class="btn btn-ghost" onclick="refreshThreads()">刷新</button>
+    </div>
   </div>
   <div id="threadsProviderBreakdown"></div>
-  <div class="section-sub-label" style="margin-top:20px;">线程列表</div>
-  <div style="max-height:50vh;overflow-y:auto;">
+  <div class="threads-list-head">线程列表</div>
+  <div class="threads-table-wrap">
     <table class="threads-table">
       <thead><tr><th>标题</th><th>Provider</th><th>更新时间</th><th>状态</th></tr></thead>
       <tbody id="threadsTableBody"><tr><td colspan="4" style="text-align:center;color:var(--text-muted);">加载中...</td></tr></tbody>
@@ -63,7 +65,7 @@ async function refreshThreads() {
     if (breakdown) {
       breakdown.innerHTML = status.summary.map(s => {
         const cls = s.provider === status.active_provider ? 'tag-current' : 'tag-other';
-        return `<span class="tag ${cls}" style="margin-right:6px;margin-bottom:4px;">${esc(s.provider)}: ${s.count}</span>`;
+        return `<span class="tag ${cls}">${esc(s.provider)}: ${s.count}</span>`;
       }).join('');
     }
 
