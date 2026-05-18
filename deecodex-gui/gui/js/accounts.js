@@ -199,6 +199,8 @@ function createEndpointFromTemplate(template, account) {
     context_window_override: account?.context_window_override || null,
     reasoning_effort_override: account?.reasoning_effort_override || null,
     thinking_tokens: account?.thinking_tokens || null,
+    fast_mode_enabled: false,
+    fast_service_tier: 'fast',
     balance_url: account?.balance_url || '',
   };
 }
@@ -340,6 +342,8 @@ function renderAccountDetail() {
   const contextWindow = ep.context_window_override ?? null;
   const reasoningEffort = ep.reasoning_effort_override ?? null;
   const thinkingTokens = ep.thinking_tokens ?? null;
+  const fastEnabled = ep.fast_mode_enabled === true;
+  const fastServiceTier = ep.fast_service_tier || 'fast';
   const customHeaders = ep.custom_headers || {};
   const requestTimeout = ep.request_timeout_secs ?? null;
   const maxRetries = ep.max_retries ?? a.max_retries;
@@ -531,6 +535,13 @@ function renderAccountDetail() {
           </label>
           <span class="hint">用于 Claude、R1 等需要固定思考预算的账号。</span>
         </div>
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_fast_enabled" ${fastEnabled ? 'checked' : ''} onchange="toggleFastFields()">
+            GPT Fast 服务层
+          </label>
+          <span class="hint">仅 OpenAI Responses 直连端点生效；保持推理预算，只注入 service_tier。</span>
+        </div>
       </div>
       <div id="reasoningFields" style="${reasoningEffort ? '' : 'display:none;'}">
         <div class="config-fields nested-fields">
@@ -548,6 +559,15 @@ function renderAccountDetail() {
             <label>思考 Token 预算 <span class="optional-label">可选</span></label>
             <input type="number" id="edit_thinking_tokens" value="${thinkingTokens || ''}" min="1024" max="128000" step="1024" placeholder="留空不设限制，如 16000">
             <span class="hint">Claude Extended Thinking 的 token 预算，留空则不限制</span>
+          </div>
+        </div>
+      </div>
+      <div id="fastFields" style="${fastEnabled ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>service_tier</label>
+            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="fast">
+            <span class="hint">默认 fast；如果上游要求 priority/flex，可在这里改。</span>
           </div>
         </div>
       </div>
@@ -878,6 +898,14 @@ function syncEditingDraftFromForm() {
     a.thinking_tokens = ep.thinking_tokens;
   }
 
+  const fastEnabled = document.getElementById('edit_fast_enabled');
+  if (fastEnabled) {
+    ep.fast_mode_enabled = fastEnabled.checked;
+    ep.fast_service_tier = fastEnabled.checked
+      ? (document.getElementById('edit_fast_service_tier')?.value.trim() || 'fast')
+      : 'fast';
+  }
+
   const headersText = document.getElementById('edit_custom_headers');
   if (headersText) {
     ep.custom_headers = {};
@@ -1160,7 +1188,6 @@ async function saveAccount(options = {}) {
     a.request_timeout_secs = ep.request_timeout_secs ?? null;
     a.max_retries = ep.max_retries ?? null;
     a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
-    a.endpoints = [ep];
     a._editing_endpoint_id = ep.id;
   }
   const editingEndpointId = ep?.id || selectedEndpointId(a);

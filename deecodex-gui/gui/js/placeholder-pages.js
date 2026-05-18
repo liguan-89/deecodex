@@ -205,10 +205,7 @@ window.dexAgent = {
 
   _canStream: function () {
     try {
-      return typeof window.__TAURI__ !== 'undefined'
-        && window.__TAURI__
-        && window.__TAURI__.event
-        && typeof window.__TAURI__.event.listen === 'function';
+      return typeof window.DeeCodexTauri?.listen === 'function';
     } catch (e) { return false; }
   },
 
@@ -236,7 +233,7 @@ window.dexAgent = {
       resolveStream = resolve; rejectStream = reject;
     });
 
-    var unlisten = await window.__TAURI__.event.listen('dex-chat-chunk', function (event) {
+    var unlisten = await window.DeeCodexTauri.listen('dex-chat-chunk', function (event) {
       try {
         if (self._aborted) { unlisten(); rejectStream(new Error('用户中止')); return; }
         var payload = event.payload;
@@ -699,6 +696,13 @@ function dexWelcomeHTML() {
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查看插件状态和可用插件能力\')">插件状态</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'分析当前项目工作区环境\')">项目环境</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">日志异常</button></div></div></div>';
+}
+
+function dexDisposePanel() {
+  if (window._dexStatusTimer) {
+    clearInterval(window._dexStatusTimer);
+    window._dexStatusTimer = null;
+  }
 }
 
 function dexToolMetaHtml(meta) {

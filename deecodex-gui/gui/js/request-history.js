@@ -15,6 +15,16 @@ let _historyOffline = false;
 let _historyReconnectTimer = null;
 const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 
+		function syncHistoryAutoRefreshUi() {
+		  const toggle = document.getElementById('historyAutoToggle');
+		  const intervalSel = document.getElementById('historyIntervalSel');
+		  if (toggle) toggle.classList.toggle('on', Boolean(_historyRefreshTimer));
+		  if (intervalSel) {
+		    intervalSel.style.display = _historyRefreshTimer ? '' : 'none';
+		    if (_historyRefreshMs) intervalSel.value = String(_historyRefreshMs);
+		  }
+		}
+
 		function renderHistory() {
 		  return `<div class="page-header">
 		    <h2>请求历史</h2>
@@ -44,14 +54,14 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		      <option value="completed">仅成功</option>
 		      <option value="failed">仅失败</option>
 		    </select>
-		    <label class="history-toggle" id="historyAutoToggle" onclick="toggleAutoRefresh()">
+		    <label class="history-toggle${_historyRefreshTimer ? ' on' : ''}" id="historyAutoToggle" onclick="toggleAutoRefresh()">
 		      <div class="toggle-dot"></div> 自动刷新
 		    </label>
-		    <select class="history-select" id="historyIntervalSel" onchange="setRefreshInterval(this.value)" style="display:none;">
-		      <option value="5000">5s</option>
-		      <option value="10000" selected>10s</option>
-		      <option value="30000">30s</option>
-		      <option value="60000">60s</option>
+		    <select class="history-select" id="historyIntervalSel" onchange="setRefreshInterval(this.value)" style="${_historyRefreshTimer ? '' : 'display:none;'}">
+		      <option value="5000" ${_historyRefreshMs === 5000 ? 'selected' : ''}>5s</option>
+		      <option value="10000" ${_historyRefreshMs === 10000 || !_historyRefreshMs ? 'selected' : ''}>10s</option>
+		      <option value="30000" ${_historyRefreshMs === 30000 ? 'selected' : ''}>30s</option>
+		      <option value="60000" ${_historyRefreshMs === 60000 ? 'selected' : ''}>60s</option>
 		    </select>
 		    <span style="flex:1"></span>
 		    <button class="btn btn-primary" onclick="refreshHistory()">⟳ 刷新</button>
@@ -222,22 +232,27 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 
 		function toggleAutoRefresh() {
 		  if (_historyRefreshTimer) {
-		    clearInterval(_historyRefreshTimer);
-		    _historyRefreshTimer = null;
-		    _historyRefreshMs = 0;
-		    document.getElementById('historyAutoToggle').classList.remove('on');
-		    document.getElementById('historyIntervalSel').style.display = 'none';
+		    stopHistoryAutoRefresh();
 		  } else {
 		    _historyRefreshMs = parseInt(document.getElementById('historyIntervalSel').value) || 10000;
 		    _historyRefreshTimer = setInterval(refreshHistory, _historyRefreshMs);
-		    document.getElementById('historyAutoToggle').classList.add('on');
-		    document.getElementById('historyIntervalSel').style.display = '';
+		    syncHistoryAutoRefreshUi();
 		  }
+		}
+
+		function stopHistoryAutoRefresh() {
+		  if (_historyRefreshTimer) {
+		    clearInterval(_historyRefreshTimer);
+		    _historyRefreshTimer = null;
+		  }
+		  _historyRefreshMs = 0;
+		  syncHistoryAutoRefreshUi();
 		}
 
 		function setRefreshInterval(val) {
 		  _historyRefreshMs = parseInt(val);
 		  if (_historyRefreshTimer) { clearInterval(_historyRefreshTimer); _historyRefreshTimer = setInterval(refreshHistory, _historyRefreshMs); }
+		  syncHistoryAutoRefreshUi();
 		}
 
 		function setStatusFilter(filter) {
@@ -399,6 +414,9 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    showToast('清空失败: ' + e, 'error');
 		  }
 		}
+
+		window.stopHistoryAutoRefresh = stopHistoryAutoRefresh;
+		window.stopHistoryReconnectPolling = stopReconnectPolling;
 
 // 线程聚合
 // ═══════════════════════════════════════════════════════════════

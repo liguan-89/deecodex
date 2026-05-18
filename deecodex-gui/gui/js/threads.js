@@ -19,10 +19,10 @@ function renderThreads() {
     </div>
   </div>
   <div id="threadsProviderBreakdown"></div>
-  <div class="threads-list-head">线程列表</div>
+    <div class="threads-list-head">线程列表</div>
   <div class="threads-table-wrap">
     <table class="threads-table">
-      <thead><tr><th>标题</th><th>Provider</th><th>更新时间</th><th>状态</th></tr></thead>
+      <thead><tr><th>标题</th><th>Provider</th><th>更新时间</th><th>线程 ID</th></tr></thead>
       <tbody id="threadsTableBody"><tr><td colspan="4" style="text-align:center;color:var(--text-muted);">加载中...</td></tr></tbody>
     </table>
   </div>`;
@@ -222,14 +222,13 @@ function renderMessage(msg) {
   }
 
   const truncated = body.length > 500;
-  const displayBody = truncated ? body.substring(0, 500) : body;
   const expandBtn = truncated
     ? `<button class="msg-expand-btn" onclick="this.previousElementSibling.classList.toggle('expanded');this.textContent=this.previousElementSibling.classList.contains('expanded')?'收起':'展开全部';">展开全部</button>`
     : '';
 
   return `<div class="msg-bubble ${roleClass}">
     <div class="msg-role">${esc(role)}</div>
-    <div class="msg-body">${esc(displayBody)}</div>
+    <div class="msg-body">${esc(body)}</div>
     ${expandBtn}
   </div>`;
 }

@@ -2,6 +2,7 @@
 // ═══════════════════════════════════════════════════════════════
 (function () {
   var invokeFn = window.__TAURI__?.core?.invoke;
+  var listenFn = window.__TAURI__?.event?.listen;
 
   if (!invokeFn) {
     document.addEventListener('DOMContentLoaded', function () {
@@ -11,7 +12,11 @@
         '<p style="color:#6b7fa8;margin-top:12px;">此页面依赖 Tauri 桌面环境，不能在浏览器中运行。</p>' +
         '<p style="color:#3a4f72;font-size:13px;margin-top:8px;">请启动 deecodex 桌面 GUI 后使用。</p></div></div>';
     });
-    window.DeeCodexTauri = { hasTauri: false, invoke: function () { return Promise.reject(new Error('非 Tauri 环境')); } };
+    window.DeeCodexTauri = {
+      hasTauri: false,
+      invoke: function () { return Promise.reject(new Error('非 Tauri 环境')); },
+      listen: function () { return Promise.reject(new Error('非 Tauri 环境')); }
+    };
     return;
   }
 
@@ -28,7 +33,15 @@
     }
   }
 
+  async function listen(eventName, handler) {
+    if (typeof listenFn !== 'function') {
+      throw new Error('Tauri 事件系统不可用');
+    }
+    console.debug('[ipc:listen]', eventName);
+    return listenFn(eventName, handler);
+  }
+
   document.documentElement.dataset.runtime = 'tauri';
 
-  window.DeeCodexTauri = { hasTauri: true, invoke: invoke };
+  window.DeeCodexTauri = { hasTauri: true, invoke: invoke, listen: listen };
 })();

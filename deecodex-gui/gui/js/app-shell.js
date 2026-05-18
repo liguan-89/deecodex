@@ -7,6 +7,15 @@ let editingAccount = null;
 let providerPresets = [];
 let endpointTemplates = [];
 let upstreamModels = [];
+let appRefreshTimer = null;
+
+function cleanupPanelEffects(panelId) {
+  if (panelId === 'sessions') window.stopHistoryAutoRefresh?.();
+  if (panelId === 'sessions') window.stopHistoryReconnectPolling?.();
+  if (panelId === 'plugins') window.stopPluginAutoRefresh?.();
+  if (panelId === 'plugins') window.clearPluginQrPolling?.();
+  if (panelId === 'dex-assistant') window.dexDisposePanel?.();
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 初始化
@@ -25,11 +34,10 @@ async function init() {
   checkSetupWizard();
 
   // 监听托盘账号切换事件，自动刷新
-  const tauriEvent = window.__TAURI__?.event;
-  if (tauriEvent?.listen) {
+  if (typeof window.DeeCodexTauri?.listen === 'function') {
     (async () => {
       try {
-        await tauriEvent.listen('account-switched', () => {
+        await window.DeeCodexTauri.listen('account-switched', () => {
           if (currentPanel === 'status') loadStatus();
           if (currentPanel === 'accounts' && accountsView === 'list') loadAccountsData();
         });
@@ -39,10 +47,11 @@ async function init() {
       }
     })();
   } else {
-    console.warn('[deecodex] __TAURI__.event 不可用，托盘切换后需手动刷新');
+    console.warn('[deecodex] Tauri 事件不可用，托盘切换后需手动刷新');
   }
 
-  setInterval(async () => {
+  if (appRefreshTimer) clearInterval(appRefreshTimer);
+  appRefreshTimer = setInterval(async () => {
     if (currentPanel === 'status') await loadStatus();
     else if (currentPanel === 'accounts' && accountsView === 'list') await loadAccountsData();
   }, 10000);
@@ -62,6 +71,8 @@ function loadNav() {
 }
 
 function switchPanel(panelId) {
+  const previousPanel = currentPanel;
+  if (previousPanel && previousPanel !== panelId) cleanupPanelEffects(previousPanel);
   currentPanel = panelId;
   const main = document.getElementById('mainContent');
   if (main) main.classList.toggle('dex-main', panelId === 'dex-assistant');

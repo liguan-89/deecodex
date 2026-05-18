@@ -3,6 +3,7 @@ let _pluginsData = [];
 let _pluginsRefreshTimer = null;
 let _pluginsRefreshMs = 0;
 let _pluginsAutoRefresh = true;
+let _pluginQrPollTimer = null;
 
 var PLUGIN_STATE_LABEL = {
   installed: '已安装', starting: '启动中', running: '运行中',
@@ -21,6 +22,16 @@ var ACCOUNT_STATUS_COLOR = {
 };
 
 var _pluginDetailId = null;
+
+function syncPluginAutoRefreshUi() {
+  const toggle = document.getElementById('pluginAutoToggle');
+  const intervalSel = document.getElementById('pluginIntervalSel');
+  if (toggle) toggle.classList.toggle('on', Boolean(_pluginsRefreshTimer));
+  if (intervalSel) {
+    intervalSel.style.display = _pluginsRefreshTimer ? '' : 'none';
+    if (_pluginsRefreshMs) intervalSel.value = String(_pluginsRefreshMs);
+  }
+}
 
 function renderPluginsPanel() {
   // detail view
@@ -55,8 +66,19 @@ async function loadPluginsData() {
   try {
     _pluginsData = await invoke('list_plugins') || [];
     if (_pluginDetailId) {
-      // detail view: re-render full panel to reflect updated data
+      const input = document.activeElement;
+      const focusedId = input && input.id ? input.id : null;
+      const focusedValue = input && 'value' in input ? input.value : null;
+      const main = document.getElementById('mainContent');
+      const scrollTop = main ? main.scrollTop : 0;
       document.getElementById('mainContent').innerHTML = renderPluginsPanel();
+      const restored = focusedId ? document.getElementById(focusedId) : null;
+      if (restored && focusedValue !== null && 'value' in restored) {
+        restored.value = focusedValue;
+        restored.focus();
+      }
+      const nextMain = document.getElementById('mainContent');
+      if (nextMain) nextMain.scrollTop = scrollTop;
     } else {
       renderPluginList();
     }
@@ -103,6 +125,7 @@ function renderPluginCard(p) {
 
 // ── 插件详情页 ──
 function showPluginDetail(id) {
+  stopPluginAutoRefresh();
   _pluginDetailId = id;
   switchPanel('plugins');
 }
@@ -252,6 +275,13 @@ async function uninstallPlugin(id) {
   } catch(e) { showToast('卸载失败: ' + esc(String(e)), 'error'); }
 }
 
+function clearPluginQrPolling() {
+  if (_pluginQrPollTimer) {
+    clearInterval(_pluginQrPollTimer);
+    _pluginQrPollTimer = null;
+  }
+}
+
 async function startPluginAccount(pluginId, accountId) {
   try {
     await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
@@ -298,12 +328,13 @@ async function scanAndStart(pluginId, accountId) {
       oc.innerHTML = `<img src="${esc(url2)}" alt="QR"><p class="qr-hint" style="color:var(--amber);">请使用微信扫码，扫码后网关将自动启动</p>`;
       // 轮询状态，连接成功后自动启动网关
       var pollCount = 0;
-      var pollTimer = setInterval(async () => {
+      clearPluginQrPolling();
+      _pluginQrPollTimer = setInterval(async () => {
         pollCount++;
         try {
           var status = await invoke('query_plugin_status', { pluginId: pluginId, accountId: accountId });
           if (status && status.status === 'connected') {
-            clearInterval(pollTimer);
+            clearPluginQrPolling();
             oc.innerHTML = '<span style="color:var(--green);">登录成功，正在启动网关...</span>';
             try {
               await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
@@ -315,7 +346,7 @@ async function scanAndStart(pluginId, accountId) {
             await loadPluginsData();
           }
         } catch(ee) {}
-        if (pollCount > 60) { clearInterval(pollTimer); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
+        if (pollCount > 60) { clearPluginQrPolling(); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
       }, 2000);
     } else {
       oc.innerHTML = '<span style="color:var(--red);">' + esc(JSON.stringify(result2)) + '</span>';
@@ -363,6 +394,7 @@ function showQrOverlay() {
   return true;
 }
 function closeQrOverlay() {
+  clearPluginQrPolling();
   const overlay = document.getElementById('qrOverlay');
   if (!overlay) return;
   overlay.classList.remove('show');
@@ -384,12 +416,13 @@ async function scanPluginQr(pluginId, accountId) {
       oc.innerHTML = `<img src="${esc(url)}" alt="QR"><p class="qr-hint" style="color:var(--amber);">请使用微信扫码，扫码后网关将自动启动</p>`;
       // 轮询登录状态，确认后自动启动网关
       var pollCount = 0;
-      var pollTimer = setInterval(async () => {
+      clearPluginQrPolling();
+      _pluginQrPollTimer = setInterval(async () => {
         pollCount++;
         try {
           var status = await invoke('query_plugin_status', { pluginId: pluginId, accountId: accountId });
           if (status && status.status === 'connected') {
-            clearInterval(pollTimer);
+            clearPluginQrPolling();
             oc.innerHTML = '<span style="color:var(--green);">登录成功，正在启动网关...</span>';
             try {
               await invoke('start_plugin_account', { pluginId: pluginId, accountId: accountId });
@@ -401,7 +434,7 @@ async function scanPluginQr(pluginId, accountId) {
             await loadPluginsData();
           }
         } catch(ee) {}
-        if (pollCount > 60) { clearInterval(pollTimer); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
+        if (pollCount > 60) { clearPluginQrPolling(); oc.innerHTML = '<span style="color:var(--red);">登录超时，请重试</span>'; }
       }, 2000);
     } else {
       oc.innerHTML = '<span style="color:var(--red);">' + esc(JSON.stringify(result)) + '</span>';
@@ -411,27 +444,35 @@ async function scanPluginQr(pluginId, accountId) {
 
 function togglePluginAutoRefresh() {
   if (_pluginsRefreshTimer) {
-    clearInterval(_pluginsRefreshTimer);
-    _pluginsRefreshTimer = null;
-    _pluginsRefreshMs = 0;
-    document.getElementById('pluginAutoToggle').classList.remove('on');
-    document.getElementById('pluginIntervalSel').style.display = 'none';
+    stopPluginAutoRefresh();
   } else {
     _pluginsRefreshMs = parseInt(document.getElementById('pluginIntervalSel').value) || 10000;
     _pluginsRefreshTimer = setInterval(loadPluginsData, _pluginsRefreshMs);
-    document.getElementById('pluginAutoToggle').classList.add('on');
-    document.getElementById('pluginIntervalSel').style.display = '';
+    syncPluginAutoRefreshUi();
   }
+}
+
+function stopPluginAutoRefresh() {
+  if (_pluginsRefreshTimer) {
+    clearInterval(_pluginsRefreshTimer);
+    _pluginsRefreshTimer = null;
+  }
+  _pluginsRefreshMs = 0;
+  syncPluginAutoRefreshUi();
 }
 
 function setPluginRefreshInterval(val) {
   _pluginsRefreshMs = parseInt(val);
   if (_pluginsRefreshTimer) { clearInterval(_pluginsRefreshTimer); _pluginsRefreshTimer = setInterval(loadPluginsData, _pluginsRefreshMs); }
+  syncPluginAutoRefreshUi();
 }
 
 async function refreshPlugins() {
   await loadPluginsData();
   showToast('已刷新');
 }
+
+window.stopPluginAutoRefresh = stopPluginAutoRefresh;
+window.clearPluginQrPolling = clearPluginQrPolling;
 
 // ═══════════════════════════════════════════════════════════════
