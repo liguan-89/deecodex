@@ -6,6 +6,8 @@ deecodex.pid
 codex-relay.pid
 logs/
 .deecodex/
+deecodex-gui/app-session-*.js
+deecodex-gui/app-session-*.js.map
 
 # macOS
 .DS_Store

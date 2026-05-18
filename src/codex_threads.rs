@@ -9,7 +9,12 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+const MAX_ROLLOUT_MESSAGE_CHARS: usize = 24_000;
+const MAX_ROLLOUT_TOTAL_CHARS: usize = 1_500_000;
 
 /// 线程信息（只读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,44 +240,46 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
 
     // 1. 线程元数据
     let mut stmt = conn.prepare(
-        "SELECT id, title, model_provider, model, reasoning_effort,
+        "SELECT id, title, model_provider, model, reasoning_effort, rollout_path,
                 first_user_message, created_at_ms, updated_at_ms,
                 archived, cwd, git_sha, git_branch, agent_nickname, cli_version
          FROM threads WHERE id = ?1",
     )?;
-    let mut thread = stmt.query_row(rusqlite::params![thread_id], |row| {
-        Ok(serde_json::json!({
-            "id": row.get::<_, String>(0)?,
-            "title": row.get::<_, String>(1)?,
-            "model_provider": row.get::<_, String>(2)?,
-            "model": row.get::<_, Option<String>>(3)?,
-            "reasoning_effort": row.get::<_, Option<String>>(4)?,
-            "first_user_message": row.get::<_, String>(5)?,
-            "created_at_ms": row.get::<_, Option<i64>>(6)?,
-            "updated_at_ms": row.get::<_, Option<i64>>(7)?,
-            "archived": row.get::<_, i32>(8)? != 0,
-            "cwd": row.get::<_, String>(9)?,
-            "git_sha": row.get::<_, Option<String>>(10)?,
-            "git_branch": row.get::<_, Option<String>>(11)?,
-            "agent_nickname": row.get::<_, Option<String>>(12)?,
-            "cli_version": row.get::<_, String>(13)?,
-        }))
+    let (mut thread, rollout_path) = stmt.query_row(rusqlite::params![thread_id], |row| {
+        let rollout_path = row.get::<_, String>(5)?;
+        Ok((
+            json!({
+                "id": row.get::<_, String>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "model_provider": row.get::<_, String>(2)?,
+                "model": row.get::<_, Option<String>>(3)?,
+                "reasoning_effort": row.get::<_, Option<String>>(4)?,
+                "rollout_path": rollout_path.clone(),
+                "first_user_message": row.get::<_, String>(6)?,
+                "created_at_ms": row.get::<_, Option<i64>>(7)?,
+                "updated_at_ms": row.get::<_, Option<i64>>(8)?,
+                "archived": row.get::<_, i32>(9)? != 0,
+                "cwd": row.get::<_, String>(10)?,
+                "git_sha": row.get::<_, Option<String>>(11)?,
+                "git_branch": row.get::<_, Option<String>>(12)?,
+                "agent_nickname": row.get::<_, Option<String>>(13)?,
+                "cli_version": row.get::<_, String>(14)?,
+            }),
+            rollout_path,
+        ))
     })?;
     drop(stmt);
 
-    let mut messages: Vec<serde_json::Value> = Vec::new();
+    let mut messages = read_rollout_messages(Path::new(&rollout_path)).unwrap_or_else(|err| {
+        tracing::warn!(
+            thread_id = thread_id,
+            rollout_path = %rollout_path,
+            "读取线程 rollout 内容失败: {err}"
+        );
+        Vec::new()
+    });
 
-    // 2. 首条用户消息
-    if let Some(first_msg) = thread.get("first_user_message").and_then(|v| v.as_str()) {
-        if !first_msg.is_empty() {
-            messages.push(serde_json::json!({
-                "role": "user",
-                "payload": { "role": "user", "content": [{ "type": "input_text", "text": first_msg }] }
-            }));
-        }
-    }
-
-    // 3. stage1_outputs 摘要
+    // 2. stage1_outputs 摘要
     let mut rollout_summary = None;
     if let Ok(mut stmt) = conn
         .prepare("SELECT rollout_summary, rollout_slug FROM stage1_outputs WHERE thread_id = ?1")
@@ -288,23 +295,34 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
         }
     }
 
-    // 将摘要作为 assistant 消息
-    if let Some(ref summary) = rollout_summary {
-        if !summary.is_empty() {
-            messages.push(serde_json::json!({
-                "role": "assistant",
-                "payload": { "role": "assistant", "content": [{ "type": "output_text", "text": summary }] }
-            }));
+    if messages.is_empty() {
+        // 兼容极旧或缺失 rollout 文件的线程，至少保留列表里能看到的首问和摘要。
+        if let Some(first_msg) = thread.get("first_user_message").and_then(|v| v.as_str()) {
+            if !first_msg.is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "payload": { "role": "user", "content": [{ "type": "input_text", "text": first_msg }] }
+                }));
+            }
+        }
+        if let Some(ref summary) = rollout_summary {
+            if !summary.is_empty() {
+                messages.push(json!({
+                    "role": "assistant",
+                    "payload": { "role": "assistant", "content": [{ "type": "output_text", "text": summary }] }
+                }));
+            }
         }
     }
+    thread["message_count"] = json!(messages.len());
 
-    // 4. 线程关联的工具
+    // 3. 线程关联的工具
     if let Ok(mut stmt) = conn.prepare(
         "SELECT name, description FROM thread_dynamic_tools WHERE thread_id = ?1 ORDER BY position",
     ) {
         if let Ok(tools) = stmt
             .query_map(rusqlite::params![thread_id], |row| {
-                Ok(serde_json::json!({
+                Ok(json!({
                     "name": row.get::<_, String>(0)?,
                     "description": row.get::<_, String>(1)?,
                 }))
@@ -321,6 +339,270 @@ pub fn get_thread_content(thread_id: &str) -> Result<serde_json::Value> {
         "thread": thread,
         "messages": messages
     }))
+}
+
+fn read_rollout_messages(path: &Path) -> Result<Vec<Value>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("打开 rollout 文件失败: {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut messages = Vec::new();
+    let mut total_chars = 0usize;
+    let mut stopped_for_size = false;
+
+    for line in reader.lines() {
+        let line = line.context("读取 rollout 行失败")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(path = %path.display(), "跳过无法解析的 rollout 行: {err}");
+                continue;
+            }
+        };
+        let message = match event.get("type").and_then(Value::as_str) {
+            Some("response_item") => rollout_response_item_to_message(event.get("payload")),
+            Some("compacted") => event
+                .get("payload")
+                .and_then(|p| p.get("message"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| text_message("system", format!("上下文摘要\n\n{text}"))),
+            _ => None,
+        };
+
+        if let Some(message) = message {
+            let message_chars = value_text_len(&message);
+            if total_chars.saturating_add(message_chars) > MAX_ROLLOUT_TOTAL_CHARS {
+                stopped_for_size = true;
+                break;
+            }
+            total_chars += message_chars;
+            messages.push(message);
+        }
+    }
+
+    if stopped_for_size {
+        messages.push(text_message(
+            "system",
+            "线程内容过大，后续内容已停止加载。可继续收窄查看范围或导出原始 rollout 文件。"
+                .to_string(),
+        ));
+    }
+
+    Ok(messages)
+}
+
+fn rollout_response_item_to_message(payload: Option<&Value>) -> Option<Value> {
+    let payload = payload?;
+    let item_type = payload.get("type").and_then(Value::as_str)?;
+    match item_type {
+        "message" => {
+            let role = payload
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("system");
+            let text = content_to_text(payload.get("content"));
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(text_message(role, text))
+        }
+        "reasoning" => {
+            let mut text = content_to_text(payload.get("summary"));
+            if text.trim().is_empty() {
+                text = content_to_text(payload.get("content"));
+            }
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(text_message("assistant", format!("推理摘要\n\n{text}")))
+        }
+        "function_call" | "custom_tool_call" | "tool_search_call" | "web_search_call" => {
+            let name = payload
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(item_type);
+            let arguments = payload
+                .get("arguments")
+                .and_then(Value::as_str)
+                .map(truncate_rollout_text)
+                .or_else(|| payload.get("input").map(value_to_display_string))
+                .or_else(|| payload.get("query").map(value_to_display_string))
+                .unwrap_or_else(|| value_to_display_string(payload));
+            let text = if arguments.trim().is_empty() {
+                format!("调用工具: {name}")
+            } else {
+                format!("调用工具: {name}\n{arguments}")
+            };
+            Some(text_message("tool", text))
+        }
+        "function_call_output" | "custom_tool_call_output" | "tool_search_output" => {
+            let output = payload
+                .get("output")
+                .or_else(|| payload.get("result"))
+                .or_else(|| payload.get("content"))
+                .map(value_to_display_string)
+                .unwrap_or_default();
+            if output.trim().is_empty() {
+                return None;
+            }
+            Some(text_message("tool", output))
+        }
+        _ => None,
+    }
+}
+
+fn text_message(role: &str, text: String) -> Value {
+    json!({
+        "role": role,
+        "payload": {
+            "role": role,
+            "content": [{ "type": "text", "text": truncate_rollout_text(&text) }]
+        }
+    })
+}
+
+fn content_to_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => truncate_rollout_text(text),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(content_item_to_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(value) if !value.is_null() => value_to_display_string(value),
+        _ => String::new(),
+    }
+}
+
+fn content_item_to_text(item: &Value) -> Option<String> {
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+    match item_type {
+        "input_text" | "output_text" | "text" => item
+            .get("text")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("content").and_then(Value::as_str))
+            .map(truncate_rollout_text),
+        "input_image" | "image_url" => Some(describe_image_item(item)),
+        "input_file" => Some(describe_file_item(item)),
+        _ => {
+            if item.get("image_url").is_some() {
+                Some(describe_image_item(item))
+            } else if item.get("file_id").is_some() || item.get("filename").is_some() {
+                Some(describe_file_item(item))
+            } else {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("content").and_then(Value::as_str))
+                    .map(truncate_rollout_text)
+                    .or_else(|| Some(value_to_display_string(item)).filter(|text| !text.is_empty()))
+            }
+        }
+    }
+}
+
+fn describe_image_item(item: &Value) -> String {
+    let image_url = item
+        .get("image_url")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("url").and_then(Value::as_str))
+        .unwrap_or_default();
+    if image_url.starts_with("data:image/") {
+        let mime = image_url
+            .split(';')
+            .next()
+            .unwrap_or("data:image")
+            .trim_start_matches("data:");
+        format!(
+            "[图片内容: {mime}，{} 字节 data URL，已省略原始数据]",
+            image_url.len()
+        )
+    } else if image_url.is_empty() {
+        "[图片内容已省略]".to_string()
+    } else {
+        format!(
+            "[图片内容: {}]",
+            truncate_text(image_url, MAX_ROLLOUT_MESSAGE_CHARS.min(240))
+        )
+    }
+}
+
+fn describe_file_item(item: &Value) -> String {
+    let name = item
+        .get("filename")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("file_id").and_then(Value::as_str))
+        .unwrap_or("未知文件");
+    format!("[文件内容: {}]", truncate_text(name, 240))
+}
+
+fn value_to_display_string(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => truncate_rollout_text(text),
+        Value::Array(items) => {
+            let lines = items
+                .iter()
+                .filter_map(content_item_to_text)
+                .collect::<Vec<_>>();
+            if lines.is_empty() {
+                truncate_rollout_text(&pretty_json(value))
+            } else {
+                truncate_rollout_text(&lines.join("\n"))
+            }
+        }
+        Value::Object(_) => {
+            if value.get("image_url").is_some() {
+                describe_image_item(value)
+            } else if value.get("file_id").is_some() || value.get("filename").is_some() {
+                describe_file_item(value)
+            } else {
+                truncate_rollout_text(&pretty_json(value))
+            }
+        }
+        _ => truncate_rollout_text(&value.to_string()),
+    }
+}
+
+fn pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn truncate_rollout_text(text: &str) -> String {
+    truncate_text(text, MAX_ROLLOUT_MESSAGE_CHARS)
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut end = text.len();
+    let mut count = 0usize;
+    for (idx, _) in text.char_indices() {
+        if count >= max_chars {
+            end = idx;
+            break;
+        }
+        count += 1;
+    }
+    if end == text.len() {
+        return text.to_string();
+    }
+
+    let mut out = text[..end].to_string();
+    out.push_str(&format!(
+        "\n\n[内容过长，已截断，原始长度约 {} 字节]",
+        text.len()
+    ));
+    out
+}
+
+fn value_text_len(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len(),
+        Value::Array(items) => items.iter().map(value_text_len).sum(),
+        Value::Object(map) => map.values().map(value_text_len).sum(),
+        _ => 0,
+    }
 }
 
 /// 永久删除指定线程。
@@ -529,4 +811,82 @@ fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
         after,
         changed_count: restored,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn read_rollout_messages_collects_full_thread_items() {
+        let path = std::env::temp_dir().join(format!(
+            "deecodex-rollout-test-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::File::create(&path).expect("create temp rollout");
+        writeln!(
+            file,
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"第一问"}}]}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"第一答"}}]}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"response_item","payload":{{"type":"function_call_output","output":"工具结果"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"compacted","payload":{{"message":"压缩摘要"}}}}"#
+        )
+        .unwrap();
+
+        let messages = read_rollout_messages(&path).expect("read rollout messages");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[3]["role"], "system");
+        assert!(messages[0]["payload"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("第一问"));
+        assert!(messages[3]["payload"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("压缩摘要"));
+    }
+
+    #[test]
+    fn read_rollout_messages_summarizes_structured_tool_outputs() {
+        let path = std::env::temp_dir().join(format!(
+            "deecodex-rollout-test-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::File::create(&path).expect("create temp rollout");
+        writeln!(
+            file,
+            r#"{{"type":"response_item","payload":{{"type":"function_call_output","output":[{{"type":"output_text","text":"工具文本"}},{{"type":"input_image","image_url":"data:image/png;base64,AAAAAAAAAAAAAAAA"}}]}}}}"#
+        )
+        .unwrap();
+
+        let messages = read_rollout_messages(&path).expect("read rollout messages");
+        std::fs::remove_file(&path).ok();
+        let text = messages[0]["payload"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "tool");
+        assert!(text.contains("工具文本"));
+        assert!(text.contains("图片内容"));
+        assert!(!text.contains("AAAAAAAAAAAAAAAA"));
+    }
 }
