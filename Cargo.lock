@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex-gui"
-version = "2.0.8"
+version = "2.0.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -1039,9 +1039,11 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tauri",
  "tauri-build",
  "tokio",
+ "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
 ]

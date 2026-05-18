@@ -23,6 +23,17 @@ pub struct ClientProfile {
     pub default_base_url: String,
     pub default_model: String,
     pub capability_labels: Vec<String>,
+    #[serde(default)]
+    pub model_slots: Vec<ClientModelSlot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientModelSlot {
+    pub key: String,
+    pub label: String,
+    pub target: String,
+    pub required: bool,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +57,18 @@ pub struct ClientOperationReport {
     pub applied_at: Option<u64>,
     pub diff: Vec<String>,
     pub diagnostics: Vec<ClientDiagnostic>,
+    #[serde(default)]
+    pub risk_level: String,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub backup_paths: Vec<String>,
+    #[serde(default)]
+    pub secret_source: Option<String>,
+    #[serde(default)]
+    pub schema_ok: bool,
+    #[serde(default)]
+    pub recoverable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +89,15 @@ pub struct ClientImportCandidate {
     pub client_options: HashMap<String, Value>,
     pub source_path: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientBackupEntry {
+    pub path: String,
+    pub target_path: String,
+    pub kind: String,
+    pub created_at: u64,
+    pub size: u64,
 }
 
 struct FileLock {
@@ -92,6 +124,7 @@ pub fn get_client_profiles() -> Vec<ClientProfile> {
             default_base_url: "https://openrouter.ai/api/v1".into(),
             default_model: "gpt-5.5".into(),
             capability_labels: vec!["代理翻译".into(), "模型映射".into(), "视觉胶水".into()],
+            model_slots: Vec::new(),
         },
         ClientProfile {
             kind: AccountClientKind::ClaudeCode,
@@ -105,6 +138,30 @@ pub fn get_client_profiles() -> Vec<ClientProfile> {
             default_base_url: "https://api.anthropic.com".into(),
             default_model: "claude-sonnet-4-5".into(),
             capability_labels: vec!["本地配置".into(), "Anthropic Key".into()],
+            model_slots: vec![
+                model_slot("default", "主模型", "ANTHROPIC_MODEL", true, "Claude Code 默认模型"),
+                model_slot(
+                    "sonnet",
+                    "Sonnet 模型",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    false,
+                    "Claude Code Sonnet 槽位",
+                ),
+                model_slot(
+                    "opus",
+                    "Opus 模型",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    false,
+                    "Claude Code Opus 槽位",
+                ),
+                model_slot(
+                    "haiku",
+                    "Haiku 模型",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    false,
+                    "Claude Code Haiku 槽位",
+                ),
+            ],
         },
         ClientProfile {
             kind: AccountClientKind::Openclaw,
@@ -118,6 +175,30 @@ pub fn get_client_profiles() -> Vec<ClientProfile> {
             default_base_url: "https://openrouter.ai/api/v1".into(),
             default_model: "anthropic/claude-sonnet-4.5".into(),
             capability_labels: vec!["CLI 校验".into(), "SecretRef".into()],
+            model_slots: vec![
+                model_slot("default", "默认 Agent 模型", "agents.defaults.model", true, "OpenClaw 主模型"),
+                model_slot(
+                    "image",
+                    "图片理解模型",
+                    "agents.defaults.imageModel",
+                    false,
+                    "OpenClaw 图片输入补充模型",
+                ),
+                model_slot(
+                    "image_generation",
+                    "图片生成模型",
+                    "agents.defaults.imageGenerationModel",
+                    false,
+                    "OpenClaw 图片生成能力模型",
+                ),
+                model_slot(
+                    "video_generation",
+                    "视频生成模型",
+                    "agents.defaults.videoGenerationModel",
+                    false,
+                    "OpenClaw 视频生成能力模型",
+                ),
+            ],
         },
         ClientProfile {
             kind: AccountClientKind::Hermes,
@@ -131,6 +212,38 @@ pub fn get_client_profiles() -> Vec<ClientProfile> {
             default_base_url: "https://openrouter.ai/api/v1".into(),
             default_model: "anthropic/claude-sonnet-4".into(),
             capability_labels: vec!["YAML 配置".into(), ".env 密钥".into()],
+            model_slots: vec![
+                model_slot("default", "主模型", "model.default", true, "Hermes 主对话模型"),
+                model_slot("vision", "视觉辅助模型", "auxiliary.vision.model", false, "Hermes 视觉工具模型"),
+                model_slot(
+                    "web_extract",
+                    "网页提取模型",
+                    "auxiliary.web_extract.model",
+                    false,
+                    "Hermes 网页提取模型",
+                ),
+                model_slot(
+                    "compression",
+                    "压缩模型",
+                    "auxiliary.compression.model",
+                    false,
+                    "Hermes 上下文压缩模型",
+                ),
+                model_slot(
+                    "session_search",
+                    "会话检索模型",
+                    "auxiliary.session_search.model",
+                    false,
+                    "Hermes 会话搜索模型",
+                ),
+                model_slot(
+                    "title_generation",
+                    "标题生成模型",
+                    "auxiliary.title_generation.model",
+                    false,
+                    "Hermes 会话标题生成模型",
+                ),
+            ],
         },
         ClientProfile {
             kind: AccountClientKind::GenericClient,
@@ -144,8 +257,36 @@ pub fn get_client_profiles() -> Vec<ClientProfile> {
             default_base_url: "https://api.example.com/v1".into(),
             default_model: "gpt-5".into(),
             capability_labels: vec!["OpenAI 兼容".into(), "Env 模板".into()],
+            model_slots: vec![
+                model_slot("default", "默认模型", "OPENAI_MODEL", true, "通用客户端默认模型"),
+                model_slot("fast", "快速模型", "OPENAI_FAST_MODEL", false, "可选快速模型槽位"),
+                model_slot(
+                    "reasoning",
+                    "推理模型",
+                    "OPENAI_REASONING_MODEL",
+                    false,
+                    "可选推理模型槽位",
+                ),
+                model_slot("vision", "视觉模型", "OPENAI_VISION_MODEL", false, "可选视觉模型槽位"),
+            ],
         },
     ]
+}
+
+fn model_slot(
+    key: &str,
+    label: &str,
+    target: &str,
+    required: bool,
+    description: &str,
+) -> ClientModelSlot {
+    ClientModelSlot {
+        key: key.into(),
+        label: label.into(),
+        target: target.into(),
+        required,
+        description: description.into(),
+    }
 }
 
 pub fn profile_for_kind(kind: &AccountClientKind) -> ClientProfile {
@@ -172,18 +313,88 @@ pub fn discover_client_accounts() -> Vec<ClientImportCandidate> {
     out
 }
 
+pub fn list_backups(account: &Account) -> Vec<ClientBackupEntry> {
+    let (config_path, env_path) = resolve_paths(account);
+    let mut out = Vec::new();
+    if let Some(path) = config_path {
+        out.extend(backups_for_path(&path, "config"));
+    }
+    if let Some(path) = env_path {
+        out.extend(backups_for_path(&path, "env"));
+    }
+    out.sort_by_key(|entry| entry.created_at);
+    out.reverse();
+    out
+}
+
+pub fn restore_backup_for_account(
+    account: &Account,
+    backup_path: &Path,
+) -> Result<ClientOperationReport> {
+    if account.client_kind == AccountClientKind::Codex {
+        return Err(anyhow!("Codex 账号不支持客户端配置备份恢复"));
+    }
+    let backup = expand_tilde(backup_path.to_string_lossy().as_ref());
+    let entry = list_backups(account)
+        .into_iter()
+        .find(|entry| same_path(Path::new(&entry.path), &backup))
+        .ok_or_else(|| anyhow!("备份文件不属于该账号的客户端配置: {}", backup.display()))?;
+    let target_path = PathBuf::from(&entry.target_path);
+    let _lock = acquire_lock(&target_path)?;
+    let safety_backup = backup_file(&target_path)?;
+    let copy_result = fs::copy(&backup, &target_path);
+    if let Err(err) = copy_result {
+        restore_backup(&target_path, safety_backup.as_deref())?;
+        return Err(err).with_context(|| format!("恢复备份失败: {}", backup.display()));
+    }
+
+    let command = command_status_for(&account.client_kind);
+    let mut diagnostics = base_diagnostics(account, &command, Some(&target_path));
+    diagnostics.push(info(
+        "restore_ok",
+        &format!("已恢复备份: {}", backup.display()),
+    ));
+    let mut operation = report(
+        account,
+        ReportDraft {
+            dry_run: false,
+            message: "客户端配置备份已恢复".into(),
+            command,
+            config_path: Some(target_path.clone()),
+            env_path: None,
+            backup_path: safety_backup.clone(),
+            diff: vec![
+                format!("restore: {}", backup.display()),
+                format!("target: {}", target_path.display()),
+            ],
+            diagnostics,
+        },
+    );
+    operation.backup_paths = safety_backup
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    operation.recoverable = !operation.backup_paths.is_empty();
+    Ok(operation)
+}
+
 pub fn status(account: &Account) -> ClientOperationReport {
     let command = command_status_for(&account.client_kind);
     let (config_path, env_path) = resolve_paths(account);
     let mut diagnostics = base_diagnostics(account, &command, config_path.as_deref());
+    if let Some(env_path) = env_path.as_deref() {
+        diagnostics.extend(path_diagnostics(env_path, "env"));
+    }
     if account.client_kind == AccountClientKind::Codex {
         diagnostics.push(info(
             "codex_proxy",
             "Codex 账号由 deecodex 代理管理，不写入外部客户端配置",
         ));
     }
+    let ok = diagnostics.iter().all(|d| d.level != "error");
+    let changed_files = changed_files_from_paths(config_path.as_deref(), env_path.as_deref());
     ClientOperationReport {
-        ok: diagnostics.iter().all(|d| d.level != "error"),
+        ok,
         client_kind: account.client_kind.clone(),
         dry_run: true,
         message: "客户端状态已检查".into(),
@@ -194,6 +405,12 @@ pub fn status(account: &Account) -> ClientOperationReport {
         applied_at: account.last_applied_at,
         diff: Vec::new(),
         diagnostics,
+        risk_level: if ok { "low" } else { "high" }.into(),
+        changed_files,
+        backup_paths: Vec::new(),
+        secret_source: secret_source_for(account),
+        schema_ok: ok,
+        recoverable: true,
     }
 }
 
@@ -233,9 +450,30 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     let current = read_json_object(&config_path)?;
     let mut next = current.clone();
     let env = ensure_json_object_path(&mut next, &["env"]);
-    set_json_string(env, "ANTHROPIC_API_KEY", &account.api_key);
+    let auth_env = claude_auth_env_name(account);
+    let model_map = client_model_map(account);
+    set_json_string(env, &auth_env, &account.api_key);
     set_json_string(env, "ANTHROPIC_BASE_URL", &account.upstream);
-    set_json_string(env, "ANTHROPIC_MODEL", &account.default_model);
+    set_json_string(
+        env,
+        "ANTHROPIC_MODEL",
+        &client_slot_model(account, &model_map, "default"),
+    );
+    set_json_string(
+        env,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        slot_value(&model_map, "sonnet"),
+    );
+    set_json_string(
+        env,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        slot_value(&model_map, "opus"),
+    );
+    set_json_string(
+        env,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        slot_value(&model_map, "haiku"),
+    );
     merge_client_env(env, account);
 
     let diff = diff_json(&current, &next);
@@ -248,6 +486,10 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     if account.api_key.trim().is_empty() {
         diagnostics.push(error("empty_key", "Claude Code API Key 为空"));
     }
+    diagnostics.push(info(
+        "secret_source",
+        &format!("Claude Code 密钥将写入 settings.json env.{auth_env}"),
+    ));
     Ok(report(
         account,
         ReportDraft {
@@ -268,17 +510,19 @@ fn apply_openclaw(account: &Account, dry_run: bool) -> Result<ClientOperationRep
     let config_path =
         openclaw_config_path().unwrap_or_else(|| home_path(&[".openclaw", "openclaw.json"]));
     let mut diagnostics = base_diagnostics(account, &command, Some(&config_path));
+    let model_map = client_model_map(account);
+    let default_model = client_slot_model(account, &model_map, "default");
     let mut diff = vec![
         format!("provider: {}", redact_for_diff(&account.provider)),
         format!("base_url: {}", redact_for_diff(&account.upstream)),
-        format!("model: {}", redact_for_diff(&account.default_model)),
+        format!("model: {}", redact_for_diff(&default_model)),
     ];
     let env_name =
         client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into());
     diff.push(format!("api_key: ${{{env_name}}}"));
     diff.push(format!(
         "openclaw_model: {}",
-        openclaw_model_ref(&account.default_model)
+        openclaw_model_ref(&default_model)
     ));
 
     if !command.installed {
@@ -431,9 +675,7 @@ fn apply_openclaw(account: &Account, dry_run: bool) -> Result<ClientOperationRep
 
 fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationReport> {
     let command = command_status_for(&account.client_kind);
-    let config_path =
-        hermes_config_path().unwrap_or_else(|| home_path(&[".hermes", "config.yaml"]));
-    let env_path = hermes_env_path().unwrap_or_else(|| home_path(&[".hermes", ".env"]));
+    let (config_path, env_path) = hermes_paths(account);
     let current_config = fs::read_to_string(&config_path).unwrap_or_default();
     let mut yaml = if current_config.trim().is_empty() {
         serde_yaml::Value::Mapping(Default::default())
@@ -441,28 +683,39 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
         serde_yaml::from_str(&current_config)
             .unwrap_or_else(|_| serde_yaml::Value::Mapping(Default::default()))
     };
+    let key_name = hermes_key_name(account);
+    let model_map = client_model_map(account);
+    let default_model = client_slot_model(account, &model_map, "default");
     set_yaml_path(
         &mut yaml,
-        &["model"],
-        serde_yaml::Value::String(account.default_model.clone()),
+        &["model", "default"],
+        serde_yaml::Value::String(default_model.clone()),
     );
     set_yaml_path(
         &mut yaml,
-        &["provider"],
+        &["model", "provider"],
         serde_yaml::Value::String(account.provider.clone()),
     );
     set_yaml_path(
         &mut yaml,
-        &["base_url"],
+        &["model", "base_url"],
         serde_yaml::Value::String(account.upstream.clone()),
     );
+    set_yaml_path(
+        &mut yaml,
+        &["model", "api_key_env"],
+        serde_yaml::Value::String(key_name.clone()),
+    );
+    remove_yaml_path(&mut yaml, &["provider"]);
+    remove_yaml_path(&mut yaml, &["base_url"]);
+    apply_hermes_auxiliary_model_slots(&mut yaml, &model_map);
 
     let next_config = serde_yaml::to_string(&yaml)?;
     let mut env_map = read_env_file(&env_path)?;
-    let key_name = hermes_key_name(account);
     if !account.api_key.trim().is_empty() {
         env_map.insert(key_name.clone(), account.api_key.clone());
     }
+    merge_client_env_map(&mut env_map, account);
     let next_env = render_env_file(&env_map);
     let mut diff = diff_text("config.yaml", &current_config, &next_config);
     diff.extend(diff_text(
@@ -470,9 +723,9 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
         &redact_env_text(&fs::read_to_string(&env_path).unwrap_or_default()),
         &redact_env_text(&next_env),
     ));
-    let mut backup_path = None;
+    let mut backup_paths = Vec::new();
     if !dry_run {
-        backup_path = write_two_text_files_with_backup(
+        backup_paths = write_two_text_files_with_backups(
             &config_path,
             &next_config,
             None,
@@ -483,7 +736,8 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     }
 
     let mut diagnostics = base_diagnostics(account, &command, Some(&config_path));
-    if account.default_model.trim().is_empty() {
+    diagnostics.extend(path_diagnostics(&env_path, "env"));
+    if default_model.trim().is_empty() {
         diagnostics.push(error("empty_model", "Hermes 默认模型为空"));
     }
     if account.api_key.trim().is_empty() {
@@ -492,6 +746,11 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
             &format!("Hermes 密钥为空，应写入 {key_name}"),
         ));
     }
+    diagnostics.push(info(
+        "secret_source",
+        &format!("Hermes 密钥将写入 .env 的 {key_name}"),
+    ));
+    diagnostics.extend(hermes_credential_pool_summary(&yaml));
     if command.installed && !dry_run {
         match Command::new("hermes").args(["config", "check"]).output() {
             Ok(output) if output.status.success() => {
@@ -511,7 +770,7 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
         }
     }
 
-    Ok(report(
+    let mut operation = report(
         account,
         ReportDraft {
             dry_run,
@@ -519,11 +778,17 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
             command,
             config_path: Some(config_path),
             env_path: Some(env_path),
-            backup_path,
+            backup_path: backup_paths.first().cloned(),
             diff,
             diagnostics,
         },
-    ))
+    );
+    operation.backup_paths = backup_paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    operation.recoverable = dry_run || !operation.backup_paths.is_empty();
+    Ok(operation)
 }
 
 fn apply_generic_client(account: &Account, dry_run: bool) -> Result<ClientOperationReport> {
@@ -532,9 +797,22 @@ fn apply_generic_client(account: &Account, dry_run: bool) -> Result<ClientOperat
         .unwrap_or_else(|| home_path(&[".deecodex", "client-env"]));
     let current = fs::read_to_string(&path).unwrap_or_default();
     let mut env = read_env_text(&current);
+    let key_name =
+        client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into());
+    let model_map = client_model_map(account);
     env.insert("OPENAI_BASE_URL".into(), account.upstream.clone());
-    env.insert("OPENAI_API_KEY".into(), account.api_key.clone());
-    env.insert("OPENAI_MODEL".into(), account.default_model.clone());
+    env.insert(key_name.clone(), account.api_key.clone());
+    env.insert(
+        "OPENAI_MODEL".into(),
+        client_slot_model(account, &model_map, "default"),
+    );
+    for (slot, model) in &model_map {
+        if slot == "default" || model.trim().is_empty() {
+            continue;
+        }
+        env.insert(generic_model_env_name(slot), model.clone());
+    }
+    merge_client_env_map(&mut env, account);
     let next = render_env_file(&env);
     let diff = diff_text(
         "client-env",
@@ -545,7 +823,11 @@ fn apply_generic_client(account: &Account, dry_run: bool) -> Result<ClientOperat
     if !dry_run {
         backup_path = write_text_file_with_backup(&path, &next, Some(0o600))?;
     }
-    let diagnostics = base_diagnostics(account, &command, Some(&path));
+    let mut diagnostics = base_diagnostics(account, &command, Some(&path));
+    diagnostics.push(info(
+        "secret_source",
+        &format!("通用客户端密钥将写入 {key_name}"),
+    ));
     Ok(report(
         account,
         ReportDraft {
@@ -573,15 +855,29 @@ struct ReportDraft {
 }
 
 fn report(account: &Account, draft: ReportDraft) -> ClientOperationReport {
+    let config_path = draft.config_path.as_ref();
+    let env_path = draft.env_path.as_ref();
+    let changed_files = changed_files_from_paths(
+        config_path.map(|p| p.as_path()),
+        env_path.map(|p| p.as_path()),
+    );
+    let primary_backup = draft
+        .backup_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let backup_paths = primary_backup.clone().into_iter().collect::<Vec<_>>();
+    let ok = draft.diagnostics.iter().all(|d| d.level != "error");
+    let schema_ok = schema_ok_from_diagnostics(&draft.diagnostics);
+    let recoverable = draft.dry_run || !backup_paths.is_empty();
     ClientOperationReport {
-        ok: draft.diagnostics.iter().all(|d| d.level != "error"),
+        ok,
         client_kind: account.client_kind.clone(),
         dry_run: draft.dry_run,
         message: draft.message,
         command: draft.command,
         config_path: draft.config_path.map(|p| p.to_string_lossy().to_string()),
         env_path: draft.env_path.map(|p| p.to_string_lossy().to_string()),
-        backup_path: draft.backup_path.map(|p| p.to_string_lossy().to_string()),
+        backup_path: primary_backup,
         applied_at: if draft.dry_run {
             None
         } else {
@@ -589,6 +885,12 @@ fn report(account: &Account, draft: ReportDraft) -> ClientOperationReport {
         },
         diff: draft.diff,
         diagnostics: draft.diagnostics,
+        risk_level: risk_level(ok, recoverable).into(),
+        changed_files,
+        backup_paths,
+        secret_source: secret_source_for(account),
+        schema_ok,
+        recoverable,
     }
 }
 
@@ -646,10 +948,10 @@ fn resolve_paths(account: &Account) -> (Option<PathBuf>, Option<PathBuf>) {
             ),
             None,
         ),
-        AccountClientKind::Hermes => (
-            Some(hermes_config_path().unwrap_or_else(|| home_path(&[".hermes", "config.yaml"]))),
-            Some(hermes_env_path().unwrap_or_else(|| home_path(&[".hermes", ".env"]))),
-        ),
+        AccountClientKind::Hermes => {
+            let (config_path, env_path) = hermes_paths(account);
+            (Some(config_path), Some(env_path))
+        }
         AccountClientKind::GenericClient => (
             Some(
                 configured_path(account, "config_path")
@@ -665,7 +967,13 @@ fn discover_claude_account() -> Option<ClientImportCandidate> {
     let config_path = home_path(&[".claude", "settings.json"]);
     let config = read_json_object(&config_path).ok()?;
     let env = config.get("env").and_then(Value::as_object)?;
-    let api_key = env_string(env, "ANTHROPIC_API_KEY").unwrap_or_default();
+    let (api_key, auth_env) = env_string(env, "ANTHROPIC_API_KEY")
+        .map(|value| (value, "ANTHROPIC_API_KEY".to_string()))
+        .or_else(|| {
+            env_string(env, "ANTHROPIC_AUTH_TOKEN")
+                .map(|value| (value, "ANTHROPIC_AUTH_TOKEN".to_string()))
+        })
+        .unwrap_or_else(|| (String::new(), "ANTHROPIC_API_KEY".to_string()));
     let upstream =
         env_string(env, "ANTHROPIC_BASE_URL").unwrap_or_else(|| "https://api.anthropic.com".into());
     let default_model =
@@ -678,10 +986,20 @@ fn discover_claude_account() -> Option<ClientImportCandidate> {
         "config_path".into(),
         Value::String(config_path.to_string_lossy().to_string()),
     );
-    client_options.insert(
-        "api_key_env".into(),
-        Value::String("ANTHROPIC_API_KEY".into()),
-    );
+    client_options.insert("api_key_env".into(), Value::String(auth_env.clone()));
+    client_options.insert("auth_env".into(), Value::String(auth_env));
+    let mut model_map = serde_json::Map::new();
+    model_map.insert("default".into(), Value::String(default_model.clone()));
+    for (key, env_name) in [
+        ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+        ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+    ] {
+        if let Some(model) = env_string(env, env_name) {
+            model_map.insert(key.into(), Value::String(model));
+        }
+    }
+    client_options.insert("model_map".into(), Value::Object(model_map));
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::ClaudeCode,
         name: "Claude Code · Anthropic".into(),
@@ -698,6 +1016,28 @@ fn discover_claude_account() -> Option<ClientImportCandidate> {
 fn discover_openclaw_account() -> Option<ClientImportCandidate> {
     let config_path =
         openclaw_config_path().unwrap_or_else(|| home_path(&[".openclaw", "openclaw.json"]));
+    if !config_path.exists() {
+        let mut client_options = HashMap::new();
+        client_options.insert(
+            "config_path".into(),
+            Value::String(config_path.to_string_lossy().to_string()),
+        );
+        client_options.insert(
+            "api_key_env".into(),
+            Value::String("OPENROUTER_API_KEY".into()),
+        );
+        return Some(ClientImportCandidate {
+            client_kind: AccountClientKind::Openclaw,
+            name: "OpenClaw · 新建配置".into(),
+            provider: "openrouter".into(),
+            upstream: "https://openrouter.ai/api/v1".into(),
+            api_key: String::new(),
+            default_model: "anthropic/claude-sonnet-4.5".into(),
+            client_options,
+            source_path: Some(config_path.to_string_lossy().to_string()),
+            warnings: vec!["OpenClaw 配置文件不存在，导入后可由 deecodex 创建".into()],
+        });
+    }
     let config = read_json_object(&config_path).ok()?;
     let provider_map = config
         .pointer("/models/providers/deecodex")
@@ -740,6 +1080,33 @@ fn discover_openclaw_account() -> Option<ClientImportCandidate> {
     if let Some(env_name) = api_key_env.clone() {
         client_options.insert("api_key_env".into(), Value::String(env_name));
     }
+    let mut model_map = serde_json::Map::new();
+    model_map.insert("default".into(), Value::String(default_model.clone()));
+    if let Some(image_model) = config
+        .pointer("/agents/defaults/imageModel")
+        .and_then(openclaw_primary_model)
+    {
+        model_map.insert("image".into(), Value::String(image_model));
+    }
+    if let Some(image_generation_model) = config
+        .pointer("/agents/defaults/imageGenerationModel")
+        .and_then(openclaw_primary_model)
+    {
+        model_map.insert(
+            "image_generation".into(),
+            Value::String(image_generation_model),
+        );
+    }
+    if let Some(video_generation_model) = config
+        .pointer("/agents/defaults/videoGenerationModel")
+        .and_then(openclaw_primary_model)
+    {
+        model_map.insert(
+            "video_generation".into(),
+            Value::String(video_generation_model),
+        );
+    }
+    client_options.insert("model_map".into(), Value::Object(model_map));
     let mut warnings = Vec::new();
     if api_key.is_empty() {
         warnings.push("OpenClaw 使用 SecretRef，当前环境没有解析到对应 Key".into());
@@ -763,25 +1130,55 @@ fn discover_hermes_account() -> Option<ClientImportCandidate> {
     let env_path = hermes_env_path().unwrap_or_else(|| home_path(&[".hermes", ".env"]));
     let config_text = fs::read_to_string(&config_path).ok()?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&config_text).ok()?;
-    let provider = yaml_string(&yaml, &["provider"]).unwrap_or_else(|| "openrouter".into());
-    let upstream = yaml_string(&yaml, &["base_url"]).unwrap_or_else(|| {
-        if provider == "anthropic" {
-            "https://api.anthropic.com".into()
-        } else {
-            "https://openrouter.ai/api/v1".into()
-        }
-    });
-    let default_model =
-        yaml_string(&yaml, &["model"]).unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+    let provider = yaml_string(&yaml, &["model", "provider"])
+        .or_else(|| yaml_string(&yaml, &["provider"]))
+        .unwrap_or_else(|| "openrouter".into());
+    let upstream = yaml_string(&yaml, &["model", "base_url"])
+        .or_else(|| yaml_string(&yaml, &["base_url"]))
+        .unwrap_or_else(|| {
+            if provider == "anthropic" {
+                "https://api.anthropic.com".into()
+            } else {
+                "https://openrouter.ai/api/v1".into()
+            }
+        });
+    let default_model = yaml_string(&yaml, &["model", "default"])
+        .or_else(|| yaml_string(&yaml, &["model"]))
+        .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
     let env_map = read_env_file(&env_path).unwrap_or_default();
-    let api_key_env = hermes_key_name_for_provider(&provider);
+    let api_key_env = yaml_string(&yaml, &["model", "api_key_env"])
+        .unwrap_or_else(|| hermes_key_name_for_provider(&provider));
     let api_key = env_map.get(&api_key_env).cloned().unwrap_or_default();
     let mut client_options = HashMap::new();
     client_options.insert(
         "config_path".into(),
         Value::String(config_path.to_string_lossy().to_string()),
     );
+    client_options.insert(
+        "env_path".into(),
+        Value::String(env_path.to_string_lossy().to_string()),
+    );
     client_options.insert("api_key_env".into(), Value::String(api_key_env.clone()));
+    let mut model_map = serde_json::Map::new();
+    model_map.insert("default".into(), Value::String(default_model.clone()));
+    for (slot, path) in [
+        ("vision", &["auxiliary", "vision", "model"][..]),
+        ("web_extract", &["auxiliary", "web_extract", "model"][..]),
+        ("compression", &["auxiliary", "compression", "model"][..]),
+        (
+            "session_search",
+            &["auxiliary", "session_search", "model"][..],
+        ),
+        (
+            "title_generation",
+            &["auxiliary", "title_generation", "model"][..],
+        ),
+    ] {
+        if let Some(model) = yaml_string(&yaml, path) {
+            model_map.insert(slot.into(), Value::String(model));
+        }
+    }
+    client_options.insert("model_map".into(), Value::Object(model_map));
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::Hermes,
         name: format!("Hermes · {provider}"),
@@ -811,6 +1208,19 @@ fn discover_generic_client_account() -> Option<ClientImportCandidate> {
         Value::String(config_path.to_string_lossy().to_string()),
     );
     client_options.insert("api_key_env".into(), Value::String("OPENAI_API_KEY".into()));
+    let mut model_map = serde_json::Map::new();
+    model_map.insert("default".into(), Value::String(default_model.clone()));
+    for (key, value) in &env {
+        if let Some(slot) = key
+            .strip_prefix("OPENAI_")
+            .and_then(|rest| rest.strip_suffix("_MODEL"))
+            .map(|slot| slot.to_ascii_lowercase())
+            .filter(|slot| slot != "model")
+        {
+            model_map.insert(slot, Value::String(value.clone()));
+        }
+    }
+    client_options.insert("model_map".into(), Value::Object(model_map));
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::GenericClient,
         name: "通用客户端 · OpenAI compatible".into(),
@@ -830,6 +1240,14 @@ fn base_diagnostics(
     path: Option<&Path>,
 ) -> Vec<ClientDiagnostic> {
     let mut out = Vec::new();
+    if command.installed {
+        if let Some(version) = command.version.as_deref().filter(|v| !v.is_empty()) {
+            out.push(info(
+                "cli_version",
+                &format!("检测到 {} CLI: {}", command.command, version),
+            ));
+        }
+    }
     if !command.installed {
         out.push(warn(
             "cli_missing",
@@ -850,19 +1268,73 @@ fn base_diagnostics(
         ));
     }
     if let Some(path) = path {
-        if let Some(parent) = path.parent() {
-            if parent.exists() {
-                out.push(info(
-                    "config_dir_exists",
-                    &format!("配置目录存在: {}", parent.display()),
-                ));
-            } else {
-                out.push(warn(
-                    "config_dir_missing",
-                    &format!("配置目录将被创建: {}", parent.display()),
-                ));
+        out.extend(path_diagnostics(path, "config"));
+    }
+    out
+}
+
+fn path_diagnostics(path: &Path, kind: &str) -> Vec<ClientDiagnostic> {
+    let mut out = Vec::new();
+    if let Some(parent) = path.parent() {
+        if parent.exists() {
+            out.push(info(
+                &format!("{kind}_dir_exists"),
+                &format!("配置目录存在: {}", parent.display()),
+            ));
+            match fs::metadata(parent) {
+                Ok(meta) if meta.permissions().readonly() => out.push(error(
+                    &format!("{kind}_dir_readonly"),
+                    &format!("配置目录只读: {}", parent.display()),
+                )),
+                Ok(_) => out.push(info(
+                    &format!("{kind}_dir_writable"),
+                    &format!("配置目录可写: {}", parent.display()),
+                )),
+                Err(err) => out.push(warn(
+                    &format!("{kind}_dir_stat_failed"),
+                    &format!("读取配置目录权限失败: {err}"),
+                )),
             }
+        } else {
+            out.push(warn(
+                &format!("{kind}_dir_missing"),
+                &format!("配置目录将被创建: {}", parent.display()),
+            ));
         }
+    }
+    if path.exists() {
+        match fs::metadata(path) {
+            Ok(meta) => {
+                if meta.permissions().readonly() {
+                    out.push(error(
+                        &format!("{kind}_file_readonly"),
+                        &format!("配置文件只读: {}", path.display()),
+                    ));
+                } else {
+                    out.push(info(
+                        &format!("{kind}_file_writable"),
+                        &format!("配置文件可写: {}", path.display()),
+                    ));
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    out.push(info(
+                        &format!("{kind}_file_mode"),
+                        &format!("配置文件权限: {:o}", meta.permissions().mode() & 0o777),
+                    ));
+                }
+            }
+            Err(err) => out.push(warn(
+                &format!("{kind}_file_stat_failed"),
+                &format!("读取配置文件权限失败: {err}"),
+            )),
+        }
+    } else {
+        out.push(warn(
+            &format!("{kind}_file_missing"),
+            &format!("配置文件不存在，将在写入时创建: {}", path.display()),
+        ));
     }
     out
 }
@@ -914,6 +1386,84 @@ fn client_option_string(account: &Account, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn client_model_map(account: &Account) -> HashMap<String, String> {
+    account
+        .client_options
+        .get("model_map")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())
+                        .map(|model| (key.clone(), model.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn client_slot_model(account: &Account, model_map: &HashMap<String, String>, slot: &str) -> String {
+    model_map
+        .get(slot)
+        .cloned()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            if slot == "default" {
+                Some(account.default_model.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn slot_value<'a>(model_map: &'a HashMap<String, String>, slot: &str) -> &'a str {
+    model_map.get(slot).map(String::as_str).unwrap_or("")
+}
+
+fn client_model_values(account: &Account) -> Vec<String> {
+    let mut out = Vec::new();
+    let model_map = client_model_map(account);
+    let default_model = client_slot_model(account, &model_map, "default");
+    if !default_model.trim().is_empty() {
+        out.push(default_model);
+    }
+    for model in model_map.values() {
+        if !model.trim().is_empty() && !out.contains(model) {
+            out.push(model.clone());
+        }
+    }
+    out
+}
+
+fn claude_auth_env_name(account: &Account) -> String {
+    client_option_string(account, "auth_env")
+        .or_else(|| client_option_string(account, "api_key_env"))
+        .filter(|value| matches!(value.as_str(), "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN"))
+        .unwrap_or_else(|| "ANTHROPIC_API_KEY".into())
+}
+
+fn secret_source_for(account: &Account) -> Option<String> {
+    match account.client_kind {
+        AccountClientKind::Codex => None,
+        AccountClientKind::ClaudeCode => Some(format!(
+            "settings.json env.{}",
+            claude_auth_env_name(account)
+        )),
+        AccountClientKind::Openclaw => Some(format!(
+            "SecretRef env.{}",
+            client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into())
+        )),
+        AccountClientKind::Hermes => Some(format!("~/.hermes/.env {}", hermes_key_name(account))),
+        AccountClientKind::GenericClient => Some(
+            client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into()),
+        ),
+    }
+}
+
 fn env_string(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     map.get(key)
         .and_then(Value::as_str)
@@ -938,6 +1488,22 @@ fn secret_value_and_env(value: Option<&Value>) -> (String, Option<String>) {
             (secret, env_name)
         }
         _ => (String::new(), None),
+    }
+}
+
+fn openclaw_primary_model(value: &Value) -> Option<String> {
+    match value {
+        Value::String(model) => model
+            .strip_prefix("deecodex/")
+            .unwrap_or(model)
+            .trim()
+            .to_string()
+            .into(),
+        Value::Object(map) => map
+            .get("primary")
+            .and_then(Value::as_str)
+            .map(|model| model.strip_prefix("deecodex/").unwrap_or(model).to_string()),
+        _ => None,
     }
 }
 
@@ -1021,6 +1587,23 @@ fn hermes_env_path() -> Option<PathBuf> {
     }
 }
 
+fn hermes_paths(account: &Account) -> (PathBuf, PathBuf) {
+    let config_path = configured_path(account, "config_path").unwrap_or_else(|| {
+        hermes_config_path().unwrap_or_else(|| home_path(&[".hermes", "config.yaml"]))
+    });
+    let env_path = configured_path(account, "env_path").unwrap_or_else(|| {
+        if account.client_options.contains_key("config_path") {
+            config_path
+                .parent()
+                .map(|parent| parent.join(".env"))
+                .unwrap_or_else(|| home_path(&[".hermes", ".env"]))
+        } else {
+            hermes_env_path().unwrap_or_else(|| home_path(&[".hermes", ".env"]))
+        }
+    });
+    (config_path, env_path)
+}
+
 fn read_json_object(path: &Path) -> Result<Value> {
     if !path.exists() {
         return Ok(json!({}));
@@ -1035,7 +1618,7 @@ fn read_json_object(path: &Path) -> Result<Value> {
     if value.is_object() {
         Ok(value)
     } else {
-        Ok(json!({}))
+        Err(anyhow!("JSON 配置根节点必须是对象: {}", path.display()))
     }
 }
 
@@ -1068,6 +1651,16 @@ fn merge_client_env(map: &mut serde_json::Map<String, Value>, account: &Account)
         for (key, value) in env {
             if let Some(text) = value.as_str() {
                 map.insert(key.clone(), Value::String(text.to_string()));
+            }
+        }
+    }
+}
+
+fn merge_client_env_map(map: &mut HashMap<String, String>, account: &Account) {
+    if let Some(env) = account.client_options.get("env").and_then(Value::as_object) {
+        for (key, value) in env {
+            if let Some(text) = value.as_str() {
+                map.insert(key.clone(), text.to_string());
             }
         }
     }
@@ -1121,14 +1714,14 @@ fn write_text_file_with_backup(
     }
 }
 
-fn write_two_text_files_with_backup(
+fn write_two_text_files_with_backups(
     first_path: &Path,
     first_value: &str,
     first_mode: Option<u32>,
     second_path: &Path,
     second_value: &str,
     second_mode: Option<u32>,
-) -> Result<Option<PathBuf>> {
+) -> Result<Vec<PathBuf>> {
     let _first_lock = acquire_lock(first_path)?;
     let _second_lock = acquire_lock(second_path)?;
     let first_backup = backup_file(first_path)?;
@@ -1148,7 +1741,10 @@ fn write_two_text_files_with_backup(
             )
         });
     }
-    Ok(first_backup)
+    Ok([first_backup, second_backup]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 fn acquire_lock(path: &Path) -> Result<FileLock> {
@@ -1175,16 +1771,69 @@ fn backup_file(path: &Path) -> Result<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
     }
-    let backup = path.with_extension(format!(
-        "{}deecodex.bak.{}",
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| format!("{ext}."))
-            .unwrap_or_default(),
-        now_secs()
-    ));
+    let extension_prefix = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!("{ext}."))
+        .unwrap_or_default();
+    let mut timestamp = backup_timestamp_millis();
+    let backup = loop {
+        let candidate = path.with_extension(format!("{extension_prefix}deecodex.bak.{timestamp}"));
+        if !candidate.exists() {
+            break candidate;
+        }
+        timestamp += 1;
+    };
     fs::copy(path, &backup)?;
     Ok(Some(backup))
+}
+
+fn backup_timestamp_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn backups_for_path(path: &Path, kind: &str) -> Vec<ClientBackupEntry> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{file_name}.deecodex.bak.");
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let backup_path = entry.path();
+            let name = backup_path.file_name()?.to_str()?;
+            let ts = name.strip_prefix(&prefix)?.parse::<u64>().ok()?;
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            Some(ClientBackupEntry {
+                path: backup_path.to_string_lossy().to_string(),
+                target_path: path.to_string_lossy().to_string(),
+                kind: kind.into(),
+                created_at: ts,
+                size,
+            })
+        })
+        .collect()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn restore_backup(path: &Path, backup: Option<&Path>) -> Result<()> {
@@ -1203,6 +1852,34 @@ fn restore_backup(path: &Path, backup: Option<&Path>) -> Result<()> {
 
 fn has_errors(diagnostics: &[ClientDiagnostic]) -> bool {
     diagnostics.iter().any(|d| d.level == "error")
+}
+
+fn changed_files_from_paths(config_path: Option<&Path>, env_path: Option<&Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    for path in [config_path, env_path].into_iter().flatten() {
+        let text = path.to_string_lossy().to_string();
+        if !out.contains(&text) {
+            out.push(text);
+        }
+    }
+    out
+}
+
+fn schema_ok_from_diagnostics(diagnostics: &[ClientDiagnostic]) -> bool {
+    !diagnostics.iter().any(|diagnostic| {
+        diagnostic.level == "error"
+            && (diagnostic.code.contains("schema") || diagnostic.code.contains("validate"))
+    })
+}
+
+fn risk_level(ok: bool, recoverable: bool) -> &'static str {
+    if !ok {
+        "high"
+    } else if recoverable {
+        "low"
+    } else {
+        "medium"
+    }
 }
 
 fn diff_json(before: &Value, after: &Value) -> Vec<String> {
@@ -1374,23 +2051,37 @@ fn redact_env_text(text: &str) -> String {
 }
 
 fn openclaw_batch(account: &Account, env_name: &str) -> Value {
-    let model = account.default_model.trim();
-    json!([
-        {
+    let model_map = client_model_map(account);
+    let model = client_slot_model(account, &model_map, "default");
+    let mut batch = vec![
+        json!({
             "path": "models.providers.deecodex",
             "value": {
                 "baseUrl": account.upstream.clone(),
                 "apiKey": {"provider": "default", "source": "env", "id": env_name},
                 "auth": "api-key",
                 "api": openclaw_api_adapter(&account.provider),
-                "models": [{"id": model, "name": model}]
+                "models": client_model_values(account)
+                    .into_iter()
+                    .map(|model| json!({"id": model, "name": model}))
+                    .collect::<Vec<_>>()
             }
-        },
-        {
+        }),
+        json!({
             "path": "agents.defaults.model",
-            "value": openclaw_model_ref(model)
+            "value": openclaw_model_ref(&model)
+        }),
+    ];
+    for (slot, path) in [
+        ("image", "agents.defaults.imageModel"),
+        ("image_generation", "agents.defaults.imageGenerationModel"),
+        ("video_generation", "agents.defaults.videoGenerationModel"),
+    ] {
+        if let Some(model) = model_map.get(slot).filter(|model| !model.trim().is_empty()) {
+            batch.push(json!({"path": path, "value": openclaw_model_ref(model)}));
         }
-    ])
+    }
+    Value::Array(batch)
 }
 
 fn openclaw_command(account: &Account, env_name: &str) -> Command {
@@ -1431,6 +2122,40 @@ fn hermes_key_name_for_provider(provider: &str) -> String {
     .into()
 }
 
+fn apply_hermes_auxiliary_model_slots(
+    yaml: &mut serde_yaml::Value,
+    model_map: &HashMap<String, String>,
+) {
+    for (slot, path) in [
+        ("vision", ["auxiliary", "vision", "model"]),
+        ("web_extract", ["auxiliary", "web_extract", "model"]),
+        ("compression", ["auxiliary", "compression", "model"]),
+        ("session_search", ["auxiliary", "session_search", "model"]),
+        (
+            "title_generation",
+            ["auxiliary", "title_generation", "model"],
+        ),
+    ] {
+        if let Some(model) = model_map.get(slot).filter(|model| !model.trim().is_empty()) {
+            set_yaml_path(yaml, &path, serde_yaml::Value::String(model.clone()));
+        }
+    }
+}
+
+fn generic_model_env_name(slot: &str) -> String {
+    let normalized: String = slot
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("OPENAI_{normalized}_MODEL")
+}
+
 fn set_yaml_path(root: &mut serde_yaml::Value, path: &[&str], value: serde_yaml::Value) {
     if path.is_empty() {
         *root = value;
@@ -1460,6 +2185,42 @@ fn set_yaml_path(root: &mut serde_yaml::Value, path: &[&str], value: serde_yaml:
     }
 }
 
+fn remove_yaml_path(root: &mut serde_yaml::Value, path: &[&str]) -> Option<serde_yaml::Value> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut current = root;
+    for key in &path[..path.len() - 1] {
+        current = current.get_mut(*key)?;
+    }
+    match current {
+        serde_yaml::Value::Mapping(map) => {
+            let key = serde_yaml::Value::String(path[path.len() - 1].into());
+            map.remove(&key)
+        }
+        _ => None,
+    }
+}
+
+fn hermes_credential_pool_summary(yaml: &serde_yaml::Value) -> Vec<ClientDiagnostic> {
+    let Some(strategies) = yaml.get("credential_pool_strategies") else {
+        return Vec::new();
+    };
+    let count = match strategies {
+        serde_yaml::Value::Mapping(map) => map.len(),
+        serde_yaml::Value::Sequence(items) => items.len(),
+        _ => 0,
+    };
+    if count == 0 {
+        Vec::new()
+    } else {
+        vec![info(
+            "credential_pool_readonly",
+            &format!("Hermes credential pool 检测到 {count} 个条目，本版本只读展示不改写"),
+        )]
+    }
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for (idx, ch) in value.chars().enumerate() {
@@ -1476,14 +2237,54 @@ fn truncate(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-client-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn client_account(kind: AccountClientKind) -> Account {
+        serde_json::from_value(json!({
+            "id": "client",
+            "name": "Client",
+            "provider": "openrouter",
+            "client_kind": kind,
+            "upstream": "https://openrouter.ai/api/v1",
+            "api_key": "sk-test123456",
+            "default_model": "anthropic/claude-sonnet-4"
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn client_profiles_include_requested_clients() {
-        let slugs: Vec<_> = get_client_profiles().into_iter().map(|p| p.slug).collect();
+        let profiles = get_client_profiles();
+        let slugs: Vec<_> = profiles.iter().map(|p| p.slug.clone()).collect();
         assert!(slugs.contains(&"codex".to_string()));
         assert!(slugs.contains(&"claude_code".to_string()));
         assert!(slugs.contains(&"openclaw".to_string()));
         assert!(slugs.contains(&"hermes".to_string()));
         assert!(slugs.contains(&"generic_client".to_string()));
+        for slug in ["claude_code", "openclaw", "hermes", "generic_client"] {
+            let profile = profiles
+                .iter()
+                .find(|profile| profile.slug == slug)
+                .unwrap();
+            assert!(
+                profile
+                    .model_slots
+                    .iter()
+                    .any(|slot| slot.key == "default" && slot.required),
+                "{slug} should expose a required default model slot"
+            );
+        }
     }
 
     #[test]
@@ -1529,6 +2330,166 @@ mod tests {
     }
 
     #[test]
+    fn claude_auth_env_prefers_explicit_token_mode() {
+        let mut account = client_account(AccountClientKind::ClaudeCode);
+        account.client_options.insert(
+            "auth_env".into(),
+            Value::String("ANTHROPIC_AUTH_TOKEN".into()),
+        );
+
+        assert_eq!(claude_auth_env_name(&account), "ANTHROPIC_AUTH_TOKEN");
+        assert_eq!(
+            secret_source_for(&account),
+            Some("settings.json env.ANTHROPIC_AUTH_TOKEN".into())
+        );
+    }
+
+    #[test]
+    fn claude_writer_applies_client_model_slots() {
+        let dir = temp_dir("claude-model-slots");
+        let path = dir.join("settings.json");
+        let mut account = client_account(AccountClientKind::ClaudeCode);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        account.client_options.insert(
+            "model_map".into(),
+            json!({
+                "default": "claude-sonnet-4-5",
+                "sonnet": "claude-sonnet-4-5",
+                "opus": "claude-opus-4-5",
+                "haiku": "claude-haiku-4-5"
+            }),
+        );
+
+        let report = apply_claude(&account, false).unwrap();
+        assert!(report.ok);
+        let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["env"]["ANTHROPIC_MODEL"], "claude-sonnet-4-5");
+        assert_eq!(
+            written["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+            "claude-opus-4-5"
+        );
+        assert_eq!(
+            written["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            "claude-haiku-4-5"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generic_client_uses_custom_api_key_env() {
+        let dir = temp_dir("generic-env");
+        let path = dir.join("client-env");
+        let mut account = client_account(AccountClientKind::GenericClient);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        account.client_options.insert(
+            "api_key_env".into(),
+            Value::String("CUSTOM_CLIENT_KEY".into()),
+        );
+        account.client_options.insert(
+            "model_map".into(),
+            json!({
+                "default": "gpt-5",
+                "fast": "gpt-4.1-mini",
+                "vision": "gpt-4.1"
+            }),
+        );
+
+        let report = apply_generic_client(&account, false).unwrap();
+        assert!(report.ok);
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("CUSTOM_CLIENT_KEY=sk-test123456"));
+        assert!(!written.contains("OPENAI_API_KEY=sk-test123456"));
+        assert!(written.contains("OPENAI_MODEL=gpt-5"));
+        assert!(written.contains("OPENAI_FAST_MODEL=gpt-4.1-mini"));
+        assert!(written.contains("OPENAI_VISION_MODEL=gpt-4.1"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hermes_writer_uses_nested_model_config_and_env_path() {
+        let dir = temp_dir("hermes-nested");
+        let config_path = dir.join("config.yaml");
+        let env_path = dir.join(".env");
+        fs::write(
+            &config_path,
+            "model:\n  default: old-model\n  provider: old\ncredential_pool_strategies:\n  main: {}\n",
+        )
+        .unwrap();
+        let mut account = client_account(AccountClientKind::Hermes);
+        account.provider = "minimax".into();
+        account.upstream = "https://api.minimaxi.com/v1".into();
+        account.default_model = "MiniMax-M2.7".into();
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(config_path.display().to_string()),
+        );
+        account.client_options.insert(
+            "env_path".into(),
+            Value::String(env_path.display().to_string()),
+        );
+        account.client_options.insert(
+            "api_key_env".into(),
+            Value::String("MINIMAX_API_KEY".into()),
+        );
+        account.client_options.insert(
+            "model_map".into(),
+            json!({
+                "default": "MiniMax-M2.7",
+                "vision": "MiniMax-VL-01",
+                "compression": "MiniMax-Text-01"
+            }),
+        );
+
+        let report = apply_hermes(&account, false).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.backup_paths.len(), 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "credential_pool_readonly"));
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            yaml_string(&yaml, &["model", "default"]).unwrap(),
+            "MiniMax-M2.7"
+        );
+        assert_eq!(
+            yaml_string(&yaml, &["model", "provider"]).unwrap(),
+            "minimax"
+        );
+        assert_eq!(
+            yaml_string(&yaml, &["model", "base_url"]).unwrap(),
+            "https://api.minimaxi.com/v1"
+        );
+        assert_eq!(
+            yaml_string(&yaml, &["model", "api_key_env"]).unwrap(),
+            "MINIMAX_API_KEY"
+        );
+        assert_eq!(
+            yaml_string(&yaml, &["auxiliary", "vision", "model"]).unwrap(),
+            "MiniMax-VL-01"
+        );
+        assert_eq!(
+            yaml_string(&yaml, &["auxiliary", "compression", "model"]).unwrap(),
+            "MiniMax-Text-01"
+        );
+        assert!(yaml_string(&yaml, &["provider"]).is_none());
+        assert!(fs::read_to_string(&env_path)
+            .unwrap()
+            .contains("MINIMAX_API_KEY=sk-test123456"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn restore_backup_restores_existing_file_and_removes_new_file() {
         let dir = std::env::temp_dir().join(format!(
             "deecodex-client-rollback-{}-{}",
@@ -1553,6 +2514,31 @@ mod tests {
     }
 
     #[test]
+    fn list_and_restore_client_backup_roundtrip() {
+        let dir = temp_dir("backup-roundtrip");
+        let path = dir.join("client-env");
+        fs::write(&path, "OPENAI_MODEL=old\n").unwrap();
+        let backup = backup_file(&path).unwrap().unwrap();
+        fs::write(&path, "OPENAI_MODEL=new\n").unwrap();
+
+        let mut account = client_account(AccountClientKind::GenericClient);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        let backups = list_backups(&account);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].path, backup.to_string_lossy());
+
+        let report = restore_backup_for_account(&account, &backup).unwrap();
+        assert!(report.ok);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "OPENAI_MODEL=old\n");
+        assert!(!report.backup_paths.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn mask_secret_is_unicode_safe() {
         assert_eq!(mask_secret("钥匙abcdef1234"), "钥匙ab****1234");
     }
@@ -1566,7 +2552,14 @@ mod tests {
             "client_kind": "openclaw",
             "upstream": "https://openrouter.ai/api/v1",
             "api_key": "sk-test",
-            "default_model": "anthropic/claude-sonnet-4.5"
+            "default_model": "anthropic/claude-sonnet-4.5",
+            "client_options": {
+                "model_map": {
+                    "default": "anthropic/claude-sonnet-4.5",
+                    "image": "openai/gpt-4.1",
+                    "image_generation": "google/gemini-2.5-flash-image"
+                }
+            }
         }))
         .unwrap();
         let batch = openclaw_batch(&account, "OPENROUTER_API_KEY");
@@ -1578,5 +2571,9 @@ mod tests {
         );
         assert_eq!(batch[1]["path"], "agents.defaults.model");
         assert_eq!(batch[1]["value"], "deecodex/anthropic/claude-sonnet-4.5");
+        assert_eq!(batch[2]["path"], "agents.defaults.imageModel");
+        assert_eq!(batch[2]["value"], "deecodex/openai/gpt-4.1");
+        assert_eq!(batch[3]["path"], "agents.defaults.imageGenerationModel");
+        assert_eq!(batch[3]["value"], "deecodex/google/gemini-2.5-flash-image");
     }
 }

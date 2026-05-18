@@ -310,6 +310,7 @@ pub async fn dex_get_workspace_context(manager: State<'_, ServerManager>) -> Res
                 "name": a.name,
                 "provider": a.provider,
                 "client_kind": a.client_kind,
+                "target": if a.client_kind.is_codex() { "codex_proxy" } else { "client_config" },
                 "upstream": a.upstream,
                 "model_count": a.model_map.len(),
             })
@@ -463,6 +464,46 @@ pub async fn dex_execute_tool(
             "get_client_status" => {
                 crate::commands::get_client_status(manager, req_string(&args, "account_id")?)
                     .await?
+            }
+            "refresh_client_status" => {
+                crate::commands::refresh_client_status(manager, req_string(&args, "account_id")?)
+                    .await?
+            }
+            "list_client_backups" => {
+                crate::commands::list_client_backups(manager, req_string(&args, "account_id")?)
+                    .await?
+            }
+            "restore_client_backup" => {
+                crate::commands::restore_client_backup(
+                    manager,
+                    req_string(&args, "account_id")?,
+                    req_string(&args, "backup_path")?,
+                )
+                .await?
+            }
+            "open_client_config" => {
+                crate::commands::open_client_config(manager, req_string(&args, "account_id")?)
+                    .await?
+            }
+            "get_account_config_file" => {
+                crate::commands::get_account_config_file(manager, req_string(&args, "account_id")?)
+                    .await?
+            }
+            "validate_account_config_file" => {
+                crate::commands::validate_account_config_file(
+                    manager,
+                    req_string(&args, "account_id")?,
+                    req_string(&args, "content")?,
+                )
+                .await?
+            }
+            "save_account_config_file" => {
+                crate::commands::save_account_config_file(
+                    manager,
+                    req_string(&args, "account_id")?,
+                    req_string(&args, "content")?,
+                )
+                .await?
             }
             "test_client_account" => {
                 crate::commands::test_client_account(
@@ -2484,12 +2525,22 @@ pub fn dex_export_report() -> Result<Value, String> {
         } else {
             ""
         };
+        let target = if acc.client_kind.is_codex() {
+            "Codex 代理账号"
+        } else {
+            "客户端配置账号"
+        };
         report.push_str(&format!(
-            "  - {}{} ({}), 模型数: {}\n",
+            "  - {}{} ({}, {}), 模型数: {}, 最近检查: {}\n",
             acc.name,
             active,
+            target,
             acc.provider,
-            acc.model_map.len()
+            acc.model_map.len(),
+            acc.last_check
+                .as_ref()
+                .map(|check| check.message.as_str())
+                .unwrap_or("无")
         ));
     }
 

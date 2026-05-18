@@ -70,6 +70,59 @@ function getClientProfile(kind) {
   return clientProfiles.find(profile => normalizeClientKind(profile.slug || profile.kind) === slug) || null;
 }
 
+function clientSecretLabel(kind) {
+  const slug = normalizeClientKind(kind);
+  if (slug === 'claude_code') return 'Claude 鉴权变量';
+  if (slug === 'openclaw') return 'SecretRef 环境变量';
+  if (slug === 'hermes') return 'Hermes .env Key';
+  return 'Key 环境变量名';
+}
+
+function renderClaudeAuthEnvSelect(value) {
+  const current = value || 'ANTHROPIC_API_KEY';
+  return `<select id="edit_client_auth_env">
+    <option value="ANTHROPIC_API_KEY" ${current === 'ANTHROPIC_API_KEY' ? 'selected' : ''}>ANTHROPIC_API_KEY</option>
+    <option value="ANTHROPIC_AUTH_TOKEN" ${current === 'ANTHROPIC_AUTH_TOKEN' ? 'selected' : ''}>ANTHROPIC_AUTH_TOKEN</option>
+  </select>`;
+}
+
+function clientModelSlots(kind) {
+  const profile = getClientProfile(kind);
+  if (profile && Array.isArray(profile.model_slots) && profile.model_slots.length) return profile.model_slots;
+  const slug = normalizeClientKind(kind);
+  if (slug === 'claude_code') return [
+    { key: 'default', label: '主模型', target: 'ANTHROPIC_MODEL', required: true },
+    { key: 'sonnet', label: 'Sonnet 模型', target: 'ANTHROPIC_DEFAULT_SONNET_MODEL' },
+    { key: 'opus', label: 'Opus 模型', target: 'ANTHROPIC_DEFAULT_OPUS_MODEL' },
+    { key: 'haiku', label: 'Haiku 模型', target: 'ANTHROPIC_DEFAULT_HAIKU_MODEL' },
+  ];
+  if (slug === 'openclaw') return [
+    { key: 'default', label: '默认 Agent 模型', target: 'agents.defaults.model', required: true },
+    { key: 'image', label: '图片理解模型', target: 'agents.defaults.imageModel' },
+    { key: 'image_generation', label: '图片生成模型', target: 'agents.defaults.imageGenerationModel' },
+    { key: 'video_generation', label: '视频生成模型', target: 'agents.defaults.videoGenerationModel' },
+  ];
+  if (slug === 'hermes') return [
+    { key: 'default', label: '主模型', target: 'model.default', required: true },
+    { key: 'vision', label: '视觉辅助模型', target: 'auxiliary.vision.model' },
+    { key: 'web_extract', label: '网页提取模型', target: 'auxiliary.web_extract.model' },
+    { key: 'compression', label: '压缩模型', target: 'auxiliary.compression.model' },
+    { key: 'session_search', label: '会话检索模型', target: 'auxiliary.session_search.model' },
+    { key: 'title_generation', label: '标题生成模型', target: 'auxiliary.title_generation.model' },
+  ];
+  return [
+    { key: 'default', label: '默认模型', target: 'OPENAI_MODEL', required: true },
+    { key: 'fast', label: '快速模型', target: 'OPENAI_FAST_MODEL' },
+    { key: 'reasoning', label: '推理模型', target: 'OPENAI_REASONING_MODEL' },
+    { key: 'vision', label: '视觉模型', target: 'OPENAI_VISION_MODEL' },
+  ];
+}
+
+function clientModelMap(account) {
+  const map = account?.client_options?.model_map;
+  return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+}
+
 function clientIcon(kind) {
   const slug = normalizeClientKind(kind);
   const logo = slug === 'claude_code' ? 'anthropic' : (slug === 'generic_client' ? 'custom' : slug);
@@ -109,6 +162,12 @@ function renderClientAccountDetail() {
   const profile = getClientProfile(kind) || {};
   const configPath = a.client_options?.config_path || '';
   const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
+  const authEnv = a.client_options?.auth_env || apiKeyEnv;
+  const secretHint = kind === 'openclaw'
+    ? 'OpenClaw 会写入 SecretRef，不把 Key 放进命令参数。'
+    : (kind === 'hermes'
+      ? 'Hermes 会把非密钥配置写入 config.yaml，密钥写入 .env。'
+      : '写入前会展示脱敏 diff，不显示完整密钥。');
   return `<div class="breadcrumb">
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / ${esc(a.name)}</span>
@@ -166,6 +225,23 @@ function renderClientAccountDetail() {
 
     <section class="account-edit-section">
       <div class="account-section-head">
+        <div class="section-sub-label">客户端模型映射</div>
+        <div class="account-section-desc">不同客户端会写入不同模型槽位；默认模型会同步到上方默认模型字段。</div>
+      </div>
+      <div class="section-action-row">
+        <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
+        <span id="clientModelFetchStatus"></span>
+      </div>
+      <div class="client-model-map-head">
+        <span>客户端槽位</span>
+        <span>上游模型</span>
+      </div>
+      <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
+      <div class="model-add-row"><button onclick="addClientModelRow()">+ 添加自定义槽位</button></div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
         <div class="section-sub-label">配置写入</div>
         <div class="account-section-desc">写入前会做 dry-run 并生成备份；OpenClaw 优先使用官方 config dry-run/validate。</div>
       </div>
@@ -177,13 +253,38 @@ function renderClientAccountDetail() {
         <div class="config-field">
           <label>Key 环境变量名</label>
           <input type="text" id="edit_client_api_key_env" value="${escAttr(apiKeyEnv)}" placeholder="OPENAI_API_KEY">
+          <span class="hint">${esc(secretHint)}</span>
         </div>
+        ${kind === 'claude_code' ? `<div class="config-field">
+          <label>${clientSecretLabel(kind)}</label>
+          ${renderClaudeAuthEnvSelect(authEnv)}
+          <span class="hint">兼容 Claude Code 的 API Key 和 Auth Token 两种本地环境变量。</span>
+        </div>` : `<div class="config-field">
+          <label>${clientSecretLabel(kind)}</label>
+          <input type="text" value="${escAttr(apiKeyEnv)}" disabled>
+        </div>
+        `}
       </div>
       <div class="section-action-row">
+        ${a.id ? `<button class="btn btn-ghost" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">刷新状态</button>` : ''}
+        ${a.id ? `<button class="btn btn-ghost" onclick="editConfigFile('${escAttr(a.id)}')">编辑配置文件</button>` : ''}
         <button class="btn btn-ghost" onclick="dryRunEditingClientAccount()">预检当前表单</button>
         <span id="clientDryRunStatus"></span>
       </div>
       <div id="clientApplyPreview" class="client-apply-preview"></div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div>
+          <div class="section-sub-label">最近备份</div>
+          <div class="account-section-desc">正式写入或手动恢复前都会生成备份；恢复也会先备份当前文件。</div>
+        </div>
+        ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientBackupsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
+      </div>
+      <div id="clientBackupList" class="client-backup-list">
+        <span class="status-muted">${a.id ? '加载中...' : '保存账号后显示备份'}</span>
+      </div>
     </section>
 
     <section class="account-edit-section">
@@ -425,6 +526,7 @@ function renderMainContent() {
 function afterRenderAccountsPanel() {
   if (accountsView === 'edit' && editingAccount && !isCodexAccount(editingAccount) && editingAccount.id) {
     fetchClientEventsForDetail(editingAccount.id);
+    fetchClientBackupsForDetail(editingAccount.id);
   }
 }
 
@@ -493,6 +595,7 @@ function renderAccountList() {
               ${active
                 ? '<button class="account-action account-applied" disabled>已应用</button>'
                 : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
+              <button class="account-action" onclick="editConfigFile('${escAttr(a.id)}')">配置</button>
               <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
             </div>
           </div>
@@ -547,8 +650,10 @@ function renderClientAccountCard(a) {
       <div class="account-card-side">
         <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
         <div class="card-actions-row">
+          <button class="account-action" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">诊断</button>
           <button class="account-action" onclick="dryRunClientAccount('${escAttr(a.id)}')">预检</button>
           <button class="account-action account-apply" onclick="applyClientAccount('${escAttr(a.id)}')">写入配置</button>
+          <button class="account-action" onclick="editConfigFile('${escAttr(a.id)}')">配置</button>
           <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
         </div>
       </div>
@@ -970,6 +1075,7 @@ function renderAccountDetail() {
 
   <div class="accounts-actions">
     <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+    ${a.id ? `<button class="btn btn-ghost" onclick="editConfigFile('${escAttr(a.id)}')">编辑配置文件</button>` : ''}
     <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
   </div>
   </div>`;
@@ -1019,6 +1125,87 @@ function renderModelMappingRows(knownModels) {
       </div>
     </div>`;
   }).join('');
+}
+
+function renderClientModelMappingRows(account) {
+  const kind = accountClientKind(account);
+  const slots = clientModelSlots(kind);
+  const map = clientModelMap(account);
+  const knownKeys = slots.map(slot => slot.key);
+  const modelSource = upstreamModels.length > 0 ? upstreamModels : getProviderKnownModels(account.provider || '');
+  const suggestionsJson = escAttr(JSON.stringify(modelSource || []));
+  const rows = slots.map(slot => ({
+    key: slot.key,
+    label: slot.label || slot.key,
+    target: slot.target || '',
+    description: slot.description || '',
+    required: Boolean(slot.required),
+    value: map[slot.key] || (slot.key === 'default' ? (account.default_model || '') : ''),
+    readonly: true,
+  }));
+  Object.entries(map).forEach(([key, value]) => {
+    if (knownKeys.includes(key)) return;
+    rows.push({ key, label: key, target: '自定义槽位', required: false, value, readonly: false });
+  });
+  return rows.map(row => {
+    const slotCell = row.readonly
+      ? `<div class="client-model-slot">
+          <strong>${esc(row.label)}${row.required ? ' *' : ''}</strong>
+          <span title="${escAttr(row.description || row.target)}">${esc(row.target)}</span>
+          <input type="hidden" class="client-model-slot-key" value="${escAttr(row.key)}">
+        </div>`
+      : `<div class="client-model-slot custom">
+          <input type="text" class="client-model-slot-key" value="${escAttr(row.key)}" placeholder="槽位名，如 rerank">
+          <span>${esc(row.target)}</span>
+        </div>`;
+    return `<div class="client-model-row">
+      ${slotCell}
+      <div class="client-model-value">
+        <div class="model-autocomplete">
+          <input type="text" class="client-model-value-input" value="${escAttr(row.value || '')}" placeholder="留空则不写入该槽位"
+            onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">
+          <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+        </div>
+        ${row.readonly ? '<span class="model-remove-placeholder"></span>' : '<button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function addClientModelRow() {
+  const container = document.getElementById('clientModelMapRows');
+  if (!container) return;
+  const modelSource = upstreamModels.length > 0 ? upstreamModels : getProviderKnownModels(editingAccount?.provider || '');
+  const suggestionsJson = escAttr(JSON.stringify(modelSource || []));
+  const row = document.createElement('div');
+  row.className = 'client-model-row';
+  row.innerHTML = `<div class="client-model-slot custom">
+      <input type="text" class="client-model-slot-key" placeholder="槽位名，如 rerank">
+      <span>自定义槽位</span>
+    </div>
+    <div class="client-model-value">
+      <div class="model-autocomplete">
+        <input type="text" class="client-model-value-input" placeholder="上游模型名"
+          onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">
+        <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+      </div>
+      <button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>
+    </div>`;
+  container.appendChild(row);
+}
+
+function removeClientModelRow(btn) {
+  btn.closest('.client-model-row')?.remove();
+}
+
+function collectClientModelMap() {
+  const result = {};
+  document.querySelectorAll('#clientModelMapRows .client-model-row').forEach(row => {
+    const key = row.querySelector('.client-model-slot-key')?.value?.trim();
+    const value = row.querySelector('.client-model-value-input')?.value?.trim();
+    if (key && value) result[key] = value;
+  });
+  return result;
 }
 
 function normalizedVisionMode(mode) {
@@ -1122,6 +1309,19 @@ function updateClientProviderDefaults() {
     const draft = { provider, client_kind: selectedClientKind };
     env.value = defaultApiKeyEnvForClient(draft);
   }
+  if (editingAccount && !isCodexAccount(editingAccount)) {
+    upstreamModels = [];
+    syncEditingDraftFromForm();
+    const clientMap = clientModelMap(editingAccount);
+    const defaultModel = model?.value?.trim() || editingAccount.default_model || '';
+    if (defaultModel && !clientMap.default) {
+      editingAccount.client_options = editingAccount.client_options || {};
+      editingAccount.client_options.model_map = { ...clientMap, default: defaultModel };
+      editingAccount.default_model = defaultModel;
+    }
+    const rows = document.getElementById('clientModelMapRows');
+    if (rows) rows.innerHTML = renderClientModelMappingRows(editingAccount);
+  }
 }
 
 // ── 模型映射编辑辅助 ──
@@ -1154,6 +1354,15 @@ function syncEditingDraftFromForm() {
     const defaultModel = document.getElementById('edit_default_model');
     if (defaultModel) a.default_model = defaultModel.value.trim();
     if (!a.client_options) a.client_options = {};
+    const clientModels = collectClientModelMap();
+    if (Object.keys(clientModels).length) {
+      if (!clientModels.default && a.default_model) clientModels.default = a.default_model;
+      a.client_options.model_map = clientModels;
+      a.default_model = clientModels.default || a.default_model;
+      if (defaultModel) defaultModel.value = a.default_model;
+    } else {
+      delete a.client_options.model_map;
+    }
     const configPath = document.getElementById('edit_client_config_path');
     if (configPath) {
       const value = configPath.value.trim();
@@ -1165,6 +1374,11 @@ function syncEditingDraftFromForm() {
       const value = apiKeyEnv.value.trim();
       if (value) a.client_options.api_key_env = value;
       else delete a.client_options.api_key_env;
+    }
+    const authEnv = document.getElementById('edit_client_auth_env');
+    if (authEnv) {
+      a.client_options.auth_env = authEnv.value || a.client_options.api_key_env || 'ANTHROPIC_API_KEY';
+      a.client_options.api_key_env = a.client_options.auth_env;
     }
     a.translate_enabled = false;
     a.endpoints = [];
@@ -1421,7 +1635,13 @@ function addAccount(provider, clientKind) {
     upstream: preset.default_upstream,
     api_key: '',
     default_model: kind === 'codex' ? '' : ((preset.known_models && preset.known_models[0]) || clientProfile?.default_model || ''),
-    client_options: kind === 'codex' ? {} : { api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }) },
+    client_options: kind === 'codex' ? {} : {
+      api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }),
+      ...(kind === 'claude_code' ? { auth_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }) } : {}),
+      model_map: {
+        default: (preset.known_models && preset.known_models[0]) || clientProfile?.default_model || '',
+      },
+    },
     last_applied_at: null,
     last_check: null,
     model_map: {},
@@ -1618,14 +1838,23 @@ function renderClientReport(report) {
   if (!report) return '';
   const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
   const diff = Array.isArray(report.diff) ? report.diff : [];
+  const changedFiles = Array.isArray(report.changed_files) ? report.changed_files : [];
+  const backupPaths = Array.isArray(report.backup_paths) ? report.backup_paths : (report.backup_path ? [report.backup_path] : []);
   const levelClass = report.ok ? 'status-ok' : 'status-error';
   const envPath = report.env_path ? `<div class="client-report-path">${esc(report.env_path)}</div>` : '';
-  const backupPath = report.backup_path ? `<div class="client-report-path">备份: ${esc(report.backup_path)}</div>` : '';
+  const meta = [
+    report.risk_level ? `风险 ${report.risk_level}` : '',
+    report.schema_ok === false ? 'Schema 异常' : 'Schema 正常',
+    report.recoverable === false ? '不可自动恢复' : '可恢复',
+    report.secret_source ? `密钥: ${report.secret_source}` : '',
+  ].filter(Boolean);
   return `<div class="client-report">
     <div class="${levelClass}">${esc(report.message || (report.ok ? '检查通过' : '检查失败'))}</div>
+    ${meta.length ? `<div class="client-report-meta">${meta.map(item => `<span>${esc(item)}</span>`).join('')}</div>` : ''}
     ${report.config_path ? `<div class="client-report-path">${esc(report.config_path)}</div>` : ''}
     ${envPath}
-    ${backupPath}
+    ${changedFiles.length ? `<div class="client-report-files"><strong>变更文件</strong>${changedFiles.map(path => `<span title="${escAttr(path)}">${esc(trunc(path, 72))}</span>`).join('')}</div>` : ''}
+    ${backupPaths.length ? `<div class="client-report-files"><strong>备份</strong>${backupPaths.map(path => `<span title="${escAttr(path)}">${esc(trunc(path, 72))}</span>`).join('')}</div>` : ''}
     ${diagnostics.length ? `<div class="client-report-list">${diagnostics.map(d => `<div class="client-report-item ${escAttr(d.level || 'info')}">${esc(d.message || d.code || '')}</div>`).join('')}</div>` : ''}
     ${diff.length ? `<div class="client-report-diff">${diff.map(line => `<code>${esc(line)}</code>`).join('')}</div>` : ''}
   </div>`;
@@ -1688,7 +1917,8 @@ function renderClientEventLog(events) {
     const time = formatTimeShort(event.ts);
     const message = event.message || '';
     const details = event.details || {};
-    const path = details.source_path || details.config_path || details.backup_path || '';
+    const backupPaths = Array.isArray(details.backup_paths) ? details.backup_paths : [];
+    const path = details.source_path || details.config_path || details.backup_path || backupPaths[0] || '';
     const source = path ? `<span title="${escAttr(path)}">${esc(trunc(path, 52))}</span>` : '';
     return `<div class="client-event-item ${ok ? 'ok' : 'error'}">
       <div class="client-event-dot"></div>
@@ -1707,10 +1937,61 @@ function renderClientEventLog(events) {
 function accountEventActionLabel(action) {
   const labels = {
     client_account_import: '导入账号',
+    client_account_status: '状态刷新',
     client_account_dry_run: '配置预检',
     client_account_apply: '写入配置',
+    client_account_restore: '恢复备份',
+    client_config_open: '编辑配置',
+    client_config_save: '保存配置',
   };
   return labels[action] || action || '配置事件';
+}
+
+async function fetchClientBackupsForDetail(id) {
+  const el = document.getElementById('clientBackupList');
+  if (!el || !id) return;
+  el.innerHTML = '<span class="status-muted">加载中...</span>';
+  try {
+    const backups = await invoke('list_client_backups', { accountId: id });
+    el.innerHTML = renderClientBackupList(id, Array.isArray(backups) ? backups : []);
+  } catch (e) {
+    el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+  }
+}
+
+function renderClientBackupList(id, backups) {
+  if (!backups.length) return '<span class="status-muted">暂无备份</span>';
+  return backups.slice(0, 12).map(backup => {
+    const time = formatTimeShort(backup.created_at);
+    const sizeKb = Math.max(1, Math.round(Number(backup.size || 0) / 1024));
+    return `<div class="client-backup-item">
+      <div class="client-backup-main">
+        <strong>${esc(backup.kind || 'config')}</strong>
+        <span title="${escAttr(backup.path)}">${esc(trunc(backup.path || '', 68))}</span>
+        <em>${esc(time)} · ${sizeKb} KB</em>
+      </div>
+      <button class="btn btn-ghost btn-small" onclick="restoreClientBackup('${escAttr(id)}', '${escAttr(backup.path || '')}')">恢复</button>
+    </div>`;
+  }).join('');
+}
+
+async function restoreClientBackup(id, backupPath) {
+  if (!backupPath) return;
+  if (!await showConfirm('确定恢复这个客户端配置备份吗？当前配置会先再次备份。')) return;
+  try {
+    const report = await invoke('restore_client_backup', { accountId: id, backupPath });
+    showToast(report.ok ? '客户端备份已恢复' : '恢复后仍有诊断问题', report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    fetchClientEventsForDetail(id);
+    fetchClientBackupsForDetail(id);
+  } catch (e) {
+    showToast('恢复客户端备份失败: ' + e, 'error');
+  }
+}
+
+function refreshClientSwitcherIssues() {
+  const switcher = document.querySelector('.client-switcher');
+  if (switcher) switcher.outerHTML = renderClientSwitcher(accountsData.accounts || []);
 }
 
 async function dryRunEditingClientAccount() {
@@ -1734,11 +2015,134 @@ async function dryRunClientAccount(id) {
   try {
     const report = await invoke('test_client_account', { accountId: id });
     showToast(report.ok ? '客户端预检通过' : '客户端预检发现问题', report.ok ? 'success' : 'error');
+    const account = (accountsData.accounts || []).find(item => item.id === id);
+    if (account) account._client_status_report = report;
     const el = document.getElementById('client-status-' + id);
     if (el) el.innerHTML = renderClientStatusSummary(report);
+    refreshClientSwitcherIssues();
   } catch (e) {
     showToast('客户端预检失败: ' + e, 'error');
   }
+}
+
+async function refreshClientAccountStatus(id) {
+  try {
+    const report = await invoke('refresh_client_status', { accountId: id });
+    showToast(report.ok ? '客户端状态正常' : '客户端状态有问题', report.ok ? 'success' : 'error');
+    const account = (accountsData.accounts || []).find(item => item.id === id);
+    if (account) {
+      account._client_status_report = report;
+      account.last_check = { ok: report.ok, message: report.message, details: report };
+    }
+    const el = document.getElementById('client-status-' + id);
+    if (el) el.innerHTML = renderClientStatusSummary(report);
+    const preview = document.getElementById('clientApplyPreview');
+    if (preview) preview.innerHTML = renderClientReport(report);
+    refreshClientSwitcherIssues();
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('刷新客户端状态失败: ' + e, 'error');
+  }
+}
+
+async function openClientConfig(id) {
+  try {
+    const result = await invoke('open_client_config', { accountId: id });
+    showToast('已交给系统打开: ' + trunc(result.path || '', 64), 'success');
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('打开配置文件失败: ' + e, 'error');
+  }
+}
+
+async function editConfigFile(id) {
+  if (!id) return;
+  try {
+    const file = await invoke('get_account_config_file', { accountId: id });
+    showConfigEditorModal(id, file);
+  } catch (e) {
+    showToast('读取配置文件失败: ' + e, 'error');
+  }
+}
+
+function showConfigEditorModal(id, file) {
+  const existing = document.getElementById('configEditorModal');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'configEditorModal';
+  const statusText = file.exists ? `已加载 · ${Number(file.size_bytes || 0)} bytes` : '文件不存在，将按当前账号生成初始内容';
+  overlay.innerHTML = `<div class="modal-box config-editor-modal">
+    <div class="modal-header">
+      <h3>编辑配置文件</h3>
+      <button class="modal-close" id="configEditorCloseBtn" type="button">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="config-editor-meta">
+        <strong>${esc(file.label || '配置文件')}</strong>
+        <span title="${escAttr(file.path || '')}">${esc(file.path || '')}</span>
+        <em>${esc((file.format || '').toUpperCase())} · ${esc(statusText)}</em>
+      </div>
+      <div id="configEditorValidation">${renderConfigValidation(file.validation)}</div>
+      <textarea id="configEditorContent" class="config-editor-textarea" spellcheck="false">${esc(file.content || '')}</textarea>
+    </div>
+    <div class="config-editor-actions">
+      <span id="configEditorSaveStatus"></span>
+      <button class="btn btn-ghost" id="configEditorValidateBtn" type="button">校验/编译</button>
+      <button class="btn btn-ghost" id="configEditorSystemOpenBtn" type="button">系统打开</button>
+      <button class="btn btn-primary" id="configEditorSaveBtn" type="button">保存</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const cleanup = () => overlay.remove();
+  document.getElementById('configEditorCloseBtn').onclick = cleanup;
+  overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(); });
+  document.getElementById('configEditorValidateBtn').onclick = async () => {
+    const content = document.getElementById('configEditorContent')?.value || '';
+    const status = document.getElementById('configEditorSaveStatus');
+    if (status) status.innerHTML = '<span class="status-muted">校验中...</span>';
+    try {
+      const validation = await invoke('validate_account_config_file', { accountId: id, content });
+      document.getElementById('configEditorValidation').innerHTML = renderConfigValidation(validation);
+      if (status) status.innerHTML = validation.ok ? '<span class="status-ok">校验通过</span>' : '<span class="status-error">校验失败</span>';
+    } catch (e) {
+      if (status) status.innerHTML = '<span class="status-error">校验异常</span>';
+      showToast('配置校验失败: ' + e, 'error');
+    }
+  };
+  document.getElementById('configEditorSaveBtn').onclick = async () => {
+    const content = document.getElementById('configEditorContent')?.value || '';
+    const status = document.getElementById('configEditorSaveStatus');
+    if (status) status.innerHTML = '<span class="status-muted">保存中...</span>';
+    try {
+      const result = await invoke('save_account_config_file', { accountId: id, content });
+      document.getElementById('configEditorValidation').innerHTML = renderConfigValidation(result.validation);
+      if (!result.ok) {
+        if (status) status.innerHTML = '<span class="status-error">未保存</span>';
+        showToast(result.message || '配置校验未通过，未保存', 'error');
+        return;
+      }
+      if (status) status.innerHTML = `<span class="status-ok">已保存${result.backup_path ? '，已备份' : ''}</span>`;
+      showToast('配置文件已保存', 'success');
+      fetchClientEventsForDetail(id);
+      fetchClientBackupsForDetail(id);
+    } catch (e) {
+      if (status) status.innerHTML = '<span class="status-error">保存失败</span>';
+      showToast('保存配置文件失败: ' + e, 'error');
+    }
+  };
+  document.getElementById('configEditorSystemOpenBtn').onclick = () => openClientConfig(id);
+}
+
+function renderConfigValidation(validation) {
+  const result = validation || {};
+  const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+  const cls = result.ok ? 'status-ok' : 'status-error';
+  const label = result.ok ? '语法正常' : '需要修正';
+  return `<div class="config-editor-validation">
+    <strong class="${cls}">${label}</strong>
+    ${diagnostics.map(item => `<span class="${item.level === 'error' ? 'status-error' : (item.level === 'warning' ? 'status-warn' : 'status-muted')}">${esc(item.message || '')}</span>`).join('')}
+  </div>`;
 }
 
 async function saveAndApplyClientAccount(id) {
@@ -1768,6 +2172,7 @@ async function applyClientAccount(id) {
     const el = document.getElementById('client-status-' + id);
     if (el) el.innerHTML = renderClientStatusSummary(report);
     fetchClientEventsForDetail(id);
+    fetchClientBackupsForDetail(id);
   } catch (e) {
     showToast('写入客户端配置失败: ' + e, 'error');
   }
@@ -1781,6 +2186,7 @@ async function fetchClientStatusForCard(a) {
     const report = await invoke('get_client_status', { accountId: a.id });
     a._client_status_report = report;
     el.innerHTML = renderClientStatusSummary(report);
+    refreshClientSwitcherIssues();
   } catch (e) {
     el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
   }
@@ -1793,9 +2199,11 @@ function renderClientStatusSummary(report) {
   const hasError = diagnostics.some(item => item.level === 'error');
   const cls = hasError ? 'status-error' : (report.ok ? 'status-ok' : 'status-warn');
   const path = report.config_path ? trunc(report.config_path, 42) : '无配置路径';
+  const risk = report.risk_level ? `风险 ${report.risk_level}` : (report.schema_ok === false ? 'Schema 异常' : '');
   return `<div class="client-status-summary">
     <span class="${cls}">${esc(version)}</span>
     <span>${esc(path)}</span>
+    ${risk ? `<span>${esc(risk)}</span>` : ''}
   </div>`;
 }
 
@@ -1836,6 +2244,30 @@ async function fetchAndPopulateModels() {
   } catch (e) {
     if (statusEl) statusEl.innerHTML = '<span class="status-error">获取失败</span>';
     showToast('获取模型列表失败: ' + e, 'error');
+  }
+}
+
+async function fetchClientModels() {
+  const statusEl = document.getElementById('clientModelFetchStatus');
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">获取中...</span>';
+  try {
+    const upstream = document.getElementById('edit_upstream')?.value?.trim();
+    const apiKey = document.getElementById('edit_api_key')?.value?.trim() || '';
+    if (!upstream) { showToast('请先填写目标客户端 Base URL', 'error'); return; }
+    const provider = document.getElementById('edit_client_provider')?.value || editingAccount?.provider || '';
+    const endpointKind = provider === 'anthropic' ? 'anthropic_messages' : 'open_ai_chat';
+    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey, endpointKind });
+    if (upstreamModels.length > 0) {
+      if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
+      syncEditingDraftFromForm();
+      const rows = document.getElementById('clientModelMapRows');
+      if (rows) rows.innerHTML = renderClientModelMappingRows(editingAccount);
+    } else {
+      if (statusEl) statusEl.innerHTML = '<span class="status-muted">上游未返回模型</span>';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">获取失败</span>';
+    showToast('获取客户端模型列表失败: ' + e, 'error');
   }
 }
 

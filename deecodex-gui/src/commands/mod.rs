@@ -6,7 +6,7 @@ pub mod logs;
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -1824,6 +1824,641 @@ pub async fn get_client_status(
 }
 
 #[tauri::command]
+pub async fn refresh_client_status(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let pos = store
+        .accounts
+        .iter()
+        .position(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let report = deecodex::client_integrations::status(&store.accounts[pos]);
+    store.accounts[pos].last_check = Some(deecodex::accounts::ClientCheckRecord {
+        ok: report.ok,
+        checked_at: deecodex::accounts::now_secs(),
+        message: report.message.clone(),
+        details: serde_json::to_value(&report).unwrap_or_default(),
+    });
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号状态失败: {e}"))?;
+    sync_account_store_to_running_state(&manager, &store).await;
+    if !store.accounts[pos].client_kind.is_codex() {
+        append_account_event(
+            &data_dir,
+            &account_id,
+            &store.accounts[pos].client_kind,
+            "client_account_status",
+            report.ok,
+            &report.message,
+            serde_json::to_value(&report).unwrap_or_default(),
+        );
+    }
+    serde_json::to_value(report).map_err(|e| format!("序列化客户端状态失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn list_client_backups(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    serde_json::to_value(deecodex::client_integrations::list_backups(account))
+        .map_err(|e| format!("序列化客户端备份失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn restore_client_backup(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    backup_path: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let pos = store
+        .accounts
+        .iter()
+        .position(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let report = deecodex::client_integrations::restore_backup_for_account(
+        &store.accounts[pos],
+        Path::new(&backup_path),
+    )
+    .map_err(|e| format!("恢复客户端备份失败: {e}"))?;
+    store.accounts[pos].last_check = Some(deecodex::accounts::ClientCheckRecord {
+        ok: report.ok,
+        checked_at: deecodex::accounts::now_secs(),
+        message: report.message.clone(),
+        details: serde_json::to_value(&report).unwrap_or_default(),
+    });
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号恢复状态失败: {e}"))?;
+    sync_account_store_to_running_state(&manager, &store).await;
+    append_account_event(
+        &data_dir,
+        &account_id,
+        &store.accounts[pos].client_kind,
+        "client_account_restore",
+        report.ok,
+        &report.message,
+        serde_json::to_value(&report).unwrap_or_default(),
+    );
+    serde_json::to_value(report).map_err(|e| format!("序列化恢复结果失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn open_client_config(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let target = account_config_target(account).map_err(|e| format!("定位配置文件失败: {e}"))?;
+    ensure_editable_account_config_file(&target.path, account)
+        .map_err(|e| format!("准备客户端配置文件失败: {e}"))?;
+    open_path_with_system_editor(&target.path)
+        .map_err(|e| format!("打开客户端配置文件失败: {e}"))?;
+    append_account_event(
+        &data_dir,
+        &account_id,
+        &account.client_kind,
+        "client_config_open",
+        true,
+        "已打开客户端配置文件",
+        json!({"config_path": target.path.to_string_lossy(), "format": target.format}),
+    );
+    Ok(json!({"ok": true, "path": target.path.to_string_lossy(), "format": target.format}))
+}
+
+#[tauri::command]
+pub async fn get_account_config_file(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let target = account_config_target(account).map_err(|e| format!("定位配置文件失败: {e}"))?;
+    let exists = target.path.exists();
+    let content = if exists {
+        read_text_file_lossy(&target.path).map_err(|e| format!("读取配置文件失败: {e}"))?
+    } else {
+        initial_account_config_text(account)
+    };
+    let validation = validate_config_text_for_editor(target.format, &content);
+    let size_bytes = if exists {
+        std::fs::metadata(&target.path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(json!({
+        "ok": true,
+        "account_id": account_id,
+        "client_kind": account.client_kind,
+        "label": target.label,
+        "path": target.path.to_string_lossy(),
+        "format": target.format,
+        "exists": exists,
+        "content": content,
+        "size_bytes": size_bytes,
+        "validation": validation,
+    }))
+}
+
+#[tauri::command]
+pub async fn validate_account_config_file(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    content: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let target = account_config_target(account).map_err(|e| format!("定位配置文件失败: {e}"))?;
+    Ok(validate_config_text_for_editor(target.format, &content))
+}
+
+#[tauri::command]
+pub async fn save_account_config_file(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    content: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let target = account_config_target(account).map_err(|e| format!("定位配置文件失败: {e}"))?;
+    let validation = validate_config_text_for_editor(target.format, &content);
+    if validation["ok"].as_bool() != Some(true) {
+        return Ok(json!({
+            "ok": false,
+            "message": "配置文件校验未通过，未写入磁盘",
+            "path": target.path.to_string_lossy(),
+            "format": target.format,
+            "validation": validation,
+        }));
+    }
+    if let Some(parent) = target.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let backup_path = backup_config_file_for_editor(&target.path)
+        .map_err(|e| format!("备份配置文件失败: {e}"))?;
+    std::fs::write(&target.path, content).map_err(|e| format!("写入配置文件失败: {e}"))?;
+    append_account_event(
+        &data_dir,
+        &account_id,
+        &account.client_kind,
+        "client_config_save",
+        true,
+        "配置文件已在客户端编辑并保存",
+        json!({
+            "config_path": target.path.to_string_lossy(),
+            "backup_path": backup_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "format": target.format,
+        }),
+    );
+    Ok(json!({
+        "ok": true,
+        "message": "配置文件已保存",
+        "path": target.path.to_string_lossy(),
+        "format": target.format,
+        "backup_path": backup_path.map(|p| p.to_string_lossy().to_string()),
+        "validation": validation,
+    }))
+}
+
+struct ConfigEditorTarget {
+    path: PathBuf,
+    format: &'static str,
+    label: &'static str,
+}
+
+fn account_config_target(
+    account: &deecodex::accounts::Account,
+) -> Result<ConfigEditorTarget, String> {
+    if account.client_kind.is_codex() {
+        let path = deecodex::config::home_dir()
+            .ok_or_else(|| "无法定位用户 HOME 目录".to_string())?
+            .join(".codex")
+            .join("config.toml");
+        return Ok(ConfigEditorTarget {
+            path,
+            format: "toml",
+            label: "Codex config.toml",
+        });
+    }
+    let report = deecodex::client_integrations::status(account);
+    let path = report
+        .config_path
+        .as_deref()
+        .ok_or_else(|| "客户端配置路径不可用".to_string())?;
+    let (format, label) = match account.client_kind {
+        AccountClientKind::ClaudeCode => ("json", "Claude Code settings.json"),
+        AccountClientKind::Openclaw => ("json", "OpenClaw 配置"),
+        AccountClientKind::Hermes => ("yaml", "Hermes config.yaml"),
+        AccountClientKind::GenericClient => ("env", "通用客户端 env"),
+        AccountClientKind::Codex => unreachable!(),
+    };
+    Ok(ConfigEditorTarget {
+        path: PathBuf::from(path),
+        format,
+        label,
+    })
+}
+
+fn ensure_editable_account_config_file(
+    path: &Path,
+    account: &deecodex::accounts::Account,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !path.exists() {
+        let initial = initial_account_config_text(account);
+        std::fs::write(path, initial)?;
+    }
+    Ok(())
+}
+
+fn initial_account_config_text(account: &deecodex::accounts::Account) -> String {
+    if account.client_kind.is_codex() {
+        "# Codex config.toml\n".into()
+    } else {
+        initial_client_config_text(account)
+    }
+}
+
+fn initial_client_config_text(account: &deecodex::accounts::Account) -> String {
+    match account.client_kind {
+        deecodex::accounts::AccountClientKind::ClaudeCode => {
+            let model_map = client_model_map_for_editor(account);
+            let auth_env = client_auth_env_for_editor(account);
+            let mut env = serde_json::Map::new();
+            env.insert(auth_env, Value::String(String::new()));
+            env.insert(
+                "ANTHROPIC_BASE_URL".into(),
+                Value::String(account.upstream.clone()),
+            );
+            if let Some(model) = client_model_for_editor(account, &model_map, "default") {
+                env.insert("ANTHROPIC_MODEL".into(), Value::String(model));
+            }
+            for (slot, key) in [
+                ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+                ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+            ] {
+                if let Some(model) = client_model_for_editor(account, &model_map, slot) {
+                    env.insert(key.into(), Value::String(model));
+                }
+            }
+            serde_json::to_string_pretty(&json!({ "env": env })).unwrap_or_else(|_| "{}".into())
+                + "\n"
+        }
+        deecodex::accounts::AccountClientKind::Openclaw => {
+            let model_map = client_model_map_for_editor(account);
+            let default_model = client_model_for_editor(account, &model_map, "default")
+                .unwrap_or_else(|| account.default_model.clone());
+            let env_name = client_auth_env_for_editor(account);
+            let mut defaults = serde_json::Map::new();
+            if !default_model.trim().is_empty() {
+                defaults.insert(
+                    "model".into(),
+                    Value::String(format!("deecodex/{}", default_model.trim())),
+                );
+            }
+            for (slot, key) in [
+                ("image", "imageModel"),
+                ("image_generation", "imageGenerationModel"),
+                ("video_generation", "videoGenerationModel"),
+            ] {
+                if let Some(model) = client_model_for_editor(account, &model_map, slot) {
+                    defaults.insert(key.into(), Value::String(format!("deecodex/{model}")));
+                }
+            }
+            let models: Vec<Value> = client_model_values_for_editor(account, &model_map)
+                .into_iter()
+                .map(|model| json!({ "id": model, "name": model }))
+                .collect();
+            serde_json::to_string_pretty(&json!({
+                "models": {
+                    "providers": {
+                        "deecodex": {
+                            "baseUrl": account.upstream,
+                            "apiKey": { "provider": "default", "source": "env", "id": env_name },
+                            "auth": "api-key",
+                            "models": models
+                        }
+                    }
+                },
+                "agents": { "defaults": defaults }
+            }))
+            .unwrap_or_else(|_| "{}".into())
+                + "\n"
+        }
+        deecodex::accounts::AccountClientKind::Hermes => {
+            let model_map = client_model_map_for_editor(account);
+            let default_model = client_model_for_editor(account, &model_map, "default")
+                .unwrap_or_else(|| account.default_model.clone());
+            let env_name = client_auth_env_for_editor(account);
+            let mut out = String::new();
+            out.push_str("model:\n");
+            out.push_str(&format!("  default: {}\n", yaml_scalar(&default_model)));
+            out.push_str(&format!("  provider: {}\n", yaml_scalar(&account.provider)));
+            out.push_str(&format!("  base_url: {}\n", yaml_scalar(&account.upstream)));
+            out.push_str(&format!("  api_key_env: {}\n", yaml_scalar(&env_name)));
+            let mut aux_lines = Vec::new();
+            for (slot, path) in [
+                ("vision", "vision"),
+                ("web_extract", "web_extract"),
+                ("compression", "compression"),
+                ("session_search", "session_search"),
+                ("title_generation", "title_generation"),
+            ] {
+                if let Some(model) = client_model_for_editor(account, &model_map, slot) {
+                    aux_lines.push(format!("  {path}:\n    model: {}\n", yaml_scalar(&model)));
+                }
+            }
+            if !aux_lines.is_empty() {
+                out.push_str("auxiliary:\n");
+                out.push_str(&aux_lines.join(""));
+            }
+            out
+        }
+        deecodex::accounts::AccountClientKind::GenericClient => {
+            let model_map = client_model_map_for_editor(account);
+            let env_name = client_auth_env_for_editor(account);
+            let mut out = String::new();
+            out.push_str(&format!("OPENAI_BASE_URL={}\n", account.upstream));
+            out.push_str(&format!("{env_name}=\n"));
+            if let Some(model) = client_model_for_editor(account, &model_map, "default") {
+                out.push_str(&format!("OPENAI_MODEL={model}\n"));
+            }
+            for (slot, model) in model_map {
+                if slot == "default" || model.trim().is_empty() {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "{}={}\n",
+                    generic_model_env_name_for_editor(&slot),
+                    model
+                ));
+            }
+            out
+        }
+        deecodex::accounts::AccountClientKind::Codex => String::new(),
+    }
+}
+
+fn read_text_file_lossy(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(_) => std::fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).to_string()),
+    }
+}
+
+fn backup_config_file_for_editor(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let backup = path.with_file_name(format!(
+        "{}.deecodex.bak.{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config"),
+        deecodex::accounts::now_secs()
+    ));
+    std::fs::copy(path, &backup)?;
+    Ok(Some(backup))
+}
+
+fn validate_config_text_for_editor(format: &str, content: &str) -> Value {
+    let mut diagnostics = Vec::new();
+    let trimmed = content.trim();
+    match format {
+        "toml" => {
+            if let Err(err) = content.parse::<toml_edit::DocumentMut>() {
+                diagnostics
+                    .push(json!({"level": "error", "message": format!("TOML 解析失败: {err}")}));
+            }
+        }
+        "json" => {
+            if trimmed.is_empty() {
+                diagnostics.push(json!({"level": "error", "message": "JSON 配置不能为空"}));
+            } else if let Err(err) = serde_json::from_str::<Value>(content) {
+                diagnostics
+                    .push(json!({"level": "error", "message": format!("JSON 解析失败: {err}")}));
+            }
+        }
+        "yaml" => {
+            if !trimmed.is_empty() {
+                if let Err(err) = serde_yaml::from_str::<serde_yaml::Value>(content) {
+                    diagnostics.push(
+                        json!({"level": "error", "message": format!("YAML 解析失败: {err}")}),
+                    );
+                }
+            }
+        }
+        "env" => {
+            for (idx, line) in content.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((key, _)) = line.split_once('=') else {
+                    diagnostics.push(
+                        json!({"level": "error", "message": format!("第 {} 行缺少 '='", idx + 1)}),
+                    );
+                    continue;
+                };
+                if !key
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+                {
+                    diagnostics.push(json!({"level": "warning", "message": format!("第 {} 行环境变量名建议使用大写字母、数字和下划线", idx + 1)}));
+                }
+            }
+        }
+        _ => diagnostics
+            .push(json!({"level": "warning", "message": format!("未知配置格式: {format}")})),
+    }
+    let ok = diagnostics
+        .iter()
+        .all(|item| item["level"].as_str() != Some("error"));
+    if ok {
+        diagnostics.push(json!({"level": "info", "message": "配置语法校验通过"}));
+    }
+    json!({
+        "ok": ok,
+        "format": format,
+        "diagnostics": diagnostics,
+    })
+}
+
+fn client_model_map_for_editor(account: &deecodex::accounts::Account) -> HashMap<String, String> {
+    account
+        .client_options
+        .get("model_map")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())
+                        .map(|model| (key.clone(), model.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn client_model_for_editor(
+    account: &deecodex::accounts::Account,
+    model_map: &HashMap<String, String>,
+    slot: &str,
+) -> Option<String> {
+    model_map
+        .get(slot)
+        .cloned()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| {
+            if slot == "default" && !account.default_model.trim().is_empty() {
+                Some(account.default_model.clone())
+            } else {
+                None
+            }
+        })
+}
+
+fn client_model_values_for_editor(
+    account: &deecodex::accounts::Account,
+    model_map: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(default_model) = client_model_for_editor(account, model_map, "default") {
+        out.push(default_model);
+    }
+    for model in model_map.values() {
+        if !model.trim().is_empty() && !out.contains(model) {
+            out.push(model.clone());
+        }
+    }
+    out
+}
+
+fn client_auth_env_for_editor(account: &deecodex::accounts::Account) -> String {
+    account
+        .client_options
+        .get("auth_env")
+        .or_else(|| account.client_options.get("api_key_env"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            match account.provider.as_str() {
+                "anthropic" => "ANTHROPIC_API_KEY",
+                "openrouter" => "OPENROUTER_API_KEY",
+                "minimax" => "MINIMAX_API_KEY",
+                _ => "OPENAI_API_KEY",
+            }
+            .into()
+        })
+}
+
+fn generic_model_env_name_for_editor(slot: &str) -> String {
+    let normalized: String = slot
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("OPENAI_{normalized}_MODEL")
+}
+
+fn yaml_scalar(value: &str) -> String {
+    if value.is_empty()
+        || value.chars().any(|ch| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    ':' | '#'
+                        | '\''
+                        | '"'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | ','
+                        | '&'
+                        | '*'
+                        | '!'
+                        | '|'
+                        | '>'
+                        | '@'
+                        | '`'
+                )
+        })
+    {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.into()
+    }
+}
+
+fn open_path_with_system_editor(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn()?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 pub async fn test_client_account(
     manager: State<'_, ServerManager>,
     account_json: Option<String>,
@@ -3461,6 +4096,72 @@ mod tests {
         assert!(preserved.vision_api_key.is_empty());
         assert!(preserved.vision_model.is_empty());
         assert!(preserved.vision_endpoint.is_empty());
+    }
+
+    #[test]
+    fn editable_client_config_seed_is_client_specific_and_redacted() {
+        let mut account = test_account("client");
+        account.client_kind = AccountClientKind::Hermes;
+        account.provider = "minimax".into();
+        account.upstream = "https://api.minimaxi.com/v1".into();
+        account.api_key = "sk-secret-should-not-leak".into();
+        account.default_model = "MiniMax-M2.7".into();
+        account
+            .client_options
+            .insert("api_key_env".into(), json!("MINIMAX_API_KEY"));
+        account.client_options.insert(
+            "model_map".into(),
+            json!({
+                "default": "MiniMax-M2.7",
+                "vision": "MiniMax-VL-01"
+            }),
+        );
+
+        let text = initial_client_config_text(&account);
+
+        assert!(text.contains("model:"));
+        assert!(text.contains("api_key_env: MINIMAX_API_KEY"));
+        assert!(text.contains("vision:"));
+        assert!(text.contains("MiniMax-VL-01"));
+        assert!(!text.contains("sk-secret-should-not-leak"));
+    }
+
+    #[test]
+    fn config_editor_validates_common_config_formats() {
+        assert_eq!(
+            validate_config_text_for_editor("toml", "[model_providers.deecodex]\nname = \"x\"\n")
+                ["ok"],
+            true
+        );
+        assert_eq!(
+            validate_config_text_for_editor("json", "{\"env\":{}}")["ok"],
+            true
+        );
+        assert_eq!(
+            validate_config_text_for_editor("yaml", "model:\n  default: MiniMax-M2.7\n")["ok"],
+            true
+        );
+        assert_eq!(
+            validate_config_text_for_editor("env", "OPENAI_MODEL=gpt-5\n")["ok"],
+            true
+        );
+        assert_eq!(validate_config_text_for_editor("json", "{")["ok"], false);
+        assert_eq!(
+            validate_config_text_for_editor("env", "OPENAI_MODEL")["ok"],
+            false
+        );
+    }
+
+    #[test]
+    fn codex_config_editor_uses_codex_toml_target() {
+        let mut account = test_account("codex");
+        account.client_kind = AccountClientKind::Codex;
+
+        let target = account_config_target(&account).unwrap();
+
+        assert_eq!(target.format, "toml");
+        assert!(target.path.ends_with(".codex/config.toml"));
+        assert!(initial_account_config_text(&account).contains("Codex config.toml"));
     }
 
     #[test]
