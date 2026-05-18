@@ -152,4 +152,18 @@ const validation = context.renderConfigValidation({
 assert(validation.includes('语法正常'));
 assert(validation.includes('配置语法校验通过'));
 
+const savePayload = JSON.parse(context.serializeAccountForBackend({
+  id: 'h1',
+  name: 'Hermes',
+  provider: 'openrouter',
+  client_kind: 'hermes',
+  target: 'hermes',
+  _editing_endpoint_id: 'ep1',
+  upstream: 'https://openrouter.ai/api/v1',
+  api_key: 'sk-test',
+}));
+assert.strictEqual(savePayload.client_kind, 'hermes');
+assert(!Object.prototype.hasOwnProperty.call(savePayload, 'target'));
+assert(!Object.prototype.hasOwnProperty.call(savePayload, '_editing_endpoint_id'));
+
 console.log('accounts render smoke ok');

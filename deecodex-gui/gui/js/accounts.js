@@ -497,7 +497,7 @@ function createEndpointFromTemplate(template, account) {
     reasoning_effort_override: account?.reasoning_effort_override || null,
     thinking_tokens: account?.thinking_tokens || null,
     fast_mode_enabled: false,
-    fast_service_tier: 'fast',
+    fast_service_tier: 'priority',
     balance_url: account?.balance_url || '',
   };
 }
@@ -719,7 +719,7 @@ function renderAccountDetail() {
   const reasoningEffort = ep.reasoning_effort_override ?? null;
   const thinkingTokens = ep.thinking_tokens ?? null;
   const fastEnabled = ep.fast_mode_enabled === true;
-  const fastServiceTier = ep.fast_service_tier || 'fast';
+  const fastServiceTier = ep.fast_service_tier || 'priority';
   const customHeaders = ep.custom_headers || {};
   const requestTimeout = ep.request_timeout_secs ?? null;
   const maxRetries = ep.max_retries ?? a.max_retries;
@@ -942,8 +942,8 @@ function renderAccountDetail() {
         <div class="config-fields nested-fields">
           <div class="config-field">
             <label>service_tier</label>
-            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="fast">
-            <span class="hint">默认 fast；如果上游要求 priority/flex，可在这里改。</span>
+            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="priority">
+            <span class="hint">默认 priority；旧配置中的 fast 会在请求时自动转为 priority。</span>
           </div>
         </div>
       </div>
@@ -1452,8 +1452,8 @@ function syncEditingDraftFromForm() {
   if (fastEnabled) {
     ep.fast_mode_enabled = fastEnabled.checked;
     ep.fast_service_tier = fastEnabled.checked
-      ? (document.getElementById('edit_fast_service_tier')?.value.trim() || 'fast')
-      : 'fast';
+      ? (document.getElementById('edit_fast_service_tier')?.value.trim() || 'priority')
+      : 'priority';
   }
 
   const headersText = document.getElementById('edit_custom_headers');
@@ -1698,6 +1698,15 @@ function editAccount(id) {
   renderMainContent();
 }
 
+function serializeAccountForBackend(account) {
+  const payload = JSON.parse(JSON.stringify(account || {}));
+  if (Object.prototype.hasOwnProperty.call(payload, 'client_kind')) {
+    delete payload.target;
+  }
+  delete payload._editing_endpoint_id;
+  return JSON.stringify(payload);
+}
+
 async function saveAccount(options = {}) {
   if (!editingAccount) return;
   if (options instanceof Event) options = {};
@@ -1771,10 +1780,10 @@ async function saveAccount(options = {}) {
     let result;
     if (isNewAccount) {
       // 新账号
-      result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: JSON.stringify(a) });
+      result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: serializeAccountForBackend(a) });
       if (!options.silent) showToast('账号已创建', 'success');
     } else {
-      result = await invoke('update_account', { accountJson: JSON.stringify(a) });
+      result = await invoke('update_account', { accountJson: serializeAccountForBackend(a) });
       if (!options.silent) showToast('账号已保存', 'success');
     }
     await loadAccountsData();
@@ -2001,7 +2010,7 @@ async function dryRunEditingClientAccount() {
   const preview = document.getElementById('clientApplyPreview');
   if (statusEl) statusEl.innerHTML = '<span class="status-muted">预检中...</span>';
   try {
-    const report = await invoke('test_client_account', { accountJson: JSON.stringify(editingAccount) });
+    const report = await invoke('test_client_account', { accountJson: serializeAccountForBackend(editingAccount) });
     if (statusEl) statusEl.innerHTML = report.ok ? '<span class="status-ok">预检通过</span>' : '<span class="status-error">预检有问题</span>';
     if (preview) preview.innerHTML = renderClientReport(report);
     if (editingAccount.id) fetchClientEventsForDetail(editingAccount.id);

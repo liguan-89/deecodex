@@ -222,7 +222,7 @@ fn default_template_version() -> u32 {
 }
 
 fn default_fast_service_tier() -> String {
-    "fast".into()
+    "priority".into()
 }
 
 impl EndpointConfig {

@@ -124,6 +124,7 @@ struct BypassArgs {
     response_id: String,
     store_response: bool,
     model: String,
+    requested_service_tier: Option<String>,
 }
 
 struct CapabilityObservationResult {
@@ -202,7 +203,7 @@ async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) 
                 reasoning_effort_override: None,
                 thinking_tokens: None,
                 fast_mode_enabled: false,
-                fast_service_tier: "fast".into(),
+                fast_service_tier: "priority".into(),
                 balance_url: String::new(),
             };
             fallback.model_map = account.model_map.clone();
@@ -1402,18 +1403,31 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     response
 }
 
-/// 从 SSE 字节流中提取 usage 信息，返回 (input_tokens, output_tokens, cache_hit)
-fn extract_usage_from_sse(bytes: &[u8]) -> (u32, u32, bool) {
+/// 从 SSE 字节流中提取 usage 和上游回显信息。
+fn extract_bypass_response_observations(bytes: &[u8]) -> (u32, u32, bool, Option<String>) {
     let text = String::from_utf8_lossy(bytes);
     let mut input_tokens: u32 = 0;
     let mut output_tokens: u32 = 0;
     let mut cache_hit = false;
+    let mut service_tier: Option<String> = None;
     for line in text.lines() {
         let data = line.strip_prefix("data: ").unwrap_or(line);
         if data.is_empty() || data == "[DONE]" {
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+            let event_type = v.get("type").and_then(Value::as_str).unwrap_or_default();
+            let event_service_tier = v
+                .get("response")
+                .and_then(|r| r.get("service_tier"))
+                .or_else(|| v.get("service_tier"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(tier) = event_service_tier {
+                if event_type == "response.completed" || service_tier.is_none() {
+                    service_tier = Some(tier);
+                }
+            }
             // response.completed 事件
             if let Some(resp) = v.get("response").and_then(|r| r.get("usage")) {
                 input_tokens = resp
@@ -1450,7 +1464,7 @@ fn extract_usage_from_sse(bytes: &[u8]) -> (u32, u32, bool) {
             }
         }
     }
-    (input_tokens, output_tokens, cache_hit)
+    (input_tokens, output_tokens, cache_hit, service_tier)
 }
 
 /// 判断 usage 对象中是否包含缓存命中标记
@@ -1513,18 +1527,39 @@ fn patch_body_string_field(
     serde_json::to_vec(&v).map(axum::body::Bytes::from)
 }
 
-fn apply_endpoint_fast_service_tier(req: &mut ResponsesRequest, endpoint: &EndpointConfig) {
-    if req.service_tier.is_some()
-        || endpoint.kind != EndpointKind::OpenAiResponses
-        || !endpoint.fast_mode_enabled
-    {
-        return;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FastServiceTierStatus {
+    AlreadyPresent,
+    Injected,
+    Skipped,
+}
+
+fn normalize_fast_service_tier(tier: &str) -> Option<&str> {
+    match tier.trim() {
+        "" => None,
+        // 兼容旧 GUI 文案/配置：用户看到的是 Fast，但 OpenAI/Codex 上游接受的是 priority。
+        "fast" => Some("priority"),
+        value => Some(value),
+    }
+}
+
+fn apply_endpoint_fast_service_tier(
+    req: &mut ResponsesRequest,
+    endpoint: &EndpointConfig,
+) -> FastServiceTierStatus {
+    if req.service_tier.is_some() {
+        return FastServiceTierStatus::AlreadyPresent;
+    }
+    if endpoint.kind != EndpointKind::OpenAiResponses || !endpoint.fast_mode_enabled {
+        return FastServiceTierStatus::Skipped;
     }
 
-    let tier = endpoint.fast_service_tier.trim();
-    if !tier.is_empty() {
+    if let Some(tier) = normalize_fast_service_tier(&endpoint.fast_service_tier) {
         req.service_tier = Some(tier.to_string());
+        return FastServiceTierStatus::Injected;
     }
+
+    FastServiceTierStatus::Skipped
 }
 
 fn response_input_has_new_image(input: &ResponsesInput) -> bool {
@@ -1757,7 +1792,22 @@ async fn handle_responses_bypass(
 
     // 模型映射（直连模式下仅此一项处理）
     let (account, endpoint) = active_account_endpoint(&state).await;
-    apply_endpoint_fast_service_tier(&mut req, &endpoint);
+    let fast_service_tier_status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
+    match fast_service_tier_status {
+        FastServiceTierStatus::Injected => tracing::info!(
+            model = %req.model,
+            endpoint_kind = ?endpoint.kind,
+            service_tier = %req.service_tier.as_deref().unwrap_or(""),
+            "GPT Fast service_tier 已注入"
+        ),
+        FastServiceTierStatus::AlreadyPresent => tracing::info!(
+            model = %req.model,
+            endpoint_kind = ?endpoint.kind,
+            service_tier = %req.service_tier.as_deref().unwrap_or(""),
+            "请求已携带 service_tier，保持原值转发"
+        ),
+        FastServiceTierStatus::Skipped => {}
+    }
     let model_map = endpoint.model_map.clone();
     let model = resolve_model(&req.model, &model_map);
     let mut body = if model != req.model {
@@ -1871,6 +1921,7 @@ async fn handle_responses_bypass(
         response_id,
         store_response,
         model,
+        requested_service_tier: req.service_tier.clone(),
     };
 
     let start = std::time::Instant::now();
@@ -1896,6 +1947,7 @@ async fn bypass_stream_forward(
         response_id,
         store_response: _,
         model,
+        requested_service_tier,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -2076,7 +2128,21 @@ async fn bypass_stream_forward(
         }
     };
 
-    let (input_tokens, output_tokens, cache_hit) = extract_usage_from_sse(&body_bytes);
+    let (input_tokens, output_tokens, cache_hit, upstream_service_tier) =
+        extract_bypass_response_observations(&body_bytes);
+    if let Some(service_tier) = upstream_service_tier.as_deref() {
+        tracing::info!(
+            model = %model,
+            service_tier = %service_tier,
+            "上游响应回显 service_tier"
+        );
+    } else if requested_service_tier.is_some() {
+        tracing::warn!(
+            model = %model,
+            requested_service_tier = %requested_service_tier.as_deref().unwrap_or(""),
+            "上游响应未回显 service_tier，无法仅凭响应确认 GPT 已采用该服务层"
+        );
+    }
     let _ = state
         .request_history
         .record(
@@ -2124,6 +2190,7 @@ async fn bypass_send_request(
         response_id,
         store_response,
         model,
+        requested_service_tier,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -2283,6 +2350,28 @@ async fn bypass_send_request(
                 state
                     .sessions
                     .save_response(response_id.clone(), response_body.clone());
+            }
+
+            let upstream_service_tier = response_body
+                .get("service_tier")
+                .or_else(|| {
+                    response_body
+                        .get("response")
+                        .and_then(|r| r.get("service_tier"))
+                })
+                .and_then(Value::as_str);
+            if let Some(service_tier) = upstream_service_tier {
+                tracing::info!(
+                    model = %model,
+                    service_tier = %service_tier,
+                    "上游响应回显 service_tier"
+                );
+            } else if requested_service_tier.is_some() {
+                tracing::warn!(
+                    model = %model,
+                    requested_service_tier = %requested_service_tier.as_deref().unwrap_or(""),
+                    "上游响应未回显 service_tier，无法仅凭响应确认 GPT 已采用该服务层"
+                );
             }
 
             {
@@ -2612,6 +2701,7 @@ async fn handle_responses_inner(
     };
 
     let vision_label = if use_vision_transport { " 📷" } else { "" };
+    providers::adapt_chat_request(&providers::profile_for_account(&account), &mut chat_req);
     let tool_names: Vec<&str> = chat_req
         .tools
         .iter()
@@ -4531,9 +4621,10 @@ mod tests {
             balance_url: String::new(),
         };
 
-        apply_endpoint_fast_service_tier(&mut req, &endpoint);
+        let status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
 
-        assert_eq!(req.service_tier.as_deref(), Some("fast"));
+        assert_eq!(status, FastServiceTierStatus::Injected);
+        assert_eq!(req.service_tier.as_deref(), Some("priority"));
         assert_eq!(
             req.reasoning.as_ref().and_then(|r| r.effort.as_deref()),
             Some("high")
@@ -4551,8 +4642,70 @@ mod tests {
             patch_body_string_field(&body, "service_tier", req.service_tier.as_deref().unwrap())
                 .unwrap();
         let actual: Value = serde_json::from_slice(&patched).unwrap();
-        assert_eq!(actual["service_tier"], "fast");
+        assert_eq!(actual["service_tier"], "priority");
         assert_eq!(actual["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn test_fast_service_tier_keeps_priority_value() {
+        let mut req = ResponsesRequest {
+            model: "gpt-5.4".into(),
+            input: ResponsesInput::Text("hi".into()),
+            previous_response_id: None,
+            tools: vec![],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: None,
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
+            background: None,
+            conversation: None,
+            include: None,
+            include_obfuscation: None,
+            max_tool_calls: None,
+            parallel_tool_calls: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            safety_identifier: None,
+            service_tier: None,
+            stream_options: None,
+            text: None,
+            top_logprobs: None,
+            user: None,
+        };
+        let endpoint = EndpointConfig {
+            id: "ep".into(),
+            name: "GPT".into(),
+            kind: EndpointKind::OpenAiResponses,
+            base_url: "https://api.openai.com/v1".into(),
+            path: String::new(),
+            template_id: String::new(),
+            template_version: 1,
+            model_map: Default::default(),
+            model_profiles: Default::default(),
+            vision: Default::default(),
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: None,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            fast_mode_enabled: true,
+            fast_service_tier: "priority".into(),
+            balance_url: String::new(),
+        };
+
+        let status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
+
+        assert_eq!(status, FastServiceTierStatus::Injected);
+        assert_eq!(req.service_tier.as_deref(), Some("priority"));
     }
 
     #[test]
@@ -4611,9 +4764,46 @@ mod tests {
             balance_url: String::new(),
         };
 
-        apply_endpoint_fast_service_tier(&mut req, &endpoint);
+        let status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
 
+        assert_eq!(status, FastServiceTierStatus::Skipped);
         assert_eq!(req.service_tier, None);
+    }
+
+    #[test]
+    fn test_extract_bypass_response_observations_reads_service_tier() {
+        let body = br#"event: response.completed
+data: {"type":"response.completed","response":{"service_tier":"priority","usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":0},"output_tokens":3,"total_tokens":15}}}
+
+data: [DONE]
+"#;
+
+        let (input_tokens, output_tokens, cache_hit, service_tier) =
+            extract_bypass_response_observations(body);
+
+        assert_eq!(input_tokens, 12);
+        assert_eq!(output_tokens, 3);
+        assert!(!cache_hit);
+        assert_eq!(service_tier.as_deref(), Some("priority"));
+    }
+
+    #[test]
+    fn test_extract_bypass_response_observations_prefers_completed_service_tier() {
+        let body = br#"event: response.created
+data: {"type":"response.created","response":{"service_tier":"auto"}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"service_tier":"auto"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}
+
+data: [DONE]
+"#;
+
+        let (_, _, _, service_tier) = extract_bypass_response_observations(body);
+
+        assert_eq!(service_tier.as_deref(), Some("default"));
     }
 
     #[test]

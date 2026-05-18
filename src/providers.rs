@@ -370,6 +370,15 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
 
     if !caps.response_format {
         req.response_format = None;
+    } else if profile.slug == "deepseek"
+        && req
+            .response_format
+            .as_ref()
+            .and_then(|format| format.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("json_schema")
+    {
+        req.response_format = Some(serde_json::json!({"type": "json_object"}));
     }
 
     if caps.stream_usage == StreamUsageMode::Unavailable {
@@ -648,5 +657,39 @@ mod tests {
         assert!(req.thinking.is_some());
         assert!(req.web_search_options.is_some());
         assert_eq!(req.parallel_tool_calls, None);
+    }
+
+    #[test]
+    fn deepseek_profile_downgrades_json_schema_response_format() {
+        let mut req = ChatRequest {
+            model: "deepseek-chat".into(),
+            messages: vec![],
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": {"type": "object"},
+                    "strict": true
+                }
+            })),
+            user: None,
+            stream_options: Some(crate::types::StreamOptions {
+                include_usage: true,
+            }),
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("deepseek"), &mut req);
+
+        assert_eq!(req.response_format, Some(json!({"type": "json_object"})));
     }
 }

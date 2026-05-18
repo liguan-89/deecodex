@@ -103,6 +103,17 @@ fn read_account_events(data_dir: &Path, account_id: Option<&str>, limit: usize) 
     events
 }
 
+fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> {
+    let mut value: Value =
+        serde_json::from_str(raw).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
+    if let Value::Object(ref mut object) = value {
+        if object.contains_key("client_kind") {
+            object.remove("target");
+        }
+    }
+    serde_json::from_value(value).map_err(|e| format!("解析账号 JSON 失败: {e}"))
+}
+
 // ── 前端返回类型 ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
@@ -1446,8 +1457,7 @@ pub async fn add_account(
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
     let mut new_account = if let Some(json) = account_json {
-        let mut a: Account =
-            serde_json::from_str(&json).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
+        let mut a: Account = parse_account_json(&json)?;
         a.id = generate_id();
         if a.provider.is_empty() {
             a.provider = guess_provider(&a.upstream).to_string();
@@ -1558,8 +1568,7 @@ pub async fn update_account(
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
-    let updated: Account =
-        serde_json::from_str(&account_json).map_err(|e| format!("解析账号 JSON 失败: {e}"))?;
+    let updated: Account = parse_account_json(&account_json)?;
 
     let pos = store
         .accounts
@@ -2467,8 +2476,7 @@ pub async fn test_client_account(
     let data_dir = manager.data_dir.lock().await.clone();
     let mut persisted_account_id = None;
     let account = if let Some(raw) = account_json {
-        serde_json::from_str::<deecodex::accounts::Account>(&raw)
-            .map_err(|e| format!("解析账号 JSON 失败: {e}"))?
+        parse_account_json(&raw)?
     } else {
         let id = account_id.ok_or_else(|| "缺少 account_id 或 account_json".to_string())?;
         persisted_account_id = Some(id.clone());
@@ -4061,6 +4069,41 @@ mod tests {
             dev_pipeline_reviewer_instruction: String::new(),
             endpoints: Vec::new(),
         }
+    }
+
+    #[test]
+    fn parse_account_json_accepts_client_kind_with_legacy_target() {
+        let raw = json!({
+            "id": "a1",
+            "name": "Hermes",
+            "provider": "openrouter",
+            "client_kind": "hermes",
+            "target": "hermes",
+            "upstream": "https://openrouter.ai/api/v1",
+            "api_key": "sk-test"
+        })
+        .to_string();
+
+        let account = parse_account_json(&raw).unwrap();
+
+        assert_eq!(account.client_kind, AccountClientKind::Hermes);
+    }
+
+    #[test]
+    fn parse_account_json_keeps_target_only_legacy_payloads() {
+        let raw = json!({
+            "id": "a1",
+            "name": "Claude Code",
+            "provider": "anthropic",
+            "target": "claude_code",
+            "upstream": "https://api.anthropic.com",
+            "api_key": "sk-test"
+        })
+        .to_string();
+
+        let account = parse_account_json(&raw).unwrap();
+
+        assert_eq!(account.client_kind, AccountClientKind::ClaudeCode);
     }
 
     #[test]

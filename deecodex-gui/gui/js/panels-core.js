@@ -450,7 +450,7 @@ function toggleFastFields() {
     ff.style.display = cb.checked ? '' : 'none';
     if (!cb.checked) {
       const tier = document.getElementById('edit_fast_service_tier');
-      if (tier) tier.value = 'fast';
+      if (tier) tier.value = 'priority';
     }
   }
 }
