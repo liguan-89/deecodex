@@ -2758,17 +2758,14 @@ body {
 
 /* Accounts bottom actions */
 .accounts-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 15;
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 18px;
-  padding: 12px 0 6px;
+  margin-top: 22px;
+  padding: 16px 0 2px;
   border-top: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(7,14,28,0), var(--bg-root) 32%);
+  background: transparent;
 }
 .accounts-actions .btn {
   min-width: 112px;
