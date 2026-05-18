@@ -1825,21 +1825,27 @@ fn check_playwright(args: &Args, diags: &mut Vec<Diagnostic>) {
     }
 }
 
-fn check_browser_use_bridge(_args: &Args, diags: &mut Vec<Diagnostic>) {
-    let url = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_URL")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let command = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_COMMAND")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+fn check_browser_use_bridge(args: &Args, diags: &mut Vec<Diagnostic>) {
+    let url = if args.browser_use_bridge_url.trim().is_empty() {
+        std::env::var("DEECODEX_BROWSER_USE_BRIDGE_URL").unwrap_or_default()
+    } else {
+        args.browser_use_bridge_url.clone()
+    }
+    .trim()
+    .to_string();
+    let command = if args.browser_use_bridge_command.trim().is_empty() {
+        std::env::var("DEECODEX_BROWSER_USE_BRIDGE_COMMAND").unwrap_or_default()
+    } else {
+        args.browser_use_bridge_command.clone()
+    }
+    .trim()
+    .to_string();
 
     if url.is_empty() && command.is_empty() {
         diags.push(Diagnostic {
             severity: Severity::Warn,
             category: "computer_executor",
-            message: "computer executor 设为 browser-use，但未配置 DEECODEX_BROWSER_USE_BRIDGE_URL 和 DEECODEX_BROWSER_USE_BRIDGE_COMMAND——browser-use 操作将返回失败".into(),
+            message: "computer executor 设为 browser-use，但未配置 browser_use_bridge_url 或 browser_use_bridge_command——browser-use 操作将返回失败".into(),
         });
         return;
     }
@@ -2247,6 +2253,19 @@ mod tests {
         assert!(diags
             .iter()
             .any(|d| d.category == "computer_executor" && d.severity == Severity::Error));
+    }
+
+    #[test]
+    fn browser_use_bridge_config_from_args_is_accepted() {
+        let mut args = base_args();
+        args.computer_executor = "browser-use".into();
+        args.browser_use_bridge_url = "http://127.0.0.1:7777/action".into();
+
+        let diags = validate(&args);
+
+        assert!(!diags.iter().any(|d| {
+            d.category == "computer_executor" && d.message.contains("未配置 browser_use_bridge_url")
+        }));
     }
 
     #[test]

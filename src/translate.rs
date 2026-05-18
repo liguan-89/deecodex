@@ -22,6 +22,7 @@ pub fn to_chat_request(
     chinese_thinking: bool,
 ) -> TranslatedRequest {
     let mut messages = history;
+    let host_only_tools = collect_host_only_tools(&req.tools);
 
     // Track whether any message contains images
     let mut has_images = false;
@@ -35,7 +36,7 @@ pub fn to_chat_request(
         None
     };
 
-    let system_text = if chinese_thinking {
+    let mut system_text = if chinese_thinking {
         let raw = req.instructions.as_ref().or(req.system.as_ref());
         match raw {
             Some(s) => Some(format!("{}\n\n{}", cn_system, s)),
@@ -44,7 +45,18 @@ pub fn to_chat_request(
     } else {
         req.instructions.as_ref().or(req.system.as_ref()).cloned()
     };
-
+    if !host_only_tools.is_empty() {
+        let notice = host_only_tool_notice(&host_only_tools);
+        system_text = Some(match system_text {
+            Some(existing) => format!("{existing}\n\n{notice}"),
+            None => notice,
+        });
+        info!(
+            count = host_only_tools.len(),
+            tools = host_only_tools.join(","),
+            "filtered host-only Codex tools before upstream translation"
+        );
+    }
     if let Some(system) = system_text {
         let system_msg = ChatMessage {
             role: "system".into(),
@@ -157,7 +169,7 @@ pub fn to_chat_request(
                                             "id": call_id,
                                             "type": "function",
                                             "function": {
-                                                "name": item_type,
+                                                "name": synthetic_tool_name_for_output(item_type),
                                                 "arguments": "{}"
                                             }
                                         })]),
@@ -307,7 +319,7 @@ pub fn to_chat_request(
             !matches!(
                 typ,
                 "web_search" | "web_search_preview" | "file_search" | "file_search_preview"
-            )
+            ) && !is_host_only_tool(t)
         })
         .flat_map(|t| {
             let converted = convert_tool(t);
@@ -319,9 +331,7 @@ pub fn to_chat_request(
             }
         })
         .collect();
-
     // Deduplicate tools by function name (DeepSeek requires unique names)
-    use std::collections::HashSet;
     let mut seen_names = HashSet::new();
     let tools: Vec<Value> = tools
         .into_iter()
@@ -582,6 +592,153 @@ fn response_format_from_text(text: Option<&Value>) -> Option<Value> {
     }
 }
 
+fn collect_host_only_tools(tools: &[Value]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut labels = Vec::new();
+    for tool in tools {
+        if let Some(label) = host_only_tool_label(tool) {
+            if seen.insert(label.clone()) {
+                labels.push(label);
+            }
+        }
+    }
+    labels
+}
+
+fn host_only_tool_notice(labels: &[String]) -> String {
+    let list = labels.join(", ");
+    format!(
+        "【deecodex 能力边界】本代理已过滤以下 Codex 宿主侧操作工具，未转发给上游模型：{list}。这些桌面/浏览器操作和客户端插件能力只能由 Codex 宿主原生通道执行。遇到相关请求时，请明确说明当前上游代理不能直接执行这些操作，不要伪造工具调用结果。"
+    )
+}
+
+fn host_only_tool_label(tool: &Value) -> Option<String> {
+    let obj = tool.as_object()?;
+    let typ = obj.get("type").and_then(Value::as_str).unwrap_or("");
+    if matches!(
+        typ,
+        "computer_use" | "computer_use_preview" | "browser_use" | "browser"
+    ) {
+        return Some(typ.to_string());
+    }
+
+    let name = obj
+        .get("name")
+        .or_else(|| obj.get("namespace"))
+        .or_else(|| obj.get("server_label"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if host_only_tool_name(name) {
+        return Some(if name.is_empty() {
+            typ.to_string()
+        } else {
+            name.to_string()
+        });
+    }
+
+    if let Some(function_name) = obj
+        .get("function")
+        .and_then(|f| f.get("name"))
+        .and_then(Value::as_str)
+    {
+        if host_only_tool_name(function_name) {
+            return Some(function_name.to_string());
+        }
+    }
+
+    None
+}
+
+fn is_host_only_tool(tool: &Value) -> bool {
+    host_only_tool_label(tool).is_some()
+}
+
+fn host_only_tool_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("computer_use")
+        || lower.contains("computer-use")
+        || lower.contains("browser_use")
+        || lower.contains("browser-use")
+        || lower == "browser"
+        || lower.starts_with("browser.")
+        || lower.starts_with("browser__")
+        || lower == "chrome"
+        || lower.starts_with("chrome.")
+        || lower.starts_with("chrome__")
+}
+
+fn is_tool_search_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "tool_search"
+        || lower == "tool_search_tool"
+        || lower == "tool_search.tool_search_tool"
+        || lower == "tool_search__tool_search_tool"
+        || lower == "functions.tool_search"
+        || lower == "functions__tool_search"
+}
+
+fn normalize_tool_search_name(name: &str) -> &str {
+    if is_tool_search_name(name) {
+        "tool_search"
+    } else {
+        name
+    }
+}
+
+fn convert_tool_search_tool(tool: &Value) -> Value {
+    let obj = tool.as_object();
+    let description = obj
+        .and_then(|o| o.get("description"))
+        .or_else(|| obj.and_then(|o| o.get("function")).and_then(|f| f.get("description")))
+        .cloned()
+        .unwrap_or_else(|| {
+            json!(
+                "搜索延迟暴露的 Codex 工具元数据，并在下一轮补齐匹配工具。用于插件/连接器/Computer Use 等能力发现。"
+            )
+        });
+    let parameters = obj
+        .and_then(|o| o.get("parameters"))
+        .or_else(|| {
+            obj.and_then(|o| o.get("function"))
+                .and_then(|f| f.get("parameters"))
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "要搜索的能力或工具关键词"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "最多返回的工具数量"
+                    }
+                },
+                "required": ["query"]
+            })
+        });
+
+    json!({
+        "type": "function",
+        "function": {
+            "name": "tool_search",
+            "description": description,
+            "parameters": parameters
+        }
+    })
+}
+
+fn synthetic_tool_name_for_output(item_type: &str) -> &str {
+    match item_type {
+        "tool_search_output" => "tool_search",
+        "computer_call_output" => "local_computer",
+        "mcp_tool_call_output" => "local_mcp_call",
+        other => other,
+    }
+}
+
 /// Responses API flat tool → Chat Completions nested format.
 /// Handles function, custom (apply_patch), and namespace (MCP) types.
 pub fn convert_tool(tool: &Value) -> Value {
@@ -593,6 +750,14 @@ pub fn convert_tool(tool: &Value) -> Value {
     match typ {
         // Already in the right format — ensure required fields are present
         _ if obj.contains_key("function") => {
+            if obj
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .is_some_and(is_tool_search_name)
+            {
+                return convert_tool_search_tool(tool);
+            }
             let mut t = tool.clone();
             if let Some(func) = t.get_mut("function").and_then(|f| f.as_object_mut()) {
                 if !func.contains_key("parameters") {
@@ -615,6 +780,13 @@ pub fn convert_tool(tool: &Value) -> Value {
 
         // Standard function type → nest under "function" key
         "function" => {
+            if obj
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(is_tool_search_name)
+            {
+                return convert_tool_search_tool(tool);
+            }
             let mut func = serde_json::Map::new();
             if let Some(v) = obj.get("name") {
                 func.insert("name".into(), v.clone());
@@ -637,9 +809,22 @@ pub fn convert_tool(tool: &Value) -> Value {
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("namespace");
+            if is_tool_search_name(name) {
+                return convert_tool_search_tool(tool);
+            }
             let mut expanded = Vec::new();
             if let Some(tools) = obj.get("tools").and_then(Value::as_array) {
                 for sub_tool in tools {
+                    if let Some(sub_name) = sub_tool
+                        .get("name")
+                        .or_else(|| sub_tool.get("function").and_then(|f| f.get("name")))
+                        .and_then(Value::as_str)
+                    {
+                        if is_tool_search_name(sub_name) {
+                            expanded.push(convert_tool_search_tool(sub_tool));
+                            continue;
+                        }
+                    }
                     let sub = convert_tool(sub_tool);
                     // Prefix sub-tool names with namespace for dedup
                     if let Some(sub_name) = sub
@@ -772,6 +957,8 @@ pub fn convert_tool(tool: &Value) -> Value {
                 }
             })
         }
+
+        "tool_search" => convert_tool_search_tool(tool),
 
         "computer_use" | "computer_use_preview" => {
             let display_width = obj
@@ -955,6 +1142,7 @@ pub fn from_chat_response(
         let name = function
             .get("name")
             .and_then(Value::as_str)
+            .map(normalize_tool_search_name)
             .unwrap_or_default();
         let arguments = function
             .get("arguments")
@@ -1636,6 +1824,155 @@ mod tests {
         assert_eq!(result["function"]["name"], "minimal");
         assert!(result["function"].get("description").is_none());
         assert!(result["function"].get("parameters").is_none());
+    }
+
+    #[test]
+    fn test_host_only_tools_are_filtered_from_chat_tools() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("打开抖音搜索露营视频".into()));
+        req.tools = vec![
+            json!({"type": "computer_use", "display_width": 1024, "display_height": 768}),
+            json!({
+                "type": "namespace",
+                "name": "mcp__computer-use__",
+                "tools": [{"type": "function", "name": "get_app_state"}]
+            }),
+            json!({
+                "type": "mcp",
+                "server_label": "computer-use"
+            }),
+            json!({"type": "function", "name": "safe_tool", "parameters": {"type": "object"}}),
+        ];
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        let tool_names: Vec<_> = chat
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+            })
+            .collect();
+        assert_eq!(tool_names, vec!["safe_tool"]);
+        assert_eq!(chat.messages[0].role, "system");
+        assert!(chat.messages[0]
+            .content
+            .as_ref()
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("computer-use"));
+    }
+
+    #[test]
+    fn test_computer_use_plugin_mention_does_not_inject_mcp_bridge_tool() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "电脑打开抖音 app 播放第一个视频"},
+                {"type": "input_text", "text": "plugin://computer-use@openai-bundled"}
+            ]
+        })]));
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert!(!chat
+            .tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "local_mcp_call"));
+        assert!(!chat.messages.iter().any(|message| {
+            message.role == "system"
+                && message
+                    .content
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("local_mcp_call"))
+        }));
+    }
+
+    #[test]
+    fn test_tool_search_function_alias_is_normalized() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("补齐电脑能力".into()));
+        req.tools = vec![
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "tool_search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "required": ["query"]
+                    }
+                }
+            }),
+            json!({
+                "type": "tool_search",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+            }),
+            json!({
+                "type": "function",
+                "name": "tool_search_tool",
+                "parameters": {"type": "object"}
+            }),
+            json!({
+                "type": "namespace",
+                "name": "tool_search",
+                "tools": [{"type": "function", "name": "tool_search_tool"}]
+            }),
+        ];
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        let tool_names: Vec<_> = chat
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+            })
+            .collect();
+        assert_eq!(tool_names, vec!["tool_search"]);
+        assert_eq!(
+            chat.tools[0]["function"]["parameters"]["required"],
+            json!(["query"])
+        );
+        assert_eq!(
+            chat.tools[0]["function"]["parameters"]["properties"]["limit"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn test_tool_search_call_alias_is_returned_as_stable_name() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_ts",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search__tool_search_tool",
+                            "arguments": "{\"query\":\"computer use\"}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_ts".into(), "test", chat_resp);
+        assert_eq!(resp.output[0].kind, "function_call");
+        assert_eq!(resp.output[0].name.as_deref(), Some("tool_search"));
+        assert_eq!(
+            resp.output[0].arguments.as_deref(),
+            Some("{\"query\":\"computer use\"}")
+        );
     }
 
     #[test]

@@ -555,6 +555,8 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
     let executors = deecodex::executor::LocalExecutorConfig::from_raw(
         &args.computer_executor,
         args.computer_executor_timeout_secs,
+        &args.browser_use_bridge_url,
+        &args.browser_use_bridge_command,
         &args.mcp_executor_config,
         args.mcp_executor_timeout_secs,
     )?;

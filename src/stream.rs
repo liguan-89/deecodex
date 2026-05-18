@@ -97,6 +97,24 @@ fn event_with_sequence(
     Ok(Event::default().event(name).data(payload.to_string()))
 }
 
+fn is_tool_search_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "tool_search"
+        || lower == "tool_search_tool"
+        || lower == "tool_search.tool_search_tool"
+        || lower == "tool_search__tool_search_tool"
+        || lower == "functions.tool_search"
+        || lower == "functions__tool_search"
+}
+
+fn normalize_tool_search_name(name: &str) -> &str {
+    if is_tool_search_name(name) {
+        "tool_search"
+    } else {
+        name
+    }
+}
+
 fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> ResponseToolCallItem {
     if name == "local_computer" {
         ResponseToolCallItem {
@@ -123,7 +141,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
         let tool_name = if name == "apply_patch" {
             "exec_command".to_string()
         } else {
-            name.to_string()
+            normalize_tool_search_name(name).to_string()
         };
         ResponseToolCallItem {
             item_type: "function_call",
@@ -1049,25 +1067,28 @@ pub fn translate_stream(
         // Store in request cache (only if stream completed normally)
         if stream_completed && store_response {
             if let (Some(c), Some(key)) = (cache, cache_key) {
-            let cached = CachedResponse {
-                text: accumulated_text.clone(),
-                reasoning: accumulated_reasoning.clone(),
-                tool_calls: tool_calls.values().map(|tc| CachedToolCall {
-                    id: tc.id.clone(),
-                    name: if tc.name == "apply_patch" {
-                        "exec_command".into()
-                    } else {
-                        tc.name.clone()
-                    },
-                    arguments: tc.arguments.clone(),
-                }).collect(),
-                usage: usage_to_cached(cache_usage.as_ref()),
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-            c.insert(key, cached);
+                let cached = CachedResponse {
+                    text: accumulated_text.clone(),
+                    reasoning: accumulated_reasoning.clone(),
+                    tool_calls: tool_calls
+                        .values()
+                        .map(|tc| CachedToolCall {
+                            id: tc.id.clone(),
+                            name: if tc.name == "apply_patch" {
+                                "exec_command".into()
+                            } else {
+                                normalize_tool_search_name(&tc.name).to_string()
+                            },
+                            arguments: tc.arguments.clone(),
+                        })
+                        .collect(),
+                    usage: usage_to_cached(cache_usage.as_ref()),
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+                c.insert(key, cached);
             }
         }
 
@@ -1596,6 +1617,18 @@ mod tests {
         assert_eq!(item.item_type, "function_call");
         assert_eq!(item.name.as_deref(), Some("exec_command"));
         assert_eq!(item.arguments.as_deref(), Some(r#"{"patch":"diff"}"#));
+    }
+
+    #[test]
+    fn test_response_tool_call_item_tool_search_alias() {
+        let item = response_tool_call_item(
+            "ts1",
+            "tool_search__tool_search_tool",
+            r#"{"query":"电脑"}"#,
+        );
+        assert_eq!(item.item_type, "function_call");
+        assert_eq!(item.name.as_deref(), Some("tool_search"));
+        assert_eq!(item.arguments.as_deref(), Some(r#"{"query":"电脑"}"#));
     }
 
     #[test]

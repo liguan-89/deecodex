@@ -155,6 +155,14 @@ fn find_env_file() -> Option<std::path::PathBuf> {
     if std::path::Path::new(".env").exists() {
         return Some(PathBuf::from(".env"));
     }
+    if let Ok(data_dir) = std::env::var("DEECODEX_DATA_DIR") {
+        if !data_dir.trim().is_empty() {
+            let data_env = PathBuf::from(data_dir).join(".env");
+            if data_env.exists() {
+                return Some(data_env);
+            }
+        }
+    }
     if let Some(home) = deecodex::config::home_dir() {
         let home_env = home.join(".deecodex").join(".env");
         if home_env.exists() {
@@ -182,6 +190,9 @@ fn load_env() {
                 }
                 if let Some(eq) = trimmed.find('=') {
                     let key = trimmed[..eq].trim();
+                    if std::env::var_os(key).is_some() {
+                        continue;
+                    }
                     let val = trimmed[eq + 1..].trim();
                     let val = if (val.starts_with('"') && val.ends_with('"'))
                         || (val.starts_with('\'') && val.ends_with('\''))

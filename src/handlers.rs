@@ -1385,6 +1385,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     let response = handle_responses_inner(
         state.clone(),
         req,
+        body.clone(),
         local_file_search_output_items,
         local_file_search_input_items,
     )
@@ -2429,6 +2430,7 @@ async fn bypass_send_request(
 async fn handle_responses_inner(
     state: AppState,
     req: ResponsesRequest,
+    raw_body: axum::body::Bytes,
     local_output_prefix_items: Vec<Value>,
     local_input_suffix_items: Vec<Value>,
 ) -> Response {
@@ -2566,7 +2568,7 @@ async fn handle_responses_inner(
     );
     let mut chat_req = translated.chat;
 
-    let capability_observation = build_capability_observation(&state, &req).await;
+    let capability_observation = build_capability_observation(&state, &req, &raw_body).await;
     if let Some(observation) = capability_observation.message {
         let insert_at = if chat_req
             .messages
@@ -3002,6 +3004,7 @@ async fn handle_responses_inner(
 async fn build_capability_observation(
     state: &AppState,
     req: &ResponsesRequest,
+    raw_body: &[u8],
 ) -> CapabilityObservationResult {
     let main_account = state.active_account.read().await.clone();
     let requested = !capability::capability_observer_request(req)
@@ -3023,17 +3026,49 @@ async fn build_capability_observation(
     };
 
     let helper_context = if let Some(helper) = helper_account.as_ref() {
-        match validate_upstream(&helper.upstream) {
+        let mut normalized_helper = helper.clone();
+        normalized_helper.normalize_v2();
+        let Some(helper_endpoint) = normalized_helper
+            .active_endpoint(None)
+            .cloned()
+            .or_else(|| normalized_helper.endpoints.first().cloned())
+        else {
+            warn!(
+                account_id = %helper.id,
+                account_name = %helper.name,
+                "能力账号没有可用端点，Computer Use 原生能力通道不可用"
+            );
+            return CapabilityObservationResult {
+                message: Some(capability_config_error_message(
+                    "能力账号没有可用端点，无法接管 Computer Use。",
+                )),
+                suppress_vision_route: true,
+            };
+        };
+        if !helper_endpoint.kind.is_responses_like() {
+            warn!(
+                account_id = %helper.id,
+                account_name = %helper.name,
+                endpoint_kind = ?helper_endpoint.kind,
+                "能力账号必须配置为原生 Responses 端点，拒绝回退到 Chat 或本地桥"
+            );
+            return CapabilityObservationResult {
+                message: Some(capability_config_error_message(
+                    "能力账号必须配置为原生 Responses 端点；当前端点不是 Responses，已拒绝回退到 Chat 或本地桥。",
+                )),
+                suppress_vision_route: true,
+            };
+        }
+        match validate_upstream(&helper_endpoint.base_url) {
             Ok(upstream) => Some(capability::CapabilityContext {
                 client: state.client.clone(),
                 upstream,
+                endpoint_path: helper_endpoint.effective_path().to_string(),
                 api_key: helper.api_key.clone(),
-                custom_headers: helper.custom_headers.clone(),
-                timeout_secs: helper.request_timeout_secs,
-                max_retries: helper.max_retries,
-                executors: state.executors.read().await.clone(),
-                tool_policy: state.tool_policy.read().await.clone(),
-                chinese_thinking: state.chinese_thinking,
+                custom_headers: helper_endpoint.custom_headers.clone(),
+                timeout_secs: helper_endpoint.request_timeout_secs,
+                max_retries: helper_endpoint.max_retries,
+                model_map: helper_endpoint.model_map.clone(),
             }),
             Err(err) => {
                 warn!(
@@ -3043,7 +3078,9 @@ async fn build_capability_observation(
                     "能力账号上游 URL 无效，回退主模型并跳过旧视觉路由"
                 );
                 return CapabilityObservationResult {
-                    message: None,
+                    message: Some(capability_config_error_message(
+                        "能力账号上游 URL 无效，无法接管 Computer Use。",
+                    )),
                     suppress_vision_route: true,
                 };
             }
@@ -3059,12 +3096,15 @@ async fn build_capability_observation(
             "能力补全已触发但未配置有效能力账号，回退主模型并跳过旧视觉路由"
         );
         return CapabilityObservationResult {
-            message: None,
+            message: Some(capability_config_error_message(
+                "未配置有效的原生 Responses 能力账号，无法接管 Computer Use。",
+            )),
             suppress_vision_route: true,
         };
     };
 
-    let message = capability::maybe_observe(req, &main_account, helper_account, context).await;
+    let message =
+        capability::maybe_observe(req, raw_body, &main_account, helper_account, context).await;
     if message.is_none() {
         warn!(
             account_id = %main_account.id,
@@ -3075,6 +3115,19 @@ async fn build_capability_observation(
     CapabilityObservationResult {
         message,
         suppress_vision_route: true,
+    }
+}
+
+fn capability_config_error_message(message: &str) -> ChatMessage {
+    ChatMessage {
+        role: "system".into(),
+        content: Some(Value::String(format!(
+            "【deecodex 能力账号配置错误】{message}请直接告知用户该配置问题；不要尝试由主模型、Chat fallback 或本地 MCP bridge 执行 Computer Use。"
+        ))),
+        reasoning_content: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
     }
 }
 

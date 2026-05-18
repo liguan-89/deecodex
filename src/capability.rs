@@ -1,14 +1,7 @@
 use crate::accounts::Account;
-use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
-use crate::handlers::ToolPolicy;
-use crate::providers;
-use crate::session::SessionStore;
-use crate::translate;
-use crate::types::{
-    resolve_model, ChatMessage, ChatRequest, ChatResponse, ResponsesInput, ResponsesRequest,
-};
+use crate::types::{ChatMessage, ResponsesInput, ResponsesRequest};
 use reqwest::{Client, Url};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -31,17 +24,17 @@ impl CapabilityTrigger {
 pub struct CapabilityContext {
     pub client: Client,
     pub upstream: Url,
+    pub endpoint_path: String,
     pub api_key: String,
     pub custom_headers: HashMap<String, String>,
     pub timeout_secs: Option<u64>,
     pub max_retries: Option<u32>,
-    pub executors: LocalExecutorConfig,
-    pub tool_policy: ToolPolicy,
-    pub chinese_thinking: bool,
+    pub model_map: HashMap<String, String>,
 }
 
 pub async fn maybe_observe(
     req: &ResponsesRequest,
+    raw_body: &[u8],
     main_account: &Account,
     helper_account: Option<Account>,
     context: CapabilityContext,
@@ -73,8 +66,9 @@ pub async fn maybe_observe(
         return None;
     }
 
-    match observe_with_helper(req, main_account, &helper, &trigger, context).await {
+    match observe_with_helper(req, raw_body, main_account, &helper, &trigger, context).await {
         Ok(Some(text)) => {
+            let guidance = main_model_capability_guidance(&trigger);
             info!(
                 main_account = %main_account.name,
                 helper_account = %helper.name,
@@ -85,7 +79,7 @@ pub async fn maybe_observe(
             Some(ChatMessage {
                 role: "system".into(),
                 content: Some(Value::String(format!(
-                    "【deecodex 能力通道观察结果】\n{text}\n\n请把以上观察作为当前会话上下文的一部分。最终回答仍由你完成；不要声称自己直接执行了这些工具。"
+                    "【deecodex 能力通道观察结果】\n{text}{guidance}\n\n请把以上观察作为当前会话上下文的一部分。最终回答仍由你完成；不要声称自己直接执行了这些工具。"
                 ))),
                 reasoning_content: None,
                 tool_calls: None,
@@ -134,59 +128,42 @@ pub fn capability_observer_request(req: &ResponsesRequest) -> bool {
 
 async fn observe_with_helper(
     req: &ResponsesRequest,
+    raw_body: &[u8],
     main_account: &Account,
-    helper: &Account,
+    _helper: &Account,
     trigger: &CapabilityTrigger,
-    mut context: CapabilityContext,
+    context: CapabilityContext,
 ) -> anyhow::Result<Option<String>> {
-    let mut observer_req = req.clone();
-    observer_req.stream = false;
-    observer_req.background = Some(false);
-    observer_req.store = Some(false);
-    observer_req
-        .metadata
-        .get_or_insert_with(Default::default)
-        .insert(CAPABILITY_METADATA_KEY.into(), "true".into());
-    observer_req.instructions = Some(observer_instructions(main_account, trigger));
-    observer_req.tool_choice = None;
-    observer_req.max_output_tokens = observer_req.max_output_tokens.or(Some(2048));
-    inject_observer_hint_tools(&mut observer_req, trigger);
+    let model = context
+        .model_map
+        .get(&req.model)
+        .cloned()
+        .unwrap_or_else(|| req.model.clone());
+    let body = build_native_responses_body(
+        raw_body,
+        &model,
+        &observer_instructions(main_account, trigger),
+    )?;
 
-    let sessions = SessionStore::new();
-    let translated = translate::to_chat_request(
-        &observer_req,
-        Vec::new(),
-        &sessions,
-        &helper.model_map,
-        context.chinese_thinking,
+    let url = format!(
+        "{}{}",
+        join_base(&context.upstream),
+        context.endpoint_path.trim_start_matches('/')
     );
-    let mut chat_req = translated.chat;
-    chat_req.stream = false;
-    chat_req.model = resolve_model(&req.model, &helper.model_map);
-    providers::adapt_chat_request(&providers::profile_for_account(helper), &mut chat_req);
-
-    let url = format!("{}chat/completions", join_base(&context.upstream));
     let start = Instant::now();
-    let chat_resp = send_chat_request(
+    let response = send_responses_request(
         &context.client,
         &url,
         &context.api_key,
         &context.custom_headers,
         context.timeout_secs,
         context.max_retries.unwrap_or(1) as usize,
-        &chat_req,
+        &body,
     )
     .await?;
     let elapsed_ms = start.elapsed().as_millis();
 
-    let (resp, _) = translate::from_chat_response(
-        format!("capability_{}", uuid::Uuid::new_v4().simple()),
-        &chat_req.model,
-        chat_resp,
-    );
-    let mut outputs = serde_json::to_value(resp.output)?;
-    append_executable_outputs(&mut outputs, &mut context).await;
-    let observation = summarize_outputs(&outputs, elapsed_ms);
+    let observation = summarize_native_response(&response, elapsed_ms);
     if observation.trim().is_empty() {
         Ok(None)
     } else {
@@ -194,15 +171,15 @@ async fn observe_with_helper(
     }
 }
 
-async fn send_chat_request(
+async fn send_responses_request(
     client: &Client,
     url: &str,
     api_key: &str,
     custom_headers: &HashMap<String, String>,
     timeout_secs: Option<u64>,
     max_retries: usize,
-    chat_req: &ChatRequest,
-) -> anyhow::Result<ChatResponse> {
+    body: &Value,
+) -> anyhow::Result<Value> {
     let mut builder = client.post(url).header("Content-Type", "application/json");
     if !api_key.is_empty() {
         builder = builder.bearer_auth(api_key);
@@ -225,13 +202,11 @@ async fn send_chat_request(
         let response = builder
             .try_clone()
             .ok_or_else(|| anyhow::anyhow!("无法克隆能力通道请求"))?
-            .json(chat_req)
+            .json(body)
             .send()
             .await;
         match response {
-            Ok(resp) if resp.status().is_success() => {
-                return Ok(resp.json::<ChatResponse>().await?)
-            }
+            Ok(resp) if resp.status().is_success() => return Ok(resp.json::<Value>().await?),
             Ok(resp) => {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -248,71 +223,52 @@ async fn send_chat_request(
     }
 }
 
-async fn append_executable_outputs(outputs: &mut Value, context: &mut CapabilityContext) {
-    let Some(items) = outputs.as_array_mut() else {
-        return;
+fn build_native_responses_body(
+    raw_body: &[u8],
+    model: &str,
+    instructions: &str,
+) -> anyhow::Result<Value> {
+    let mut body: Value = serde_json::from_slice(raw_body)?;
+    let Some(map) = body.as_object_mut() else {
+        anyhow::bail!("能力通道原始 Responses 请求不是 JSON object");
     };
-    let original = items.clone();
-    for item in original {
-        if let Some(invocation) = McpToolInvocation::from_response_item(&item) {
-            let result = if !context.tool_policy.allowed_mcp_servers.is_empty()
-                && !context
-                    .tool_policy
-                    .allowed_mcp_servers
-                    .iter()
-                    .any(|server| server == &invocation.server_label)
-            {
-                crate::executor::McpToolOutput::failed(format!(
-                    "MCP server '{}' is not allowed by local tool policy",
-                    invocation.server_label
-                ))
-            } else {
-                context.executors.mcp.execute_tool(invocation).await
-            };
-            items.push(json!({
-                "type": "mcp_tool_call_output",
-                "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
-                "status": result.status,
-                "output": result.output,
-            }));
-        }
-
-        if let Some(invocation) = ComputerActionInvocation::from_response_item(&item) {
-            let result = if !context.tool_policy.allowed_computer_displays.is_empty()
-                && !context
-                    .tool_policy
-                    .allowed_computer_displays
-                    .iter()
-                    .any(|display| display == &invocation.display)
-            {
-                crate::executor::ComputerActionOutput::failed(format!(
-                    "computer display '{}' is not allowed by local tool policy",
-                    invocation.display
-                ))
-            } else {
-                context.executors.computer.execute_action(invocation).await
-            };
-            items.push(json!({
-                "type": "computer_call_output",
-                "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
-                "status": result.status,
-                "output": result.output,
-            }));
+    map.insert("model".into(), Value::String(model.to_string()));
+    map.insert(
+        "instructions".into(),
+        Value::String(instructions.to_string()),
+    );
+    if map.get("stream").and_then(Value::as_bool) == Some(true) {
+        map.insert("stream".into(), Value::Bool(false));
+    }
+    map.entry("max_output_tokens")
+        .or_insert_with(|| Value::from(2048));
+    map.remove("system");
+    if let Some(metadata) = map.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove(CAPABILITY_METADATA_KEY);
+        if metadata.is_empty() {
+            map.remove("metadata");
         }
     }
+    Ok(body)
 }
 
 fn observer_instructions(main_account: &Account, trigger: &CapabilityTrigger) -> String {
     format!(
-        "你是 deecodex 的能力观察通道。主推理账号是 '{}'，触发原因是 {}。你的任务是只为主模型补齐多模态、浏览器、computer_use、MCP 或插件观察。需要工具时请发起工具调用；不需要工具时请用简洁中文描述你从输入中观察到的事实。不要给最终答案、不要展开完整推理。",
+        "你是 deecodex 的原生 Responses 能力账号。主推理账号是 '{}'，触发原因是 {}。请使用 OpenAI/Codex 原生能力完成必要的 computer_use、MCP、浏览器或多模态观察，只返回可供主模型继续回答的事实结果。不要展开完整推理。",
         main_account.name,
         trigger.label()
     )
 }
 
-fn summarize_outputs(outputs: &Value, elapsed_ms: u128) -> String {
+fn summarize_native_response(response: &Value, elapsed_ms: u128) -> String {
     let mut lines = vec![format!("能力通道耗时: {elapsed_ms}ms")];
-    if let Some(items) = outputs.as_array() {
+    if let Some(id) = response.get("id").and_then(Value::as_str) {
+        lines.push(format!("原生 Responses ID: {id}"));
+    }
+    if let Some(status) = response.get("status").and_then(Value::as_str) {
+        lines.push(format!("原生 Responses 状态: {status}"));
+    }
+    if let Some(items) = response.get("output").and_then(Value::as_array) {
         for item in items {
             let item_type = item
                 .get("type")
@@ -354,7 +310,7 @@ fn summarize_outputs(outputs: &Value, elapsed_ms: u128) -> String {
                     compact_json(item.get("output").unwrap_or(&Value::Null))
                 )),
                 "function_call" => lines.push(format!(
-                    "函数调用建议: name={} args={}",
+                    "函数调用: name={} args={}",
                     item.get("name")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown"),
@@ -363,6 +319,8 @@ fn summarize_outputs(outputs: &Value, elapsed_ms: u128) -> String {
                 _ => {}
             }
         }
+    } else {
+        lines.push(format!("原生 Responses 返回: {}", compact_json(response)));
     }
     truncate_observation(lines.join("\n"))
 }
@@ -503,24 +461,14 @@ fn collect_text_reasons(text: &str, reasons: &mut Vec<String>) {
     }
 }
 
-fn inject_observer_hint_tools(req: &mut ResponsesRequest, trigger: &CapabilityTrigger) {
-    if trigger.reasons.iter().any(|reason| reason == "computer")
-        && !req.tools.iter().any(is_computer_tool)
-    {
-        req.tools.push(json!({
-            "type": "computer_use_preview",
-            "display_width": 1024,
-            "display_height": 768,
-            "environment": "mac"
-        }));
+fn main_model_capability_guidance(trigger: &CapabilityTrigger) -> String {
+    let has_computer_plugin = trigger.reasons.iter().any(|reason| reason == "computer")
+        && trigger.reasons.iter().any(|reason| reason == "plugin");
+    if !has_computer_plugin {
+        return String::new();
     }
-}
 
-fn is_computer_tool(tool: &Value) -> bool {
-    matches!(
-        tool.get("type").and_then(Value::as_str).unwrap_or(""),
-        "computer_use" | "computer_use_preview"
-    )
+    "\n\n【deecodex Computer Use 提醒】Computer Use 已由原生 Responses 能力账号接管。主模型不要调用 computer-use、local_mcp_call、list_mcp_resources、read_mcp_resource 或 resources/list；只基于能力通道返回的观察结果继续回答。".into()
 }
 
 fn looks_like_plugin_or_browser_tool(name: &str) -> bool {
@@ -558,6 +506,7 @@ fn value_has_image(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn base_req() -> ResponsesRequest {
         ResponsesRequest {
@@ -663,14 +612,16 @@ mod tests {
     }
 
     #[test]
-    fn observer_injects_computer_hint_tool_for_text_mention() {
+    fn native_observer_keeps_computer_plugin_request_unchanged() {
         let mut req = base_req();
-        let trigger = CapabilityTrigger {
-            reasons: vec!["computer".into(), "plugin".into()],
-        };
+        req.input =
+            ResponsesInput::Text("[@电脑](plugin://computer-use@openai-bundled) 打开抖音".into());
+        req.tools = vec![json!({"type":"computer_use_preview", "display_width":1024})];
+        req.metadata
+            .get_or_insert_with(Default::default)
+            .insert(CAPABILITY_METADATA_KEY.into(), "true".into());
 
-        inject_observer_hint_tools(&mut req, &trigger);
-
+        assert!(capability_observer_request(&req));
         assert_eq!(req.tools.len(), 1);
         assert_eq!(
             req.tools[0].get("type").and_then(Value::as_str),
@@ -679,44 +630,46 @@ mod tests {
     }
 
     #[test]
-    fn observer_does_not_duplicate_existing_computer_tool() {
-        let mut req = base_req();
-        req.tools = vec![json!({"type":"computer_use", "display":"browser"})];
-        let trigger = CapabilityTrigger {
-            reasons: vec!["computer".into()],
-        };
+    fn summarize_native_response_extracts_message_and_tool_items() {
+        let response = json!({
+            "id": "resp_capability",
+            "status": "completed",
+            "output": [
+                {"type":"computer_call", "action":{"type":"click","x":1,"y":2}},
+                {"type":"message", "content":[{"type":"output_text","text":"已打开抖音并播放第一个视频"}]}
+            ]
+        });
 
-        inject_observer_hint_tools(&mut req, &trigger);
+        let summary = summarize_native_response(&response, 42);
 
-        assert_eq!(req.tools.len(), 1);
-        assert_eq!(
-            req.tools[0].get("type").and_then(Value::as_str),
-            Some("computer_use")
-        );
+        assert!(summary.contains("原生 Responses ID: resp_capability"));
+        assert!(summary.contains("Computer 调用"));
+        assert!(summary.contains("已打开抖音并播放第一个视频"));
     }
 
     #[test]
-    fn injected_computer_hint_translates_to_local_computer_tool() {
-        let mut req = base_req();
-        req.input =
-            ResponsesInput::Text("[@电脑](plugin://computer-use@openai-bundled) 打开抖音".into());
-        let trigger = detect_trigger(&req).unwrap();
-        inject_observer_hint_tools(&mut req, &trigger);
+    fn build_native_responses_body_patches_raw_body() {
+        let raw_body = json!({
+            "model": "gpt-5",
+            "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音",
+            "tools": [{"type":"computer_use_preview", "display_width":1024}],
+            "stream": true,
+            "system": "不要透传",
+            "metadata": {CAPABILITY_METADATA_KEY: "true"}
+        })
+        .to_string();
 
-        let translated = translate::to_chat_request(
-            &req,
-            Vec::new(),
-            &SessionStore::new(),
-            &HashMap::new(),
-            true,
-        );
+        let body = build_native_responses_body(raw_body.as_bytes(), "gpt-4.1", "observe").unwrap();
 
-        assert!(translated.chat.tools.iter().any(|tool| {
-            tool.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                == Some("local_computer")
-        }));
+        assert_eq!(body["model"], "gpt-4.1");
+        assert_eq!(body["instructions"], "observe");
+        assert_eq!(body["tools"][0]["type"], "computer_use_preview");
+        assert_eq!(body["max_output_tokens"], 2048);
+        assert_eq!(body["stream"], false);
+        assert!(body.get("system").is_none());
+        assert!(body.get("metadata").is_none());
+        assert!(body.get("background").is_none());
+        assert!(body.get("store").is_none());
     }
 
     #[test]

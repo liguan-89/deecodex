@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -46,6 +46,8 @@ impl ComputerExecutorBackend {
 pub struct ComputerExecutorConfig {
     pub backend: ComputerExecutorBackend,
     pub timeout_secs: u64,
+    pub browser_use_bridge_url: String,
+    pub browser_use_bridge_command: String,
 }
 
 impl Default for ComputerExecutorConfig {
@@ -53,6 +55,8 @@ impl Default for ComputerExecutorConfig {
         Self {
             backend: ComputerExecutorBackend::Disabled,
             timeout_secs: 30,
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
         }
     }
 }
@@ -103,7 +107,9 @@ impl ComputerExecutorConfig {
             ComputerExecutorBackend::Disabled => Ok(ComputerActionOutput::failed(
                 "computer executor is disabled".into(),
             )),
-            ComputerExecutorBackend::BrowserUse => execute_browser_use_action(&invocation).await,
+            ComputerExecutorBackend::BrowserUse => {
+                self.execute_browser_use_action(&invocation).await
+            }
             ComputerExecutorBackend::Playwright => execute_playwright_action(&invocation).await,
         }
     }
@@ -233,9 +239,7 @@ impl McpExecutorConfig {
             .ok_or_else(|| anyhow!("MCP server '{}' is not configured", invocation.server_label))?;
 
         let deadline = Duration::from_secs(self.timeout_secs.max(1));
-        timeout(deadline, execute_stdio_mcp_tool(server, &invocation))
-            .await
-            .map_err(|_| anyhow!("MCP tool '{}' timed out", invocation.tool_name))?
+        execute_stdio_mcp_tool(server, &invocation, deadline).await
     }
 }
 
@@ -304,7 +308,9 @@ impl McpToolOutput {
 async fn execute_stdio_mcp_tool(
     server: &McpServerConfig,
     invocation: &McpToolInvocation,
+    deadline: Duration,
 ) -> Result<McpToolOutput> {
+    let transport = mcp_stdio_transport(server);
     let mut command = Command::new(&server.command);
     command.args(&server.args);
     command.envs(&server.env);
@@ -320,6 +326,14 @@ async fn execute_stdio_mcp_tool(
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to start MCP server '{}'", server.label))?;
+    tracing::debug!(
+        server_label = server.label.as_str(),
+        tool_name = invocation.tool_name.as_str(),
+        command = server.command.as_str(),
+        args = ?server.args,
+        cwd = ?server.cwd,
+        "MCP stdio server spawned"
+    );
     let mut stdin = child
         .stdin
         .take()
@@ -333,7 +347,7 @@ async fn execute_stdio_mcp_tool(
         .take()
         .map(|stderr| tokio::spawn(read_limited_stderr(stderr, 4096)));
 
-    send_jsonrpc(
+    send_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -345,16 +359,34 @@ async fn execute_stdio_mcp_tool(
                 "clientInfo": {"name": "deecodex", "version": env!("CARGO_PKG_VERSION")}
             }
         }),
+        transport,
     )
     .await?;
-    let init_response = read_jsonrpc_response(&mut stdout, 1).await?;
+    let init_response = timeout(
+        deadline,
+        read_jsonrpc_response_with_transport(&mut stdout, 1, transport),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "MCP server '{}' timed out waiting for initialize response for tool '{}'",
+            server.label,
+            invocation.tool_name
+        )
+    })??;
+    tracing::debug!(
+        server_label = server.label.as_str(),
+        tool_name = invocation.tool_name.as_str(),
+        "MCP initialize completed"
+    );
 
-    send_jsonrpc(
+    send_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         }),
+        transport,
     )
     .await?;
 
@@ -362,21 +394,48 @@ async fn execute_stdio_mcp_tool(
     let can_list_tools = init_response
         .pointer("/result/capabilities/tools")
         .is_some();
-    let tool_metadata = if can_list_tools {
-        match list_mcp_tools(&mut stdin, &mut stdout, next_id).await {
-            Ok(metadata) => {
+    let should_list_tools = server.read_only && can_list_tools;
+    let tool_metadata = if should_list_tools {
+        match timeout(
+            deadline,
+            list_mcp_tools(&mut stdin, &mut stdout, next_id, transport),
+        )
+        .await
+        {
+            Ok(Ok(metadata)) => {
+                tracing::debug!(
+                    server_label = server.label.as_str(),
+                    tool_name = invocation.tool_name.as_str(),
+                    "MCP tools/list completed"
+                );
                 next_id += 1;
                 metadata
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::debug!(
                     "MCP server '{}' tools/list probe skipped or failed: {err}",
                     server.label
                 );
                 None
             }
+            Err(_) => {
+                tracing::warn!(
+                    server_label = server.label.as_str(),
+                    tool_name = invocation.tool_name.as_str(),
+                    timeout_secs = deadline.as_secs(),
+                    "MCP tools/list timed out; continuing with name heuristic"
+                );
+                None
+            }
         }
     } else {
+        if can_list_tools && !server.read_only {
+            tracing::debug!(
+                server_label = server.label.as_str(),
+                tool_name = invocation.tool_name.as_str(),
+                "MCP tools/list skipped for non-read-only server"
+            );
+        }
         None
     };
 
@@ -395,7 +454,7 @@ async fn execute_stdio_mcp_tool(
         );
     }
 
-    send_jsonrpc(
+    send_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -406,9 +465,26 @@ async fn execute_stdio_mcp_tool(
                 "arguments": invocation.arguments
             }
         }),
+        transport,
     )
     .await?;
-    let result = read_jsonrpc_response(&mut stdout, next_id).await?;
+    tracing::debug!(
+        server_label = server.label.as_str(),
+        tool_name = invocation.tool_name.as_str(),
+        "MCP tools/call sent"
+    );
+    let result = timeout(
+        deadline,
+        read_jsonrpc_response_with_transport(&mut stdout, next_id, transport),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "MCP server '{}' timed out waiting for tools/call response for tool '{}'",
+            server.label,
+            invocation.tool_name
+        )
+    })??;
     let _ = stdin.shutdown().await;
     let _ = child.kill().await;
     let _ = child.wait().await;
@@ -439,12 +515,17 @@ async fn execute_stdio_mcp_tool(
     }
 }
 
-async fn list_mcp_tools<W, R>(stdin: &mut W, stdout: &mut R, id: u64) -> Result<Option<Value>>
+async fn list_mcp_tools<W, R>(
+    stdin: &mut W,
+    stdout: &mut R,
+    id: u64,
+    transport: McpStdioTransport,
+) -> Result<Option<Value>>
 where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
-    send_jsonrpc(
+    send_jsonrpc_message(
         stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -452,9 +533,10 @@ where
             "method": "tools/list",
             "params": {}
         }),
+        transport,
     )
     .await?;
-    let response = read_jsonrpc_response(stdout, id).await?;
+    let response = read_jsonrpc_response_with_transport(stdout, id, transport).await?;
     if response.get("error").is_some() {
         return Ok(None);
     }
@@ -613,24 +695,35 @@ async fn execute_playwright_action(
     Ok(ComputerActionOutput::succeeded(value))
 }
 
-async fn execute_browser_use_action(
-    invocation: &ComputerActionInvocation,
-) -> Result<ComputerActionOutput> {
-    if let Ok(url) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_URL") {
-        let url = url.trim();
-        if !url.is_empty() {
-            return execute_browser_use_http_bridge(url, invocation).await;
+impl ComputerExecutorConfig {
+    async fn execute_browser_use_action(
+        &self,
+        invocation: &ComputerActionInvocation,
+    ) -> Result<ComputerActionOutput> {
+        let configured_url = self.browser_use_bridge_url.trim();
+        if !configured_url.is_empty() {
+            return execute_browser_use_http_bridge(configured_url, invocation).await;
         }
-    }
-    if let Ok(command) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_COMMAND") {
-        let command = command.trim();
-        if !command.is_empty() {
-            return execute_browser_use_command_bridge(command, invocation).await;
+        if let Ok(url) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_URL") {
+            let url = url.trim();
+            if !url.is_empty() {
+                return execute_browser_use_http_bridge(url, invocation).await;
+            }
         }
+        let configured_command = self.browser_use_bridge_command.trim();
+        if !configured_command.is_empty() {
+            return execute_browser_use_command_bridge(configured_command, invocation).await;
+        }
+        if let Ok(command) = std::env::var("DEECODEX_BROWSER_USE_BRIDGE_COMMAND") {
+            let command = command.trim();
+            if !command.is_empty() {
+                return execute_browser_use_command_bridge(command, invocation).await;
+            }
+        }
+        Ok(ComputerActionOutput::failed(
+            "browser-use computer executor is configured but neither browser_use_bridge_url nor browser_use_bridge_command is set".into(),
+        ))
     }
-    Ok(ComputerActionOutput::failed(
-        "browser-use computer executor is configured but neither DEECODEX_BROWSER_USE_BRIDGE_URL nor DEECODEX_BROWSER_USE_BRIDGE_COMMAND is set".into(),
-    ))
 }
 
 async fn execute_browser_use_http_bridge(
@@ -733,12 +826,96 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum McpStdioTransport {
+    ContentLength,
+    JsonLines,
+}
+
+fn mcp_stdio_transport(server: &McpServerConfig) -> McpStdioTransport {
+    if server.label == "computer-use" || server.command.contains("SkyComputerUseClient") {
+        McpStdioTransport::JsonLines
+    } else {
+        McpStdioTransport::ContentLength
+    }
+}
+
+async fn send_jsonrpc_message<W>(
+    writer: &mut W,
+    value: &Value,
+    transport: McpStdioTransport,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    match transport {
+        McpStdioTransport::ContentLength => send_jsonrpc(writer, value).await,
+        McpStdioTransport::JsonLines => send_jsonrpc_line(writer, value).await,
+    }
+}
+
+async fn send_jsonrpc_line<W>(writer: &mut W, value: &Value) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let body = serde_json::to_vec(value)?;
+    writer.write_all(&body).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn read_jsonrpc_response_with_transport<R>(
+    reader: &mut R,
+    expected_id: u64,
+    transport: McpStdioTransport,
+) -> Result<Value>
+where
+    R: AsyncRead + Unpin,
+{
+    match transport {
+        McpStdioTransport::ContentLength => read_jsonrpc_response(reader, expected_id).await,
+        McpStdioTransport::JsonLines => read_jsonrpc_line_response(reader, expected_id).await,
+    }
+}
+
 async fn read_jsonrpc_response<R>(reader: &mut R, expected_id: u64) -> Result<Value>
 where
     R: AsyncRead + Unpin,
 {
     loop {
         let message = read_framed_json(reader).await?;
+        if message.get("id").and_then(Value::as_u64) == Some(expected_id) {
+            return Ok(message);
+        }
+    }
+}
+
+async fn read_jsonrpc_line_response<R>(reader: &mut R, expected_id: u64) -> Result<Value>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        line.clear();
+        loop {
+            reader.read_exact(&mut byte).await?;
+            if byte[0] == b'\n' {
+                break;
+            }
+            if byte[0] != b'\r' {
+                line.push(byte[0]);
+            }
+            if line.len() > 8 * 1024 * 1024 {
+                anyhow::bail!("MCP JSON-lines message too large");
+            }
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let message: Value =
+            serde_json::from_slice(&line).context("failed to parse MCP JSON-lines message")?;
         if message.get("id").and_then(Value::as_u64) == Some(expected_id) {
             return Ok(message);
         }
@@ -806,6 +983,8 @@ impl LocalExecutorConfig {
     pub fn from_raw(
         computer_backend: &str,
         computer_timeout_secs: u64,
+        browser_use_bridge_url: &str,
+        browser_use_bridge_command: &str,
         mcp_config: &str,
         mcp_timeout_secs: u64,
     ) -> Result<Self> {
@@ -813,10 +992,12 @@ impl LocalExecutorConfig {
             computer: ComputerExecutorConfig {
                 backend: ComputerExecutorBackend::parse(computer_backend)?,
                 timeout_secs: computer_timeout_secs,
+                browser_use_bridge_url: browser_use_bridge_url.to_string(),
+                browser_use_bridge_command: browser_use_bridge_command.to_string(),
             },
             mcp: McpExecutorConfig {
                 timeout_secs: mcp_timeout_secs,
-                servers: parse_mcp_servers(mcp_config)?,
+                servers: with_builtin_mcp_servers(parse_mcp_servers(mcp_config)?),
             },
         })
     }
@@ -828,16 +1009,28 @@ fn parse_mcp_servers(raw: &str) -> Result<BTreeMap<String, McpServerConfig>> {
         return Ok(BTreeMap::new());
     }
 
-    let source = if raw.starts_with('{') || raw.starts_with('[') {
-        raw.to_string()
+    let (source, base_dir) = if raw.starts_with('{') || raw.starts_with('[') {
+        (raw.to_string(), None)
     } else {
-        std::fs::read_to_string(raw)
-            .with_context(|| format!("failed to read MCP executor config from {raw}"))?
+        let path = PathBuf::from(raw);
+        (
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read MCP executor config from {raw}"))?,
+            path.parent().map(Path::to_path_buf),
+        )
     };
 
     let value: serde_json::Value =
         serde_json::from_str(&source).context("failed to parse MCP executor config JSON")?;
-    mcp_servers_from_value(value)
+    let mut servers = mcp_servers_from_value(value)?;
+    if let Some(base_dir) = base_dir {
+        for server in servers.values_mut() {
+            if server.cwd.is_none() && Path::new(&server.command).is_relative() {
+                server.cwd = Some(base_dir.clone());
+            }
+        }
+    }
+    Ok(servers)
 }
 
 fn mcp_servers_from_value(value: serde_json::Value) -> Result<BTreeMap<String, McpServerConfig>> {
@@ -845,14 +1038,18 @@ fn mcp_servers_from_value(value: serde_json::Value) -> Result<BTreeMap<String, M
         serde_json::Value::Array(items) => {
             let mut servers = BTreeMap::new();
             for item in items {
-                let server: McpServerConfig =
+                let mut server: McpServerConfig =
                     serde_json::from_value(item).context("invalid MCP server config")?;
+                normalize_mcp_server(&mut server);
                 validate_mcp_server(&server)?;
                 servers.insert(server.label.clone(), server);
             }
             Ok(servers)
         }
         serde_json::Value::Object(map) => {
+            if let Some(wrapped) = map.get("mcpServers") {
+                return mcp_servers_from_value(wrapped.clone());
+            }
             let mut servers = BTreeMap::new();
             for (label, item) in map {
                 let mut server: McpServerConfig =
@@ -860,6 +1057,7 @@ fn mcp_servers_from_value(value: serde_json::Value) -> Result<BTreeMap<String, M
                 if server.label.is_empty() {
                     server.label = label;
                 }
+                normalize_mcp_server(&mut server);
                 validate_mcp_server(&server)?;
                 servers.insert(server.label.clone(), server);
             }
@@ -867,6 +1065,57 @@ fn mcp_servers_from_value(value: serde_json::Value) -> Result<BTreeMap<String, M
         }
         _ => anyhow::bail!("MCP executor config must be a JSON object or array"),
     }
+}
+
+fn with_builtin_mcp_servers(
+    mut servers: BTreeMap<String, McpServerConfig>,
+) -> BTreeMap<String, McpServerConfig> {
+    if !servers.contains_key("computer-use") {
+        if let Some(server) = discover_bundled_computer_use_mcp() {
+            servers.insert(server.label.clone(), server);
+        }
+    }
+    servers
+}
+
+fn normalize_mcp_server(server: &mut McpServerConfig) {
+    if server.label == "computer-use" || server.command.contains("SkyComputerUseClient") {
+        server.read_only = false;
+    }
+}
+
+fn discover_bundled_computer_use_mcp() -> Option<McpServerConfig> {
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))?;
+    let root = codex_home
+        .join("plugins")
+        .join("cache")
+        .join("openai-bundled")
+        .join("computer-use");
+    let mut versions = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    versions.sort();
+    versions.reverse();
+
+    for dir in versions {
+        let command =
+            "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient";
+        if dir.join(command.trim_start_matches("./")).is_file() {
+            return Some(McpServerConfig {
+                label: "computer-use".into(),
+                command: command.into(),
+                args: vec!["mcp".into()],
+                env: BTreeMap::new(),
+                cwd: Some(dir),
+                read_only: false,
+            });
+        }
+    }
+    None
 }
 
 fn validate_mcp_server(server: &McpServerConfig) -> Result<()> {
@@ -902,6 +1151,8 @@ mod tests {
         let cfg = LocalExecutorConfig::from_raw(
             "playwright",
             12,
+            "",
+            "",
             r#"{
                 "filesystem": {
                     "label": "",
@@ -916,12 +1167,34 @@ mod tests {
 
         assert!(cfg.computer.enabled());
         assert_eq!(cfg.computer.timeout_secs, 12);
+        assert_eq!(cfg.computer.browser_use_bridge_url, "");
+        assert_eq!(cfg.computer.browser_use_bridge_command, "");
         assert_eq!(cfg.mcp.timeout_secs, 9);
         let server = cfg.mcp.get_server("filesystem").unwrap();
         assert_eq!(server.label, "filesystem");
         assert_eq!(server.command, "npx");
         assert!(server.read_only);
         assert_eq!(server.env["ROOT"], "/tmp");
+    }
+
+    #[test]
+    fn parses_browser_use_bridge_config() {
+        let cfg = LocalExecutorConfig::from_raw(
+            "browser-use",
+            12,
+            "http://127.0.0.1:7777/action",
+            "bridge-command",
+            "",
+            9,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.computer.backend, ComputerExecutorBackend::BrowserUse);
+        assert_eq!(
+            cfg.computer.browser_use_bridge_url,
+            "http://127.0.0.1:7777/action"
+        );
+        assert_eq!(cfg.computer.browser_use_bridge_command, "bridge-command");
     }
 
     #[test]
@@ -935,11 +1208,57 @@ mod tests {
         .unwrap();
 
         let cfg =
-            LocalExecutorConfig::from_raw("disabled", 30, &path.to_string_lossy(), 45).unwrap();
+            LocalExecutorConfig::from_raw("disabled", 30, "", "", &path.to_string_lossy(), 45)
+                .unwrap();
         let server = cfg.mcp.get_server("github").unwrap();
         assert_eq!(server.command, "mcp-github");
         assert!(!server.read_only);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_wrapped_mcp_servers_file_with_relative_cwd() {
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-computer-use-mcp-{}",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"computer-use":{"command":"./ComputerUse","args":["mcp"],"read_only":false}}}"#,
+        )
+        .unwrap();
+
+        let cfg =
+            LocalExecutorConfig::from_raw("disabled", 30, "", "", &path.to_string_lossy(), 45)
+                .unwrap();
+        let server = cfg.mcp.get_server("computer-use").unwrap();
+
+        assert_eq!(server.label, "computer-use");
+        assert_eq!(server.command, "./ComputerUse");
+        assert_eq!(server.args, vec!["mcp"]);
+        assert_eq!(server.cwd.as_deref(), Some(dir.as_path()));
+        assert!(!server.read_only);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn bundled_computer_use_mcp_config_is_normalized_to_mutating_server() {
+        let cfg = LocalExecutorConfig::from_raw(
+            "disabled",
+            30,
+            "",
+            "",
+            r#"{"mcpServers":{"computer-use":{"command":"./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient","args":["mcp"],"cwd":"."}}}"#,
+            45,
+        )
+        .unwrap();
+
+        let server = cfg.mcp.get_server("computer-use").unwrap();
+        assert!(!server.read_only);
+        assert_eq!(mcp_stdio_transport(server), McpStdioTransport::JsonLines);
     }
 
     #[test]
@@ -981,6 +1300,20 @@ mod tests {
     }
 
     #[test]
+    fn computer_use_mcp_uses_json_lines_transport() {
+        let server = McpServerConfig {
+            label: "computer-use".into(),
+            command: "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient".into(),
+            args: vec!["mcp".into()],
+            env: BTreeMap::new(),
+            cwd: None,
+            read_only: false,
+        };
+
+        assert_eq!(mcp_stdio_transport(&server), McpStdioTransport::JsonLines);
+    }
+
+    #[test]
     fn mcp_read_only_prefers_tool_metadata() {
         let metadata = json!({
             "tools": [
@@ -1002,6 +1335,8 @@ mod tests {
         let config = ComputerExecutorConfig {
             backend: ComputerExecutorBackend::BrowserUse,
             timeout_secs: 1,
+            browser_use_bridge_url: String::new(),
+            browser_use_bridge_command: String::new(),
         };
         let output = config
             .execute_action(ComputerActionInvocation {
@@ -1049,6 +1384,24 @@ mod tests {
         let read_task = tokio::spawn(async move { read_framed_json(&mut reader).await });
 
         send_jsonrpc(
+            &mut writer,
+            &json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}}),
+        )
+        .await
+        .unwrap();
+
+        let message = read_task.await.unwrap().unwrap();
+        assert_eq!(message["id"], 7);
+        assert_eq!(message["result"]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn stdio_json_lines_roundtrip() {
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let read_task =
+            tokio::spawn(async move { read_jsonrpc_line_response(&mut reader, 7).await });
+
+        send_jsonrpc_line(
             &mut writer,
             &json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}}),
         )

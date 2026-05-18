@@ -3020,6 +3020,8 @@ async fn test_responses_blocking_local_mcp_executor_appends_output() {
         deecodex::executor::LocalExecutorConfig::from_raw(
             "disabled",
             30,
+            "",
+            "",
             &json!({
                 "filesystem": {
                     "label": "",
@@ -3092,7 +3094,7 @@ async fn test_responses_blocking_local_computer_executor_appends_failed_output()
         .await,
     ));
     state.executors = Arc::new(tokio::sync::RwLock::new(
-        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", "", "", 5).unwrap(),
     ));
     state.tool_policy = Arc::new(tokio::sync::RwLock::new(deecodex::handlers::ToolPolicy {
         allowed_computer_displays: vec!["browser".into()],
@@ -4804,6 +4806,221 @@ async fn test_translate_stream_web_search() {
     assert_eq!(events[4].0, "response.completed");
 }
 
+// ── 能力补全：Computer Use 只走原生 Responses 能力账号 ──────────────────────
+
+#[tokio::test]
+async fn test_capability_computer_use_uses_native_responses_account() {
+    let (main_upstream, main_captured) = capture_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "能力账号已经完成电脑操作。"}}
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+        }"#,
+    )
+    .await;
+    let (capability_upstream, capability_captured) = capture_any_json_upstream(
+        r#"{
+            "id": "resp_capability_native",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "已打开抖音并播放第一个视频"}
+                    ]
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream));
+
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("capability-openai".into());
+
+    let mut helper_account = main_account.clone();
+    helper_account.id = "capability-openai".into();
+    helper_account.name = "OpenAI 原生能力账号".into();
+    helper_account.upstream = capability_upstream.to_string();
+    helper_account.translate_enabled = false;
+    helper_account.endpoints.clear();
+    helper_account.normalize_v2();
+    helper_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+    helper_account.endpoints[0].base_url = capability_upstream.to_string();
+    helper_account.endpoints[0].path = "responses".into();
+    helper_account.endpoints[0]
+        .model_map
+        .insert("gpt-5".into(), "gpt-4.1".into());
+
+    *state.active_account.write().await = main_account.clone();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![main_account, helper_account];
+        store.active_account_id = Some("test-account".into());
+        store.active_id = Some("test-account".into());
+        store.active_endpoint_id = None;
+    }
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gpt-5",
+                        "system": "主模型系统提示不应透传给能力账号的 system 字段",
+                        "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音 app 播放第一个视频",
+                        "tools": [{"type":"computer_use_preview", "display_width":1024, "display_height":768}]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let capability_requests = capability_captured.lock().unwrap();
+    assert_eq!(capability_requests.len(), 1);
+    assert_eq!(capability_requests[0].path, "/responses");
+    assert_eq!(capability_requests[0].body["model"], "gpt-4.1");
+    assert!(capability_requests[0].body.get("system").is_none());
+    assert!(capability_requests[0].body["instructions"]
+        .as_str()
+        .is_some_and(|text| text.contains("原生 Responses 能力账号")));
+    assert_eq!(
+        capability_requests[0].body["tools"][0]["type"],
+        "computer_use_preview"
+    );
+    assert!(capability_requests[0].body.get("stream").is_none());
+    assert!(capability_requests[0].body.get("metadata").is_none());
+    assert!(capability_requests[0].body.get("background").is_none());
+    assert!(capability_requests[0].body.get("store").is_none());
+    assert!(capability_requests[0]
+        .body
+        .get("previous_response_id")
+        .is_none());
+    assert!(capability_requests[0].body.get("conversation").is_none());
+    assert!(capability_requests[0].body.get("temperature").is_none());
+    assert!(capability_requests[0].body.get("tool_choice").is_none());
+
+    let main_requests = main_captured.lock().unwrap();
+    assert_eq!(main_requests.len(), 1);
+    let messages = main_requests[0]["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("已打开抖音并播放第一个视频"))
+    }));
+    assert!(!main_requests[0]["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "local_mcp_call")
+    }));
+}
+
+#[tokio::test]
+async fn test_capability_computer_use_rejects_chat_helper_without_bridge_fallback() {
+    let (main_upstream, main_captured) = capture_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "能力账号配置错误。"}}
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+        }"#,
+    )
+    .await;
+    let (capability_upstream, capability_captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "不应该调用到这里"}}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream));
+
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("capability-chat".into());
+
+    let mut helper_account = main_account.clone();
+    helper_account.id = "capability-chat".into();
+    helper_account.name = "错误 Chat 能力账号".into();
+    helper_account.upstream = capability_upstream.to_string();
+    helper_account.translate_enabled = true;
+    helper_account.endpoints.clear();
+    helper_account.normalize_v2();
+    helper_account.endpoints[0].kind = EndpointKind::OpenAiChat;
+    helper_account.endpoints[0].base_url = capability_upstream.to_string();
+    helper_account.endpoints[0].path = "chat/completions".into();
+
+    *state.active_account.write().await = main_account.clone();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![main_account, helper_account];
+        store.active_account_id = Some("test-account".into());
+        store.active_id = Some("test-account".into());
+        store.active_endpoint_id = None;
+    }
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gpt-5",
+                        "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音",
+                        "tools": [{"type":"computer_use_preview"}]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        capability_captured.lock().unwrap().is_empty(),
+        "Chat 能力账号不应被调用，也不能回退本地 bridge"
+    );
+
+    let main_requests = main_captured.lock().unwrap();
+    let messages = main_requests[0]["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"].as_str().is_some_and(|text| {
+                text.contains("能力账号必须配置为原生 Responses 端点")
+                    && text.contains("不要尝试由主模型、Chat fallback 或本地 MCP bridge 执行")
+            })
+    }));
+    assert!(!main_requests[0]["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "local_mcp_call")
+    }));
+}
+
 // ── P2 端到端实验：computer_use 多轮闭环 ──────────────────────────────────
 
 #[tokio::test]
@@ -4836,7 +5053,7 @@ async fn test_computer_use_multiturn_roundtrip() {
         ..Default::default()
     }));
     state.executors = Arc::new(tokio::sync::RwLock::new(
-        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", "", "", 5).unwrap(),
     ));
     let sessions = state.sessions.clone();
     let files = state.files.clone();
@@ -4869,12 +5086,20 @@ async fn test_computer_use_multiturn_roundtrip() {
     assert_eq!(round1["output"][1]["type"], "computer_call_output");
     assert_eq!(round1["output"][1]["call_id"], "call_open");
 
-    // Round 1 的 Chat 请求：只含 user 消息（无 instructions 时不生成 system 消息）
+    // Round 1 的 Chat 请求：host-only computer_use 被过滤，只向上游注入边界提示。
     {
         let r1_messages = captured1.lock().unwrap();
+        assert!(r1_messages[0]["tools"]
+            .as_array()
+            .is_none_or(|tools| tools.is_empty()));
         let r1_msgs = r1_messages[0]["messages"].as_array().unwrap();
-        assert!(!r1_msgs.is_empty(), "Round 1 至少有一条 user 消息");
-        assert_eq!(r1_msgs[0]["role"], "user");
+        assert!(r1_msgs.len() >= 2, "Round 1 至少有 system 和 user 消息");
+        assert_eq!(r1_msgs[0]["role"], "system");
+        assert!(r1_msgs[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("deecodex 能力边界"));
+        assert_eq!(r1_msgs[1]["role"], "user");
     }
 
     // Round 2: 模拟 Codex 使用 previous_response_id 发起后续请求
@@ -4959,7 +5184,7 @@ async fn test_computer_use_multiturn_state_persistence() {
         ..Default::default()
     }));
     state.executors = Arc::new(tokio::sync::RwLock::new(
-        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", 5).unwrap(),
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", "", "", 5).unwrap(),
     ));
     let sessions = state.sessions.clone();
 
