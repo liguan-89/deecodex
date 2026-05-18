@@ -5,6 +5,8 @@ pub mod dex_security;
 pub mod logs;
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -12,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
 
-use deecodex::accounts::{AccountStore, DevPipelineToolMode, DevPipelineTriggerMode};
+use deecodex::accounts::{
+    AccountClientKind, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode,
+};
 use deecodex::config::Args;
 use deecodex::handlers;
 use deecodex::{files, metrics, vector_stores};
@@ -20,6 +24,84 @@ use deecodex::{files, metrics, vector_stores};
 use deecodex_plugin_host::PluginManager;
 
 use crate::ServerManager;
+
+fn client_kind_slug(kind: &AccountClientKind) -> &'static str {
+    match kind {
+        AccountClientKind::Codex => "codex",
+        AccountClientKind::ClaudeCode => "claude_code",
+        AccountClientKind::Openclaw => "openclaw",
+        AccountClientKind::Hermes => "hermes",
+        AccountClientKind::GenericClient => "generic_client",
+    }
+}
+
+fn client_account_counts(store: &AccountStore) -> Value {
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    for account in &store.accounts {
+        *counts
+            .entry(client_kind_slug(&account.client_kind))
+            .or_default() += 1;
+    }
+    json!(counts)
+}
+
+fn append_account_event(
+    data_dir: &Path,
+    account_id: &str,
+    client_kind: &AccountClientKind,
+    action: &str,
+    ok: bool,
+    message: &str,
+    details: Value,
+) {
+    let path = data_dir.join("account-events.jsonl");
+    if let Some(parent) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!("创建账号事件目录失败: {err}");
+            return;
+        }
+    }
+    let event = json!({
+        "ts": deecodex::accounts::now_secs(),
+        "account_id": account_id,
+        "client_kind": client_kind,
+        "action": action,
+        "ok": ok,
+        "message": message,
+        "details": details,
+    });
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(err) = writeln!(file, "{event}") {
+                tracing::warn!("写入账号事件日志失败: {err}");
+            }
+        }
+        Err(err) => tracing::warn!("打开账号事件日志失败: {err}"),
+    }
+}
+
+fn read_account_events(data_dir: &Path, account_id: Option<&str>, limit: usize) -> Vec<Value> {
+    let path = data_dir.join("account-events.jsonl");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+    let mut events: Vec<Value> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| {
+            account_id.is_none_or(|id| event.get("account_id").and_then(Value::as_str) == Some(id))
+        })
+        .collect();
+    events.sort_by_key(|event| event.get("ts").and_then(Value::as_u64).unwrap_or(0));
+    events.reverse();
+    events.truncate(limit.clamp(1, 100));
+    events
+}
 
 // ── 前端返回类型 ──────────────────────────────────────────────────────────
 
@@ -269,9 +351,14 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 id: generate_id(),
                 name: "旧配置导入".into(),
                 provider: provider.to_string(),
+                client_kind: Default::default(),
                 wire_protocol: Default::default(),
                 upstream: file_args.upstream.clone(),
                 api_key: file_args.api_key.clone(),
+                default_model: String::new(),
+                client_options: HashMap::new(),
+                last_applied_at: None,
+                last_check: None,
                 model_map,
                 vision_upstream: file_args.vision_upstream.clone(),
                 vision_api_key: file_args.vision_api_key.clone(),
@@ -331,9 +418,14 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             id: generate_id(),
             name: "默认账号".into(),
             provider: "openrouter".into(),
+            client_kind: Default::default(),
             wire_protocol: openrouter.wire_protocol.clone(),
             upstream: openrouter.default_upstream.clone(),
             api_key: String::new(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: HashMap::new(),
             vision_upstream: String::new(),
             vision_api_key: String::new(),
@@ -409,13 +501,23 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
         .as_ref()
         .or(account_store.active_id.as_ref())
         .and_then(|id| account_store.accounts.iter().find(|a| &a.id == id))
+        .filter(|account| account.client_kind.is_codex())
+        .or_else(|| {
+            account_store
+                .accounts
+                .iter()
+                .find(|account| account.client_kind.is_codex())
+        })
         .cloned()
-        .unwrap_or_else(|| account_store.accounts[0].clone());
+        .ok_or_else(|| {
+            anyhow::anyhow!("没有可用于 deecodex 代理的 Codex 账号，请先创建 Codex 客户端账号")
+        })?;
 
     let active_endpoint = active_account
         .active_endpoint(account_store.active_endpoint_id.as_deref())
         .cloned()
-        .unwrap_or_else(|| active_account.endpoints[0].clone());
+        .or_else(|| active_account.endpoints.first().cloned())
+        .ok_or_else(|| anyhow::anyhow!("没有可用于 deecodex 代理的 Codex 账号端点"))?;
     active_account.sync_legacy_from_endpoint(&active_endpoint);
 
     let model_map: HashMap<String, String> = active_endpoint.model_map.clone();
@@ -1304,12 +1406,14 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
         .iter()
         .map(|account| account_to_value_for_store(account, &store))
         .collect();
+    let client_counts = client_account_counts(&store);
 
     Ok(json!({
         "accounts": accounts,
         "active_id": store.active_id,
         "active_account_id": store.active_account_id,
         "active_endpoint_id": store.active_endpoint_id,
+        "client_counts": client_counts,
     }))
 }
 
@@ -1319,10 +1423,7 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
     let data_dir = manager.data_dir.lock().await.clone();
     let store = deecodex::accounts::load_accounts(&data_dir);
 
-    let active = store
-        .active_id
-        .as_ref()
-        .and_then(|id| store.accounts.iter().find(|a| &a.id == id));
+    let active = store.active_account();
 
     match active {
         Some(a) => Ok(account_to_value_for_store(a, &store)),
@@ -1368,9 +1469,14 @@ pub async fn add_account(
             id: generate_id(),
             name: format!("{} 账号", preset.label),
             provider: provider.clone(),
+            client_kind: Default::default(),
             wire_protocol: preset.wire_protocol.clone(),
             upstream: preset.default_upstream.clone(),
             api_key: String::new(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: Default::default(),
             vision_upstream: String::new(),
             vision_api_key: String::new(),
@@ -1407,6 +1513,10 @@ pub async fn add_account(
         }
     };
     new_account.normalize_v2();
+    if !new_account.client_kind.is_codex() {
+        new_account.translate_enabled = false;
+        new_account.endpoints.clear();
+    }
 
     let mut candidate_store = store.clone();
     candidate_store.accounts.push(new_account.clone());
@@ -1414,7 +1524,7 @@ pub async fn add_account(
     deecodex::accounts::validate_dev_pipeline_links(&candidate_store).map_err(|e| e.to_string())?;
 
     // 如果没有活跃账号，自动设为活跃
-    let became_active = store.active_id.is_none();
+    let became_active = store.active_id.is_none() && new_account.client_kind.is_codex();
     if became_active {
         store.active_id = Some(new_account.id.clone());
         store.active_account_id = Some(new_account.id.clone());
@@ -1466,6 +1576,10 @@ pub async fn update_account(
         account.provider_options =
             deecodex::providers::provider_options_for_slug(&account.provider);
     }
+    if !account.client_kind.is_codex() {
+        account.translate_enabled = false;
+        account.endpoints.clear();
+    }
     account.normalize_v2();
     let endpoint_for_legacy = if store.active_account_id.as_ref() == Some(&account.id)
         || store.active_id.as_ref() == Some(&account.id)
@@ -1482,8 +1596,9 @@ pub async fn update_account(
     }
     account.updated_at = now_secs();
 
-    let is_active = store.active_account_id.as_ref() == Some(&account.id)
-        || store.active_id.as_ref() == Some(&account.id);
+    let is_active = account.client_kind.is_codex()
+        && (store.active_account_id.as_ref() == Some(&account.id)
+            || store.active_id.as_ref() == Some(&account.id));
     store.accounts[pos] = account.clone();
     deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
     deecodex::accounts::validate_dev_pipeline_links(&store).map_err(|e| e.to_string())?;
@@ -1527,31 +1642,31 @@ pub async fn delete_account(
     }
 
     let next_active_id = if was_active {
-        Some(store.accounts[0].id.clone())
+        store
+            .accounts
+            .iter()
+            .find(|account| account.client_kind.is_codex())
+            .map(|account| account.id.clone())
     } else {
         None
     };
 
-    // 如果删除的是活跃账号，切换到第一个
+    // 如果删除的是活跃账号，只切到剩余的 Codex 代理账号；外部客户端不参与代理热切换。
     if was_active {
         store.active_id = next_active_id.clone();
         store.active_account_id = store.active_id.clone();
-        store.active_endpoint_id = store.accounts[0]
-            .endpoints
-            .first()
-            .map(|endpoint| endpoint.id.clone());
+        store.active_endpoint_id = next_active_id.as_ref().and_then(|next_id| {
+            store
+                .accounts
+                .iter()
+                .find(|account| &account.id == next_id)
+                .and_then(|account| account.endpoints.first())
+                .map(|endpoint| endpoint.id.clone())
+        });
     }
 
     deecodex::accounts::validate_capability_links(&store).map_err(|e| e.to_string())?;
     deecodex::accounts::validate_dev_pipeline_links(&store).map_err(|e| e.to_string())?;
-
-    if was_active {
-        if let Some(active_id) = store.active_id.as_deref() {
-            if let Some(active) = store.accounts.iter().find(|a| a.id == active_id) {
-                sync_active_account_to_running_state(&manager, &store, active).await?;
-            }
-        }
-    }
 
     deecodex::accounts::save_accounts(&data_dir, &store)
         .map_err(|e| format!("保存账号失败: {e}"))?;
@@ -1560,6 +1675,8 @@ pub async fn delete_account(
         sync_account_store_to_running_state(&manager, &store).await;
     } else if let Some(next_id) = next_active_id {
         switch_account_inner(&manager, next_id).await?;
+    } else {
+        sync_account_store_to_running_state(&manager, &store).await;
     }
 
     Ok(json!({"success": true}))
@@ -1580,6 +1697,9 @@ pub(crate) async fn switch_account_inner(
         .find(|a| a.id == id)
         .ok_or_else(|| format!("账号不存在: {id}"))?
         .clone();
+    if !target.client_kind.is_codex() {
+        return Err("非 Codex 客户端账号不参与 deecodex 代理切换，请使用写入配置".into());
+    }
     target.normalize_v2();
     let target_endpoint = target
         .active_endpoint(store.active_endpoint_id.as_deref())
@@ -1682,6 +1802,284 @@ pub fn get_provider_presets() -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub fn get_client_profiles() -> Result<Value, String> {
+    serde_json::to_value(deecodex::client_integrations::get_client_profiles())
+        .map_err(|e| format!("序列化客户端分类失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_client_status(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    serde_json::to_value(deecodex::client_integrations::status(account))
+        .map_err(|e| format!("序列化客户端状态失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn test_client_account(
+    manager: State<'_, ServerManager>,
+    account_json: Option<String>,
+    account_id: Option<String>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut persisted_account_id = None;
+    let account = if let Some(raw) = account_json {
+        serde_json::from_str::<deecodex::accounts::Account>(&raw)
+            .map_err(|e| format!("解析账号 JSON 失败: {e}"))?
+    } else {
+        let id = account_id.ok_or_else(|| "缺少 account_id 或 account_json".to_string())?;
+        persisted_account_id = Some(id.clone());
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        store
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .cloned()
+            .ok_or_else(|| "账号不存在".to_string())?
+    };
+    let mut draft = account.clone();
+    let report = deecodex::client_integrations::apply(&mut draft, true)
+        .map_err(|e| format!("客户端 dry-run 失败: {e}"))?;
+    if let Some(id) = persisted_account_id {
+        let mut store = deecodex::accounts::load_accounts(&data_dir);
+        if let Some(existing) = store.accounts.iter_mut().find(|item| item.id == id) {
+            existing.last_check = Some(deecodex::accounts::ClientCheckRecord {
+                ok: report.ok,
+                checked_at: deecodex::accounts::now_secs(),
+                message: report.message.clone(),
+                details: serde_json::to_value(&report).unwrap_or_default(),
+            });
+            deecodex::accounts::save_accounts(&data_dir, &store)
+                .map_err(|e| format!("保存账号预检状态失败: {e}"))?;
+            sync_account_store_to_running_state(&manager, &store).await;
+        }
+    }
+    if !account.id.trim().is_empty() && !account.client_kind.is_codex() {
+        append_account_event(
+            &data_dir,
+            &account.id,
+            &account.client_kind,
+            "client_account_dry_run",
+            report.ok,
+            &report.message,
+            serde_json::to_value(&report).unwrap_or_default(),
+        );
+    }
+    serde_json::to_value(report).map_err(|e| format!("序列化 dry-run 结果失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn apply_client_account(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    dry_run: Option<bool>,
+) -> Result<Value, String> {
+    let dry_run = dry_run.unwrap_or(false);
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let pos = store
+        .accounts
+        .iter()
+        .position(|a| a.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+    let mut account = store.accounts[pos].clone();
+    if account.client_kind.is_codex() {
+        return Err("Codex 账号请使用「应用」切换代理账号".into());
+    }
+    let report = deecodex::client_integrations::apply(&mut account, dry_run)
+        .map_err(|e| format!("写入客户端配置失败: {e}"))?;
+    let now = deecodex::accounts::now_secs();
+    account.last_check = Some(deecodex::accounts::ClientCheckRecord {
+        ok: report.ok,
+        checked_at: now,
+        message: report.message.clone(),
+        details: serde_json::to_value(&report).unwrap_or_default(),
+    });
+    store.accounts[pos] = account;
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号状态失败: {e}"))?;
+    sync_account_store_to_running_state(&manager, &store).await;
+    append_account_event(
+        &data_dir,
+        &account_id,
+        &store.accounts[pos].client_kind,
+        if dry_run {
+            "client_account_dry_run"
+        } else {
+            "client_account_apply"
+        },
+        report.ok,
+        &report.message,
+        serde_json::to_value(&report).unwrap_or_default(),
+    );
+    serde_json::to_value(report).map_err(|e| format!("序列化写入结果失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_account_events(
+    manager: State<'_, ServerManager>,
+    account_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    Ok(json!(read_account_events(
+        &data_dir,
+        account_id.as_deref(),
+        limit.unwrap_or(20)
+    )))
+}
+
+#[tauri::command]
+pub async fn import_client_accounts(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    use deecodex::accounts::{
+        generate_id, now_secs, Account, DevPipelineToolMode, DevPipelineTriggerMode,
+    };
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let candidates = deecodex::client_integrations::discover_client_accounts();
+    let mut imported_accounts = Vec::new();
+    let mut import_events = Vec::new();
+    let mut skipped = 0usize;
+    for candidate in candidates {
+        if store
+            .accounts
+            .iter()
+            .any(|account| same_client_account(account, &candidate))
+        {
+            skipped += 1;
+            continue;
+        }
+        let now = now_secs();
+        let mut account = Account {
+            id: generate_id(),
+            name: candidate.name.clone(),
+            provider: candidate.provider.clone(),
+            client_kind: candidate.client_kind.clone(),
+            wire_protocol: Default::default(),
+            upstream: candidate.upstream.clone(),
+            api_key: candidate.api_key.clone(),
+            default_model: candidate.default_model.clone(),
+            client_options: candidate.client_options.clone(),
+            last_applied_at: None,
+            last_check: None,
+            model_map: HashMap::new(),
+            vision_upstream: String::new(),
+            vision_api_key: String::new(),
+            vision_model: String::new(),
+            vision_endpoint: String::new(),
+            vision_enabled: false,
+            from_codex_config: false,
+            balance_url: String::new(),
+            created_at: now,
+            updated_at: now,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            custom_headers: HashMap::new(),
+            provider_options: deecodex::providers::provider_options_for_slug(&candidate.provider),
+            request_timeout_secs: None,
+            max_retries: None,
+            translate_enabled: false,
+            capability_enabled: false,
+            capability_account_id: None,
+            dev_pipeline_enabled: false,
+            dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+            dev_pipeline_command: "/dev-pipeline".into(),
+            dev_pipeline_architect_account_id: None,
+            dev_pipeline_implementer_account_id: None,
+            dev_pipeline_reviewer_account_id: None,
+            dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+            dev_pipeline_max_iterations: 3,
+            dev_pipeline_show_trace: false,
+            dev_pipeline_architect_instruction: String::new(),
+            dev_pipeline_implementer_instruction: String::new(),
+            dev_pipeline_reviewer_instruction: String::new(),
+            endpoints: Vec::new(),
+        };
+        account.normalize_v2();
+        import_events.push((
+            account.id.clone(),
+            account.client_kind.clone(),
+            json!({
+                "source_path": candidate.source_path,
+                "warnings": candidate.warnings,
+            }),
+        ));
+        imported_accounts.push(account_to_value(&account));
+        store.accounts.push(account);
+    }
+
+    if !imported_accounts.is_empty() {
+        deecodex::accounts::save_accounts(&data_dir, &store)
+            .map_err(|e| format!("保存导入账号失败: {e}"))?;
+        sync_account_store_to_running_state(&manager, &store).await;
+        for (account_id, client_kind, details) in import_events {
+            append_account_event(
+                &data_dir,
+                &account_id,
+                &client_kind,
+                "client_account_import",
+                true,
+                "已从本机客户端配置导入账号",
+                details,
+            );
+        }
+    }
+
+    let statuses: Vec<Value> = store
+        .accounts
+        .iter()
+        .filter(|account| !account.client_kind.is_codex())
+        .map(|account| {
+            serde_json::to_value(deecodex::client_integrations::status(account)).unwrap_or_default()
+        })
+        .collect();
+    let imported_count = imported_accounts.len();
+    let message = if imported_count == 0 {
+        format!("客户端扫描完成，未发现新的可导入账号（已存在 {skipped} 个）")
+    } else {
+        format!("已导入 {imported_count} 个客户端账号，跳过 {skipped} 个已存在账号")
+    };
+    Ok(json!({
+        "imported": imported_count,
+        "skipped": skipped,
+        "accounts": imported_accounts,
+        "message": message,
+        "statuses": statuses,
+    }))
+}
+
+fn same_client_account(
+    account: &deecodex::accounts::Account,
+    candidate: &deecodex::client_integrations::ClientImportCandidate,
+) -> bool {
+    if account.client_kind != candidate.client_kind {
+        return false;
+    }
+    let existing_path = account
+        .client_options
+        .get("config_path")
+        .and_then(Value::as_str);
+    if let (Some(existing), Some(source)) = (existing_path, candidate.source_path.as_deref()) {
+        if existing == source {
+            return true;
+        }
+    }
+    account.provider == candidate.provider
+        && account.upstream == candidate.upstream
+        && account.default_model == candidate.default_model
+}
+
+#[tauri::command]
 pub fn get_endpoint_templates() -> Result<Value, String> {
     serde_json::to_value(deecodex::accounts::get_endpoint_templates())
         .map_err(|e| format!("序列化端点模板失败: {e}"))
@@ -1701,6 +2099,9 @@ pub async fn switch_endpoint(
         .find(|a| a.id == account_id)
         .cloned()
         .ok_or_else(|| format!("账号不存在: {account_id}"))?;
+    if !account.client_kind.is_codex() {
+        return Err("非 Codex 客户端账号没有 deecodex 代理端点，请使用写入配置".into());
+    }
     account.normalize_v2();
     let endpoint = account
         .endpoints
@@ -2243,7 +2644,11 @@ pub async fn undo_delete_session(
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 
 fn account_to_value(a: &deecodex::accounts::Account) -> Value {
-    let endpoint = a.endpoints.first();
+    let endpoint = if a.client_kind.is_codex() {
+        a.endpoints.first()
+    } else {
+        None
+    };
     account_to_value_with_endpoint(a, endpoint)
 }
 
@@ -2259,6 +2664,9 @@ fn endpoint_for_account_in_store<'a>(
     account: &'a deecodex::accounts::Account,
     store: &deecodex::accounts::AccountStore,
 ) -> Option<&'a deecodex::accounts::EndpointConfig> {
+    if !account.client_kind.is_codex() {
+        return None;
+    }
     if store.active_account_id.as_deref() == Some(&account.id)
         || store.active_id.as_deref() == Some(&account.id)
     {
@@ -2286,9 +2694,15 @@ fn account_to_value_with_endpoint(
         "id": a.id,
         "name": a.name,
         "provider": a.provider,
+        "client_kind": a.client_kind,
+        "target": a.client_kind,
         "wire_protocol": a.wire_protocol,
         "upstream": upstream,
         "api_key": a.api_key.clone(),
+        "default_model": a.default_model,
+        "client_options": a.client_options,
+        "last_applied_at": a.last_applied_at,
+        "last_check": a.last_check,
         "model_map": model_map,
         "vision_upstream": vision.map(|v| v.base_url.clone()).unwrap_or_else(|| a.vision_upstream.clone()),
         "vision_api_key": vision.map(|v| v.api_key.clone()).unwrap_or_else(|| a.vision_api_key.clone()),
@@ -2970,9 +3384,14 @@ mod tests {
             id: id.into(),
             name: "Test".into(),
             provider: "deepseek".into(),
+            client_kind: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: Default::default(),
             vision_upstream: String::new(),
             vision_api_key: String::new(),
@@ -3050,9 +3469,14 @@ mod tests {
             id: "main".into(),
             name: "主账号".into(),
             provider: "deepseek".into(),
+            client_kind: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: HashMap::new(),
             vision_upstream: String::new(),
             vision_api_key: String::new(),
@@ -3176,6 +3600,70 @@ mod tests {
 
         assert!(!ok);
         assert!(error.unwrap().contains("API Key"));
+    }
+
+    #[test]
+    fn account_events_are_filtered_newest_first_and_limited() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "deecodex-account-events-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("account-events.jsonl"),
+            [
+                json!({"ts": 10, "account_id": "a", "action": "old"}).to_string(),
+                "not-json".to_string(),
+                json!({"ts": 30, "account_id": "b", "action": "other"}).to_string(),
+                json!({"ts": 20, "account_id": "a", "action": "new"}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let events = read_account_events(&data_dir, Some("a"), 1);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["action"], "new");
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn same_client_account_matches_path_or_provider_tuple() {
+        let mut account = test_account("client");
+        account.client_kind = AccountClientKind::Hermes;
+        account.provider = "openrouter".into();
+        account.upstream = "https://openrouter.ai/api/v1".into();
+        account.default_model = "anthropic/claude-sonnet-4".into();
+        account
+            .client_options
+            .insert("config_path".into(), json!("/tmp/hermes.yaml"));
+
+        let mut candidate = deecodex::client_integrations::ClientImportCandidate {
+            client_kind: AccountClientKind::Hermes,
+            name: "Hermes".into(),
+            provider: "anthropic".into(),
+            upstream: "https://api.anthropic.com".into(),
+            api_key: "sk-test".into(),
+            default_model: "claude-sonnet-4-5".into(),
+            client_options: HashMap::new(),
+            source_path: Some("/tmp/hermes.yaml".into()),
+            warnings: Vec::new(),
+        };
+        assert!(same_client_account(&account, &candidate));
+
+        candidate.source_path = Some("/tmp/other.yaml".into());
+        candidate.provider = account.provider.clone();
+        candidate.upstream = account.upstream.clone();
+        candidate.default_model = account.default_model.clone();
+        assert!(same_client_account(&account, &candidate));
+
+        candidate.client_kind = AccountClientKind::ClaudeCode;
+        assert!(!same_client_account(&account, &candidate));
     }
 
     #[test]

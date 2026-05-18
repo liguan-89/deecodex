@@ -187,6 +187,11 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
             health: GroupHealth::Healthy,
         },
         DiagnosticGroup {
+            name: "客户端配置".into(),
+            items: check_client_accounts(ctx),
+            health: GroupHealth::Healthy,
+        },
+        DiagnosticGroup {
             name: "Codex 路由".into(),
             items: vec![
                 check_codex_installed(),
@@ -303,6 +308,81 @@ fn check_upstream_connectivity_sync(_: &DiagnosticContext) -> DiagnosticItem {
         detail: None,
         suggestion: Some("请使用完整异步诊断以检测上游 API 连通性".into()),
     }
+}
+
+fn check_client_accounts(ctx: &DiagnosticContext) -> Vec<DiagnosticItem> {
+    let store = accounts::load_accounts(&ctx.data_dir);
+    let client_accounts: Vec<_> = store
+        .accounts
+        .iter()
+        .filter(|account| !account.client_kind.is_codex())
+        .collect();
+    if client_accounts.is_empty() {
+        return vec![DiagnosticItem {
+            status: Status::Info,
+            check_name: "外部客户端账号".into(),
+            message: "尚未配置 Claude/OpenClaw/Hermes 等外部客户端账号".into(),
+            detail: None,
+            suggestion: Some("如需管理外部客户端，请在账号管理页切换分类后添加账号".into()),
+        }];
+    }
+
+    client_accounts
+        .into_iter()
+        .map(|account| {
+            let report = crate::client_integrations::status(account);
+            let errors = report
+                .diagnostics
+                .iter()
+                .filter(|item| item.level == "error")
+                .count();
+            let warnings = report
+                .diagnostics
+                .iter()
+                .filter(|item| item.level == "warning")
+                .count();
+            let status = if errors > 0 {
+                Status::Fail
+            } else if warnings > 0 {
+                Status::Warn
+            } else {
+                Status::Pass
+            };
+            let cli = report
+                .command
+                .version
+                .as_deref()
+                .unwrap_or(if report.command.installed {
+                    "已安装"
+                } else {
+                    "未检测到"
+                });
+            DiagnosticItem {
+                status,
+                check_name: format!("客户端账号 · {}", account.name),
+                message: if report.ok {
+                    "客户端账号状态正常".into()
+                } else {
+                    format!("客户端账号存在 {} 个错误、{} 个警告", errors, warnings)
+                },
+                detail: Some(format!(
+                    "客户端: {:?}, CLI: {}, 配置: {}, 最近写入: {}",
+                    account.client_kind,
+                    cli,
+                    report.config_path.as_deref().unwrap_or("未定位"),
+                    account
+                        .last_applied_at
+                        .map(|ts| ts.to_string())
+                        .unwrap_or_else(|| "未写入".into())
+                )),
+                suggestion: if report.ok {
+                    None
+                } else {
+                    Some("请在账号管理页打开该客户端账号，执行预检或重新写入配置".into())
+                },
+            }
+        })
+        .collect()
 }
 
 /// 异步连通性检测结果，由调用方在 GUI/CLI 中异步获取后回填。
@@ -2415,12 +2495,13 @@ mod tests {
     fn new_diagnostic_report_has_correct_groups() {
         let ctx = test_context();
         let report = run_diagnostics_sync(&ctx);
-        assert_eq!(report.groups.len(), 5);
+        assert_eq!(report.groups.len(), 6);
         assert_eq!(report.groups[0].name, "服务状态");
         assert_eq!(report.groups[1].name, "账号连通");
-        assert_eq!(report.groups[2].name, "Codex 路由");
-        assert_eq!(report.groups[3].name, "注入状态");
-        assert_eq!(report.groups[4].name, "运行环境");
+        assert_eq!(report.groups[2].name, "客户端配置");
+        assert_eq!(report.groups[3].name, "Codex 路由");
+        assert_eq!(report.groups[4].name, "注入状态");
+        assert_eq!(report.groups[5].name, "运行环境");
     }
 
     #[test]

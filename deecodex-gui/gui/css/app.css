@@ -1463,6 +1463,116 @@ body {
   gap: 14px;
 }
 
+.client-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  margin: 0 0 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius) + 2px);
+  background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01)), var(--bg-surface);
+  overflow-x: auto;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
+}
+.client-tab {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-sm) + 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--transition);
+  position: relative;
+}
+.client-tab:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.client-tab.active {
+  border-color: rgba(0,200,232,0.62);
+  background: linear-gradient(180deg, rgba(0,200,232,0.24), rgba(0,200,232,0.12));
+  color: var(--text-primary);
+  box-shadow: 0 0 0 2px rgba(0,200,232,0.13), 0 10px 22px rgba(0,0,0,0.16);
+}
+.client-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(0,200,232,0.55);
+}
+.client-tab em {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
+}
+.client-tab.active em {
+  background: var(--accent);
+  color: #041014;
+  font-weight: 800;
+}
+.client-tab.has-issues {
+  border-color: rgba(255,60,92,0.34);
+}
+.client-tab-alert {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 3px var(--red-dim);
+}
+.client-logo-img {
+  width: 20px;
+  height: 20px;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+}
+.client-tab.active .client-logo-img {
+  filter: drop-shadow(0 0 6px rgba(0,200,232,0.35));
+}
+.client-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+.client-kind-badge .client-logo-img {
+  width: 14px;
+  height: 14px;
+}
+
 .account-card {
   background: var(--bg-surface); border: 1px solid var(--border-subtle);
   border-radius: calc(var(--radius) + 2px); padding: 14px 18px; min-height: 0;
@@ -1609,6 +1719,20 @@ body {
   background: rgba(107,127,168,0.06);
   border: 1px solid var(--border-subtle);
 }
+.client-status-box {
+  min-height: 42px;
+}
+.client-status-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.client-status-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-context {
   display: inline-flex;
   align-items: center;
@@ -1656,6 +1780,8 @@ body {
 .badge-openrouter { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,200,232,0.2); }
 .badge-anthropic { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
 .badge-google-ai { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.badge-openclaw { background: rgba(255,107,74,0.12); color: #ff8b6e; border: 1px solid rgba(255,107,74,0.26); }
+.badge-hermes { background: rgba(124,92,255,0.12); color: #a995ff; border: 1px solid rgba(124,92,255,0.26); }
 .badge-custom { background: rgba(107,127,168,0.08); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
 
 /* Delete button in card header */
@@ -1907,6 +2033,137 @@ body {
 /* Account Detail Form */
 .account-form {
   max-width: 720px;
+}
+.client-account-form {
+  max-width: 760px;
+}
+.client-apply-preview {
+  margin-top: 10px;
+}
+.client-apply-modal {
+  max-width: 760px;
+}
+.client-apply-modal .modal-body {
+  display: grid;
+  gap: 10px;
+}
+.client-apply-modal-intro {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.client-apply-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 20px 16px;
+}
+.client-apply-modal-actions .btn {
+  min-width: 92px;
+}
+.client-report {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.client-report-path {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.client-report-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+.client-report-item {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.client-report-item.error {
+  color: var(--red);
+}
+.client-report-item.warning {
+  color: var(--amber);
+}
+.client-report-diff {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.client-report-diff code {
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.client-event-log {
+  display: grid;
+  gap: 8px;
+  min-height: 28px;
+}
+.client-event-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+}
+.client-event-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-dim);
+}
+.client-event-item.error .client-event-dot {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-dim);
+}
+.client-event-main {
+  min-width: 0;
+}
+.client-event-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.client-event-line strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.client-event-line time {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.client-event-message,
+.client-event-source {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.client-event-source {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 .account-edit-section {
   padding: 12px 0 14px;
@@ -3347,6 +3604,32 @@ body {
 [data-theme="light"] .account-card.active {
   border-color: rgba(217,79,58,0.40);
   box-shadow: 0 0 0 2px rgba(217,79,58,0.10), var(--glass-shadow);
+}
+[data-theme="light"] .client-switcher {
+  background: rgba(255,255,255,0.56);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.52), 0 8px 18px rgba(92,68,50,0.05);
+}
+[data-theme="light"] .client-tab.active {
+  border-color: rgba(217,79,58,0.46);
+  background: linear-gradient(180deg, rgba(217,79,58,0.16), rgba(217,79,58,0.08));
+  color: var(--text-primary);
+  box-shadow: 0 0 0 2px rgba(217,79,58,0.09), 0 8px 18px rgba(92,68,50,0.09);
+}
+[data-theme="light"] .client-tab.active::after {
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(217,79,58,0.32);
+}
+[data-theme="light"] .client-tab.active em {
+  background: var(--accent);
+  color: #fff;
+}
+[data-theme="light"] .client-tab.has-issues {
+  border-color: rgba(217,79,58,0.34);
+}
+[data-theme="light"] .client-tab-alert {
+  background: var(--red);
+  color: #fff;
+  box-shadow: 0 0 0 3px var(--red-dim);
 }
 [data-theme="light"] .account-card {
   padding: 10px 12px;

@@ -1,11 +1,18 @@
 const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5', 'codex-auto-review'];
+const CLIENT_KIND_LABELS = {
+  codex: 'Codex',
+  claude_code: 'Claude Code',
+  openclaw: 'OpenClaw',
+  hermes: 'Hermes',
+  generic_client: '通用客户端',
+};
 
 function providerBadgeClass(p) {
   return 'badge-provider badge-' + (p || 'custom');
 }
 
 function providerLogoSlug(p) {
-  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai'].includes(p)
+  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai', 'openclaw', 'hermes', 'claude'].includes(p)
     ? p
     : 'custom';
 }
@@ -16,6 +23,7 @@ function providerLogoSrc(p) {
     kimi: 'kimi.png',
     minimax: 'minimax.png',
     anthropic: 'anthropic.png',
+    claude: 'anthropic.png',
     glm: 'glm-wordmark.png',
     openai: 'openai-wordmark.png',
   };
@@ -30,6 +38,187 @@ function providerIcon(p, label) {
 function renderProviderBadge(p) {
   const slug = p || 'custom';
   return `<span class="${providerBadgeClass(slug)}"><img src="${providerLogoSrc(slug)}" alt="" aria-hidden="true">${esc(slug)}</span>`;
+}
+
+function normalizeClientKind(kind) {
+  const value = String(kind || 'codex');
+  if (value === 'ClaudeCode') return 'claude_code';
+  if (value === 'Openclaw') return 'openclaw';
+  if (value === 'GenericClient') return 'generic_client';
+  if (value === 'Codex') return 'codex';
+  if (value === 'Hermes') return 'hermes';
+  return ['codex', 'claude_code', 'openclaw', 'hermes', 'generic_client'].includes(value) ? value : 'codex';
+}
+
+function accountClientKind(a) {
+  return normalizeClientKind(a?.client_kind || a?.target || 'codex');
+}
+
+function isCodexAccount(a) {
+  return accountClientKind(a) === 'codex';
+}
+
+function clientAccountHasIssue(a) {
+  if (!a || isCodexAccount(a)) return false;
+  const status = a._client_status_report || a.last_check;
+  if (!status) return false;
+  return status.ok === false;
+}
+
+function getClientProfile(kind) {
+  const slug = normalizeClientKind(kind);
+  return clientProfiles.find(profile => normalizeClientKind(profile.slug || profile.kind) === slug) || null;
+}
+
+function clientIcon(kind) {
+  const slug = normalizeClientKind(kind);
+  const logo = slug === 'claude_code' ? 'anthropic' : (slug === 'generic_client' ? 'custom' : slug);
+  return `<img class="client-logo-img" src="${providerLogoSrc(logo)}" alt="" aria-hidden="true">`;
+}
+
+function renderClientSwitcher(list) {
+  const counts = accountsData.client_counts || {};
+  const profiles = clientProfiles.length ? clientProfiles : [
+    { slug: 'codex', label: 'Codex', description: 'deecodex 代理账号' },
+    { slug: 'claude_code', label: 'Claude Code', description: 'Claude 本地配置' },
+    { slug: 'openclaw', label: 'OpenClaw', description: 'OpenClaw 配置' },
+    { slug: 'hermes', label: 'Hermes', description: 'Hermes 配置' },
+    { slug: 'generic_client', label: '通用客户端', description: 'OpenAI 兼容 Env' },
+  ];
+  return `<div class="client-switcher" role="tablist" aria-label="账号客户端分类">
+    ${profiles.map(profile => {
+      const kind = normalizeClientKind(profile.slug || profile.kind);
+      const clientAccounts = list.filter(a => accountClientKind(a) === kind);
+      const count = counts[kind] || clientAccounts.length || 0;
+      const issueCount = clientAccounts.filter(clientAccountHasIssue).length;
+      const active = kind === selectedClientKind ? ' active' : '';
+      const issueClass = issueCount ? ' has-issues' : '';
+      return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}')" title="${escAttr(profile.description || '')}" role="tab" aria-selected="${kind === selectedClientKind}">
+        ${clientIcon(kind)}
+        <span>${esc(profile.label || CLIENT_KIND_LABELS[kind] || kind)}</span>
+        <em>${count}</em>
+        ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderClientAccountDetail() {
+  const a = editingAccount;
+  const kind = accountClientKind(a);
+  const profile = getClientProfile(kind) || {};
+  const configPath = a.client_options?.config_path || '';
+  const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
+  return `<div class="breadcrumb">
+    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
+    <span> / ${esc(a.name)}</span>
+  </div>
+  <div class="page-header account-detail-header">
+    <div class="account-detail-title">
+      ${clientIcon(kind)}
+      <div>
+        <div class="account-detail-heading">
+          <h2>${esc(a.name)}</h2>
+          <span class="client-kind-badge">${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
+          ${renderProviderBadge(a.provider)}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="account-form client-account-form">
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">客户端账号</div>
+        <div class="account-section-desc">此账号直接写入 ${esc(profile.label || '外部客户端')} 配置，不经过 deecodex 端点翻译。</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>账号名称</label>
+          <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+        </div>
+        <div class="config-field">
+          <label>供应商</label>
+          <select id="edit_client_provider" onchange="updateClientProviderDefaults()">
+            ${providersForClientKind(kind).map(p => `<option value="${escAttr(p.slug)}" ${a.provider === p.slug ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="config-field wide">
+          <label>目标客户端 Base URL</label>
+          <input type="text" id="edit_upstream" value="${escAttr(a.upstream)}" placeholder="${escAttr(profile.default_base_url || 'https://api.example.com/v1')}">
+          <span class="hint">这个 URL 会写入目标客户端配置；非 Codex 账号不会走 deecodex 代理翻译。</span>
+        </div>
+        <div class="config-field">
+          <label>默认模型</label>
+          <input type="text" id="edit_default_model" value="${escAttr(a.default_model || '')}" placeholder="${escAttr(profile.default_model || 'model-name')}">
+        </div>
+        <div class="config-field">
+          <label>API Key</label>
+          <div class="pass-group">
+            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+            <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">配置写入</div>
+        <div class="account-section-desc">写入前会做 dry-run 并生成备份；OpenClaw 优先使用官方 config dry-run/validate。</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>配置路径 <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_client_config_path" value="${escAttr(configPath)}" placeholder="${escAttr(profile.config_path_hint || '')}">
+        </div>
+        <div class="config-field">
+          <label>Key 环境变量名</label>
+          <input type="text" id="edit_client_api_key_env" value="${escAttr(apiKeyEnv)}" placeholder="OPENAI_API_KEY">
+        </div>
+      </div>
+      <div class="section-action-row">
+        <button class="btn btn-ghost" onclick="dryRunEditingClientAccount()">预检当前表单</button>
+        <span id="clientDryRunStatus"></span>
+      </div>
+      <div id="clientApplyPreview" class="client-apply-preview"></div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div>
+          <div class="section-sub-label">最近配置事件</div>
+          <div class="account-section-desc">只记录外部客户端配置操作，不混入 deecodex 代理请求历史。</div>
+        </div>
+        ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientEventsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
+      </div>
+      <div id="clientEventLog" class="client-event-log">
+        <span class="status-muted">${a.id ? '加载中...' : '保存账号后显示事件'}</span>
+      </div>
+    </section>
+
+    <div class="accounts-actions">
+      <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+      ${a.id ? `<button class="btn btn-ghost" onclick="saveAndApplyClientAccount('${escAttr(a.id)}')">保存并写入配置</button>` : ''}
+      <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
+    </div>
+  </div>`;
+}
+
+function selectClientKind(kind) {
+  selectedClientKind = normalizeClientKind(kind);
+  if (accountsView === 'add') accountsView = 'list';
+  renderMainContent();
+  if (accountsView === 'list') {
+    (accountsData.accounts || [])
+      .filter(a => accountClientKind(a) === selectedClientKind)
+      .forEach(a => {
+        if (isCodexAccount(a)) fetchBalanceForCard(a);
+        else fetchClientStatusForCard(a);
+      });
+  }
 }
 
 function getProviderPreset(provider) {
@@ -124,6 +313,13 @@ function visionModeLabel(mode) {
     Glue: '胶水多模态',
   };
   return labels[mode] || '视觉关闭';
+}
+
+function formatTimeShort(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '—';
+  const d = new Date(n * 1000);
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function setVisionMode(mode) {
@@ -223,6 +419,13 @@ function navigateAccounts(view) {
 
 function renderMainContent() {
   document.getElementById('mainContent').innerHTML = renderAccountsPanel();
+  afterRenderAccountsPanel();
+}
+
+function afterRenderAccountsPanel() {
+  if (accountsView === 'edit' && editingAccount && !isCodexAccount(editingAccount) && editingAccount.id) {
+    fetchClientEventsForDetail(editingAccount.id);
+  }
 }
 
 function renderAccountsPanel() {
@@ -235,12 +438,15 @@ function renderAccountsPanel() {
 
 function renderAccountList() {
   const list = accountsData.accounts || [];
+  const filtered = list.filter(a => accountClientKind(a) === selectedClientKind);
+  const selectedProfile = getClientProfile(selectedClientKind);
   let cards = '';
-  if (list.length === 0) {
-    cards = '<div class="empty-state">暂无账号，点击下方按钮创建</div>';
+  if (filtered.length === 0) {
+    cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}账号，点击上方按钮创建</div>`;
   } else {
-    cards = '<div class="accounts-grid">' + list.map(a => {
+    cards = '<div class="accounts-grid">' + filtered.map(a => {
       const active = a.id === (accountsData.active_account_id || accountsData.active_id);
+      if (!isCodexAccount(a)) return renderClientAccountCard(a);
       const ep = currentEndpoint(a);
       const visionMode = ep?.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
       const contextWindow = ep?.context_window_override ?? null;
@@ -296,13 +502,58 @@ function renderAccountList() {
   }
 
   return `<div class="page-header accounts-page-header">
-    <div><h2>账号管理</h2><p>管理上游 LLM 账号，点击「应用」切换活跃账号</p></div>
+    <div><h2>账号管理</h2><p>${esc(selectedProfile?.description || '管理 AI 客户端和模型账号')}</p></div>
     <div class="page-header-actions">
       <button class="btn btn-ghost" onclick="importFromCodex()">导入配置</button>
+      <button class="btn btn-ghost" onclick="scanClientAccounts()">扫描客户端</button>
       <button class="btn btn-primary" onclick="navigateAccounts('add')">添加账号</button>
     </div>
   </div>
+  ${renderClientSwitcher(list)}
   ${cards}`;
+}
+
+function renderClientAccountCard(a) {
+  const kind = accountClientKind(a);
+  const profile = getClientProfile(kind);
+  const statusId = `client-status-${escAttr(a.id)}`;
+  const path = a.client_options?.config_path || profile?.config_path_hint || '';
+  const last = a.last_applied_at ? formatTimeShort(a.last_applied_at) : '未写入';
+  const model = a.default_model || '未配置模型';
+  const key = maskKey(a.api_key) || '未配置 Key';
+  return `<div class="account-card client-account-card">
+    <div class="account-card-mainline">
+      <div class="account-card-primary">
+        <div class="account-card-header">
+          <div class="account-card-titlebar">
+            <span class="client-kind-badge">${clientIcon(kind)}${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
+            ${renderProviderBadge(a.provider)}
+          </div>
+          <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
+        </div>
+        <div class="account-card-body">
+          <div class="account-card-main">
+            <div class="card-name">${esc(a.name)}</div>
+            <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream || path, 70))}</div>
+          </div>
+          <div class="card-key">${esc(key)}</div>
+        </div>
+        <div class="account-meta-tags">
+          <span class="card-context">${esc(model)}</span>
+          <span class="card-context">${esc(last)}</span>
+          <span class="card-context tag-muted" title="${escAttr(path)}">${esc(trunc(path, 36))}</span>
+        </div>
+      </div>
+      <div class="account-card-side">
+        <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
+        <div class="card-actions-row">
+          <button class="account-action" onclick="dryRunClientAccount('${escAttr(a.id)}')">预检</button>
+          <button class="account-action account-apply" onclick="applyClientAccount('${escAttr(a.id)}')">写入配置</button>
+          <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ── Level 2: 添加账号 ──
@@ -312,9 +563,10 @@ function renderAddAccount() {
   if (providerPresets.length === 0) {
     cards = '<div class="empty-state">加载供应商列表...</div>';
   } else {
-    cards = '<div class="provider-grid">' + providerPresets.map(p => {
+    const providers = providersForClientKind(selectedClientKind);
+    cards = '<div class="provider-grid">' + providers.map(p => {
       const upstream = p.default_upstream || '(自定义)';
-      return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}')">
+      return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')">
         <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
         <div class="provider-name">${esc(p.label)}</div>
         <div class="provider-desc">${esc(p.description)}</div>
@@ -327,8 +579,26 @@ function renderAddAccount() {
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / 添加账号</span>
   </div>
-  <div class="page-header"><h2>选择供应商</h2><p>选择 LLM 供应商以创建新账号配置</p></div>
+  ${renderClientSwitcher(accountsData.accounts || [])}
+  <div class="page-header"><h2>选择供应商</h2><p>为 ${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')} 创建新账号配置</p></div>
   ${cards}`;
+}
+
+function providersForClientKind(kind) {
+  const normalized = normalizeClientKind(kind);
+  if (normalized === 'codex') return providerPresets;
+  const bySlug = slug => providerPresets.find(p => p.slug === slug);
+  const custom = bySlug('custom') || {
+    slug: 'custom',
+    label: '自定义',
+    description: 'OpenAI-compatible 或客户端原生 Base URL',
+    default_upstream: '',
+    known_models: [],
+  };
+  if (normalized === 'claude_code') return [bySlug('anthropic'), bySlug('openrouter'), custom].filter(Boolean);
+  if (normalized === 'openclaw') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('minimax'), custom].filter(Boolean);
+  if (normalized === 'hermes') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('minimax'), custom].filter(Boolean);
+  return [bySlug('openai'), bySlug('openrouter'), custom].filter(Boolean);
 }
 
 // ── Level 3: 编辑账号 ──
@@ -336,6 +606,7 @@ function renderAddAccount() {
 function renderAccountDetail() {
   if (!editingAccount) return '<div class="empty-state">账号数据丢失，请返回列表</div>';
   const a = editingAccount;
+  if (!isCodexAccount(a)) return renderClientAccountDetail();
   ensureAccountEndpoints(a);
   const ep = currentEndpoint(a) || {};
   const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
@@ -780,15 +1051,29 @@ async function loadAccountsData() {
   try {
     const result = await invoke('list_accounts');
     accountsData = result;
+    if (!clientProfiles.length) await loadClientProfiles();
     if (!providerPresets.length) await loadProviderPresets();
     if (!endpointTemplates.length) await loadEndpointTemplates();
     if (accountsView === 'list' && currentPanel === 'accounts') renderMainContent();
     // 异步加载余额（不阻塞渲染）
     if (accountsView === 'list') {
-      (accountsData.accounts || []).forEach(a => fetchBalanceForCard(a));
+      (accountsData.accounts || [])
+        .filter(a => accountClientKind(a) === selectedClientKind)
+        .forEach(a => {
+          if (isCodexAccount(a)) fetchBalanceForCard(a);
+          else fetchClientStatusForCard(a);
+        });
     }
   } catch (e) {
     showToast('加载账号失败: ' + e, 'error');
+  }
+}
+
+async function loadClientProfiles() {
+  try {
+    clientProfiles = await invoke('get_client_profiles');
+  } catch (e) {
+    showToast('加载客户端分类失败: ' + e, 'error');
   }
 }
 
@@ -813,6 +1098,32 @@ function getProviderKnownModels(provider) {
   return p ? p.known_models : [];
 }
 
+function defaultApiKeyEnvForClient(account) {
+  const kind = accountClientKind(account);
+  if (kind === 'claude_code' || account.provider === 'anthropic') return 'ANTHROPIC_API_KEY';
+  if (account.provider === 'openrouter') return 'OPENROUTER_API_KEY';
+  if (account.provider === 'minimax') return 'MINIMAX_API_KEY';
+  if (kind === 'generic_client' || account.provider === 'openai') return 'OPENAI_API_KEY';
+  return 'OPENAI_API_KEY';
+}
+
+function updateClientProviderDefaults() {
+  const provider = document.getElementById('edit_client_provider')?.value || '';
+  const preset = getProviderPreset(provider);
+  if (!preset) return;
+  const upstream = document.getElementById('edit_upstream');
+  const model = document.getElementById('edit_default_model');
+  const env = document.getElementById('edit_client_api_key_env');
+  if (upstream && !upstream.value.trim()) upstream.value = preset.default_upstream || '';
+  if (model && !model.value.trim() && Array.isArray(preset.known_models) && preset.known_models.length) {
+    model.value = preset.known_models[0];
+  }
+  if (env && (!env.value.trim() || env.value === 'OPENAI_API_KEY')) {
+    const draft = { provider, client_kind: selectedClientKind };
+    env.value = defaultApiKeyEnvForClient(draft);
+  }
+}
+
 // ── 模型映射编辑辅助 ──
 
 function removeModelMapRow(btn) {
@@ -834,6 +1145,31 @@ function syncEditingDraftFromForm() {
   if (nameInput) a.name = nameInput.value.trim() || a.name;
   const keyInput = document.getElementById('edit_api_key');
   if (keyInput) a.api_key = keyInput.value.trim();
+
+  if (!isCodexAccount(a)) {
+    const provider = document.getElementById('edit_client_provider');
+    if (provider) a.provider = provider.value || a.provider;
+    const upstream = document.getElementById('edit_upstream');
+    if (upstream) a.upstream = upstream.value.trim();
+    const defaultModel = document.getElementById('edit_default_model');
+    if (defaultModel) a.default_model = defaultModel.value.trim();
+    if (!a.client_options) a.client_options = {};
+    const configPath = document.getElementById('edit_client_config_path');
+    if (configPath) {
+      const value = configPath.value.trim();
+      if (value) a.client_options.config_path = value;
+      else delete a.client_options.config_path;
+    }
+    const apiKeyEnv = document.getElementById('edit_client_api_key_env');
+    if (apiKeyEnv) {
+      const value = apiKeyEnv.value.trim();
+      if (value) a.client_options.api_key_env = value;
+      else delete a.client_options.api_key_env;
+    }
+    a.translate_enabled = false;
+    a.endpoints = [];
+    return;
+  }
 
   const endpoints = ensureAccountEndpoints(a);
   const ep = currentEndpoint(a) || endpoints[0];
@@ -1071,15 +1407,23 @@ async function switchAccount(id) {
   }
 }
 
-function addAccount(provider) {
+function addAccount(provider, clientKind) {
+  const kind = normalizeClientKind(clientKind || selectedClientKind || 'codex');
   const preset = providerPresets.find(p => p.slug === provider);
   if (!preset) return;
+  const clientProfile = getClientProfile(kind);
   editingAccount = {
     id: '',
-    name: preset.label + ' 账号',
+    name: kind === 'codex' ? preset.label + ' 账号' : `${clientProfile?.label || CLIENT_KIND_LABELS[kind]} · ${preset.label}`,
     provider: provider,
+    client_kind: kind,
+    target: kind,
     upstream: preset.default_upstream,
     api_key: '',
+    default_model: kind === 'codex' ? '' : ((preset.known_models && preset.known_models[0]) || clientProfile?.default_model || ''),
+    client_options: kind === 'codex' ? {} : { api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }) },
+    last_applied_at: null,
+    last_check: null,
     model_map: {},
     vision_enabled: false,
     vision_upstream: '',
@@ -1111,8 +1455,13 @@ function addAccount(provider) {
     dev_pipeline_implementer_instruction: '',
     dev_pipeline_reviewer_instruction: '',
   };
-  editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
-  editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
+  if (kind === 'codex') {
+    editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
+    editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
+  } else {
+    editingAccount.translate_enabled = false;
+    editingAccount.endpoints = [];
+  }
   accountsView = 'edit';
   renderMainContent();
 }
@@ -1176,7 +1525,12 @@ async function saveAccount(options = {}) {
     return;
   }
   const ep = currentEndpoint(a);
-  if (ep) {
+  if (!isCodexAccount(a)) {
+    a.translate_enabled = false;
+    a.endpoints = [];
+    a.model_map = {};
+    a.vision_enabled = false;
+  } else if (ep) {
     ep.name = endpointKindLabel(ep.kind);
     a.upstream = ep.base_url || a.upstream;
     a.balance_url = ep.balance_url || '';
@@ -1190,7 +1544,7 @@ async function saveAccount(options = {}) {
     a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
     a._editing_endpoint_id = ep.id;
   }
-  const editingEndpointId = ep?.id || selectedEndpointId(a);
+  const editingEndpointId = isCodexAccount(a) ? (ep?.id || selectedEndpointId(a)) : null;
   a.updated_at = Math.floor(Date.now() / 1000);
 
   try {
@@ -1242,6 +1596,207 @@ async function importFromCodex() {
   } catch (e) {
     showToast('导入失败: ' + e, 'error');
   }
+}
+
+async function scanClientAccounts() {
+  try {
+    const result = await invoke('import_client_accounts');
+    showToast(result.message || '客户端扫描完成', 'success');
+    await loadAccountsData();
+    if (Number(result.imported || 0) > 0) {
+      const imported = Array.isArray(result.accounts) ? result.accounts[0] : null;
+      if (imported) selectedClientKind = accountClientKind(imported);
+      accountsView = 'list';
+      renderMainContent();
+    }
+  } catch (e) {
+    showToast('客户端扫描失败: ' + e, 'error');
+  }
+}
+
+function renderClientReport(report) {
+  if (!report) return '';
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const diff = Array.isArray(report.diff) ? report.diff : [];
+  const levelClass = report.ok ? 'status-ok' : 'status-error';
+  const envPath = report.env_path ? `<div class="client-report-path">${esc(report.env_path)}</div>` : '';
+  const backupPath = report.backup_path ? `<div class="client-report-path">备份: ${esc(report.backup_path)}</div>` : '';
+  return `<div class="client-report">
+    <div class="${levelClass}">${esc(report.message || (report.ok ? '检查通过' : '检查失败'))}</div>
+    ${report.config_path ? `<div class="client-report-path">${esc(report.config_path)}</div>` : ''}
+    ${envPath}
+    ${backupPath}
+    ${diagnostics.length ? `<div class="client-report-list">${diagnostics.map(d => `<div class="client-report-item ${escAttr(d.level || 'info')}">${esc(d.message || d.code || '')}</div>`).join('')}</div>` : ''}
+    ${diff.length ? `<div class="client-report-diff">${diff.map(line => `<code>${esc(line)}</code>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function showClientApplyConfirm(report) {
+  return new Promise(resolve => {
+    const existing = document.getElementById('clientApplyConfirmModal');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'clientApplyConfirmModal';
+    overlay.innerHTML = `<div class="modal-box client-apply-modal">
+      <div class="modal-header">
+        <h3>写入前预检</h3>
+        <button class="modal-close" id="clientApplyCloseBtn" type="button">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="client-apply-modal-intro ${report.ok ? 'status-ok' : 'status-error'}">
+          ${esc(report.ok ? '预检通过，请确认脱敏 diff 后写入外部客户端配置。' : '预检未通过，已阻止写入外部客户端配置。')}
+        </div>
+        ${renderClientReport(report)}
+      </div>
+      <div class="client-apply-modal-actions">
+        <button class="btn btn-primary" id="clientApplyOkBtn" type="button" ${report.ok ? '' : 'disabled'}>确认写入</button>
+        <button class="btn btn-ghost" id="clientApplyCancelBtn" type="button">取消</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    function cleanup(value) {
+      overlay.remove();
+      resolve(value);
+    }
+    document.getElementById('clientApplyCloseBtn').onclick = () => cleanup(false);
+    document.getElementById('clientApplyCancelBtn').onclick = () => cleanup(false);
+    document.getElementById('clientApplyOkBtn').onclick = () => cleanup(Boolean(report.ok));
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) cleanup(false);
+    });
+  });
+}
+
+async function fetchClientEventsForDetail(id) {
+  const el = document.getElementById('clientEventLog');
+  if (!el || !id) return;
+  el.innerHTML = '<span class="status-muted">加载中...</span>';
+  try {
+    const events = await invoke('get_account_events', { accountId: id, limit: 12 });
+    el.innerHTML = renderClientEventLog(Array.isArray(events) ? events : []);
+  } catch (e) {
+    el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+  }
+}
+
+function renderClientEventLog(events) {
+  if (!events.length) return '<span class="status-muted">暂无配置事件</span>';
+  return events.map(event => {
+    const ok = event.ok !== false;
+    const action = accountEventActionLabel(event.action);
+    const time = formatTimeShort(event.ts);
+    const message = event.message || '';
+    const details = event.details || {};
+    const path = details.source_path || details.config_path || details.backup_path || '';
+    const source = path ? `<span title="${escAttr(path)}">${esc(trunc(path, 52))}</span>` : '';
+    return `<div class="client-event-item ${ok ? 'ok' : 'error'}">
+      <div class="client-event-dot"></div>
+      <div class="client-event-main">
+        <div class="client-event-line">
+          <strong>${esc(action)}</strong>
+          <time>${esc(time)}</time>
+        </div>
+        <div class="client-event-message">${esc(message)}</div>
+        ${source ? `<div class="client-event-source">${source}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function accountEventActionLabel(action) {
+  const labels = {
+    client_account_import: '导入账号',
+    client_account_dry_run: '配置预检',
+    client_account_apply: '写入配置',
+  };
+  return labels[action] || action || '配置事件';
+}
+
+async function dryRunEditingClientAccount() {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  const statusEl = document.getElementById('clientDryRunStatus');
+  const preview = document.getElementById('clientApplyPreview');
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">预检中...</span>';
+  try {
+    const report = await invoke('test_client_account', { accountJson: JSON.stringify(editingAccount) });
+    if (statusEl) statusEl.innerHTML = report.ok ? '<span class="status-ok">预检通过</span>' : '<span class="status-error">预检有问题</span>';
+    if (preview) preview.innerHTML = renderClientReport(report);
+    if (editingAccount.id) fetchClientEventsForDetail(editingAccount.id);
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">预检失败</span>';
+    if (preview) preview.innerHTML = `<div class="status-error">${esc(String(e))}</div>`;
+  }
+}
+
+async function dryRunClientAccount(id) {
+  try {
+    const report = await invoke('test_client_account', { accountId: id });
+    showToast(report.ok ? '客户端预检通过' : '客户端预检发现问题', report.ok ? 'success' : 'error');
+    const el = document.getElementById('client-status-' + id);
+    if (el) el.innerHTML = renderClientStatusSummary(report);
+  } catch (e) {
+    showToast('客户端预检失败: ' + e, 'error');
+  }
+}
+
+async function saveAndApplyClientAccount(id) {
+  const saved = await saveAccount({ silent: true, stay: true });
+  if (!saved) {
+    showToast('写入前保存账号失败', 'error');
+    return;
+  }
+  showToast('账号已保存，开始预检写入配置', 'success');
+  await applyClientAccount(saved.id || id);
+}
+
+async function applyClientAccount(id) {
+  try {
+    showToast('正在执行写入前预检', 'info');
+    const dryReport = await invoke('apply_client_account', { accountId: id, dryRun: true });
+    const statusEl = document.getElementById('client-status-' + id);
+    if (statusEl) statusEl.innerHTML = renderClientStatusSummary(dryReport);
+    fetchClientEventsForDetail(id);
+    if (!await showClientApplyConfirm(dryReport)) {
+      if (!dryReport.ok) showToast('预检未通过，已取消写入', 'error');
+      return;
+    }
+    const report = await invoke('apply_client_account', { accountId: id, dryRun: false });
+    showToast(report.ok ? '客户端配置已写入' : '客户端配置写入后仍有问题', report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    const el = document.getElementById('client-status-' + id);
+    if (el) el.innerHTML = renderClientStatusSummary(report);
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('写入客户端配置失败: ' + e, 'error');
+  }
+}
+
+async function fetchClientStatusForCard(a) {
+  const el = document.getElementById('client-status-' + a.id);
+  if (!el || !a.id) return;
+  el.innerHTML = '<span class="balance-loading">检查中...</span>';
+  try {
+    const report = await invoke('get_client_status', { accountId: a.id });
+    a._client_status_report = report;
+    el.innerHTML = renderClientStatusSummary(report);
+  } catch (e) {
+    el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+  }
+}
+
+function renderClientStatusSummary(report) {
+  const command = report.command || {};
+  const version = command.version || (command.installed ? '已安装' : '未检测到');
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const hasError = diagnostics.some(item => item.level === 'error');
+  const cls = hasError ? 'status-error' : (report.ok ? 'status-ok' : 'status-warn');
+  const path = report.config_path ? trunc(report.config_path, 42) : '无配置路径';
+  return `<div class="client-status-summary">
+    <span class="${cls}">${esc(version)}</span>
+    <span>${esc(path)}</span>
+  </div>`;
 }
 
 // ── 模型获取与余额查询 ──

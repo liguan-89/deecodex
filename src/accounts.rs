@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::providers::{
     get_provider_profiles, provider_options_for_slug, AuthScheme, ModelDiscovery,
@@ -11,7 +12,36 @@ use crate::providers::{
 
 // ── 数据模型 ────────────────────────────────────────────────────────────────
 
-pub const ACCOUNT_STORE_VERSION: u32 = 2;
+pub const ACCOUNT_STORE_VERSION: u32 = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountClientKind {
+    #[default]
+    Codex,
+    ClaudeCode,
+    Openclaw,
+    Hermes,
+    GenericClient,
+}
+
+impl AccountClientKind {
+    pub fn is_codex(&self) -> bool {
+        matches!(self, Self::Codex)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientCheckRecord {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub checked_at: u64,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub details: Value,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -217,10 +247,25 @@ pub struct Account {
     pub id: String,
     pub name: String,
     pub provider: String,
+    /// 账号面向的 AI 客户端。Codex 账号走 deecodex 代理；其他客户端只管理本地配置。
+    #[serde(default, alias = "target")]
+    pub client_kind: AccountClientKind,
     #[serde(default)]
     pub wire_protocol: WireProtocol,
     pub upstream: String,
     pub api_key: String,
+    /// 非 Codex 客户端直接使用的默认模型名。Codex 账号继续使用 model_map。
+    #[serde(default)]
+    pub default_model: String,
+    /// 客户端侧扩展配置，例如 env 覆盖、profile 名称、配置路径等。
+    #[serde(default)]
+    pub client_options: HashMap<String, Value>,
+    /// 外部客户端配置最近一次成功写入时间。
+    #[serde(default)]
+    pub last_applied_at: Option<u64>,
+    /// 外部客户端最近一次检查结果。
+    #[serde(default)]
+    pub last_check: Option<ClientCheckRecord>,
     #[serde(default)]
     pub model_map: HashMap<String, String>,
     #[serde(default)]
@@ -357,6 +402,11 @@ impl Account {
     }
 
     pub fn normalize_v2(&mut self) {
+        if !self.client_kind.is_codex() {
+            self.translate_enabled = false;
+            self.endpoints.clear();
+            return;
+        }
         if self.endpoints.is_empty() {
             self.endpoints.push(endpoint_from_legacy_account(self));
         }
@@ -435,18 +485,26 @@ impl AccountStore {
             account.normalize_v2();
         }
 
-        let active_exists = self
-            .active_account_id
-            .as_ref()
-            .is_some_and(|id| self.accounts.iter().any(|account| &account.id == id));
+        let active_exists = self.active_account_id.as_ref().is_some_and(|id| {
+            self.accounts
+                .iter()
+                .any(|account| &account.id == id && account.client_kind.is_codex())
+        });
         if !active_exists {
-            self.active_account_id = self.accounts.first().map(|a| a.id.clone());
+            self.active_account_id = self
+                .accounts
+                .iter()
+                .find(|account| account.client_kind.is_codex())
+                .map(|a| a.id.clone());
         }
         self.active_id = self.active_account_id.clone();
 
         let active_endpoint_valid = self
             .active_account()
             .and_then(|account| {
+                if !account.client_kind.is_codex() {
+                    return None;
+                }
                 self.active_endpoint_id.as_ref().map(|endpoint_id| {
                     account
                         .endpoints
@@ -458,6 +516,7 @@ impl AccountStore {
         if !active_endpoint_valid {
             self.active_endpoint_id = self
                 .active_account()
+                .filter(|account| account.client_kind.is_codex())
                 .and_then(|account| account.endpoints.first())
                 .map(|endpoint| endpoint.id.clone());
         }
@@ -465,6 +524,11 @@ impl AccountStore {
         let active_account_id = self.active_account_id.clone();
         let active_endpoint_id = self.active_endpoint_id.clone();
         for account in &mut self.accounts {
+            if !account.client_kind.is_codex() {
+                account.translate_enabled = false;
+                account.endpoints.clear();
+                continue;
+            }
             let endpoint = if Some(&account.id) == active_account_id.as_ref() {
                 account
                     .active_endpoint(active_endpoint_id.as_deref())
@@ -483,7 +547,12 @@ impl AccountStore {
             .as_ref()
             .or(self.active_id.as_ref())
             .and_then(|id| self.accounts.iter().find(|account| &account.id == id))
-            .or_else(|| self.accounts.first())
+            .filter(|account| account.client_kind.is_codex())
+            .or_else(|| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.client_kind.is_codex())
+            })
     }
 
     #[allow(dead_code)]
@@ -493,11 +562,17 @@ impl AccountStore {
             .clone()
             .or_else(|| self.active_id.clone());
         if let Some(id) = active_id {
-            if let Some(pos) = self.accounts.iter().position(|account| account.id == id) {
+            if let Some(pos) = self
+                .accounts
+                .iter()
+                .position(|account| account.id == id && account.client_kind.is_codex())
+            {
                 return self.accounts.get_mut(pos);
             }
         }
-        self.accounts.first_mut()
+        self.accounts
+            .iter_mut()
+            .find(|account| account.client_kind.is_codex())
     }
 
     #[allow(dead_code)]
@@ -736,6 +811,10 @@ pub fn hydrate_account_defaults(store: &mut AccountStore) {
         if account.provider_options.is_empty() {
             account.provider_options = provider_options_for_slug(&account.provider);
         }
+        if !account.client_kind.is_codex() {
+            account.translate_enabled = false;
+            account.endpoints.clear();
+        }
     }
 }
 
@@ -898,6 +977,43 @@ mod provider_tests {
         );
         assert_eq!(account.dev_pipeline_max_iterations, 3);
     }
+
+    #[test]
+    fn v3_non_codex_account_does_not_keep_proxy_endpoint() {
+        let raw = json!({
+            "version": 2,
+            "accounts": [{
+                "id": "claude-1",
+                "name": "Claude Code",
+                "provider": "anthropic",
+                "client_kind": "claude_code",
+                "upstream": "https://api.anthropic.com",
+                "api_key": "sk-test",
+                "default_model": "claude-sonnet-4-5",
+                "translate_enabled": true,
+                "endpoints": [{
+                    "id": "endpoint_bad",
+                    "name": "Chat",
+                    "kind": "open_ai_chat",
+                    "base_url": "https://api.anthropic.com",
+                    "path": ""
+                }]
+            }],
+            "active_id": "claude-1"
+        });
+        let mut store: AccountStore = serde_json::from_value(raw).unwrap();
+        hydrate_account_defaults(&mut store);
+        store.normalize_v2();
+        let account = &store.accounts[0];
+        assert_eq!(store.version, ACCOUNT_STORE_VERSION);
+        assert_eq!(account.client_kind, AccountClientKind::ClaudeCode);
+        assert!(!account.translate_enabled);
+        assert!(account.endpoints.is_empty());
+        assert!(store.active_account_id.is_none());
+        assert!(store.active_id.is_none());
+        assert!(store.active_account().is_none());
+        assert!(store.active_endpoint_id.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -910,9 +1026,14 @@ mod capability_tests {
             id: id.into(),
             name: format!("账号 {id}"),
             provider: "custom".into(),
+            client_kind: AccountClientKind::Codex,
             wire_protocol: Default::default(),
             upstream: "https://example.com/v1".into(),
             api_key: String::new(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: HashMap::new(),
             vision_upstream: String::new(),
             vision_api_key: String::new(),
@@ -1066,9 +1187,14 @@ mod tests {
             id: "acc_1".into(),
             name: "测试账号".into(),
             provider: "deepseek".into(),
+            client_kind: AccountClientKind::Codex,
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
+            default_model: String::new(),
+            client_options: HashMap::new(),
+            last_applied_at: None,
+            last_check: None,
             model_map: HashMap::from([("gpt-5".into(), "deepseek-chat".into())]),
             vision_upstream: String::new(),
             vision_api_key: String::new(),

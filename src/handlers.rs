@@ -181,7 +181,33 @@ async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) 
     let mut endpoint = account
         .active_endpoint(endpoint_id.as_deref())
         .cloned()
-        .unwrap_or_else(|| account.endpoints[0].clone());
+        .or_else(|| account.endpoints.first().cloned())
+        .unwrap_or_else(|| {
+            tracing::warn!("活跃账号没有端点，使用默认 OpenRouter Chat 端点兜底");
+            let mut fallback = crate::accounts::EndpointConfig {
+                id: "fallback_openrouter".into(),
+                name: "Fallback OpenRouter".into(),
+                kind: crate::accounts::EndpointKind::OpenAiChat,
+                base_url: "https://openrouter.ai/api/v1".into(),
+                path: String::new(),
+                template_id: "openrouter".into(),
+                template_version: 1,
+                model_map: std::collections::HashMap::new(),
+                model_profiles: std::collections::HashMap::new(),
+                vision: Default::default(),
+                custom_headers: std::collections::HashMap::new(),
+                request_timeout_secs: None,
+                max_retries: None,
+                context_window_override: None,
+                reasoning_effort_override: None,
+                thinking_tokens: None,
+                fast_mode_enabled: false,
+                fast_service_tier: "fast".into(),
+                balance_url: String::new(),
+            };
+            fallback.model_map = account.model_map.clone();
+            fallback
+        });
     // AppState 的热字段仍是运行时真值；测试和托盘切换都会直接更新它。
     endpoint.base_url = state.upstream.read().await.to_string();
     account.sync_legacy_from_endpoint(&endpoint);

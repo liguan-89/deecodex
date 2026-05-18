@@ -309,6 +309,7 @@ pub async fn dex_get_workspace_context(manager: State<'_, ServerManager>) -> Res
                 "id": a.id,
                 "name": a.name,
                 "provider": a.provider,
+                "client_kind": a.client_kind,
                 "upstream": a.upstream,
                 "model_count": a.model_map.len(),
             })
@@ -458,6 +459,38 @@ pub async fn dex_execute_tool(
             }
             "import_codex_config" => crate::commands::import_codex_config(manager).await?,
             "get_provider_presets" => crate::commands::get_provider_presets()?,
+            "get_client_profiles" => crate::commands::get_client_profiles()?,
+            "get_client_status" => {
+                crate::commands::get_client_status(manager, req_string(&args, "account_id")?)
+                    .await?
+            }
+            "test_client_account" => {
+                crate::commands::test_client_account(
+                    manager,
+                    opt_string(&args, "account_json"),
+                    opt_string(&args, "account_id"),
+                )
+                .await?
+            }
+            "apply_client_account" => {
+                crate::commands::apply_client_account(
+                    manager,
+                    req_string(&args, "account_id")?,
+                    args.get("dry_run").and_then(|v| v.as_bool()),
+                )
+                .await?
+            }
+            "get_account_events" => {
+                crate::commands::get_account_events(
+                    manager,
+                    opt_string(&args, "account_id"),
+                    args.get("limit")
+                        .and_then(|v| v.as_u64())
+                        .map(|value| value as usize),
+                )
+                .await?
+            }
+            "import_client_accounts" => crate::commands::import_client_accounts(manager).await?,
             "fetch_upstream_models" => {
                 let data_dir = manager.data_dir.lock().await.clone();
                 let account_id =
@@ -1136,6 +1169,8 @@ pub fn dex_get_env_info() -> Result<Value, String> {
 
     // Claude 版本
     let claude_version = get_cli_version("claude", &["--version"]);
+    let openclaw_version = get_cli_version("openclaw", &["--version"]);
+    let hermes_version = get_cli_version("hermes", &["--version"]);
 
     // Node 版本
     let node_version = get_cli_version("node", &["--version"]);
@@ -1161,6 +1196,12 @@ pub fn dex_get_env_info() -> Result<Value, String> {
         },
         "claude": {
             "version": claude_version,
+        },
+        "openclaw": {
+            "version": openclaw_version,
+        },
+        "hermes": {
+            "version": hermes_version,
         },
         "node": {
             "version": node_version,
@@ -1388,6 +1429,17 @@ pub async fn dex_health_summary(manager: State<'_, ServerManager>) -> Result<Val
     // 账号信息
     let store = deecodex::accounts::load_accounts(&data_dir);
     let account_count = store.accounts.len();
+    let client_counts = {
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for account in &store.accounts {
+            let key = serde_json::to_value(&account.client_kind)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "codex".into());
+            *counts.entry(key).or_default() += 1;
+        }
+        counts
+    };
     let (account_ok, provider, profile_slug, wire_protocol, capability_labels) =
         if let Some((upstream, api_key, _, provider, profile)) = get_active_account_info(&data_dir)
         {
@@ -1433,7 +1485,8 @@ pub async fn dex_health_summary(manager: State<'_, ServerManager>) -> Result<Val
             "profile": profile_slug,
             "wire_protocol": wire_protocol,
             "capabilities": capability_labels,
-            "count": account_count
+            "count": account_count,
+            "client_counts": client_counts
         },
         "codex_installed": codex_ok,
         "recent_errors": recent_errors,

@@ -4,6 +4,8 @@ mod backup_store;
 mod cache;
 mod capability;
 mod cdp;
+#[allow(dead_code)]
+mod client_integrations;
 mod codex_config;
 mod codex_threads;
 mod config;
@@ -567,9 +569,14 @@ async fn main() -> Result<()> {
         id: generate_id(),
         name: "默认账号".into(),
         provider: crate::accounts::guess_provider(&args.upstream).into(),
+        client_kind: Default::default(),
         wire_protocol: Default::default(),
         upstream: args.upstream.clone(),
         api_key: args.api_key.clone(),
+        default_model: String::new(),
+        client_options: HashMap::new(),
+        last_applied_at: None,
+        last_check: None,
         model_map: model_map.clone(),
         vision_upstream: args.vision_upstream.clone(),
         vision_api_key: args.vision_api_key.clone(),
