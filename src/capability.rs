@@ -1,6 +1,7 @@
 use crate::accounts::Account;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
 use crate::handlers::ToolPolicy;
+use crate::providers;
 use crate::session::SessionStore;
 use crate::translate;
 use crate::types::{
@@ -111,6 +112,7 @@ pub fn detect_trigger(req: &ResponsesRequest) -> Option<CapabilityTrigger> {
     if request_has_images(req) {
         reasons.push("image".to_string());
     }
+    collect_input_reasons(&req.input, &mut reasons);
     for tool in &req.tools {
         collect_tool_reasons(tool, &mut reasons);
     }
@@ -148,6 +150,7 @@ async fn observe_with_helper(
     observer_req.instructions = Some(observer_instructions(main_account, trigger));
     observer_req.tool_choice = None;
     observer_req.max_output_tokens = observer_req.max_output_tokens.or(Some(2048));
+    inject_observer_hint_tools(&mut observer_req, trigger);
 
     let sessions = SessionStore::new();
     let translated = translate::to_chat_request(
@@ -160,6 +163,7 @@ async fn observe_with_helper(
     let mut chat_req = translated.chat;
     chat_req.stream = false;
     chat_req.model = resolve_model(&req.model, &helper.model_map);
+    providers::adapt_chat_request(&providers::profile_for_account(helper), &mut chat_req);
 
     let url = format!("{}chat/completions", join_base(&context.upstream));
     let start = Instant::now();
@@ -437,6 +441,88 @@ fn collect_tool_reasons(tool: &Value, reasons: &mut Vec<String>) {
     }
 }
 
+fn collect_input_reasons(input: &ResponsesInput, reasons: &mut Vec<String>) {
+    match input {
+        ResponsesInput::Text(text) => collect_text_reasons(text, reasons),
+        ResponsesInput::Messages(items) => {
+            for item in items {
+                collect_value_text_reasons(item, reasons);
+            }
+        }
+    }
+}
+
+fn collect_value_text_reasons(value: &Value, reasons: &mut Vec<String>) {
+    match value {
+        Value::String(text) => collect_text_reasons(text, reasons),
+        Value::Array(items) => {
+            for item in items {
+                collect_value_text_reasons(item, reasons);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                collect_value_text_reasons(value, reasons);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_text_reasons(text: &str, reasons: &mut Vec<String>) {
+    let lower = text.to_ascii_lowercase();
+    let has_plugin_uri = lower.contains("plugin://") || lower.contains("app://");
+    let mentions_computer = lower.contains("computer-use")
+        || lower.contains("computer_use")
+        || lower.contains("computer use")
+        || text.contains("@电脑")
+        || text.contains("电脑");
+    let mentions_browser = lower.contains("browser")
+        || lower.contains("chrome")
+        || text.contains("@浏览器")
+        || text.contains("浏览器");
+    let mentions_mcp = lower.contains("mcp://") || lower.contains("mcp__") || lower.contains("mcp");
+
+    if has_plugin_uri {
+        reasons.push("plugin".into());
+    }
+    if mentions_computer {
+        reasons.push("computer".into());
+        if has_plugin_uri {
+            reasons.push("plugin".into());
+        }
+    }
+    if mentions_browser {
+        reasons.push("browser".into());
+        if has_plugin_uri {
+            reasons.push("plugin".into());
+        }
+    }
+    if mentions_mcp {
+        reasons.push("mcp".into());
+    }
+}
+
+fn inject_observer_hint_tools(req: &mut ResponsesRequest, trigger: &CapabilityTrigger) {
+    if trigger.reasons.iter().any(|reason| reason == "computer")
+        && !req.tools.iter().any(is_computer_tool)
+    {
+        req.tools.push(json!({
+            "type": "computer_use_preview",
+            "display_width": 1024,
+            "display_height": 768,
+            "environment": "mac"
+        }));
+    }
+}
+
+fn is_computer_tool(tool: &Value) -> bool {
+    matches!(
+        tool.get("type").and_then(Value::as_str).unwrap_or(""),
+        "computer_use" | "computer_use_preview"
+    )
+}
+
 fn looks_like_plugin_or_browser_tool(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.contains("browser")
@@ -548,6 +634,89 @@ mod tests {
             detect_trigger(&req).unwrap().reasons,
             vec!["browser", "plugin"]
         );
+    }
+
+    #[test]
+    fn computer_plugin_mention_triggers_capability() {
+        let mut req = base_req();
+        req.input =
+            ResponsesInput::Text("[@电脑](plugin://computer-use@openai-bundled) 打开抖音".into());
+
+        assert_eq!(
+            detect_trigger(&req).unwrap().reasons,
+            vec!["computer", "plugin"]
+        );
+    }
+
+    #[test]
+    fn computer_plugin_mention_inside_message_triggers_capability() {
+        let mut req = base_req();
+        req.input = ResponsesInput::Messages(vec![json!({
+            "role": "user",
+            "content": [{"type":"input_text","text":"[@电脑](plugin://computer-use@openai-bundled) 打开抖音"}]
+        })]);
+
+        assert_eq!(
+            detect_trigger(&req).unwrap().reasons,
+            vec!["computer", "plugin"]
+        );
+    }
+
+    #[test]
+    fn observer_injects_computer_hint_tool_for_text_mention() {
+        let mut req = base_req();
+        let trigger = CapabilityTrigger {
+            reasons: vec!["computer".into(), "plugin".into()],
+        };
+
+        inject_observer_hint_tools(&mut req, &trigger);
+
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(
+            req.tools[0].get("type").and_then(Value::as_str),
+            Some("computer_use_preview")
+        );
+    }
+
+    #[test]
+    fn observer_does_not_duplicate_existing_computer_tool() {
+        let mut req = base_req();
+        req.tools = vec![json!({"type":"computer_use", "display":"browser"})];
+        let trigger = CapabilityTrigger {
+            reasons: vec!["computer".into()],
+        };
+
+        inject_observer_hint_tools(&mut req, &trigger);
+
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(
+            req.tools[0].get("type").and_then(Value::as_str),
+            Some("computer_use")
+        );
+    }
+
+    #[test]
+    fn injected_computer_hint_translates_to_local_computer_tool() {
+        let mut req = base_req();
+        req.input =
+            ResponsesInput::Text("[@电脑](plugin://computer-use@openai-bundled) 打开抖音".into());
+        let trigger = detect_trigger(&req).unwrap();
+        inject_observer_hint_tools(&mut req, &trigger);
+
+        let translated = translate::to_chat_request(
+            &req,
+            Vec::new(),
+            &SessionStore::new(),
+            &HashMap::new(),
+            true,
+        );
+
+        assert!(translated.chat.tools.iter().any(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("local_computer")
+        }));
     }
 
     #[test]

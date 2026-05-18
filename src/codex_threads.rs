@@ -576,13 +576,11 @@ fn truncate_rollout_text(text: &str) -> String {
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
     let mut end = text.len();
-    let mut count = 0usize;
-    for (idx, _) in text.char_indices() {
+    for (count, (idx, _)) in text.char_indices().enumerate() {
         if count >= max_chars {
             end = idx;
             break;
         }
-        count += 1;
     }
     if end == text.len() {
         return text.to_string();
