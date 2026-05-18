@@ -1475,6 +1475,32 @@ fn patch_body_model_field(
     serde_json::to_vec(&v).map(axum::body::Bytes::from)
 }
 
+fn patch_body_string_field(
+    body: &axum::body::Bytes,
+    field: &str,
+    value: &str,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut v: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(field.to_string(), serde_json::json!(value));
+    }
+    serde_json::to_vec(&v).map(axum::body::Bytes::from)
+}
+
+fn apply_endpoint_fast_service_tier(req: &mut ResponsesRequest, endpoint: &EndpointConfig) {
+    if req.service_tier.is_some()
+        || endpoint.kind != EndpointKind::OpenAiResponses
+        || !endpoint.fast_mode_enabled
+    {
+        return;
+    }
+
+    let tier = endpoint.fast_service_tier.trim();
+    if !tier.is_empty() {
+        req.service_tier = Some(tier.to_string());
+    }
+}
+
 fn response_input_has_new_image(input: &ResponsesInput) -> bool {
     match input {
         ResponsesInput::Text(text) => text.contains("data:image/"),
@@ -1705,6 +1731,7 @@ async fn handle_responses_bypass(
 
     // 模型映射（直连模式下仅此一项处理）
     let (account, endpoint) = active_account_endpoint(&state).await;
+    apply_endpoint_fast_service_tier(&mut req, &endpoint);
     let model_map = endpoint.model_map.clone();
     let model = resolve_model(&req.model, &model_map);
     let mut body = if model != req.model {
@@ -1712,6 +1739,9 @@ async fn handle_responses_bypass(
     } else {
         body
     };
+    if let Some(service_tier) = req.service_tier.as_deref() {
+        body = patch_body_string_field(&body, "service_tier", service_tier).unwrap_or(body);
+    }
     req.model = model.clone();
 
     let conversation_id = conversation_id_from_request(&req);
@@ -4414,6 +4444,150 @@ mod tests {
         assert_eq!(items[0]["id"], "item_0");
         assert_eq!(items[0]["status"], "completed");
         assert_eq!(items[0]["output"], Value::Null);
+    }
+
+    #[test]
+    fn test_fast_service_tier_injects_only_for_openai_responses() {
+        let mut req = ResponsesRequest {
+            model: "gpt-5.4".into(),
+            input: ResponsesInput::Text("hi".into()),
+            previous_response_id: None,
+            tools: vec![],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: Some(ReasoningConfig {
+                effort: Some("high".into()),
+                summary: Some("auto".into()),
+            }),
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
+            background: None,
+            conversation: None,
+            include: None,
+            include_obfuscation: None,
+            max_tool_calls: None,
+            parallel_tool_calls: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            safety_identifier: None,
+            service_tier: None,
+            stream_options: None,
+            text: None,
+            top_logprobs: None,
+            user: None,
+        };
+        let endpoint = EndpointConfig {
+            id: "ep".into(),
+            name: "GPT".into(),
+            kind: EndpointKind::OpenAiResponses,
+            base_url: "https://api.openai.com/v1".into(),
+            path: String::new(),
+            template_id: String::new(),
+            template_version: 1,
+            model_map: Default::default(),
+            model_profiles: Default::default(),
+            vision: Default::default(),
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: None,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            fast_mode_enabled: true,
+            fast_service_tier: "fast".into(),
+            balance_url: String::new(),
+        };
+
+        apply_endpoint_fast_service_tier(&mut req, &endpoint);
+
+        assert_eq!(req.service_tier.as_deref(), Some("fast"));
+        assert_eq!(
+            req.reasoning.as_ref().and_then(|r| r.effort.as_deref()),
+            Some("high")
+        );
+
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hi",
+                "reasoning": {"effort": "high", "summary": "auto"}
+            }))
+            .unwrap(),
+        );
+        let patched =
+            patch_body_string_field(&body, "service_tier", req.service_tier.as_deref().unwrap())
+                .unwrap();
+        let actual: Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(actual["service_tier"], "fast");
+        assert_eq!(actual["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn test_fast_service_tier_does_not_inject_for_chat_endpoint() {
+        let mut req = ResponsesRequest {
+            model: "gpt-5.4".into(),
+            input: ResponsesInput::Text("hi".into()),
+            previous_response_id: None,
+            tools: vec![],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: None,
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
+            background: None,
+            conversation: None,
+            include: None,
+            include_obfuscation: None,
+            max_tool_calls: None,
+            parallel_tool_calls: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            safety_identifier: None,
+            service_tier: None,
+            stream_options: None,
+            text: None,
+            top_logprobs: None,
+            user: None,
+        };
+        let endpoint = EndpointConfig {
+            id: "ep".into(),
+            name: "Chat".into(),
+            kind: EndpointKind::OpenAiChat,
+            base_url: "https://api.openai.com/v1".into(),
+            path: String::new(),
+            template_id: String::new(),
+            template_version: 1,
+            model_map: Default::default(),
+            model_profiles: Default::default(),
+            vision: Default::default(),
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: None,
+            context_window_override: None,
+            reasoning_effort_override: None,
+            thinking_tokens: None,
+            fast_mode_enabled: true,
+            fast_service_tier: "fast".into(),
+            balance_url: String::new(),
+        };
+
+        apply_endpoint_fast_service_tier(&mut req, &endpoint);
+
+        assert_eq!(req.service_tier, None);
     }
 
     #[test]

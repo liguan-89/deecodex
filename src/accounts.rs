@@ -178,12 +178,21 @@ pub struct EndpointConfig {
     pub reasoning_effort_override: Option<String>,
     #[serde(default)]
     pub thinking_tokens: Option<u32>,
+    /// Fast 模式服务层。开启后仅注入 service_tier，不降低 reasoning / thinking。
+    #[serde(default)]
+    pub fast_mode_enabled: bool,
+    #[serde(default = "default_fast_service_tier")]
+    pub fast_service_tier: String,
     #[serde(default)]
     pub balance_url: String,
 }
 
 fn default_template_version() -> u32 {
     1
+}
+
+fn default_fast_service_tier() -> String {
+    "fast".into()
 }
 
 impl EndpointConfig {
@@ -537,6 +546,8 @@ fn endpoint_from_legacy_account(account: &Account) -> EndpointConfig {
         context_window_override: account.context_window_override,
         reasoning_effort_override: account.reasoning_effort_override.clone(),
         thinking_tokens: account.thinking_tokens,
+        fast_mode_enabled: false,
+        fast_service_tier: default_fast_service_tier(),
         balance_url: account.balance_url.clone(),
     }
 }

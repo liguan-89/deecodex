@@ -443,6 +443,18 @@ function toggleReasoningFields() {
   }
 }
 
+function toggleFastFields() {
+  const cb = document.getElementById('edit_fast_enabled');
+  const ff = document.getElementById('fastFields');
+  if (cb && ff) {
+    ff.style.display = cb.checked ? '' : 'none';
+    if (!cb.checked) {
+      const tier = document.getElementById('edit_fast_service_tier');
+      if (tier) tier.value = 'fast';
+    }
+  }
+}
+
 function toggleCapabilityFields() {
   const cb = document.getElementById('edit_capability_enabled');
   const fields = document.getElementById('capabilityFields');
