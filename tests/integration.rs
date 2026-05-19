@@ -4806,7 +4806,7 @@ async fn test_translate_stream_web_search() {
     assert_eq!(events[4].0, "response.completed");
 }
 
-// ── 能力补全：Computer Use 只走原生 Responses 能力账号 ──────────────────────
+// ── 能力补全：Computer Use 只走能力执行账号 ──────────────────────
 
 #[tokio::test]
 async fn test_capability_computer_use_uses_native_responses_account() {
@@ -4895,16 +4895,20 @@ async fn test_capability_computer_use_uses_native_responses_account() {
     assert_eq!(capability_requests.len(), 1);
     assert_eq!(capability_requests[0].path, "/responses");
     assert_eq!(capability_requests[0].body["model"], "gpt-4.1");
-    assert!(capability_requests[0].body.get("system").is_none());
-    assert!(capability_requests[0].body["instructions"]
+    // system 不再删除
+    assert!(capability_requests[0]
+        .body["system"]
         .as_str()
-        .is_some_and(|text| text.contains("原生 Responses 能力账号")));
+        .is_some_and(|s| s.contains("主模型系统提示")));
+    assert!(capability_requests[0]
+        .body
+        .get("instructions")
+        .is_none());
+    // tools 原样保留
     assert_eq!(
         capability_requests[0].body["tools"][0]["type"],
         "computer_use_preview"
     );
-    assert!(capability_requests[0].body.get("stream").is_none());
-    assert!(capability_requests[0].body.get("metadata").is_none());
     assert!(capability_requests[0].body.get("background").is_none());
     assert!(capability_requests[0].body.get("store").is_none());
     assert!(capability_requests[0]
@@ -4918,11 +4922,16 @@ async fn test_capability_computer_use_uses_native_responses_account() {
     let main_requests = main_captured.lock().unwrap();
     assert_eq!(main_requests.len(), 1);
     let messages = main_requests[0]["messages"].as_array().unwrap();
+    // 观察结果现在以 user 角色 + 多模态 content 注入
     assert!(messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("已打开抖音并播放第一个视频"))
+        message["role"] == "user"
+            && message["content"].as_array().is_some_and(|parts| {
+                parts.iter().any(|p| {
+                    p["text"]
+                        .as_str()
+                        .is_some_and(|t| t.contains("已打开抖音并播放第一个视频"))
+                })
+            })
     }));
     assert!(!main_requests[0]["tools"].as_array().is_some_and(|tools| {
         tools
@@ -5018,6 +5027,164 @@ async fn test_capability_computer_use_rejects_chat_helper_without_bridge_fallbac
         tools
             .iter()
             .any(|tool| tool["function"]["name"] == "local_mcp_call")
+    }));
+}
+
+#[tokio::test]
+async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back() {
+    let (main_upstream, main_captured) = capture_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "能力账号已完成电脑操作并返回结果。"}}
+            ],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+        }"#,
+    )
+    .await;
+    let (capability_upstream, capability_captured) = capture_sequence_json_upstream(vec![
+        (
+            StatusCode::OK,
+            r#"{
+                "id": "resp_capability_round1",
+                "object": "response",
+                "status": "in_progress",
+                "output": [
+                    {
+                        "type": "computer_call",
+                        "call_id": "call_comp_001",
+                        "action": {"type": "click", "x": 100, "y": 200}
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+            }"#,
+        ),
+        (
+            StatusCode::OK,
+            r#"{
+                "id": "resp_capability_final",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": "抖音已打开，正在播放第一个视频"}
+                        ]
+                    }
+                ],
+                "usage": {"input_tokens": 15, "output_tokens": 5, "total_tokens": 20}
+            }"#,
+        ),
+    ])
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream));
+    *state.executors.write().await =
+        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", "", "", 5).unwrap();
+
+    let mut main_account = state.active_account.read().await.clone();
+    main_account.capability_enabled = true;
+    main_account.capability_account_id = Some("capability-openai".into());
+
+    let mut helper_account = main_account.clone();
+    helper_account.id = "capability-openai".into();
+    helper_account.name = "OpenAI 原生能力账号".into();
+    helper_account.upstream = capability_upstream.to_string();
+    helper_account.translate_enabled = false;
+    helper_account.endpoints.clear();
+    helper_account.normalize_v2();
+    helper_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+    helper_account.endpoints[0].base_url = capability_upstream.to_string();
+    helper_account.endpoints[0].path = "responses".into();
+    helper_account.endpoints[0]
+        .model_map
+        .insert("gpt-5".into(), "gpt-4.1".into());
+
+    *state.active_account.write().await = main_account.clone();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![main_account, helper_account];
+        store.active_account_id = Some("test-account".into());
+        store.active_id = Some("test-account".into());
+        store.active_endpoint_id = None;
+    }
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gpt-5",
+                        "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音 app 播放第一个视频",
+                        "tools": [{"type":"computer_use_preview", "display_width":1024, "display_height":768}]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let capability_requests = capability_captured.lock().unwrap();
+    assert_eq!(
+        capability_requests.len(),
+        2,
+        "工具执行循环应产生2次请求: 初始请求 + 工具输出请求"
+    );
+
+    // 第一轮：初始能力通道请求
+    let req1 = &capability_requests[0];
+    assert_eq!(req1.path, "/responses");
+    assert_eq!(req1.body["model"], "gpt-4.1");
+    assert!(req1.body.get("instructions").is_none());
+    assert!(req1.body.get("previous_response_id").is_none());
+
+    // 第二轮：带工具输出的后续请求
+    let req2 = &capability_requests[1];
+    assert_eq!(req2.path, "/responses");
+    assert_eq!(req2.body["model"], "gpt-4.1");
+    assert_eq!(
+        req2.body["previous_response_id"],
+        "resp_capability_round1"
+    );
+    let input = req2.body["input"].as_array().unwrap();
+    assert_eq!(input.len(), 1);
+    assert_eq!(input[0]["type"], "computer_call_output");
+    assert_eq!(input[0]["call_id"], "call_comp_001");
+
+    // 主模型应收到能力通道观察结果（user 角色 + 多模态 content）
+    let main_requests = main_captured.lock().unwrap();
+    assert_eq!(main_requests.len(), 1);
+    let messages = main_requests[0]["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"].as_array().is_some_and(|parts| {
+                parts.iter().any(|p| {
+                    p["text"]
+                        .as_str()
+                        .is_some_and(|t| t.contains("抖音已打开"))
+                })
+            })
+    }));
+    assert!(messages.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"].as_array().is_some_and(|parts| {
+                parts.iter().any(|p| {
+                    p["text"]
+                        .as_str()
+                        .is_some_and(|t| {
+                            t.contains("Computer 调用") || t.contains("Computer 结果")
+                        })
+                })
+            })
     }));
 }
 

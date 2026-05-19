@@ -1,7 +1,12 @@
 use crate::accounts::Account;
+use crate::executor::{
+    ComputerActionInvocation, ComputerActionOutput, LocalExecutorConfig, McpToolInvocation,
+    McpToolOutput,
+};
+use crate::handlers::ToolPolicy;
 use crate::types::{ChatMessage, ResponsesInput, ResponsesRequest};
 use reqwest::{Client, Url};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -20,6 +25,12 @@ impl CapabilityTrigger {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ObservationResult {
+    text: String,
+    images: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct CapabilityContext {
     pub client: Client,
@@ -30,6 +41,8 @@ pub struct CapabilityContext {
     pub timeout_secs: Option<u64>,
     pub max_retries: Option<u32>,
     pub model_map: HashMap<String, String>,
+    pub executors: LocalExecutorConfig,
+    pub tool_policy: ToolPolicy,
 }
 
 pub async fn maybe_observe(
@@ -67,20 +80,20 @@ pub async fn maybe_observe(
     }
 
     match observe_with_helper(req, raw_body, main_account, &helper, &trigger, context).await {
-        Ok(Some(text)) => {
+        Ok(Some(obs)) => {
             let guidance = main_model_capability_guidance(&trigger);
             info!(
                 main_account = %main_account.name,
                 helper_account = %helper.name,
                 reason = %trigger.label(),
-                chars = text.len(),
+                chars = obs.text.len(),
+                images = obs.images.len(),
                 "能力补全观察已注入主模型"
             );
+            let content = build_multimodal_observation_content(&obs, &guidance);
             Some(ChatMessage {
-                role: "system".into(),
-                content: Some(Value::String(format!(
-                    "【deecodex 能力通道观察结果】\n{text}{guidance}\n\n请把以上观察作为当前会话上下文的一部分。最终回答仍由你完成；不要声称自己直接执行了这些工具。"
-                ))),
+                role: "user".into(),
+                content: Some(content),
                 reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -133,17 +146,15 @@ async fn observe_with_helper(
     _helper: &Account,
     trigger: &CapabilityTrigger,
     context: CapabilityContext,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<ObservationResult>> {
     let model = context
         .model_map
         .get(&req.model)
         .cloned()
         .unwrap_or_else(|| req.model.clone());
-    let body = build_native_responses_body(
-        raw_body,
-        &model,
-        &observer_instructions(main_account, trigger),
-    )?;
+    let instructions = observer_instructions(main_account, trigger);
+    let mut body =
+        build_native_responses_body(raw_body, &model, &instructions)?;
 
     let url = format!(
         "{}{}",
@@ -151,22 +162,129 @@ async fn observe_with_helper(
         context.endpoint_path.trim_start_matches('/')
     );
     let start = Instant::now();
-    let response = send_responses_request(
-        &context.client,
-        &url,
-        &context.api_key,
-        &context.custom_headers,
-        context.timeout_secs,
-        context.max_retries.unwrap_or(1) as usize,
-        &body,
-    )
-    .await?;
-    let elapsed_ms = start.elapsed().as_millis();
+    const MAX_TOOL_ROUNDS: usize = 5;
+    let mut all_outputs: Vec<Value> = Vec::new();
 
-    let observation = summarize_native_response(&response, elapsed_ms);
-    if observation.trim().is_empty() {
+    for _round in 0..MAX_TOOL_ROUNDS {
+        let response = send_responses_request(
+            &context.client,
+            &url,
+            &context.api_key,
+            &context.custom_headers,
+            context.timeout_secs,
+            context.max_retries.unwrap_or(1) as usize,
+            &body,
+        )
+        .await?;
+
+        let response_id = response
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let round_outputs = response
+            .get("output")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let tool_items: Vec<Value> = round_outputs
+            .iter()
+            .filter(|item| {
+                let t = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                t == "computer_call" || t == "mcp_tool_call"
+            })
+            .cloned()
+            .collect();
+
+        all_outputs.extend(round_outputs);
+
+        if tool_items.is_empty() {
+            let elapsed_ms = start.elapsed().as_millis();
+            let observation =
+                extract_observation(&all_outputs, &response_id, elapsed_ms);
+            if observation.text.trim().is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(observation));
+        }
+
+        let mut tool_outputs = Vec::new();
+        for item in &tool_items {
+            match item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+            {
+                "computer_call" => {
+                    if let Some(invocation) =
+                        ComputerActionInvocation::from_response_item(item)
+                    {
+                        let result =
+                            if !context.tool_policy.allowed_computer_displays.is_empty()
+                                && !context
+                                    .tool_policy
+                                    .allowed_computer_displays
+                                    .iter()
+                                    .any(|d| d == &invocation.display)
+                            {
+                                ComputerActionOutput::failed(format!(
+                                    "computer display '{}' is not allowed by tool policy",
+                                    invocation.display
+                                ))
+                            } else {
+                                context.executors.computer.execute_action(invocation).await
+                            };
+                        tool_outputs.push(json!({
+                            "type": "computer_call_output",
+                            "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
+                            "status": result.status,
+                            "output": result.output,
+                        }));
+                    }
+                }
+                "mcp_tool_call" => {
+                    if let Some(invocation) =
+                        McpToolInvocation::from_response_item(item)
+                    {
+                        let result =
+                            if !context.tool_policy.allowed_mcp_servers.is_empty()
+                                && !context
+                                    .tool_policy
+                                    .allowed_mcp_servers
+                                    .iter()
+                                    .any(|s| s == &invocation.server_label)
+                            {
+                                McpToolOutput::failed(format!(
+                                    "MCP server '{}' is not allowed by tool policy",
+                                    invocation.server_label
+                                ))
+                            } else {
+                                context.executors.mcp.execute_tool(invocation).await
+                            };
+                        tool_outputs.push(json!({
+                            "type": "mcp_tool_call_output",
+                            "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
+                            "status": result.status,
+                            "output": result.output,
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        body = build_tool_loop_body(&model, &instructions, &response_id, &tool_outputs);
+    }
+
+    let elapsed_ms = start.elapsed().as_millis();
+    let mut observation = extract_observation(&all_outputs, "", elapsed_ms);
+    if observation.text.trim().is_empty() {
         Ok(None)
     } else {
+        observation.text.push_str("\n(已达到最大工具执行轮次)");
         Ok(Some(observation))
     }
 }
@@ -226,103 +344,148 @@ async fn send_responses_request(
 fn build_native_responses_body(
     raw_body: &[u8],
     model: &str,
-    instructions: &str,
+    _instructions: &str,
 ) -> anyhow::Result<Value> {
     let mut body: Value = serde_json::from_slice(raw_body)?;
     let Some(map) = body.as_object_mut() else {
         anyhow::bail!("能力通道原始 Responses 请求不是 JSON object");
     };
+    // 最小改动：model 映射 + 强制非流式 + token 上限
     map.insert("model".into(), Value::String(model.to_string()));
-    map.insert(
-        "instructions".into(),
-        Value::String(instructions.to_string()),
-    );
     if map.get("stream").and_then(Value::as_bool) == Some(true) {
         map.insert("stream".into(), Value::Bool(false));
     }
     map.entry("max_output_tokens")
-        .or_insert_with(|| Value::from(2048));
-    map.remove("system");
-    if let Some(metadata) = map.get_mut("metadata").and_then(Value::as_object_mut) {
-        metadata.remove(CAPABILITY_METADATA_KEY);
-        if metadata.is_empty() {
-            map.remove("metadata");
-        }
-    }
+        .or_insert_with(|| Value::from(4096));
+    // 不注入 instructions —— 让 CPA 用原始 system 上下文自行判断如何使用工具
+    // 不删任何原始字段，与 bypass 路径保持一致
     Ok(body)
 }
 
 fn observer_instructions(main_account: &Account, trigger: &CapabilityTrigger) -> String {
     format!(
-        "你是 deecodex 的原生 Responses 能力账号。主推理账号是 '{}'，触发原因是 {}。请使用 OpenAI/Codex 原生能力完成必要的 computer_use、MCP、浏览器或多模态观察，只返回可供主模型继续回答的事实结果。不要展开完整推理。",
+        "你是 deecodex 的能力执行账号，全权接管以下操作。主推理账号 '{}' 缺乏原生能力（触发原因：{}）。请使用你的 computer_use、MCP、浏览器等原生工具完成全部操作，包括截图、点击、输入、搜索等。完成所有操作后，返回最终结果（含截图），主模型将基于你的返回继续回答。",
         main_account.name,
         trigger.label()
     )
 }
 
-fn summarize_native_response(response: &Value, elapsed_ms: u128) -> String {
+fn build_tool_loop_body(model: &str, instructions: &str, response_id: &str, tool_outputs: &[Value]) -> Value {
+    json!({
+        "model": model,
+        "previous_response_id": response_id,
+        "instructions": instructions,
+        "stream": false,
+        "max_output_tokens": 2048,
+        "input": tool_outputs,
+    })
+}
+
+fn extract_observation(outputs: &[Value], response_id: &str, elapsed_ms: u128) -> ObservationResult {
     let mut lines = vec![format!("能力通道耗时: {elapsed_ms}ms")];
-    if let Some(id) = response.get("id").and_then(Value::as_str) {
-        lines.push(format!("原生 Responses ID: {id}"));
+    if !response_id.is_empty() {
+        lines.push(format!("原生 Responses ID: {response_id}"));
     }
-    if let Some(status) = response.get("status").and_then(Value::as_str) {
-        lines.push(format!("原生 Responses 状态: {status}"));
-    }
-    if let Some(items) = response.get("output").and_then(Value::as_array) {
-        for item in items {
-            let item_type = item
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            match item_type {
-                "message" => {
-                    let text = response_message_text(item);
-                    if !text.is_empty() {
-                        lines.push(format!("观察说明: {text}"));
-                    }
+    let mut images: Vec<String> = Vec::new();
+    for item in outputs {
+        let item_type = item
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match item_type {
+            "message" => {
+                let text = response_message_text(item);
+                if !text.is_empty() {
+                    lines.push(format!("观察说明: {text}"));
                 }
-                "mcp_tool_call" => lines.push(format!(
-                    "MCP 调用: server={} tool={} args={}",
-                    item.get("server_label")
-                        .and_then(Value::as_str)
-                        .unwrap_or("remote_mcp"),
-                    item.get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown"),
-                    compact_json(item.get("arguments").unwrap_or(&Value::Null))
-                )),
-                "mcp_tool_call_output" => lines.push(format!(
-                    "MCP 结果: status={} output={}",
+                // 提取消息中的图片
+                extract_message_images(item, &mut images);
+            }
+            "computer_call_output" => {
+                lines.push(format!(
+                    "Computer 结果: status={}",
                     item.get("status")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown"),
-                    compact_json(item.get("output").unwrap_or(&Value::Null))
-                )),
-                "computer_call" => lines.push(format!(
-                    "Computer 调用: action={}",
-                    compact_json(item.get("action").unwrap_or(&Value::Null))
-                )),
-                "computer_call_output" => lines.push(format!(
-                    "Computer 结果: status={} output={}",
-                    item.get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown"),
-                    compact_json(item.get("output").unwrap_or(&Value::Null))
-                )),
-                "function_call" => lines.push(format!(
-                    "函数调用: name={} args={}",
-                    item.get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown"),
-                    compact_json(item.get("arguments").unwrap_or(&Value::Null))
-                )),
-                _ => {}
+                ));
+                // 从 computer_call_output 中提取截图
+                extract_computer_output_images(item, &mut images);
+            }
+            "mcp_tool_call" => lines.push(format!(
+                "MCP 调用: server={} tool={} args={}",
+                item.get("server_label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("remote_mcp"),
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                compact_json(item.get("arguments").unwrap_or(&Value::Null))
+            )),
+            "mcp_tool_call_output" => lines.push(format!(
+                "MCP 结果: status={} output={}",
+                item.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                compact_json(item.get("output").unwrap_or(&Value::Null))
+            )),
+            "computer_call" => lines.push(format!(
+                "Computer 调用: action={}",
+                compact_json(item.get("action").unwrap_or(&Value::Null))
+            )),
+            "function_call" => lines.push(format!(
+                "函数调用: name={} args={}",
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                compact_json(item.get("arguments").unwrap_or(&Value::Null))
+            )),
+            _ => {}
+        }
+    }
+    ObservationResult {
+        text: truncate_observation(lines.join("\n")),
+        images,
+    }
+}
+
+fn extract_message_images(item: &Value, images: &mut Vec<String>) {
+    if let Some(content) = item.get("content").and_then(Value::as_array) {
+        for part in content {
+            if part.get("type").and_then(Value::as_str) == Some("input_image") {
+                if let Some(url) = part.get("image_url").and_then(Value::as_str) {
+                    images.push(url.to_string());
+                }
             }
         }
-    } else {
-        lines.push(format!("原生 Responses 返回: {}", compact_json(response)));
     }
-    truncate_observation(lines.join("\n"))
+}
+
+fn extract_computer_output_images(item: &Value, images: &mut Vec<String>) {
+    if let Some(output) = item.get("output").and_then(Value::as_array) {
+        for part in output {
+            let typ = part.get("type").and_then(Value::as_str).unwrap_or("");
+            if typ == "input_image" {
+                if let Some(url) = part.get("image_url").and_then(Value::as_str) {
+                    images.push(url.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn build_multimodal_observation_content(obs: &ObservationResult, guidance: &str) -> Value {
+    let header = format!(
+        "【deecodex 能力通道执行结果】\n{}{}\n\n以上操作已由能力执行账号完成。请基于以上结果继续回答用户，不要重复执行这些操作。",
+        obs.text, guidance
+    );
+    let mut content: Vec<Value> = vec![json!({"type": "text", "text": header})];
+    for url in &obs.images {
+        content.push(json!({
+            "type": "image_url",
+            "image_url": {"url": url, "detail": "auto"}
+        }));
+    }
+    Value::Array(content)
 }
 
 fn response_message_text(item: &Value) -> String {
@@ -462,9 +625,8 @@ fn collect_text_reasons(text: &str, reasons: &mut Vec<String>) {
 }
 
 fn main_model_capability_guidance(trigger: &CapabilityTrigger) -> String {
-    let has_computer_plugin = trigger.reasons.iter().any(|reason| reason == "computer")
-        && trigger.reasons.iter().any(|reason| reason == "plugin");
-    if !has_computer_plugin {
+    let has_computer = trigger.reasons.iter().any(|reason| reason == "computer");
+    if !has_computer {
         return String::new();
     }
 
@@ -630,21 +792,18 @@ mod tests {
     }
 
     #[test]
-    fn summarize_native_response_extracts_message_and_tool_items() {
-        let response = json!({
-            "id": "resp_capability",
-            "status": "completed",
-            "output": [
-                {"type":"computer_call", "action":{"type":"click","x":1,"y":2}},
-                {"type":"message", "content":[{"type":"output_text","text":"已打开抖音并播放第一个视频"}]}
-            ]
-        });
+    fn extract_observation_extracts_message_and_tool_items() {
+        let outputs = vec![
+            json!({"type":"computer_call", "action":{"type":"click","x":1,"y":2}}),
+            json!({"type":"message", "content":[{"type":"output_text","text":"已打开抖音并播放第一个视频"}]}),
+        ];
 
-        let summary = summarize_native_response(&response, 42);
+        let obs = extract_observation(&outputs, "resp_capability", 42);
 
-        assert!(summary.contains("原生 Responses ID: resp_capability"));
-        assert!(summary.contains("Computer 调用"));
-        assert!(summary.contains("已打开抖音并播放第一个视频"));
+        assert!(obs.text.contains("原生 Responses ID: resp_capability"));
+        assert!(obs.text.contains("Computer 调用"));
+        assert!(obs.text.contains("已打开抖音并播放第一个视频"));
+        assert!(obs.images.is_empty());
     }
 
     #[test]
@@ -655,6 +814,12 @@ mod tests {
             "tools": [{"type":"computer_use_preview", "display_width":1024}],
             "stream": true,
             "system": "不要透传",
+            "previous_response_id": "resp_should_be_removed",
+            "conversation": "conv_should_be_removed",
+            "temperature": 0.7,
+            "tool_choice": "auto",
+            "store": true,
+            "background": true,
             "metadata": {CAPABILITY_METADATA_KEY: "true"}
         })
         .to_string();
@@ -662,14 +827,22 @@ mod tests {
         let body = build_native_responses_body(raw_body.as_bytes(), "gpt-4.1", "observe").unwrap();
 
         assert_eq!(body["model"], "gpt-4.1");
-        assert_eq!(body["instructions"], "observe");
+        assert!(body.get("instructions").is_none());
         assert_eq!(body["tools"][0]["type"], "computer_use_preview");
-        assert_eq!(body["max_output_tokens"], 2048);
+        assert_eq!(body["max_output_tokens"], 4096);
         assert_eq!(body["stream"], false);
-        assert!(body.get("system").is_none());
-        assert!(body.get("metadata").is_none());
-        assert!(body.get("background").is_none());
-        assert!(body.get("store").is_none());
+        // 不删除任何字段，与 bypass 路径保持一致
+        assert_eq!(body["system"], "不要透传");
+        assert_eq!(body["previous_response_id"], "resp_should_be_removed");
+        assert_eq!(body["conversation"], "conv_should_be_removed");
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["store"], true);
+        assert_eq!(body["background"], true);
+        // metadata 保留（递归守卫 key 不再清理）
+        assert!(body["metadata"]
+            .get(CAPABILITY_METADATA_KEY)
+            .is_some_and(|v| v == "true"));
     }
 
     #[test]
@@ -680,5 +853,34 @@ mod tests {
             "true".into(),
         )]));
         assert!(capability_observer_request(&req));
+    }
+
+    #[test]
+    fn build_tool_loop_body_formats_correctly() {
+        let tool_outputs = vec![json!({
+            "type": "computer_call_output",
+            "call_id": "call_123",
+            "status": "completed",
+            "output": {"screenshot": "base64..."}
+        })];
+
+        let body = build_tool_loop_body("gpt-4.1", "observe", "resp_abc", &tool_outputs);
+
+        assert_eq!(body["model"], "gpt-4.1");
+        assert_eq!(body["previous_response_id"], "resp_abc");
+        assert_eq!(body["instructions"], "observe");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["max_output_tokens"], 2048);
+        assert_eq!(body["input"][0]["type"], "computer_call_output");
+        assert_eq!(body["input"][0]["call_id"], "call_123");
+    }
+
+    #[test]
+    fn main_model_guidance_triggers_for_computer_only() {
+        let trigger = CapabilityTrigger {
+            reasons: vec!["computer".into()],
+        };
+        let guidance = main_model_capability_guidance(&trigger);
+        assert!(guidance.contains("Computer Use 已由原生 Responses 能力账号接管"));
     }
 }

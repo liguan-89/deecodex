@@ -2569,18 +2569,6 @@ async fn handle_responses_inner(
     let mut chat_req = translated.chat;
 
     let capability_observation = build_capability_observation(&state, &req, &raw_body).await;
-    if let Some(observation) = capability_observation.message {
-        let insert_at = if chat_req
-            .messages
-            .first()
-            .is_some_and(|message| message.role == "system")
-        {
-            1
-        } else {
-            0
-        };
-        chat_req.messages.insert(insert_at, observation);
-    }
 
     // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
@@ -2629,6 +2617,20 @@ async fn handle_responses_inner(
     // 非原生视觉端点必须剥离 image_url，否则 DeepSeek 等上游会拒绝。
     if !route_to_vision && !native_vision {
         strip_images_from_chat_request(&mut chat_req);
+    }
+
+    // 能力通道观察注入（在 strip_images 之后，保护多模态 content 不被剥离）
+    if let Some(observation) = capability_observation.message {
+        let insert_at = if chat_req
+            .messages
+            .first()
+            .is_some_and(|message| message.role == "system")
+        {
+            1
+        } else {
+            0
+        };
+        chat_req.messages.insert(insert_at, observation);
     }
 
     let mut use_vision_transport = route_to_vision;
@@ -3069,6 +3071,8 @@ async fn build_capability_observation(
                 timeout_secs: helper_endpoint.request_timeout_secs,
                 max_retries: helper_endpoint.max_retries,
                 model_map: helper_endpoint.model_map.clone(),
+                executors: state.executors.read().await.clone(),
+                tool_policy: state.tool_policy.read().await.clone(),
             }),
             Err(err) => {
                 warn!(
@@ -3109,12 +3113,12 @@ async fn build_capability_observation(
         warn!(
             account_id = %main_account.id,
             account_name = %main_account.name,
-            "能力补全已触发但未产生可注入观察，回退主模型并跳过旧视觉路由"
+            "能力补全已触发但未产生可注入观察，回退主模型并允许旧视觉路由"
         );
     }
     CapabilityObservationResult {
+        suppress_vision_route: message.is_some(),
         message,
-        suppress_vision_route: true,
     }
 }
 
