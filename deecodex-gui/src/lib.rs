@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::TrayIconBuilder,
-    Manager,
+    LogicalSize, Manager, Size,
 };
 use tokio::sync::Mutex;
 
@@ -374,6 +374,10 @@ pub fn run() {
 
             // 托盘启动时也显示主窗口
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_size(Size::Logical(LogicalSize {
+                    width: 1000.0,
+                    height: 650.0,
+                }));
                 let _ = window.show();
             }
 

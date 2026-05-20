@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "deecodex 控制台",
-        "width": 860,
-        "height": 600,
+        "width": 1000,
+        "height": 650,
         "resizable": true,
         "fullscreen": false
       }
