@@ -106,14 +106,9 @@
   }
 
   function applyUpdateIndicator(hasUpdate) {
-    const logo = document.querySelector('.sidebar-brand .logo');
-    const ver = document.getElementById('sidebarVersion');
+    const ver = document.getElementById('dashboardVersion');
     const btn = document.getElementById('btnUpdate');
     if (hasUpdate) {
-      if (logo) {
-        logo.classList.add('update-available');
-        logo.style.animation = 'logo-pulse-amber 3s ease-in-out infinite';
-      }
       if (ver && !ver.querySelector('.update-dot')) {
         const dot = document.createElement('span');
         dot.className = 'update-dot';
@@ -123,10 +118,6 @@
         btn.insertAdjacentHTML('afterbegin', '<span class="update-dot" style="vertical-align:middle;margin-right:3px;"></span>');
       }
     } else {
-      if (logo) {
-        logo.classList.remove('update-available');
-        logo.style.animation = '';
-      }
       ver?.querySelector('.update-dot')?.remove();
       btn?.querySelector('.update-dot')?.remove();
     }

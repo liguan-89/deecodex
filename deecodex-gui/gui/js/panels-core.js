@@ -63,12 +63,15 @@ function renderStatus() {
   const clientIssueCount = clientSummaries.filter(item => item.hasIssue).length;
   const todayRequests = Number(tokenStats.total || 0);
   const problemCount = (running ? 0 : 1) + clientIssueCount + (connectedKinds === 0 ? 1 : 0);
-  const gatewayTitle = '全局接入健康';
+  const gatewayTitle = '接入状态';
+  const version = s.version && s.version !== '—' ? `v${s.version}` : '版本 —';
+  const hasUpdate = typeof deeStorage !== 'undefined' && deeStorage?.getItem?.('updateAvailable') === '1';
+  const serviceAddress = port === '—' ? '—' : `127.0.0.1:${port}`;
   const gatewaySummaryItems = [
     `已接入 ${connectedKinds}/${clientKinds.length} 个工具`,
     `${problemCount} 个问题`,
     `今日 ${todayRequests} 次请求`,
-    `端口 ${port}`,
+    `服务地址 ${serviceAddress}`,
   ];
   const clientRows = clientSummaries.map(kind => {
     return `
@@ -90,6 +93,7 @@ function renderStatus() {
       <div class="gateway-hero-main">
         <div class="gateway-title-row">
           <span>${esc(gatewayTitle)}</span>
+          <span class="gateway-version" id="dashboardVersion">${hasUpdate ? '<span class="update-dot"></span>' : ''}${esc(version)}</span>
         </div>
         <div class="gateway-summary-line">
           ${gatewaySummaryItems.map(item => `<span>${esc(item)}</span>`).join('')}
@@ -537,14 +541,6 @@ async function loadStatus() {
       invoke('get_config').catch(() => null),
       invoke('get_request_stats_since', { since: todayStart }).catch(() => null),
     ]);
-
-    // 更新侧边栏版本号（保留黄点更新指示器）
-    if (status?.version) {
-      const verEl = document.getElementById('sidebarVersion');
-      const dot = verEl.querySelector('.update-dot');
-      verEl.textContent = 'v' + status.version;
-      if (dot) verEl.insertBefore(dot, verEl.firstChild);
-    }
 
     window._statusData = {
       running: status?.running ?? false,
