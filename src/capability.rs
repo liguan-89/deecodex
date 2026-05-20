@@ -153,8 +153,7 @@ async fn observe_with_helper(
         .cloned()
         .unwrap_or_else(|| req.model.clone());
     let instructions = observer_instructions(main_account, trigger);
-    let mut body =
-        build_native_responses_body(raw_body, &model, &instructions)?;
+    let mut body = build_native_responses_body(raw_body, &model, &instructions)?;
 
     let url = format!(
         "{}{}",
@@ -195,10 +194,7 @@ async fn observe_with_helper(
         let tool_items: Vec<Value> = round_outputs
             .iter()
             .filter(|item| {
-                let t = item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let t = item.get("type").and_then(Value::as_str).unwrap_or("");
                 t == "computer_call" || t == "mcp_tool_call"
             })
             .cloned()
@@ -208,8 +204,7 @@ async fn observe_with_helper(
 
         if tool_items.is_empty() {
             let elapsed_ms = start.elapsed().as_millis();
-            let observation =
-                extract_observation(&all_outputs, &response_id, elapsed_ms);
+            let observation = extract_observation(&all_outputs, &response_id, elapsed_ms);
             if observation.text.trim().is_empty() {
                 return Ok(None);
             }
@@ -218,30 +213,23 @@ async fn observe_with_helper(
 
         let mut tool_outputs = Vec::new();
         for item in &tool_items {
-            match item
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-            {
+            match item.get("type").and_then(Value::as_str).unwrap_or("") {
                 "computer_call" => {
-                    if let Some(invocation) =
-                        ComputerActionInvocation::from_response_item(item)
-                    {
-                        let result =
-                            if !context.tool_policy.allowed_computer_displays.is_empty()
-                                && !context
-                                    .tool_policy
-                                    .allowed_computer_displays
-                                    .iter()
-                                    .any(|d| d == &invocation.display)
-                            {
-                                ComputerActionOutput::failed(format!(
-                                    "computer display '{}' is not allowed by tool policy",
-                                    invocation.display
-                                ))
-                            } else {
-                                context.executors.computer.execute_action(invocation).await
-                            };
+                    if let Some(invocation) = ComputerActionInvocation::from_response_item(item) {
+                        let result = if !context.tool_policy.allowed_computer_displays.is_empty()
+                            && !context
+                                .tool_policy
+                                .allowed_computer_displays
+                                .iter()
+                                .any(|d| d == &invocation.display)
+                        {
+                            ComputerActionOutput::failed(format!(
+                                "computer display '{}' is not allowed by tool policy",
+                                invocation.display
+                            ))
+                        } else {
+                            context.executors.computer.execute_action(invocation).await
+                        };
                         tool_outputs.push(json!({
                             "type": "computer_call_output",
                             "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
@@ -251,24 +239,21 @@ async fn observe_with_helper(
                     }
                 }
                 "mcp_tool_call" => {
-                    if let Some(invocation) =
-                        McpToolInvocation::from_response_item(item)
-                    {
-                        let result =
-                            if !context.tool_policy.allowed_mcp_servers.is_empty()
-                                && !context
-                                    .tool_policy
-                                    .allowed_mcp_servers
-                                    .iter()
-                                    .any(|s| s == &invocation.server_label)
-                            {
-                                McpToolOutput::failed(format!(
-                                    "MCP server '{}' is not allowed by tool policy",
-                                    invocation.server_label
-                                ))
-                            } else {
-                                context.executors.mcp.execute_tool(invocation).await
-                            };
+                    if let Some(invocation) = McpToolInvocation::from_response_item(item) {
+                        let result = if !context.tool_policy.allowed_mcp_servers.is_empty()
+                            && !context
+                                .tool_policy
+                                .allowed_mcp_servers
+                                .iter()
+                                .any(|s| s == &invocation.server_label)
+                        {
+                            McpToolOutput::failed(format!(
+                                "MCP server '{}' is not allowed by tool policy",
+                                invocation.server_label
+                            ))
+                        } else {
+                            context.executors.mcp.execute_tool(invocation).await
+                        };
                         tool_outputs.push(json!({
                             "type": "mcp_tool_call_output",
                             "call_id": item.get("call_id").cloned().unwrap_or(Value::Null),
@@ -397,7 +382,12 @@ fn observer_instructions(main_account: &Account, trigger: &CapabilityTrigger) ->
     )
 }
 
-fn build_tool_loop_body(model: &str, instructions: &str, response_id: &str, tool_outputs: &[Value]) -> Value {
+fn build_tool_loop_body(
+    model: &str,
+    instructions: &str,
+    response_id: &str,
+    tool_outputs: &[Value],
+) -> Value {
     json!({
         "model": model,
         "previous_response_id": response_id,
@@ -408,7 +398,11 @@ fn build_tool_loop_body(model: &str, instructions: &str, response_id: &str, tool
     })
 }
 
-fn extract_observation(outputs: &[Value], response_id: &str, elapsed_ms: u128) -> ObservationResult {
+fn extract_observation(
+    outputs: &[Value],
+    response_id: &str,
+    elapsed_ms: u128,
+) -> ObservationResult {
     let mut lines = vec![format!("能力通道耗时: {elapsed_ms}ms")];
     if !response_id.is_empty() {
         lines.push(format!("原生 Responses ID: {response_id}"));

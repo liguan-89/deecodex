@@ -5147,10 +5147,7 @@ async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back(
     let req2 = &capability_requests[1];
     assert_eq!(req2.path, "/responses");
     assert_eq!(req2.body["model"], "gpt-4.1");
-    assert_eq!(
-        req2.body["previous_response_id"],
-        "resp_capability_round1"
-    );
+    assert_eq!(req2.body["previous_response_id"], "resp_capability_round1");
     let input = req2.body["input"].as_array().unwrap();
     assert_eq!(input.len(), 1);
     assert_eq!(input[0]["type"], "computer_call_output");
@@ -5163,11 +5160,9 @@ async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back(
     assert!(messages.iter().any(|message| {
         message["role"] == "user"
             && message["content"].as_array().is_some_and(|parts| {
-                parts.iter().any(|p| {
-                    p["text"]
-                        .as_str()
-                        .is_some_and(|t| t.contains("抖音已打开"))
-                })
+                parts
+                    .iter()
+                    .any(|p| p["text"].as_str().is_some_and(|t| t.contains("抖音已打开")))
             })
     }));
     assert!(messages.iter().any(|message| {
@@ -5176,9 +5171,7 @@ async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back(
                 parts.iter().any(|p| {
                     p["text"]
                         .as_str()
-                        .is_some_and(|t| {
-                            t.contains("Computer 调用") || t.contains("Computer 结果")
-                        })
+                        .is_some_and(|t| t.contains("Computer 调用") || t.contains("Computer 结果"))
                 })
             })
     }));
