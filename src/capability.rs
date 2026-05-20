@@ -177,6 +177,11 @@ async fn observe_with_helper(
         )
         .await?;
 
+        tracing::info!(
+            cpa_response = %serde_json::to_string(&response).unwrap_or_default(),
+            "CPA 原始响应"
+        );
+
         let response_id = response
             .get("id")
             .and_then(Value::as_str)
@@ -350,15 +355,37 @@ fn build_native_responses_body(
     let Some(map) = body.as_object_mut() else {
         anyhow::bail!("能力通道原始 Responses 请求不是 JSON object");
     };
-    // 最小改动：model 映射 + 强制非流式 + token 上限
     map.insert("model".into(), Value::String(model.to_string()));
-    if map.get("stream").and_then(Value::as_bool) == Some(true) {
-        map.insert("stream".into(), Value::Bool(false));
-    }
+    map.insert("stream".into(), Value::Bool(false));
     map.entry("max_output_tokens")
         .or_insert_with(|| Value::from(4096));
-    // 不注入 instructions —— 让 CPA 用原始 system 上下文自行判断如何使用工具
-    // 不删任何原始字段，与 bypass 路径保持一致
+    // 删除 DeepSeek 的 system 上下文，注入 CPA 执行指令
+    map.remove("system");
+    map.insert(
+        "instructions".into(),
+        Value::String(
+            "你是 Codex 能力执行代理。请使用原生 computer_use、浏览器、MCP 工具完成用户请求中的实际操作。完成所有操作后返回最终结果。"
+                .into(),
+        ),
+    );
+    // 只保留能力类 tool，过滤掉 function 工具，迫使 CPA 使用 computer_use 等原生工具
+    if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.retain(|tool| {
+            matches!(
+                tool.get("type").and_then(Value::as_str).unwrap_or(""),
+                "computer_use"
+                    | "computer_use_preview"
+                    | "browser"
+                    | "browser_use"
+                    | "web_browser"
+                    | "mcp"
+                    | "remote_mcp"
+            )
+        });
+    }
+    // 删除指向 DeepSeek 会话的字段
+    map.remove("previous_response_id");
+    map.remove("conversation");
     Ok(body)
 }
 
@@ -827,19 +854,19 @@ mod tests {
         let body = build_native_responses_body(raw_body.as_bytes(), "gpt-4.1", "observe").unwrap();
 
         assert_eq!(body["model"], "gpt-4.1");
-        assert!(body.get("instructions").is_none());
+        assert!(body["instructions"]
+            .as_str()
+            .is_some_and(|s| s.contains("能力执行代理")));
         assert_eq!(body["tools"][0]["type"], "computer_use_preview");
         assert_eq!(body["max_output_tokens"], 4096);
         assert_eq!(body["stream"], false);
-        // 不删除任何字段，与 bypass 路径保持一致
-        assert_eq!(body["system"], "不要透传");
-        assert_eq!(body["previous_response_id"], "resp_should_be_removed");
-        assert_eq!(body["conversation"], "conv_should_be_removed");
+        assert!(body.get("system").is_none());
+        assert!(body.get("previous_response_id").is_none());
+        assert!(body.get("conversation").is_none());
         assert_eq!(body["temperature"], 0.7);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["store"], true);
         assert_eq!(body["background"], true);
-        // metadata 保留（递归守卫 key 不再清理）
         assert!(body["metadata"]
             .get(CAPABILITY_METADATA_KEY)
             .is_some_and(|v| v == "true"));

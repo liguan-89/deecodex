@@ -1821,6 +1821,11 @@ async fn handle_responses_bypass(
     }
     req.model = model.clone();
 
+    tracing::info!(
+        bypass_body = %String::from_utf8_lossy(&body),
+        "bypass 请求体"
+    );
+
     let conversation_id = conversation_id_from_request(&req);
     let store_response = req.store.unwrap_or(true);
 
@@ -2100,7 +2105,13 @@ async fn bypass_stream_forward(
 
     // 收集完整响应体，解析 usage 后再透传
     let body_bytes = match resp.bytes().await {
-        Ok(b) => b,
+        Ok(b) => {
+            tracing::info!(
+                bypass_response = %String::from_utf8_lossy(&b),
+                "bypass 响应体"
+            );
+            b
+        }
         Err(e) => {
             error!("bypass stream read body: {e}");
             let _ = state

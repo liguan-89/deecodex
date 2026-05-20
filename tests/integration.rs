@@ -4895,16 +4895,10 @@ async fn test_capability_computer_use_uses_native_responses_account() {
     assert_eq!(capability_requests.len(), 1);
     assert_eq!(capability_requests[0].path, "/responses");
     assert_eq!(capability_requests[0].body["model"], "gpt-4.1");
-    // system 不再删除
-    assert!(capability_requests[0]
-        .body["system"]
+    assert!(capability_requests[0].body.get("system").is_none());
+    assert!(capability_requests[0].body["instructions"]
         .as_str()
-        .is_some_and(|s| s.contains("主模型系统提示")));
-    assert!(capability_requests[0]
-        .body
-        .get("instructions")
-        .is_none());
-    // tools 原样保留
+        .is_some_and(|s| s.contains("能力执行代理")));
     assert_eq!(
         capability_requests[0].body["tools"][0]["type"],
         "computer_use_preview"
@@ -5144,7 +5138,9 @@ async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back(
     let req1 = &capability_requests[0];
     assert_eq!(req1.path, "/responses");
     assert_eq!(req1.body["model"], "gpt-4.1");
-    assert!(req1.body.get("instructions").is_none());
+    assert!(req1.body["instructions"]
+        .as_str()
+        .is_some_and(|s| s.contains("能力执行代理")));
     assert!(req1.body.get("previous_response_id").is_none());
 
     // 第二轮：带工具输出的后续请求
