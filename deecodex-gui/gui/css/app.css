@@ -878,8 +878,9 @@ body {
 .diag-item .item-msg { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 .diag-item .item-detail {
   font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
-  margin-top: 4px; padding: 6px 10px; background: var(--bg-deeper); border-radius: var(--radius-sm);
-  word-break: break-all;
+  margin-top: 6px; padding: 7px 10px; background: var(--bg-deeper); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm); line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 .diag-item .item-suggestion {
   font-size: 11px; color: var(--amber); margin-top: 4px;
@@ -3180,6 +3181,7 @@ body {
   --bg-elevated: rgba(241,244,249,0.54);
   --bg-card: rgba(239,242,247,0.5);
   --bg-input: rgba(236,240,246,0.64);
+  --bg-deeper: rgba(246, 248, 251, 0.92);
 
   --border: rgba(55, 70, 92, 0.16);
   --border-subtle: rgba(55, 70, 92, 0.09);
