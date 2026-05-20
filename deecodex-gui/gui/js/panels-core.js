@@ -15,116 +15,136 @@ function renderStatus() {
     const digits = value >= 10 ? 1 : 2;
     return value.toFixed(digits).replace(/\.0$/, '');
   };
-  const badge = (cond) => cond
-    ? '<span class="card-badge on">启用</span>'
-    : '<span class="card-badge off">未启用</span>';
-
-  // 激活账号（与账号管理页面字段一致，优化排版对齐）
-  const activeAcc = (accountsData.accounts || []).find(a => a.id === (accountsData.active_account_id || accountsData.active_id));
-  const activeEndpoint = typeof currentEndpoint === 'function' ? currentEndpoint(activeAcc) : null;
-  const hasAccount = !!activeAcc;
-
-  // 构建 extra 标签行
-  let extraTags = [];
-  const contextWindow = activeEndpoint?.context_window_override || activeAcc?.context_window_override;
-  const visionMode = activeEndpoint?.vision?.mode || (activeAcc?.vision_enabled ? 'glue' : 'off');
-  const reasoningEffort = activeEndpoint?.reasoning_effort_override || activeAcc?.reasoning_effort_override;
-  if (contextWindow) extraTags.push('<span>⇄ ' + contextWindow.toLocaleString() + ' tokens</span>');
-  if (visionMode === 'native' || visionMode === 'Native') extraTags.push('<span class="accent">原生视觉</span>');
-  if (visionMode === 'glue' || visionMode === 'Glue') extraTags.push('<span class="accent">胶水视觉</span>');
-  if (reasoningEffort) extraTags.push('<span class="amber">思考 ' + esc(reasoningEffort) + '</span>');
-
-  const accHtml = hasAccount
-    ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-         <span class="${providerBadgeClass(activeAcc.provider)}">${esc(activeAcc.provider)}</span>
-         <span class="card-badge on" style="margin-top:0;">活跃</span>
-       </div>
-       <div class="card-value" style="font-size:13px;margin-bottom:4px;">${esc(activeAcc.name)}</div>
-       <div class="card-upstream" style="margin-bottom:4px;" title="${escAttr(activeEndpoint?.base_url || activeAcc.upstream)}">${esc(trunc(activeEndpoint?.base_url || activeAcc.upstream, 36))}</div>
-       <div class="card-balance status-balance" id="balance-${escAttr(activeAcc.id)}" style="margin-bottom:4px;">
-         <span class="balance-loading">—</span>
-       </div>
-       ${extraTags.length ? '<div class="status-extra-tags">' + extraTags.join('') + '</div>' : ''}`
-    : `<div class="card-icon">▣ 未配置</div>
-       <div class="card-value" style="cursor:pointer;color:var(--accent)" onclick="event.stopPropagation();switchPanel(\'accounts\')">← 第一步请配置账号</div>
-       <div class="card-label">点击跳转到账号管理</div>
-       <span class="card-badge off">待配置</span>`;
-  const accOnClick = hasAccount ? 'onclick="switchPanel(\'accounts\')" style="cursor:pointer;"' : '';
+  const clientLabel = (kind) => CLIENT_KIND_LABELS?.[kind] || kind || '未知工具';
+  const statusPill = (state, text) => `<span class="gateway-pill ${state}">${esc(text)}</span>`;
+  const statusDot = (state) => `<span class="gateway-dot ${state}"></span>`;
+  const kindOf = (account) => typeof accountClientKind === 'function' ? accountClientKind(account) : (account?.client_kind || account?.target || 'codex');
+  const accounts = accountsData.accounts || [];
 
   const port = v(s.port, '—');
-  const addr = port !== '—' ? `http://127.0.0.1:${port}` : '—';
   const running = s.running;
-
-  // 运行时长卡片
-  const statusDot = running
-    ? '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green);margin-right:6px;flex-shrink:0;"></span>'
-    : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:6px;flex-shrink:0;"></span>';
-  const uptimeCard = running
-    ? `<div class="status-card">
-         <div class="card-icon">◷ 运行时长</div>
-         <div style="display:flex;align-items:center;">${statusDot}<span class="card-value small">${esc(fmtUptime(s.uptime_secs))}</span></div>
-         <div class="card-label">自启动以来</div>
-         <span class="card-badge on">运行中</span>
-       </div>`
-    : `<div class="status-card" onclick="mgmtToggle()" style="cursor:pointer;">
-         <div class="card-icon">◷ 运行时长</div>
-         <div style="display:flex;align-items:center;">${statusDot}<span class="card-value small" style="color:var(--text-muted);">服务未启动</span></div>
-         <div class="card-label">点击启动服务</div>
-         <span class="card-badge off">已停止</span>
-       </div>`;
+  const clientKinds = (() => {
+    const defaults = [
+      { slug: 'codex', label: 'Codex' },
+      { slug: 'claude_code', label: 'Claude Code' },
+      { slug: 'openclaw', label: 'OpenClaw' },
+      { slug: 'hermes', label: 'Hermes' },
+      { slug: 'generic_client', label: '通用客户端' },
+    ];
+    const profiles = Array.isArray(clientProfiles) && clientProfiles.length
+      ? clientProfiles.map(p => ({ slug: normalizeClientKind?.(p.slug || p.kind), label: p.label || clientLabel(normalizeClientKind?.(p.slug || p.kind)) }))
+      : defaults;
+    const seen = new Set();
+    return profiles.concat(defaults).filter(item => {
+      const slug = normalizeClientKind?.(item.slug) || item.slug;
+      if (!slug || seen.has(slug)) return false;
+      seen.add(slug);
+      return true;
+    });
+  })();
+  const activeAccountForKind = (kind, list) => {
+    if (!list.length) return null;
+    const activeId = accountsData.active_account_id || accountsData.active_id;
+    if (kind === 'codex') return list.find(a => a.id === activeId) || list[0];
+    return list
+      .filter(a => Number(a.last_applied_at || 0) > 0)
+      .sort((a, b) => Number(b.last_applied_at || 0) - Number(a.last_applied_at || 0))[0] || list[0];
+  };
+  const clientSummaries = clientKinds.map(kind => {
+    const list = accounts.filter(a => kindOf(a) === kind.slug);
+    const hasIssue = list.some(a => typeof clientAccountHasIssue === 'function' && clientAccountHasIssue(a));
+    const state = list.length ? (hasIssue ? 'warn' : 'ok') : 'idle';
+    const stateText = list.length ? (hasIssue ? '需处理' : '正常') : '未接入';
+    const active = activeAccountForKind(kind.slug, list);
+    return { ...kind, count: list.length, hasIssue, state, stateText, activeName: active?.name || '—' };
+  });
+  const connectedKinds = clientSummaries.filter(item => item.count > 0).length;
+  const disconnectedKinds = clientKinds.length - connectedKinds;
+  const clientIssueCount = clientSummaries.filter(item => item.hasIssue).length;
+  const todayRequests = Number(tokenStats.total || 0);
+  const problemCount = (running ? 0 : 1) + clientIssueCount + (connectedKinds === 0 ? 1 : 0);
+  const gatewayTitle = '全局接入健康';
+  const gatewaySummaryItems = [
+    `已接入 ${connectedKinds}/${clientKinds.length} 个工具`,
+    `${problemCount} 个问题`,
+    `今日 ${todayRequests} 次请求`,
+    `端口 ${port}`,
+  ];
+  const clientRows = clientSummaries.map(kind => {
+    return `
+      <button class="tool-health-row ${kind.state}" type="button" onclick="selectedClientKind='${escAttr(kind.slug)}';switchPanel('accounts')">
+        <span class="tool-health-name">${statusDot(kind.state)}${esc(kind.label || clientLabel(kind.slug))}</span>
+        <span class="tool-health-status">${statusPill(kind.state, kind.stateText)}</span>
+        <span class="tool-health-active">${esc(kind.activeName)}</span>
+        <span class="tool-health-count">${esc(kind.count)} 个配置</span>
+        <span class="tool-health-action">${kind.count ? '查看' : '配置'}</span>
+      </button>`;
+  }).join('');
 
   return `
-    <div class="page-header">
-      <h2>服务概览</h2>
-      <p>实时监控 deecodex 运行状态与连接信息</p>
+    <div class="page-header status-page-header">
+      <p>统一管理 Codex、Claude Code、OpenClaw、Hermes 等 AI 工具的本地接入、运行健康与使用概览</p>
     </div>
-    <div class="status-grid">
-      ${uptimeCard}
-      <div class="status-card" ${accOnClick}>
-        ${accHtml}
-      </div>
-      <div class="status-card" onclick="goToConfig('basic')" style="cursor:pointer;">
-        <div class="card-icon">⬡ 服务端口</div>
-        <div class="card-value">${esc(port)}</div>
-        <div class="card-label">${esc(addr)}</div>
-        <span class="card-badge" style="visibility:hidden">—</span>
-      </div>
-      <div class="status-card token-usage-card" onclick="switchPanel('sessions')" style="cursor:pointer;">
-        <div class="card-icon">Token 消耗</div>
-        <div class="token-usage-main">
-          <span class="token-usage-value">${esc(fmtStatusTokens(tokenStats.total_tokens))}</span>
-          <span class="token-usage-unit">今日累计</span>
+
+    <div class="gateway-hero">
+      <div class="gateway-hero-main">
+        <div class="gateway-title-row">
+          <span>${esc(gatewayTitle)}</span>
         </div>
-        <div class="status-token-breakdown">
-          <span><b>输入</b>${esc(fmtStatusTokens(tokenStats.input_tokens))}</span>
-          <span><b>输出</b>${esc(fmtStatusTokens(tokenStats.output_tokens))}</span>
-          <span><b>请求</b>${esc(Number(tokenStats.total || 0))}</span>
+        <div class="gateway-summary-line">
+          ${gatewaySummaryItems.map(item => `<span>${esc(item)}</span>`).join('')}
         </div>
-      </div>
-      <div class="status-card" onclick="goToConfig('basic')" style="cursor:pointer;">
-        <div class="card-icon">◈ 思考</div>
-        <div class="card-value small">${esc(v(s.chinese_thinking, false) ? '中文' : '默认')}</div>
-        <div class="card-label">思考模式</div>
-        ${badge(s.chinese_thinking)}
-      </div>
-      <div class="status-card" onclick="mgmtLaunchCodex()" style="cursor:pointer;">
-        <div class="card-icon">⬢ CDP 注入</div>
-        <div class="card-value small">端口 ${esc(v(s.cdp_port, '—'))}</div>
-        <div class="card-label">Codex 远程调试</div>
-        ${badge(window._cdpLaunched)}
       </div>
     </div>
 
-    <div class="mgmt-section">
-      <div class="mgmt-header">服务管理</div>
-      <div class="mgmt-actions">
-        <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${s.running ? '◼ 停止服务' : '▶ 启动服务'}</button>
+    <div class="gateway-metric-grid">
+      <div class="gateway-metric-card ${running ? 'ok' : 'fail'}" onclick="mgmtToggle()">
+        <span class="metric-label">网关状态</span>
+        <strong>${running ? '运行中' : '已停止'}</strong>
+        <span class="metric-foot">${running ? `已运行 ${esc(fmtUptime(s.uptime_secs))}` : '当前未运行'}</span>
+      </div>
+      <div class="gateway-metric-card" onclick="switchPanel('accounts')">
+        <span class="metric-label">接入工具</span>
+        <strong>${esc(connectedKinds)} / ${esc(clientKinds.length)}</strong>
+        <span class="metric-foot">${disconnectedKinds ? `${disconnectedKinds} 个未接入` : '全部已接入'}</span>
+      </div>
+      <div class="gateway-metric-card ${problemCount ? 'warn' : 'ok'}" onclick="validateConfig()">
+        <span class="metric-label">待处理问题</span>
+        <strong>${esc(problemCount)}</strong>
+        <span class="metric-foot">${problemCount ? '运行诊断查看详情' : '暂无待处理项'}</span>
+      </div>
+      <div class="gateway-metric-card" onclick="switchPanel('sessions')">
+        <span class="metric-label">今日流量</span>
+        <strong>${esc(todayRequests)}</strong>
+        <span class="metric-foot">${esc(fmtStatusTokens(tokenStats.total_tokens))} tokens 今日累计</span>
+      </div>
+    </div>
+
+    <section class="gateway-panel operations-panel">
+      <div class="gateway-section-title">服务操作</div>
+      <div class="mgmt-actions gateway-actions">
+        <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${running ? '◼ 停止网关' : '▶ 启动网关'}</button>
+        <button class="btn btn-ghost" onclick="validateConfig()">◇ 运行诊断</button>
         <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex" style="border-color:rgba(0,200,232,0.35);color:var(--accent)">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
         <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart">⟳ 重启服务</button>
         <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
         <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
       </div>
-    </div>
+    </section>
+
+    <section class="gateway-panel tools-panel">
+      <div class="gateway-section-title">接入工具</div>
+      <div class="tool-health-list">
+        <div class="tool-health-head" aria-hidden="true">
+          <span>工具</span>
+          <span>状态</span>
+          <span>活跃账号</span>
+          <span>配置</span>
+          <span></span>
+        </div>
+        ${clientRows}
+      </div>
+    </section>
   `;
 }
 

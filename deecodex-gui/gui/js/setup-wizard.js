@@ -34,10 +34,8 @@ function showWizardBar() {
   bar.id = 'setupWizard';
   bar.className = 'setup-wizard';
   document.body.appendChild(bar);
-  // 主内容区下移避免遮挡
-  const main = document.getElementById('mainContent');
-  if (main) main.style.paddingTop = '26px';
   renderWizardBar(bar);
+  updateWizardMainOffset(bar);
 
   // 第一步强提醒：弹出一个醒目的 toast
   if (wizardIdx === 0) {
@@ -126,6 +124,14 @@ function renderWizardBar(bar) {
       }
     };
   }
+  updateWizardMainOffset(bar);
+}
+
+function updateWizardMainOffset(bar) {
+  const main = document.getElementById('mainContent');
+  if (!main || !bar) return;
+  const height = Math.ceil(bar.getBoundingClientRect().height || 0);
+  main.style.paddingTop = `${height + 18}px`;
 }
 
 function wizardCheer() {

@@ -1,7 +1,7 @@
 const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5', 'codex-auto-review'];
 const CLIENT_KIND_LABELS = {
   codex: 'Codex',
-  claude_code: 'Claude Code',
+  claude_code: 'Claude',
   openclaw: 'OpenClaw',
   hermes: 'Hermes',
   generic_client: '通用客户端',
@@ -12,7 +12,7 @@ function providerBadgeClass(p) {
 }
 
 function providerLogoSlug(p) {
-  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai', 'openclaw', 'hermes', 'claude'].includes(p)
+  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai', 'openclaw', 'hermes', 'claude', 'codex', 'claude-code'].includes(p)
     ? p
     : 'custom';
 }
@@ -26,6 +26,10 @@ function providerLogoSrc(p) {
     claude: 'anthropic.png',
     glm: 'glm-wordmark.png',
     openai: 'openai-wordmark.png',
+    codex: 'codex.png',
+    'claude-code': 'claude-code.png',
+    openclaw: 'openclaw.png',
+    hermes: 'hermes.png',
   };
   const slug = providerLogoSlug(p);
   return `assets/provider-logos/${files[slug] || slug + '.svg'}`;
@@ -125,8 +129,12 @@ function clientModelMap(account) {
 
 function clientIcon(kind) {
   const slug = normalizeClientKind(kind);
-  const logo = slug === 'claude_code' ? 'anthropic' : (slug === 'generic_client' ? 'custom' : slug);
-  return `<img class="client-logo-img" src="${providerLogoSrc(logo)}" alt="" aria-hidden="true">`;
+  const logo = slug === 'claude_code' ? 'claude-code' : (slug === 'generic_client' ? 'custom' : slug);
+  return `<span class="client-logo-box client-logo-${escAttr(slug)}"><img class="client-logo-img" src="${providerLogoSrc(logo)}" alt="" aria-hidden="true"></span>`;
+}
+
+function renderCardActionMenu(a, isClient) {
+  return '';
 }
 
 function renderClientSwitcher(list) {
@@ -148,7 +156,7 @@ function renderClientSwitcher(list) {
       const issueClass = issueCount ? ' has-issues' : '';
       return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}')" title="${escAttr(profile.description || '')}" role="tab" aria-selected="${kind === selectedClientKind}">
         ${clientIcon(kind)}
-        <span>${esc(profile.label || CLIENT_KIND_LABELS[kind] || kind)}</span>
+        <span>${esc(CLIENT_KIND_LABELS[kind] || profile.label || kind)}</span>
         <em>${count}</em>
         ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
       </button>`;
@@ -519,7 +527,9 @@ function navigateAccounts(view) {
 }
 
 function renderMainContent() {
-  document.getElementById('mainContent').innerHTML = renderAccountsPanel();
+  const main = document.getElementById('mainContent');
+  main.classList.toggle('accounts-main', accountsView === 'list');
+  main.innerHTML = renderAccountsPanel();
   afterRenderAccountsPanel();
 }
 
@@ -541,7 +551,6 @@ function renderAccountsPanel() {
 function renderAccountList() {
   const list = accountsData.accounts || [];
   const filtered = list.filter(a => accountClientKind(a) === selectedClientKind);
-  const selectedProfile = getClientProfile(selectedClientKind);
   let cards = '';
   if (filtered.length === 0) {
     cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}账号，点击上方按钮创建</div>`;
@@ -567,36 +576,38 @@ function renderAccountList() {
       if (reasoningEffort) advancedTags.push(`推理 ${reasoningEffort}`);
       if (a.capability_enabled) advancedTags.push(`能力 ${capabilityAccount ? capabilityAccount.name : '未配置'}`);
       if (a.dev_pipeline_enabled) advancedTags.push(`开发 ${a.dev_pipeline_trigger_mode === 'always' ? '始终' : (a.dev_pipeline_command || '/dev-pipeline')}`);
+      const metaTags = primaryTags.slice(0, 3).map(label => `<span class="card-context">${esc(label)}</span>`).join('')
+        + (advancedTags.length ? `<span class="card-context tag-muted">+${advancedTags.length}</span>` : '');
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-mainline">
           <div class="account-card-primary">
-            <div class="account-card-header">
-              <div class="account-card-titlebar">
-                ${renderProviderBadge(a.provider)}
-                ${active ? '<span class="active-badge">活跃</span>' : ''}
+            <div class="account-card-info">
+              <div class="account-card-header">
+                <div class="account-card-titlebar">
+                  ${renderProviderBadge(a.provider)}
+                  ${active ? '<span class="active-badge">活跃</span>' : ''}
+                </div>
               </div>
-              <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
-            </div>
-            <div class="account-card-body">
-              <div class="account-card-main">
-                <div class="card-name">${esc(a.name)}</div>
-                <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 64))}</div>
+              <div class="account-card-body">
+                <div class="account-card-main">
+                  <div class="card-name">${esc(a.name)}</div>
+                  <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 64))}</div>
+                </div>
               </div>
-              <div class="card-key">${esc(maskKey(a.api_key) || '未配置')}</div>
             </div>
-            <div class="account-meta-tags">${primaryTags.map(label => `<span class="card-context">${esc(label)}</span>`).join('')}${advancedTags.length ? `<span class="card-context tag-muted">+${advancedTags.length}</span>` : ''}</div>
+            <div class="account-meta-tags mid-tags">${metaTags}</div>
           </div>
           <div class="account-card-side">
             <div class="card-balance" id="balance-${escAttr(a.id)}">
               <span class="balance-loading">—</span>
             </div>
             <div class="card-actions-row">
-              <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
               ${active
                 ? '<button class="account-action account-applied" disabled>已应用</button>'
                 : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
-              <button class="account-action" onclick="editConfigFile('${escAttr(a.id)}')">配置</button>
               <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
+              <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
+              <button class="account-action danger" onclick="deleteAccount('${escAttr(a.id)}')">删除</button>
             </div>
           </div>
         </div>
@@ -604,16 +615,22 @@ function renderAccountList() {
     }).join('') + '</div>';
   }
 
-  return `<div class="page-header accounts-page-header">
-    <div><h2>账号管理</h2><p>${esc(selectedProfile?.description || '管理 AI 客户端和模型账号')}</p></div>
-    <div class="page-header-actions">
-      <button class="btn btn-ghost" onclick="importFromCodex()">导入配置</button>
-      <button class="btn btn-ghost" onclick="scanClientAccounts()">扫描客户端</button>
-      <button class="btn btn-primary" onclick="navigateAccounts('add')">添加账号</button>
+  return `<div class="accounts-page-shell">
+    <div class="accounts-static-header">
+      <div class="page-header accounts-page-header">
+        <div><h2>账号管理</h2></div>
+        <div class="page-header-actions">
+          <button class="btn btn-ghost" onclick="importFromCodex()">导入配置</button>
+          <button class="btn btn-ghost" onclick="scanClientAccounts()">扫描客户端</button>
+          <button class="btn btn-primary" onclick="navigateAccounts('add')">添加账号</button>
+        </div>
+      </div>
+      ${renderClientSwitcher(list)}
     </div>
-  </div>
-  ${renderClientSwitcher(list)}
-  ${cards}`;
+    <div class="accounts-scroll-region">
+      ${cards}
+    </div>
+  </div>`;
 }
 
 function renderClientAccountCard(a) {
@@ -623,38 +640,33 @@ function renderClientAccountCard(a) {
   const path = a.client_options?.config_path || profile?.config_path_hint || '';
   const last = a.last_applied_at ? formatTimeShort(a.last_applied_at) : '未写入';
   const model = a.default_model || '未配置模型';
-  const key = maskKey(a.api_key) || '未配置 Key';
+  const metaTags = `<span class="card-context">${esc(model)}</span><span class="card-context tag-muted">${esc(last)}</span>`;
   return `<div class="account-card client-account-card">
     <div class="account-card-mainline">
       <div class="account-card-primary">
-        <div class="account-card-header">
-          <div class="account-card-titlebar">
-            <span class="client-kind-badge">${clientIcon(kind)}${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
-            ${renderProviderBadge(a.provider)}
+        <div class="account-card-info">
+          <div class="account-card-header">
+            <div class="account-card-titlebar">
+              <span class="client-kind-badge">${clientIcon(kind)}${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
+              ${renderProviderBadge(a.provider)}
+            </div>
           </div>
-          <button class="card-delete-btn" onclick="deleteAccount('${escAttr(a.id)}')" title="删除">✕</button>
-        </div>
-        <div class="account-card-body">
-          <div class="account-card-main">
-            <div class="card-name">${esc(a.name)}</div>
-            <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream || path, 70))}</div>
+          <div class="account-card-body">
+            <div class="account-card-main">
+              <div class="card-name">${esc(a.name)}</div>
+              <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream || path, 70))}</div>
+            </div>
           </div>
-          <div class="card-key">${esc(key)}</div>
         </div>
-        <div class="account-meta-tags">
-          <span class="card-context">${esc(model)}</span>
-          <span class="card-context">${esc(last)}</span>
-          <span class="card-context tag-muted" title="${escAttr(path)}">${esc(trunc(path, 36))}</span>
-        </div>
+        <div class="account-meta-tags mid-tags">${metaTags}</div>
       </div>
       <div class="account-card-side">
         <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
         <div class="card-actions-row">
-          <button class="account-action" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">诊断</button>
-          <button class="account-action" onclick="dryRunClientAccount('${escAttr(a.id)}')">预检</button>
-          <button class="account-action account-apply" onclick="applyClientAccount('${escAttr(a.id)}')">写入配置</button>
-          <button class="account-action" onclick="editConfigFile('${escAttr(a.id)}')">配置</button>
+          <button class="account-action account-apply" onclick="applyClientAccount('${escAttr(a.id)}')">写入</button>
           <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
+          <button class="account-action" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">刷新</button>
+          <button class="account-action danger" onclick="deleteAccount('${escAttr(a.id)}')">删除</button>
         </div>
       </div>
     </div>
@@ -684,7 +696,6 @@ function renderAddAccount() {
     <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
     <span> / 添加账号</span>
   </div>
-  ${renderClientSwitcher(accountsData.accounts || [])}
   <div class="page-header"><h2>选择供应商</h2><p>为 ${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')} 创建新账号配置</p></div>
   ${cards}`;
 }
@@ -2207,11 +2218,9 @@ function renderClientStatusSummary(report) {
   const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
   const hasError = diagnostics.some(item => item.level === 'error');
   const cls = hasError ? 'status-error' : (report.ok ? 'status-ok' : 'status-warn');
-  const path = report.config_path ? trunc(report.config_path, 42) : '无配置路径';
   const risk = report.risk_level ? `风险 ${report.risk_level}` : (report.schema_ok === false ? 'Schema 异常' : '');
   return `<div class="client-status-summary">
     <span class="${cls}">${esc(version)}</span>
-    <span>${esc(path)}</span>
     ${risk ? `<span>${esc(risk)}</span>` : ''}
   </div>`;
 }

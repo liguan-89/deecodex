@@ -78,6 +78,7 @@ function switchPanel(panelId) {
   currentPanel = panelId;
   const main = document.getElementById('mainContent');
   if (main) main.classList.toggle('dex-main', panelId === 'dex-assistant');
+  if (main) main.classList.toggle('accounts-main', panelId === 'accounts' && accountsView === 'list');
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.panel === panelId);
   });
@@ -103,6 +104,7 @@ function goToConfig(sectionId) {
 function renderPanel(panelId) {
   const container = document.getElementById('mainContent');
   if (container) container.classList.toggle('dex-main', panelId === 'dex-assistant');
+  if (container) container.classList.toggle('accounts-main', panelId === 'accounts' && accountsView === 'list');
   switch (panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
     case 'config': container.innerHTML = renderConfig(); break;

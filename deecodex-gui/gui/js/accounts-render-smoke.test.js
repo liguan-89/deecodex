@@ -142,8 +142,10 @@ assert(report.includes('备份'));
 context.accountsView = 'list';
 context.selectedClientKind = 'codex';
 const codexList = context.renderAccountList();
-assert(codexList.includes("editConfigFile('c1')"));
-assert(codexList.includes('配置'));
+assert(codexList.includes("applyAccount('c1')"));
+assert(codexList.includes("editAccount('c1')"));
+assert(codexList.includes("refreshBalanceForCard('c1')"));
+assert(codexList.includes("deleteAccount('c1')"));
 
 const validation = context.renderConfigValidation({
   ok: true,
