@@ -833,6 +833,123 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: empty_params(),
         },
         BuiltinToolSpec {
+            name: "openclaw_env_overview",
+            tauri_cmd: "dex_openclaw_env_overview",
+            level: 0,
+            confirm: None,
+            description: "检查 OpenClaw CLI、配置目录与状态概览",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_health_check",
+            tauri_cmd: "dex_openclaw_health_check",
+            level: 0,
+            confirm: None,
+            description: "运行 OpenClaw 只读健康检查",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_mcp_check",
+            tauri_cmd: "dex_openclaw_mcp_check",
+            level: 0,
+            confirm: None,
+            description: "检查 OpenClaw MCP 配置与工具暴露状态",
+            capability: "ai.mcp",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_gateway_overview",
+            tauri_cmd: "dex_openclaw_gateway_overview",
+            level: 0,
+            confirm: None,
+            description: "检查 OpenClaw Gateway 只读状态",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_agents_overview",
+            tauri_cmd: "dex_openclaw_agents_overview",
+            level: 0,
+            confirm: None,
+            description: "列出 OpenClaw agents 概览",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_models_overview",
+            tauri_cmd: "dex_openclaw_models_overview",
+            level: 0,
+            confirm: None,
+            description: "列出 OpenClaw 模型配置与状态概览",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "openclaw_approvals_overview",
+            tauri_cmd: "dex_openclaw_approvals_overview",
+            level: 0,
+            confirm: None,
+            description: "读取 OpenClaw approvals 策略概览",
+            capability: "ai.openclaw",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "hermes_env_overview",
+            tauri_cmd: "dex_hermes_env_overview",
+            level: 0,
+            confirm: None,
+            description: "检查 Hermes CLI、配置目录与环境概览",
+            capability: "ai.hermes",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "hermes_doctor_check",
+            tauri_cmd: "dex_hermes_doctor_check",
+            level: 0,
+            confirm: None,
+            description: "运行 Hermes doctor 只读检查",
+            capability: "ai.hermes",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "hermes_skills_overview",
+            tauri_cmd: "dex_hermes_skills_overview",
+            level: 0,
+            confirm: None,
+            description: "列出 Hermes skills 概览",
+            capability: "ai.hermes",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "hermes_config_overview",
+            tauri_cmd: "dex_hermes_config_overview",
+            level: 0,
+            confirm: None,
+            description: "读取 Hermes 配置摘要",
+            capability: "ai.hermes",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "hermes_gateway_overview",
+            tauri_cmd: "dex_hermes_gateway_overview",
+            level: 0,
+            confirm: None,
+            description: "检查 Hermes Gateway 只读状态",
+            capability: "ai.hermes",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "ai_toolchain_overview",
+            tauri_cmd: "dex_ai_toolchain_overview",
+            level: 0,
+            confirm: None,
+            description: "汇总 Codex、Claude、OpenClaw、Hermes、MCP 与插件工具链状态",
+            capability: "core.system",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
             name: "network_topology",
             tauri_cmd: "dex_network_topology",
             level: 0,
@@ -885,8 +1002,19 @@ pub(crate) fn capability_meta(id: &str) -> (&'static str, &'static str) {
         "core.system" => ("系统环境", "进程、端口、CLI 版本、模型账号等只读系统信息"),
         "core.workspace" => ("工作区", "当前项目上下文、受限文件读取和受确认 Shell 执行"),
         "ai.codex" => ("Codex", "Codex 配置、线程聚合、CDP 启动和线程维护"),
-        "ai.claude" => ("Claude", "Claude Code 与 MCP 相关检查"),
-        "ai.mcp" => ("MCP", "MCP 配置、连通性和工具链诊断"),
+        "ai.claude" => ("Claude", "Claude Code 安装、配置、MCP 和常见异常检查"),
+        "ai.openclaw" => (
+            "OpenClaw",
+            "OpenClaw CLI、Gateway、Agents、Models、Approvals 和健康状态检查",
+        ),
+        "ai.hermes" => (
+            "Hermes",
+            "Hermes CLI、doctor、skills、config 和 gateway 检查",
+        ),
+        "ai.mcp" => (
+            "MCP",
+            "跨 Codex、Claude、OpenClaw、Hermes 的 MCP 配置和连通性诊断",
+        ),
         "deecodex.ops" => ("deecodex 运维", "服务、配置、诊断、日志、请求历史和报告"),
         "plugins.dynamic" => ("插件", "插件管理和插件声明的动态 DEX 工具"),
         _ => ("扩展能力", "第三方插件或未来扩展能力"),
@@ -939,12 +1067,21 @@ mod tests {
     fn capability_state_uses_defaults_and_explicit_overrides() {
         let mut states = HashMap::new();
         assert!(is_capability_enabled(&states, "core.workspace"));
+        assert!(is_capability_enabled(&states, "ai.openclaw"));
+        assert!(is_capability_enabled(&states, "ai.hermes"));
 
         states.insert("core.workspace".to_string(), false);
         assert!(!is_capability_enabled(&states, "core.workspace"));
 
         states.insert("plugins.dynamic".to_string(), true);
         assert!(is_capability_enabled(&states, "plugins.dynamic"));
+    }
+
+    #[test]
+    fn ai_toolchain_capabilities_have_metadata() {
+        assert_eq!(capability_meta("ai.openclaw").0, "OpenClaw");
+        assert_eq!(capability_meta("ai.hermes").0, "Hermes");
+        assert!(capability_meta("ai.mcp").1.contains("OpenClaw"));
     }
 
     #[test]

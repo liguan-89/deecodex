@@ -26,10 +26,17 @@
       '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
       '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
       '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
-      '.dex-cap-chips{display:flex;flex-wrap:wrap;gap:6px;padding:6px 16px 8px;border-bottom:1px solid rgba(148,163,184,0.12)}',
-      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.12);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:4px 8px;font-size:11px;line-height:1.35;cursor:pointer}',
+      '.dex-cap-chips{padding:5px 16px;border-bottom:1px solid rgba(148,163,184,0.12)}',
+      '.dex-cap-panel{font-size:11px;color:var(--text-secondary,#6b7fa8)}',
+      '.dex-cap-panel summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;min-height:22px}',
+      '.dex-cap-panel summary::-webkit-details-marker{display:none}',
+      '.dex-cap-panel summary:before{content:"工具包";border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;color:var(--text-primary,#c4d0e4)}',
+      '.dex-cap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));gap:6px;margin-top:6px}',
+      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.12);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:5px 8px;font-size:11px;line-height:1.35;cursor:pointer;text-align:left;min-width:0}',
       '.dex-cap-chip.on{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.32);background:rgba(0,200,232,0.08)}',
       '.dex-cap-chip.off{opacity:0.55}',
+      '.dex-cap-chip-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dex-cap-chip-meta{display:block;margin-top:1px;color:var(--text-secondary,#6b7fa8);font-size:10px}',
       '.dex-mode-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 6px;border-bottom:1px solid rgba(148,163,184,0.10)}',
       '.dex-mode-tab{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.10);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:5px 10px;font-size:11px;line-height:1.35;cursor:pointer}',
       '.dex-mode-tab.active{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.4);background:rgba(0,200,232,0.1)}',
@@ -66,8 +73,8 @@ var DEX_MODES = {
 
 // ── System Prompt ──
 var DEX_SYSTEM_PROMPT = [
-  '你是 DEX助手 2.0，一个 AI工具工作台 Agent，运行在 deecodex GUI 内置的 DEX助手 面板中。',
-  '你的首版范围聚焦 Codex、Claude、MCP、模型账号、日志、请求历史、线程、插件和项目环境诊断。',
+  '你是 DEX助手 3.0，一个 AI工具链工作台 Agent，运行在 deecodex GUI 内置的 DEX助手 面板中。',
+  '你的范围聚焦 Codex、Claude Code、OpenClaw、Hermes、MCP、模型账号、日志、请求历史、线程、插件和项目环境诊断。',
   'deecodex 是你的默认能力包之一，但你不只服务于 deecodex。',
   '',
   '## 核心原则',
@@ -84,6 +91,29 @@ var DEX_SYSTEM_PROMPT = [
   '- 插件工具通过统一代理执行，遵循同一安全分级。'
 ].join('\n');
 
+var DEX_CAP_LABELS = {
+  'core.system': '系统',
+  'core.workspace': '工作区',
+  'ai.codex': 'Codex',
+  'ai.claude': 'Claude',
+  'ai.openclaw': 'OpenClaw',
+  'ai.hermes': 'Hermes',
+  'ai.mcp': 'MCP',
+  'deecodex.ops': 'deecodex',
+  'plugins.dynamic': '插件'
+};
+
+function dexCapabilityLabel(id) {
+  if (!id) return '工具';
+  return DEX_CAP_LABELS[id] || id;
+}
+
+function dexToolSourceLabel(toolDef) {
+  if (!toolDef) return '工具';
+  if (toolDef.source === 'plugin') return '插件';
+  return dexCapabilityLabel(toolDef.capability || toolDef.source);
+}
+
 function dexBuildSystemPrompt() {
   var caps = (DEX_CAPABILITIES || []).filter(function(c) { return c.enabled; }).map(function(c) {
     return '- ' + c.id + '：' + c.label + '（' + (c.tool_count || 0) + ' 个工具）';
@@ -97,7 +127,7 @@ function dexBuildSystemPrompt() {
   if (ctx.git && ctx.git.is_repo) ctxLines.push('- Git: ' + (ctx.git.branch || '未知分支') + '，未提交变更 ' + (ctx.git.dirty_count || 0) + ' 项');
   if (ctx.active_account) ctxLines.push('- 活跃账号: ' + (ctx.active_account.name || ctx.active_account.provider || '未知') + ' / ' + (ctx.active_account.provider || 'custom'));
   var toolLines = (DEX_TOOLS || []).slice(0, 80).map(function(t) {
-    return '- ' + t.name + ' [L' + (t.level || 0) + ' / ' + (t.source || 'builtin') + ' / ' + (t.capability || 'core') + ']：' + (t.description || '');
+    return '- ' + t.name + ' [L' + (t.level || 0) + ' / ' + dexToolSourceLabel(t) + ' / ' + (t.capability || 'core') + ']：' + (t.description || '');
   });
   if ((DEX_TOOLS || []).length > toolLines.length) {
     toolLines.push('- 另有 ' + ((DEX_TOOLS || []).length - toolLines.length) + ' 个工具，按需从工具清单调用。');
@@ -507,13 +537,20 @@ function dexRenderCapabilityChips() {
   var el = document.getElementById('dexCapabilityChips');
   if (!el) return;
   if (!DEX_CAPABILITIES || !DEX_CAPABILITIES.length) {
-    el.innerHTML = '<span class="dex-cap-chip">默认能力</span>';
+    el.innerHTML = '<details class="dex-cap-panel"><summary>默认能力</summary></details>';
     return;
   }
-  el.innerHTML = DEX_CAPABILITIES.map(function(c) {
+  var enabledCount = DEX_CAPABILITIES.filter(function(c) { return c.enabled; }).length;
+  var toolCount = DEX_CAPABILITIES.reduce(function(sum, c) { return sum + (c.tool_count || 0); }, 0);
+  var chips = DEX_CAPABILITIES.map(function(c) {
     var cls = c.enabled ? 'dex-cap-chip on' : 'dex-cap-chip off';
-    return '<button class="' + cls + '" onclick="dexToggleCapability(\'' + escAttr(c.id) + '\',' + (!c.enabled) + ')" title="' + escAttr(c.description || '') + '">' + esc(c.label || c.id) + ' · ' + (c.tool_count || 0) + '</button>';
+    var state = c.enabled ? '已启用' : '已停用';
+    return '<button class="' + cls + '" onclick="dexToggleCapability(\'' + escAttr(c.id) + '\',' + (!c.enabled) + ')" title="' + escAttr(c.description || '') + '">'
+      + '<span class="dex-cap-chip-name">' + esc(c.label || dexCapabilityLabel(c.id)) + '</span>'
+      + '<span class="dex-cap-chip-meta">' + state + ' · ' + (c.tool_count || 0) + ' 工具</span>'
+      + '</button>';
   }).join('');
+  el.innerHTML = '<details class="dex-cap-panel"><summary>' + enabledCount + '/' + DEX_CAPABILITIES.length + ' 已启用 · ' + toolCount + ' 个工具</summary><div class="dex-cap-grid">' + chips + '</div></details>';
 }
 
 function dexRenderModeTabs() {
@@ -549,7 +586,7 @@ function dexRenderToolCatalog() {
     var t = DEX_TOOLS[i];
     html += '<div class="dex-tool-catalog-item">'
       + '<span class="dex-tool-catalog-name">' + esc(t.name) + '</span>'
-      + '<span class="dex-tool-catalog-meta">L' + (t.level || 0) + ' · ' + esc(t.source || 'builtin') + ' · ' + esc(t.capability || 'core') + '</span>'
+      + '<span class="dex-tool-catalog-meta">L' + (t.level || 0) + ' · ' + esc(dexToolSourceLabel(t)) + ' · ' + esc(t.capability || 'core') + '</span>'
       + '<span class="dex-tool-catalog-meta">' + esc(t.description || '') + '</span>'
       + '</div>';
   }
@@ -664,7 +701,7 @@ function renderDexAssistant() {
   }, 0);
 
   return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title">'
-    + '<div class="dex-title-row"><span class="dex-title-mark"></span><h3 title="DEX助手 2.0">DEX助手 2.0</h3><span class="dex-title-sub">AI 工具工作台</span></div>'
+    + '<div class="dex-title-row"><span class="dex-title-mark"></span><h3 title="DEX助手 3.0">DEX助手 3.0</h3><span class="dex-title-sub">AI 工具链工作台</span></div>'
     + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span><span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
     + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型 ▾</button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexExportChat()" title="导出对话" aria-label="导出对话">⇩<span class="dex-sr-only">导出对话</span></button>'
@@ -689,15 +726,14 @@ function renderDexAssistant() {
 
 function dexWelcomeHTML() {
   return '<div class="dex-msg dex-msg-assistant dex-welcome"><div class="dex-bubble dex-bubble-assistant dex-welcome-bubble"><div class="dex-bubble-text">'
-    + '<p>DEX助手 2.0 就绪。描述问题，或选择一个快速操作：</p></div>'
+    + '<p>DEX助手 3.0 就绪。描述 AI 工具链问题，或选择快速操作：</p></div>'
     + '<div class="dex-quick-actions">'
-    + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'运行完整诊断，自动修复所有发现的问题\')">一键修复</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'健康概览，指出当前 AI 工具链风险\')">健康概览</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'运行 DEX 自检，检查工具注册表、能力包、插件工具和最近错误\')">DEX自检</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Codex、Claude、MCP 和模型账号环境\')">AI工具诊断</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Claude Code MCP 集成状态\')">MCP检查</button>'
+    + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'汇总 Codex、Claude、OpenClaw、Hermes、MCP、模型账号和插件状态\')">AI链总览</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Claude Code 安装、配置目录和 MCP 集成状态\')">Claude</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 OpenClaw CLI、Gateway、Agents、Models、MCP 和 Approvals 状态\')">OpenClaw</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Hermes CLI、doctor、skills、config 和 gateway 状态\')">Hermes</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'跨工具对比 Claude、OpenClaw、Hermes 的 MCP 配置\')">MCP对比</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查看插件状态和可用插件能力\')">插件状态</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'分析当前项目工作区环境\')">项目环境</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">日志异常</button></div></div></div>';
 }
 
@@ -706,7 +742,7 @@ function dexToolMetaHtml(meta) {
   var parts = [];
   if (meta.toolDef) {
     parts.push('L' + (meta.toolDef.level || 0));
-    parts.push(meta.toolDef.source || 'builtin');
+    parts.push(dexToolSourceLabel(meta.toolDef));
     parts.push(meta.toolDef.capability || 'core');
   }
   if (meta.elapsedMs !== undefined) parts.push(meta.elapsedMs + 'ms');
@@ -890,6 +926,19 @@ function dexToolSummary(fnName, result) {
     case 'auto_tune': if (data && data.applied) return '已应用 ' + data.applied + ' 项优化'; return '已分析';
     case 'claude_mcp_check': if (data && data.ok !== undefined) return data.ok ? 'MCP正常' : 'MCP异常'; return '已检查';
     case 'claude_env_overview': return data && data.installed ? 'Claude 已安装' : 'Claude 未检测到';
+    case 'openclaw_env_overview': return data && data.installed ? 'OpenClaw 已安装' : 'OpenClaw 未检测到';
+    case 'openclaw_health_check': return data && data.ok ? 'OpenClaw 正常' : 'OpenClaw 需关注';
+    case 'openclaw_mcp_check': if (data && data.mcp_servers) return data.mcp_servers.length + ' 个 MCP server'; return '已检查';
+    case 'openclaw_gateway_overview': return data && data.ok ? 'Gateway 正常' : 'Gateway 需关注';
+    case 'openclaw_agents_overview': return data && data.ok ? 'Agents 已读取' : 'Agents 需关注';
+    case 'openclaw_models_overview': return data && data.ok ? 'Models 已读取' : 'Models 需关注';
+    case 'openclaw_approvals_overview': return data && data.ok ? 'Approvals 已读取' : 'Approvals 需关注';
+    case 'hermes_env_overview': return data && data.installed ? 'Hermes 已安装' : 'Hermes 未检测到';
+    case 'hermes_doctor_check': return data && data.ok ? 'Hermes 正常' : 'Hermes 需关注';
+    case 'hermes_skills_overview': return data && data.ok ? 'Skills 已读取' : 'Skills 需关注';
+    case 'hermes_config_overview': return data && data.ok ? 'Config 已读取' : 'Config 需关注';
+    case 'hermes_gateway_overview': return data && data.ok ? 'Gateway 正常' : 'Gateway 需关注';
+    case 'ai_toolchain_overview': if (data && data.blockers) return data.ok ? 'AI链正常' : data.blockers.length + ' 个阻断项'; return '已汇总';
     case 'network_topology': if (data && data.nodes) return data.nodes + ' 节点'; return '已分析';
     case 'ssl_check': if (data && data.valid !== undefined) return data.valid ? '证书有效' : '证书异常'; return '已检查';
     case 'export_report': if (data && data.path) return '已导出: ' + data.path; return '已导出';
@@ -1307,9 +1356,13 @@ function dexExportChat() {
 var DEX_SLASH_COMMANDS = {
   '/diag': '运行完整诊断，分析结果',
   '/fix': '自动修复所有发现的问题',
-  '/health': '健康概览',
+  '/health': '汇总 Codex、Claude、OpenClaw、Hermes、MCP、模型账号和插件状态',
   '/self': '运行 DEX 自检，检查工具注册表、能力包、插件工具和最近错误',
-  '/mcp': '检查 Claude Code MCP 集成状态',
+  '/mcp': '跨工具对比 Claude、OpenClaw、Hermes 的 MCP 配置',
+  '/claude': '检查 Claude Code 安装、配置目录和 MCP 集成状态',
+  '/openclaw': '检查 OpenClaw CLI、Gateway、Agents、Models、MCP 和 Approvals 状态',
+  '/hermes': '检查 Hermes CLI、doctor、skills、config 和 gateway 状态',
+  '/agents': '检查 OpenClaw agents 和 Hermes skills 状态',
   '/workspace': '分析当前项目工作区环境',
   '/plugins': '查看插件状态和可用插件能力',
   '/cost': '分析请求成本',
@@ -1355,7 +1408,10 @@ var DEX_TOOL_KEYWORDS = [
   { keywords: ['速度', 'speed', '延迟', 'latency', '测速', '连通'], tools: 'speed_test, test_upstream_connectivity' },
   { keywords: ['成本', 'cost', 'token', '花费', '消耗'], tools: 'token_cost, analyze_requests' },
   { keywords: ['安全', 'ssl', '证书', 'tls', '网络'], tools: 'ssl_check, network_topology' },
+  { keywords: ['工具链', 'ai链', '总览', 'overview'], tools: 'ai_toolchain_overview' },
   { keywords: ['claude', 'mcp', '集成'], tools: 'claude_env_overview, claude_mcp_check' },
+  { keywords: ['openclaw', 'gateway', 'approvals', 'agents'], tools: 'openclaw_env_overview, openclaw_health_check, openclaw_mcp_check' },
+  { keywords: ['hermes', 'doctor', 'skills'], tools: 'hermes_env_overview, hermes_doctor_check, hermes_skills_overview' },
   { keywords: ['升级', 'upgrade', '更新', '版本'], tools: 'check_upgrade, run_upgrade' }
 ];
 

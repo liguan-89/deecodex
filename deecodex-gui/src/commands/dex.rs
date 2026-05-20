@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -98,8 +98,14 @@ fn is_path_allowed(path: &std::path::Path) -> bool {
     if let Some(home) = deecodex::config::home_dir() {
         let deecodex_dir = home.join(".deecodex");
         let codex_dir = home.join(".codex");
+        let claude_dir = home.join(".claude");
+        let openclaw_dir = home.join(".openclaw");
+        let hermes_dir = home.join(".hermes");
         if path_str.starts_with(deecodex_dir.to_string_lossy().as_ref())
             || path_str.starts_with(codex_dir.to_string_lossy().as_ref())
+            || path_str.starts_with(claude_dir.to_string_lossy().as_ref())
+            || path_str.starts_with(openclaw_dir.to_string_lossy().as_ref())
+            || path_str.starts_with(hermes_dir.to_string_lossy().as_ref())
         {
             return true;
         }
@@ -169,6 +175,8 @@ pub async fn dex_list_capabilities(
         "core.workspace",
         "ai.codex",
         "ai.claude",
+        "ai.openclaw",
+        "ai.hermes",
         "ai.mcp",
         "deecodex.ops",
         "plugins.dynamic",
@@ -236,14 +244,357 @@ fn command_first_line(cmd: &str, args: &[&str]) -> Option<String> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string()
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let text = if stdout.trim().is_empty() {
+                stderr.as_ref()
+            } else {
+                stdout.as_ref()
+            };
+            text.lines().next().unwrap_or("").trim().to_string()
         })
         .filter(|s| !s.is_empty())
+}
+
+const DEX_CLI_TIMEOUT_SECS: u64 = 8;
+const DEX_CLI_OUTPUT_LIMIT: usize = 12_000;
+
+#[derive(Debug, Clone)]
+struct ReadonlyCliResult {
+    binary: String,
+    args: Vec<String>,
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+    spawn_error: Option<String>,
+}
+
+impl ReadonlyCliResult {
+    fn unavailable(binary: &str, args: &[&str], error: String) -> Self {
+        Self {
+            binary: binary.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            spawn_error: Some(error),
+        }
+    }
+
+    fn timed_out(binary: &str, args: &[&str]) -> Self {
+        Self {
+            binary: binary.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+            spawn_error: None,
+        }
+    }
+
+    fn command_line(&self) -> String {
+        let mut parts = vec![self.binary.clone()];
+        parts.extend(self.args.clone());
+        parts.join(" ")
+    }
+
+    fn json_output(&self) -> Option<Value> {
+        parse_json_output(&self.stdout)
+    }
+
+    fn to_value(&self) -> Value {
+        json!({
+            "command": self.command_line(),
+            "success": self.success,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "timed_out": self.timed_out,
+            "error": self.spawn_error,
+            "json": self.json_output(),
+        })
+    }
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("\n…(已截断)");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn parse_json_output(stdout: &str) -> Option<Value> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Some(value);
+    }
+    for (start_idx, ch) in trimmed.char_indices() {
+        let end_idx = match ch {
+            '{' => trimmed.rfind('}'),
+            '[' => trimmed.rfind(']'),
+            _ => None,
+        };
+        if let Some(end_idx) = end_idx {
+            if end_idx > start_idx {
+                if let Ok(value) = serde_json::from_str::<Value>(&trimmed[start_idx..=end_idx]) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn command_exists(cmd: &str) -> bool {
+    if cmd.contains(std::path::MAIN_SEPARATOR) {
+        return Path::new(cmd).exists();
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(cmd);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            for ext in ["exe", "cmd", "bat"] {
+                if dir.join(format!("{cmd}.{ext}")).is_file() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn get_cli_version_flexible(cmd: &str) -> Option<String> {
+    get_cli_version(cmd, &["--version"])
+        .or_else(|| get_cli_version(cmd, &["-V"]))
+        .or_else(|| get_cli_version(cmd, &["version"]))
+}
+
+async fn run_readonly_cli_command(binary: &str, args: &[&str]) -> ReadonlyCliResult {
+    let mut command = tokio::process::Command::new(binary);
+    command.args(args);
+    let command_future = command.output();
+    match tokio::time::timeout(Duration::from_secs(DEX_CLI_TIMEOUT_SECS), command_future).await {
+        Ok(Ok(output)) => ReadonlyCliResult {
+            binary: binary.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            success: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: truncate_text(
+                &String::from_utf8_lossy(&output.stdout),
+                DEX_CLI_OUTPUT_LIMIT,
+            ),
+            stderr: truncate_text(
+                &String::from_utf8_lossy(&output.stderr),
+                DEX_CLI_OUTPUT_LIMIT,
+            ),
+            timed_out: false,
+            spawn_error: None,
+        },
+        Ok(Err(e)) => {
+            tracing::warn!(binary, args = ?args, error = %e, "DEX 只读 CLI 命令启动失败");
+            ReadonlyCliResult::unavailable(binary, args, e.to_string())
+        }
+        Err(_) => {
+            tracing::warn!(
+                binary,
+                args = ?args,
+                timeout_secs = DEX_CLI_TIMEOUT_SECS,
+                "DEX 只读 CLI 命令超时"
+            );
+            ReadonlyCliResult::timed_out(binary, args)
+        }
+    }
+}
+
+async fn run_first_successful_readonly_command(
+    binary: &str,
+    command_sets: &[Vec<&str>],
+) -> ReadonlyCliResult {
+    let mut last: Option<ReadonlyCliResult> = None;
+    for args in command_sets {
+        let result = run_readonly_cli_command(binary, args).await;
+        if result.success {
+            return result;
+        }
+        last = Some(result);
+    }
+    last.unwrap_or_else(|| ReadonlyCliResult::unavailable(binary, &[], "没有可执行命令".into()))
+}
+
+fn inspect_json_config_files(paths: &[PathBuf]) -> (Vec<Value>, Vec<String>, Vec<String>) {
+    let mut files = Vec::new();
+    let mut servers = HashSet::new();
+    let mut issues = Vec::new();
+
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let mut file = json!({
+            "path": path.to_string_lossy(),
+            "exists": true,
+            "valid_json": false,
+        });
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<Value>(&content) {
+                Ok(value) => {
+                    let file_servers = extract_mcp_servers(&value);
+                    for server in &file_servers {
+                        servers.insert(server.clone());
+                    }
+                    file["valid_json"] = json!(true);
+                    file["top_level_keys"] = json!(top_level_keys(&value));
+                    file["mcp_servers"] = json!(file_servers);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "DEX AI 工具配置 JSON 解析失败");
+                    issues.push(format!("{} 格式无效", path.display()));
+                    file["error"] = json!(e.to_string());
+                }
+            },
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "DEX AI 工具配置读取失败");
+                issues.push(format!("{} 读取失败", path.display()));
+                file["error"] = json!(e.to_string());
+            }
+        }
+        files.push(file);
+    }
+
+    let mut server_list: Vec<String> = servers.into_iter().collect();
+    server_list.sort();
+    (files, server_list, issues)
+}
+
+fn top_level_keys(value: &Value) -> Vec<String> {
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut keys: Vec<String> = map.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
+fn extract_mcp_servers(value: &Value) -> Vec<String> {
+    let mut servers = Vec::new();
+    if let Some(map) = value.get("mcpServers").and_then(Value::as_object) {
+        servers.extend(map.keys().cloned());
+    }
+    if let Some(map) = value
+        .get("mcp")
+        .and_then(|v| v.get("servers"))
+        .and_then(Value::as_object)
+    {
+        servers.extend(map.keys().cloned());
+    }
+    if let Some(arr) = value
+        .get("mcp")
+        .and_then(|v| v.get("servers"))
+        .and_then(Value::as_array)
+    {
+        for item in arr {
+            if let Some(name) = item
+                .get("name")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+            {
+                servers.push(name.to_string());
+            }
+        }
+    }
+    servers.sort();
+    servers.dedup();
+    servers
+}
+
+fn config_dir_summary(dir: &Path, expected_files: &[&str]) -> Value {
+    let files: Vec<Value> = expected_files
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            json!({
+                "name": name,
+                "path": path.to_string_lossy(),
+                "exists": path.exists(),
+            })
+        })
+        .collect();
+    json!({
+        "path": dir.to_string_lossy(),
+        "exists": dir.exists(),
+        "files": files,
+    })
+}
+
+fn issue_if_missing_binary(tool_name: &str, binary: &str, issues: &mut Vec<String>) {
+    if !command_exists(binary) {
+        tracing::warn!(
+            tool = tool_name,
+            binary,
+            "DEX AI 工具 CLI 未安装或不在 PATH"
+        );
+        issues.push(format!("{tool_name} CLI 未安装或不在 PATH: {binary}"));
+    }
+}
+
+fn command_problem_summary(result: &ReadonlyCliResult) -> String {
+    if result.timed_out {
+        return "命令超时".to_string();
+    }
+    if let Some(error) = &result.spawn_error {
+        return error.clone();
+    }
+    let stderr = result.stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.lines().next().unwrap_or(stderr).to_string();
+    }
+    format!("退出码 {:?}", result.exit_code)
+}
+
+fn add_failed_command_issue(
+    tool_name: &str,
+    label: &str,
+    result: &ReadonlyCliResult,
+    issues: &mut Vec<String>,
+) {
+    if result.success {
+        return;
+    }
+    let summary = command_problem_summary(result);
+    tracing::warn!(
+        tool = tool_name,
+        command = %result.command_line(),
+        error = %summary,
+        "DEX AI 工具只读命令未返回成功状态"
+    );
+    issues.push(format!("{label} 获取失败: {summary}"));
+}
+
+fn mcp_servers_from_command(result: &ReadonlyCliResult) -> Vec<String> {
+    let Some(value) = result.json_output() else {
+        return Vec::new();
+    };
+    extract_mcp_servers(&value)
 }
 
 fn detect_project_type(cwd: &std::path::Path) -> Vec<String> {
@@ -338,6 +689,8 @@ pub async fn dex_get_workspace_context(manager: State<'_, ServerManager>) -> Res
         "cli_versions": {
             "codex": get_cli_version("codex", &["--version"]),
             "claude": get_cli_version("claude", &["--version"]),
+            "openclaw": get_cli_version_flexible("openclaw"),
+            "hermes": get_cli_version_flexible("hermes"),
             "node": get_cli_version("node", &["--version"]),
             "cargo": command_first_line("cargo", &["--version"]),
             "git": command_first_line("git", &["--version"]),
@@ -641,6 +994,19 @@ pub async fn dex_execute_tool(
             "auto_tune" => dex_auto_tune()?,
             "claude_mcp_check" => dex_claude_mcp_check()?,
             "claude_env_overview" => dex_claude_env_overview()?,
+            "openclaw_env_overview" => dex_openclaw_env_overview().await?,
+            "openclaw_health_check" => dex_openclaw_health_check().await?,
+            "openclaw_mcp_check" => dex_openclaw_mcp_check().await?,
+            "openclaw_gateway_overview" => dex_openclaw_gateway_overview().await?,
+            "openclaw_agents_overview" => dex_openclaw_agents_overview().await?,
+            "openclaw_models_overview" => dex_openclaw_models_overview().await?,
+            "openclaw_approvals_overview" => dex_openclaw_approvals_overview().await?,
+            "hermes_env_overview" => dex_hermes_env_overview().await?,
+            "hermes_doctor_check" => dex_hermes_doctor_check().await?,
+            "hermes_skills_overview" => dex_hermes_skills_overview().await?,
+            "hermes_config_overview" => dex_hermes_config_overview().await?,
+            "hermes_gateway_overview" => dex_hermes_gateway_overview().await?,
+            "ai_toolchain_overview" => dex_ai_toolchain_overview(manager).await?,
             "network_topology" => dex_network_topology()?,
             "ssl_check" => dex_ssl_check()?,
             "export_report" => dex_export_report()?,
@@ -986,37 +1352,11 @@ pub fn dex_list_directory(path: String) -> Result<Value, String> {
 /// DEX 助手：检测运行中的进程
 #[tauri::command]
 pub fn dex_detect_processes() -> Result<Value, String> {
-    let targets = ["codex", "deecodex", "claude", "node"];
+    let targets = ["codex", "deecodex", "claude", "openclaw", "hermes", "node"];
     let mut processes: Vec<Value> = Vec::new();
 
     for target in &targets {
-        // 尝试 pgrep -a，失败则降级到 pgrep -l
-        let output = std::process::Command::new("pgrep")
-            .arg("-a")
-            .arg(target)
-            .output();
-
-        let instances = match output {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                parse_pgrep_output(&stdout)
-            }
-            _ => {
-                // 降级到 pgrep -l
-                let output = std::process::Command::new("pgrep")
-                    .arg("-l")
-                    .arg(target)
-                    .output();
-
-                match output {
-                    Ok(out) if out.status.success() => {
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        parse_pgrep_l_output(&stdout)
-                    }
-                    _ => Vec::new(),
-                }
-            }
-        };
+        let instances = detect_process_instances(target);
 
         processes.push(json!({
             "process": target,
@@ -1026,6 +1366,35 @@ pub fn dex_detect_processes() -> Result<Value, String> {
     }
 
     Ok(json!({ "processes": processes }))
+}
+
+fn detect_process_instances(target: &str) -> Vec<Value> {
+    // 尝试 pgrep -a，失败则降级到 pgrep -l
+    let output = std::process::Command::new("pgrep")
+        .arg("-a")
+        .arg(target)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            parse_pgrep_output(&stdout)
+        }
+        _ => {
+            let output = std::process::Command::new("pgrep")
+                .arg("-l")
+                .arg(target)
+                .output();
+
+            match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    parse_pgrep_l_output(&stdout)
+                }
+                _ => Vec::new(),
+            }
+        }
+    }
 }
 
 fn parse_pgrep_output(stdout: &str) -> Vec<Value> {
@@ -1216,7 +1585,13 @@ fn get_cli_version(cmd: &str, args: &[&str]) -> Option<String> {
         .and_then(|o| {
             if o.status.success() {
                 let stdout = String::from_utf8_lossy(&o.stdout);
-                let version = stdout.lines().next().unwrap_or("").trim().to_string();
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let text = if stdout.trim().is_empty() {
+                    stderr.as_ref()
+                } else {
+                    stdout.as_ref()
+                };
+                let version = text.lines().next().unwrap_or("").trim().to_string();
                 if version.is_empty() {
                     None
                 } else {
@@ -2161,6 +2536,8 @@ pub fn dex_claude_mcp_check() -> Result<Value, String> {
     let mut has_deecodex_entry = false;
     let mut config_path = String::new();
     let mut issues = Vec::new();
+    let mut mcp_servers = HashSet::new();
+    let mut config_files = Vec::new();
 
     for path in &[&mcp_path, &desktop_path] {
         if !path.exists() {
@@ -2170,9 +2547,19 @@ pub fn dex_claude_mcp_check() -> Result<Value, String> {
         if config_path.is_empty() {
             config_path = path.to_string_lossy().to_string();
         }
+        let mut file = json!({
+            "path": path.to_string_lossy(),
+            "exists": true,
+            "valid_json": false,
+            "mcp_servers": [],
+        });
 
         if let Ok(content) = std::fs::read_to_string(path) {
             if let Ok(json_val) = serde_json::from_str::<Value>(&content) {
+                let servers = extract_mcp_servers(&json_val);
+                for server in &servers {
+                    mcp_servers.insert(server.clone());
+                }
                 if json_val
                     .get("mcpServers")
                     .and_then(|s| s.get("deecodex"))
@@ -2180,29 +2567,53 @@ pub fn dex_claude_mcp_check() -> Result<Value, String> {
                 {
                     has_deecodex_entry = true;
                 }
+                file["valid_json"] = json!(true);
+                file["top_level_keys"] = json!(top_level_keys(&json_val));
+                file["mcp_servers"] = json!(servers);
             } else {
+                tracing::warn!(path = %path.display(), "Claude MCP 配置 JSON 解析失败");
                 issues.push(format!(
                     "{} 格式无效",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 ));
+                file["error"] = json!("JSON 格式无效");
             }
+        } else {
+            tracing::warn!(path = %path.display(), "Claude MCP 配置读取失败");
+            issues.push(format!(
+                "{} 读取失败",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            file["error"] = json!("读取失败");
         }
+        config_files.push(file);
     }
 
     if !has_mcp_config {
+        tracing::warn!("未找到 Claude MCP 配置文件");
         issues
             .push("未找到 ~/.claude/mcp.json 或 ~/.claude/claude_desktop_config.json".to_string());
     }
     if has_mcp_config && !has_deecodex_entry {
         issues.push("MCP 配置文件中未找到 deecodex 条目".to_string());
     }
+    let mut mcp_servers: Vec<String> = mcp_servers.into_iter().collect();
+    mcp_servers.sort();
 
-    Ok(json!({
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty(),
         "has_mcp_config": has_mcp_config,
         "has_deecodex_entry": has_deecodex_entry,
         "config_path": config_path,
+        "config_files": config_files,
+        "mcp_servers": mcp_servers,
         "issues": issues,
-    }))
+        "recommendations": if has_mcp_config {
+            vec!["确认 Claude Code 使用的 MCP 配置文件与当前项目一致".to_string()]
+        } else {
+            vec!["先创建 Claude MCP 配置，再添加 deecodex 或其他 MCP server".to_string()]
+        },
+    })))
 }
 
 /// DEX 助手：Claude Code 环境概览
@@ -2211,12 +2622,537 @@ pub fn dex_claude_env_overview() -> Result<Value, String> {
     let home = deecodex::config::home_dir().unwrap_or_default();
     let claude_dir = home.join(".claude");
     let mcp = dex_claude_mcp_check()?;
+    let installed =
+        command_exists("claude") || command_first_line("claude", &["--version"]).is_some();
+    let mut issues = Vec::new();
+    if !installed {
+        tracing::warn!("Claude CLI 未安装或不在 PATH");
+        issues.push("Claude CLI 未安装或不在 PATH".to_string());
+    }
+    if !claude_dir.exists() {
+        issues.push("~/.claude 配置目录不存在".to_string());
+    }
+    if mcp
+        .get("ok")
+        .and_then(Value::as_bool)
+        .map(|ok| !ok)
+        .unwrap_or(false)
+    {
+        issues.push("Claude MCP 配置需要关注".to_string());
+    }
     Ok(mask_sensitive_value(json!({
-        "installed": command_first_line("claude", &["--version"]).is_some(),
-        "version": command_first_line("claude", &["--version"]),
+        "ok": issues.is_empty(),
+        "installed": installed,
+        "version": get_cli_version_flexible("claude"),
         "config_dir": claude_dir.to_string_lossy(),
         "config_dir_exists": claude_dir.exists(),
+        "config": config_dir_summary(
+            &claude_dir,
+            &["mcp.json", "claude_desktop_config.json", "settings.json"]
+        ),
         "mcp": mcp,
+        "issues": issues,
+        "recommendations": [
+            "优先确认 Claude Code CLI 版本、~/.claude 配置目录和 MCP server 条目",
+            "如果 Claude 可以运行但 MCP 失败，先检查 mcp.json 的 JSON 格式和 server 名称",
+        ],
+    })))
+}
+
+/// DEX 助手：OpenClaw 环境概览
+#[tauri::command]
+pub async fn dex_openclaw_env_overview() -> Result<Value, String> {
+    let home = deecodex::config::home_dir().unwrap_or_default();
+    let config_dir = home.join(".openclaw");
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    if !config_dir.exists() {
+        tracing::warn!(path = %config_dir.display(), "OpenClaw 配置目录不存在");
+        issues.push("~/.openclaw 配置目录不存在".to_string());
+    }
+    let status = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[vec!["status", "--json"], vec!["status"]],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("openclaw", &["status"], "openclaw 不在 PATH".into())
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw status", &status, &mut issues);
+    }
+    let mcp = dex_openclaw_mcp_check().await?;
+    let process_instances = detect_process_instances("openclaw");
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty(),
+        "installed": command_exists("openclaw"),
+        "version": get_cli_version_flexible("openclaw"),
+        "config_dir": config_dir.to_string_lossy(),
+        "config_dir_exists": config_dir.exists(),
+        "config": config_dir_summary(
+            &config_dir,
+            &["config.json", "settings.json", "mcp.json", "agents.json", "models.json"]
+        ),
+        "status": status.to_value(),
+        "mcp": mcp,
+        "process": {
+            "running": !process_instances.is_empty(),
+            "instances": process_instances,
+        },
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw 健康检查
+#[tauri::command]
+pub async fn dex_openclaw_health_check() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let health = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["health", "--json"],
+                vec!["health"],
+                vec!["doctor", "--json"],
+                vec!["doctor"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("openclaw", &["health"], "openclaw 不在 PATH".into())
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw health", &health, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && health.success,
+        "health": health.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw MCP 检查
+#[tauri::command]
+pub async fn dex_openclaw_mcp_check() -> Result<Value, String> {
+    let home = deecodex::config::home_dir().unwrap_or_default();
+    let config_dir = home.join(".openclaw");
+    let config_paths = [
+        config_dir.join("mcp.json"),
+        config_dir.join("config.json"),
+        config_dir.join("settings.json"),
+    ];
+    let (config_files, mut config_servers, mut issues) = inspect_json_config_files(&config_paths);
+    if config_files.is_empty() {
+        tracing::warn!(path = %config_dir.display(), "未找到 OpenClaw MCP 相关 JSON 配置");
+        issues.push("未找到 OpenClaw MCP 相关 JSON 配置".to_string());
+    }
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let command = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["mcp", "list", "--json"],
+                vec!["mcp", "list"],
+                vec!["mcp", "show", "--json"],
+                vec!["mcp", "show"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("openclaw", &["mcp", "list"], "openclaw 不在 PATH".into())
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw MCP", &command, &mut issues);
+    }
+    config_servers.extend(mcp_servers_from_command(&command));
+    config_servers.sort();
+    config_servers.dedup();
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty(),
+        "config_dir": config_dir.to_string_lossy(),
+        "config_files": config_files,
+        "mcp_servers": config_servers,
+        "command": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw Gateway 概览
+#[tauri::command]
+pub async fn dex_openclaw_gateway_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let command = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["gateway", "status", "--json"],
+                vec!["gateway", "status"],
+                vec!["gateway", "health", "--json"],
+                vec!["gateway", "health"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable(
+            "openclaw",
+            &["gateway", "status"],
+            "openclaw 不在 PATH".into(),
+        )
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw Gateway", &command, &mut issues);
+    }
+    let instances = detect_process_instances("openclaw");
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && (command.success || !instances.is_empty()),
+        "gateway": command.to_value(),
+        "process": {
+            "running": !instances.is_empty(),
+            "instances": instances,
+        },
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw agents 概览
+#[tauri::command]
+pub async fn dex_openclaw_agents_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let command = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["agents", "list", "--json"],
+                vec!["agents", "list"],
+                vec!["agent", "agents", "list", "--json"],
+                vec!["agent", "agents", "list"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("openclaw", &["agents", "list"], "openclaw 不在 PATH".into())
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw agents", &command, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && command.success,
+        "agents": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw models 概览
+#[tauri::command]
+pub async fn dex_openclaw_models_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let status = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["models", "status", "--json"],
+                vec!["models", "status"],
+                vec!["models", "list", "--json"],
+                vec!["models", "list"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable(
+            "openclaw",
+            &["models", "status"],
+            "openclaw 不在 PATH".into(),
+        )
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw models", &status, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && status.success,
+        "models": status.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：OpenClaw approvals 概览
+#[tauri::command]
+pub async fn dex_openclaw_approvals_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("OpenClaw", "openclaw", &mut issues);
+    let command = if command_exists("openclaw") {
+        run_first_successful_readonly_command(
+            "openclaw",
+            &[
+                vec!["approvals", "get", "--json"],
+                vec!["approvals", "get"],
+                vec!["exec-policy", "show", "--json"],
+                vec!["exec-policy", "show"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable(
+            "openclaw",
+            &["approvals", "get"],
+            "openclaw 不在 PATH".into(),
+        )
+    };
+    if command_exists("openclaw") {
+        add_failed_command_issue("OpenClaw", "OpenClaw approvals", &command, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && command.success,
+        "approvals": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：Hermes 环境概览
+#[tauri::command]
+pub async fn dex_hermes_env_overview() -> Result<Value, String> {
+    let home = deecodex::config::home_dir().unwrap_or_default();
+    let config_dir = home.join(".hermes");
+    let mut issues = Vec::new();
+    issue_if_missing_binary("Hermes", "hermes", &mut issues);
+    if !config_dir.exists() {
+        tracing::warn!(path = %config_dir.display(), "Hermes 配置目录不存在");
+        issues.push("~/.hermes 配置目录不存在".to_string());
+    }
+    let doctor = if command_exists("hermes") {
+        run_first_successful_readonly_command("hermes", &[vec!["doctor", "--json"], vec!["doctor"]])
+            .await
+    } else {
+        ReadonlyCliResult::unavailable("hermes", &["doctor"], "hermes 不在 PATH".into())
+    };
+    if command_exists("hermes") {
+        add_failed_command_issue("Hermes", "Hermes doctor", &doctor, &mut issues);
+    }
+    let instances = detect_process_instances("hermes");
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty(),
+        "installed": command_exists("hermes"),
+        "version": get_cli_version_flexible("hermes"),
+        "config_dir": config_dir.to_string_lossy(),
+        "config_dir_exists": config_dir.exists(),
+        "config": config_dir_summary(
+            &config_dir,
+            &["config.json", "settings.json", "mcp.json", "skills.json", "gateway.json"]
+        ),
+        "doctor": doctor.to_value(),
+        "process": {
+            "running": !instances.is_empty(),
+            "instances": instances,
+        },
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：Hermes doctor 检查
+#[tauri::command]
+pub async fn dex_hermes_doctor_check() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("Hermes", "hermes", &mut issues);
+    let command = if command_exists("hermes") {
+        run_first_successful_readonly_command("hermes", &[vec!["doctor", "--json"], vec!["doctor"]])
+            .await
+    } else {
+        ReadonlyCliResult::unavailable("hermes", &["doctor"], "hermes 不在 PATH".into())
+    };
+    if command_exists("hermes") {
+        add_failed_command_issue("Hermes", "Hermes doctor", &command, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && command.success,
+        "doctor": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：Hermes skills 概览
+#[tauri::command]
+pub async fn dex_hermes_skills_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("Hermes", "hermes", &mut issues);
+    let command = if command_exists("hermes") {
+        run_first_successful_readonly_command(
+            "hermes",
+            &[vec!["skills", "list", "--json"], vec!["skills", "list"]],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("hermes", &["skills", "list"], "hermes 不在 PATH".into())
+    };
+    if command_exists("hermes") {
+        add_failed_command_issue("Hermes", "Hermes skills", &command, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && command.success,
+        "skills": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：Hermes 配置概览
+#[tauri::command]
+pub async fn dex_hermes_config_overview() -> Result<Value, String> {
+    let home = deecodex::config::home_dir().unwrap_or_default();
+    let config_dir = home.join(".hermes");
+    let config_paths = [
+        config_dir.join("config.json"),
+        config_dir.join("settings.json"),
+        config_dir.join("mcp.json"),
+        config_dir.join("gateway.json"),
+    ];
+    let (config_files, mcp_servers, mut issues) = inspect_json_config_files(&config_paths);
+    if config_files.is_empty() {
+        tracing::warn!(path = %config_dir.display(), "未找到 Hermes JSON 配置");
+        issues.push("未找到 Hermes JSON 配置".to_string());
+    }
+    issue_if_missing_binary("Hermes", "hermes", &mut issues);
+    let command = if command_exists("hermes") {
+        run_first_successful_readonly_command(
+            "hermes",
+            &[vec!["config", "get", "--json"], vec!["config", "get"]],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("hermes", &["config", "get"], "hermes 不在 PATH".into())
+    };
+    if command_exists("hermes") {
+        add_failed_command_issue("Hermes", "Hermes config", &command, &mut issues);
+    }
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty(),
+        "config_dir": config_dir.to_string_lossy(),
+        "config_files": config_files,
+        "mcp_servers": mcp_servers,
+        "command": command.to_value(),
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：Hermes Gateway 概览
+#[tauri::command]
+pub async fn dex_hermes_gateway_overview() -> Result<Value, String> {
+    let mut issues = Vec::new();
+    issue_if_missing_binary("Hermes", "hermes", &mut issues);
+    let command = if command_exists("hermes") {
+        run_first_successful_readonly_command(
+            "hermes",
+            &[
+                vec!["gateway", "status", "--json"],
+                vec!["gateway", "status"],
+                vec!["gateway", "health", "--json"],
+                vec!["gateway", "health"],
+            ],
+        )
+        .await
+    } else {
+        ReadonlyCliResult::unavailable("hermes", &["gateway", "status"], "hermes 不在 PATH".into())
+    };
+    if command_exists("hermes") {
+        add_failed_command_issue("Hermes", "Hermes Gateway", &command, &mut issues);
+    }
+    let instances = detect_process_instances("hermes");
+    Ok(mask_sensitive_value(json!({
+        "ok": issues.is_empty() && (command.success || !instances.is_empty()),
+        "gateway": command.to_value(),
+        "process": {
+            "running": !instances.is_empty(),
+            "instances": instances,
+        },
+        "issues": issues,
+    })))
+}
+
+/// DEX 助手：AI 工具链总览
+#[tauri::command]
+pub async fn dex_ai_toolchain_overview(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let active_account = store
+        .active_id
+        .as_ref()
+        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "provider": a.provider,
+                "upstream": a.upstream,
+                "model_count": a.model_map.len(),
+            })
+        });
+    let tools = all_tool_defs(&manager).await;
+    let plugin_tool_count = tools.iter().filter(|tool| tool.source == "plugin").count();
+    let claude = dex_claude_env_overview()?;
+    let openclaw = dex_openclaw_env_overview().await?;
+    let hermes = dex_hermes_env_overview().await?;
+    let hermes_config = dex_hermes_config_overview().await?;
+    let codex = json!({
+        "installed": codex_is_installed(),
+        "version": get_cli_version_flexible("codex"),
+        "config_path": codex_config_path().map(|p| p.to_string_lossy().to_string()),
+    });
+    let processes = dex_detect_processes().unwrap_or_else(|e| json!({ "error": e }));
+    let mut blockers = Vec::new();
+    if active_account.is_none() {
+        blockers.push("未配置活跃模型账号".to_string());
+    }
+    for (label, value) in [
+        ("Claude", &claude),
+        ("OpenClaw", &openclaw),
+        ("Hermes", &hermes),
+    ] {
+        if value
+            .get("installed")
+            .and_then(Value::as_bool)
+            .map(|v| !v)
+            .unwrap_or(false)
+        {
+            blockers.push(format!("{label} CLI 未安装或不在 PATH"));
+        }
+    }
+    let claude_servers = claude
+        .pointer("/mcp/mcp_servers")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let openclaw_servers = openclaw
+        .pointer("/mcp/mcp_servers")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let hermes_servers = hermes
+        .pointer("/config/mcp_servers")
+        .cloned()
+        .or_else(|| hermes_config.pointer("/mcp_servers").cloned())
+        .unwrap_or_else(|| json!([]));
+
+    Ok(mask_sensitive_value(json!({
+        "ok": blockers.is_empty(),
+        "codex": codex,
+        "claude": claude,
+        "openclaw": openclaw,
+        "hermes": hermes,
+        "hermes_config": hermes_config,
+        "mcp": {
+            "claude_servers": claude_servers,
+            "openclaw_servers": openclaw_servers,
+            "hermes_servers": hermes_servers,
+        },
+        "accounts": {
+            "count": store.accounts.len(),
+            "active": active_account,
+        },
+        "plugins": {
+            "dex_tool_count": plugin_tool_count,
+        },
+        "processes": processes,
+        "blockers": blockers,
     })))
 }
 
@@ -2496,6 +3432,27 @@ mod tests {
         assert_eq!(claude.capability, "ai.claude");
         assert_eq!(claude.level, 0);
 
+        let openclaw = tools
+            .iter()
+            .find(|tool| tool.name == "openclaw_env_overview")
+            .expect("openclaw_env_overview 工具应存在");
+        assert_eq!(openclaw.capability, "ai.openclaw");
+        assert_eq!(openclaw.level, 0);
+
+        let hermes = tools
+            .iter()
+            .find(|tool| tool.name == "hermes_env_overview")
+            .expect("hermes_env_overview 工具应存在");
+        assert_eq!(hermes.capability, "ai.hermes");
+        assert_eq!(hermes.level, 0);
+
+        let toolchain = tools
+            .iter()
+            .find(|tool| tool.name == "ai_toolchain_overview")
+            .expect("ai_toolchain_overview 工具应存在");
+        assert_eq!(toolchain.capability, "core.system");
+        assert_eq!(toolchain.level, 0);
+
         let self_check = tools
             .iter()
             .find(|tool| tool.name == "dex_self_check")
@@ -2533,5 +3490,15 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn cli_json_parser_accepts_prefixed_json_output() {
+        let parsed = parse_json_output("OpenClaw status\n{\"ok\":true,\"items\":[1]}").unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["items"][0], 1);
+
+        let parsed = parse_json_output("Hermes skills\n[{\"name\":\"a\"}]").unwrap();
+        assert_eq!(parsed[0]["name"], "a");
     }
 }
