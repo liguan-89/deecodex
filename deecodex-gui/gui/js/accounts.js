@@ -12,20 +12,24 @@ function providerBadgeClass(p) {
 }
 
 function providerLogoSlug(p) {
-  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'glm', 'openai', 'anthropic', 'google-ai', 'openclaw', 'hermes', 'claude', 'codex', 'claude-code'].includes(p)
+  return ['openrouter', 'deepseek', 'kimi', 'minimax', 'mimo', 'longcat', 'qwen', 'glm', 'openai', 'anthropic', 'google-ai', 'openclaw', 'hermes', 'claude', 'codex', 'claude-code'].includes(p)
     ? p
     : 'custom';
 }
 
 function providerLogoSrc(p) {
   const files = {
+    openrouter: 'openrouter.webp',
     deepseek: 'deepseek.png',
     kimi: 'kimi.png',
-    minimax: 'minimax.png',
+    minimax: 'minimax.webp',
+    mimo: 'mimo.webp',
+    longcat: 'longcat.png',
+    qwen: 'qwen.svg',
     anthropic: 'anthropic.png',
     claude: 'anthropic.png',
     glm: 'glm-wordmark.png',
-    openai: 'openai-wordmark.png',
+    openai: 'openai.png',
     codex: 'codex.png',
     'claude-code': 'claude-code.png',
     openclaw: 'openclaw.png',
@@ -36,7 +40,8 @@ function providerLogoSrc(p) {
 }
 
 function providerIcon(p, label) {
-  return `<img class="provider-logo-img" src="${providerLogoSrc(p)}" alt="${escAttr(label || p || '自定义')}">`;
+  const slug = providerLogoSlug(p);
+  return `<img class="provider-logo-img provider-logo-${escAttr(slug)}" src="${providerLogoSrc(p)}" alt="${escAttr(label || p || '自定义')}">`;
 }
 
 function renderProviderBadge(p) {
@@ -729,10 +734,94 @@ function providersForClientKind(kind) {
     default_upstream: '',
     known_models: [],
   };
-  if (normalized === 'claude_code') return [bySlug('anthropic'), bySlug('openrouter'), custom].filter(Boolean);
-  if (normalized === 'openclaw') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('minimax'), custom].filter(Boolean);
-  if (normalized === 'hermes') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('minimax'), custom].filter(Boolean);
-  return [bySlug('openai'), bySlug('openrouter'), custom].filter(Boolean);
+  if (normalized === 'claude_code') return [
+    bySlug('anthropic'),
+    bySlug('deepseek'),
+    bySlug('kimi'),
+    bySlug('minimax'),
+    bySlug('mimo'),
+    bySlug('longcat'),
+    bySlug('qwen'),
+    bySlug('glm'),
+    bySlug('openrouter'),
+    custom,
+  ].filter(Boolean);
+  if (normalized === 'openclaw') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('qwen'), bySlug('minimax'), custom].filter(Boolean);
+  if (normalized === 'hermes') return [bySlug('openrouter'), bySlug('anthropic'), bySlug('openai'), bySlug('qwen'), bySlug('minimax'), custom].filter(Boolean);
+  return [bySlug('openai'), bySlug('openrouter'), bySlug('qwen'), custom].filter(Boolean);
+}
+
+function clientProviderDefaults(kind, provider, preset = null) {
+  const normalized = normalizeClientKind(kind);
+  const p = preset || getProviderPreset(provider) || {};
+  if (normalized === 'claude_code' && provider === 'deepseek') {
+    return {
+      upstream: 'https://api.deepseek.com/anthropic',
+      default_model: 'deepseek-v4-pro[1m]',
+      known_models: ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'kimi') {
+    return {
+      upstream: 'https://api.moonshot.cn/anthropic',
+      default_model: 'kimi-k2.5',
+      known_models: ['kimi-k2.5', 'kimi-k2-turbo-preview', 'kimi-k2-0711-preview'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'minimax') {
+    return {
+      upstream: 'https://api.minimaxi.com/anthropic',
+      default_model: 'MiniMax-M2.7',
+      known_models: ['MiniMax-M2.7', 'MiniMax-M2', 'MiniMax-M1'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'mimo') {
+    return {
+      upstream: 'https://api.mimo-v2.com/anthropic',
+      default_model: 'mimo-v2.5-pro',
+      known_models: ['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-pro'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'longcat') {
+    return {
+      upstream: 'https://api.longcat.chat/anthropic',
+      default_model: 'LongCat-Flash-Chat',
+      known_models: [
+        'LongCat-Flash-Chat',
+        'LongCat-Flash-Thinking-2601',
+        'LongCat-Flash-Thinking',
+        'LongCat-Flash-Lite',
+        'LongCat-2.0-Preview',
+      ],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'qwen') {
+    return {
+      upstream: 'https://dashscope.aliyuncs.com/apps/anthropic',
+      default_model: 'qwen3.6-plus',
+      known_models: ['qwen3.6-plus', 'qwen-plus', 'qwen-max', 'qwen-turbo'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'glm') {
+    return {
+      upstream: 'https://open.bigmodel.cn/api/anthropic',
+      default_model: 'glm-5.1',
+      known_models: ['glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.5-air'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  return {
+    upstream: p.default_upstream || '',
+    default_model: (Array.isArray(p.known_models) && p.known_models[0]) || '',
+    known_models: Array.isArray(p.known_models) ? p.known_models : [],
+    api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: normalized }),
+  };
 }
 
 // ── Level 3: 编辑账号 ──
@@ -1316,9 +1405,20 @@ function getProviderKnownModels(provider) {
 
 function defaultApiKeyEnvForClient(account) {
   const kind = accountClientKind(account);
+  if (kind === 'claude_code' && account.provider === 'deepseek') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'kimi') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'minimax') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'mimo') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'longcat') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'qwen') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'glm') return 'ANTHROPIC_AUTH_TOKEN';
   if (kind === 'claude_code' || account.provider === 'anthropic') return 'ANTHROPIC_API_KEY';
+  if (account.provider === 'deepseek') return 'DEEPSEEK_API_KEY';
   if (account.provider === 'openrouter') return 'OPENROUTER_API_KEY';
   if (account.provider === 'minimax') return 'MINIMAX_API_KEY';
+  if (account.provider === 'mimo') return 'MIMO_API_KEY';
+  if (account.provider === 'longcat') return 'LONGCAT_API_KEY';
+  if (account.provider === 'qwen') return 'DASHSCOPE_API_KEY';
   if (kind === 'generic_client' || account.provider === 'openai') return 'OPENAI_API_KEY';
   return 'OPENAI_API_KEY';
 }
@@ -1327,17 +1427,21 @@ function updateClientProviderDefaults() {
   const provider = document.getElementById('edit_client_provider')?.value || '';
   const preset = getProviderPreset(provider);
   if (!preset) return;
+  const defaults = clientProviderDefaults(accountClientKind(editingAccount), provider, preset);
   const upstream = document.getElementById('edit_upstream');
   const model = document.getElementById('edit_default_model');
   const env = document.getElementById('edit_client_api_key_env');
-  if (upstream && !upstream.value.trim()) upstream.value = preset.default_upstream || '';
-  if (model && !model.value.trim() && Array.isArray(preset.known_models) && preset.known_models.length) {
-    model.value = preset.known_models[0];
+  const authEnv = document.getElementById('edit_client_auth_env');
+  const hasClientPreset = accountClientKind(editingAccount) === 'claude_code'
+    && ['deepseek', 'kimi', 'minimax', 'mimo', 'longcat', 'qwen', 'glm'].includes(provider);
+  if (upstream && (!upstream.value.trim() || hasClientPreset)) upstream.value = defaults.upstream || '';
+  if (model && (!model.value.trim() || hasClientPreset) && defaults.default_model) {
+    model.value = defaults.default_model;
   }
-  if (env && (!env.value.trim() || env.value === 'OPENAI_API_KEY')) {
-    const draft = { provider, client_kind: selectedClientKind };
-    env.value = defaultApiKeyEnvForClient(draft);
+  if (env && (!env.value.trim() || env.value === 'OPENAI_API_KEY' || hasClientPreset)) {
+    env.value = defaults.api_key_env;
   }
+  if (authEnv) authEnv.value = defaults.api_key_env;
   if (editingAccount && !isCodexAccount(editingAccount)) {
     upstreamModels = [];
     syncEditingDraftFromForm();
@@ -1659,20 +1763,21 @@ function addAccount(provider, clientKind) {
   const preset = providerPresets.find(p => p.slug === provider);
   if (!preset) return;
   const clientProfile = getClientProfile(kind);
+  const defaults = clientProviderDefaults(kind, provider, preset);
   editingAccount = {
     id: '',
     name: kind === 'codex' ? preset.label + ' 账号' : `${clientProfile?.label || CLIENT_KIND_LABELS[kind]} · ${preset.label}`,
     provider: provider,
     client_kind: kind,
     target: kind,
-    upstream: preset.default_upstream,
+    upstream: kind === 'codex' ? preset.default_upstream : defaults.upstream,
     api_key: '',
-    default_model: kind === 'codex' ? '' : ((preset.known_models && preset.known_models[0]) || clientProfile?.default_model || ''),
+    default_model: kind === 'codex' ? '' : (defaults.default_model || clientProfile?.default_model || ''),
     client_options: kind === 'codex' ? {} : {
-      api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }),
-      ...(kind === 'claude_code' ? { auth_env: defaultApiKeyEnvForClient({ provider, client_kind: kind }) } : {}),
+      api_key_env: defaults.api_key_env,
+      ...(kind === 'claude_code' ? { auth_env: defaults.api_key_env } : {}),
       model_map: {
-        default: (preset.known_models && preset.known_models[0]) || clientProfile?.default_model || '',
+        default: defaults.default_model || clientProfile?.default_model || '',
       },
     },
     last_applied_at: null,
@@ -2296,7 +2401,9 @@ async function fetchClientModels() {
     const apiKey = document.getElementById('edit_api_key')?.value?.trim() || '';
     if (!upstream) { showToast('请先填写目标客户端 Base URL', 'error'); return; }
     const provider = document.getElementById('edit_client_provider')?.value || editingAccount?.provider || '';
-    const endpointKind = provider === 'anthropic' ? 'anthropic_messages' : 'open_ai_chat';
+    const endpointKind = accountClientKind(editingAccount) === 'claude_code' || provider === 'anthropic'
+      ? 'anthropic_messages'
+      : 'open_ai_chat';
     upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey, endpointKind });
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;

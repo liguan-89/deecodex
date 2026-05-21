@@ -32,7 +32,8 @@ const sources = [
 
 const switcher = context.renderThreadClientSwitcher(sources, 3);
 assert(switcher.includes('thread-source-tab active'));
-assert(switcher.includes('Claude Code'));
+assert(switcher.includes('Claude'));
+assert(!switcher.includes('Claude Code'));
 assert(switcher.includes('has-issues'));
 
 const rows = context.renderThreadRows([

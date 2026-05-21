@@ -196,7 +196,13 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "DeepSeek",
             "深度求索，高性价比的中国 LLM 提供商",
             "https://api.deepseek.com/v1",
-            vec!["deepseek-chat", "deepseek-reasoner"],
+            vec![
+                "deepseek-v4-pro[1m]",
+                "deepseek-v4-pro",
+                "deepseek-v4-flash",
+                "deepseek-chat",
+                "deepseek-reasoner",
+            ],
             "DEEPSEEK_API_KEY",
             ProviderCapabilities {
                 reasoning: ReasoningMode::DeepSeek,
@@ -208,8 +214,10 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "kimi",
             "Kimi",
             "Moonshot AI Kimi，OpenAI Chat Completions 兼容接口",
-            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.cn/v1",
             vec![
+                "kimi-k2.5",
+                "kimi-k2-turbo-preview",
                 "kimi-k2-0711-preview",
                 "moonshot-v1-8k",
                 "moonshot-v1-32k",
@@ -226,8 +234,14 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "minimax",
             "MiniMax",
             "MiniMax Chat Completions/OpenAI 兼容接口",
-            "https://api.minimax.io/v1",
-            vec!["MiniMax-M1", "MiniMax-Text-01", "abab6.5s-chat"],
+            "https://api.minimaxi.com/v1",
+            vec![
+                "MiniMax-M2.7",
+                "MiniMax-M2",
+                "MiniMax-M1",
+                "MiniMax-Text-01",
+                "abab6.5s-chat",
+            ],
             "MINIMAX_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
@@ -237,12 +251,74 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             },
         ),
         ProviderProfile::chat(
+            "mimo",
+            "MiMo",
+            "小米 MiMo，支持 Anthropic 兼容接口与 OpenAI 兼容接口",
+            "https://api.mimo-v2.com/v1",
+            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"],
+            "MIMO_API_KEY",
+            ProviderCapabilities {
+                parallel_tool_calls: false,
+                reasoning: ReasoningMode::None,
+                ..Default::default()
+            },
+        ),
+        ProviderProfile::chat(
+            "longcat",
+            "LongCat",
+            "美团 LongCat，支持 Anthropic 格式与 OpenAI 兼容接口",
+            "https://api.longcat.chat/v1",
+            vec![
+                "LongCat-Flash-Chat",
+                "LongCat-Flash-Thinking-2601",
+                "LongCat-Flash-Thinking",
+                "LongCat-Flash-Lite",
+                "LongCat-2.0-Preview",
+            ],
+            "LONGCAT_API_KEY",
+            ProviderCapabilities {
+                parallel_tool_calls: false,
+                reasoning: ReasoningMode::None,
+                ..Default::default()
+            },
+        ),
+        ProviderProfile::chat(
             "glm",
             "GLM",
             "智谱 GLM，OpenAI SDK 兼容接口",
             "https://open.bigmodel.cn/api/paas/v4",
-            vec!["glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4-flash"],
+            vec![
+                "glm-5.1",
+                "glm-5",
+                "glm-4.7",
+                "glm-4.6",
+                "glm-4.5",
+                "glm-4.5-air",
+                "glm-4-flash",
+            ],
             "ZHIPUAI_API_KEY",
+            ProviderCapabilities {
+                parallel_tool_calls: false,
+                reasoning: ReasoningMode::None,
+                ..Default::default()
+            },
+        ),
+        ProviderProfile::chat(
+            "qwen",
+            "Qwen",
+            "阿里云百炼 DashScope，OpenAI Chat Completions 兼容接口",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            vec![
+                "qwen-max",
+                "qwen-plus",
+                "qwen-turbo",
+                "qwen3-coder-plus",
+                "qwen3-coder-flash",
+                "qwen-long",
+                "qwen-vl-plus",
+                "qwen-vl-max",
+            ],
+            "DASHSCOPE_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::None,
@@ -344,8 +420,17 @@ pub fn guess_provider(upstream: &str) -> &str {
         "kimi"
     } else if upstream.contains("minimax") {
         "minimax"
-    } else if upstream.contains("bigmodel.cn") || upstream.contains("zhipu") {
+    } else if upstream.contains("mimo-v2.com") {
+        "mimo"
+    } else if upstream.contains("longcat.chat") {
+        "longcat"
+    } else if upstream.contains("bigmodel.cn")
+        || upstream.contains("zhipu")
+        || upstream.contains("z.ai")
+    {
         "glm"
+    } else if upstream.contains("dashscope.aliyuncs.com") || upstream.contains("bailian") {
+        "qwen"
     } else if upstream.contains("api.openai.com") {
         "openai"
     } else if upstream.contains("anthropic.com") {
@@ -524,8 +609,9 @@ mod tests {
 
     #[test]
     fn guess_provider_recognizes_new_cn_providers() {
+        assert_eq!(guess_provider("https://api.moonshot.cn/v1"), "kimi");
         assert_eq!(guess_provider("https://api.moonshot.ai/v1"), "kimi");
-        assert_eq!(guess_provider("https://api.minimax.io/v1"), "minimax");
+        assert_eq!(guess_provider("https://api.minimaxi.com/v1"), "minimax");
         assert_eq!(
             guess_provider("https://open.bigmodel.cn/api/paas/v4"),
             "glm"
@@ -585,8 +671,8 @@ mod tests {
 
         let kimi = profile_by_slug("kimi");
         assert_eq!(
-            model_discovery_url(&kimi, "https://api.moonshot.ai/v1/", "sk").unwrap(),
-            "https://api.moonshot.ai/v1/models"
+            model_discovery_url(&kimi, "https://api.moonshot.cn/v1/", "sk").unwrap(),
+            "https://api.moonshot.cn/v1/models"
         );
         assert_eq!(
             auth_header(&kimi, "sk"),

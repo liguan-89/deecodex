@@ -661,7 +661,7 @@ mod tests {
                 1,
                 2,
                 3,
-                "https://api.moonshot.ai/v1/chat/completions".into(),
+                "https://api.moonshot.cn/v1/chat/completions".into(),
                 String::new(),
                 false,
             ))

@@ -2817,7 +2817,7 @@ body {
   background: var(--bg-surface); border: 1px solid var(--border-subtle);
   border-radius: var(--radius); padding: 12px 12px; cursor: pointer;
   text-align: center; transition: all var(--transition);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   min-width: 0; min-height: 116px;
   overflow: hidden;
 }
@@ -2826,18 +2826,44 @@ body {
   box-shadow: 0 0 16px rgba(0,200,232,0.08);
 }
 .provider-card .provider-icon {
-  width: 64px; height: 28px; line-height: 1;
+  width: 82px; height: 44px; line-height: 1;
   display: grid;
   place-items: center;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
+  flex: 0 0 44px;
 }
 .provider-logo-img {
-  max-width: 64px;
   width: auto;
-  height: 28px;
+  height: 40px;
+  max-width: 60px;
   display: block;
   object-fit: contain;
-  border-radius: 7px;
+  border-radius: 9px;
+}
+.provider-logo-qwen {
+  width: 42px;
+}
+.provider-logo-glm {
+  height: 25px;
+  max-width: none;
+}
+.provider-logo-openrouter,
+.provider-logo-custom {
+  height: 38px;
+}
+.provider-logo-longcat {
+  height: 39px;
+  max-width: 66px;
+}
+.provider-logo-openai {
+  height: 43px;
+}
+.provider-logo-google-ai {
+  height: 41px;
+}
+.provider-logo-anthropic,
+.provider-logo-claude {
+  height: 43px;
 }
 .provider-card .provider-name {
   font-family: var(--font-mono); font-size: 12px; font-weight: 600;

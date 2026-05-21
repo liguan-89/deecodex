@@ -63,6 +63,17 @@ const context = {
         { key: 'vision', label: '视觉辅助模型', target: 'auxiliary.vision.model' },
       ],
     },
+    {
+      slug: 'claude_code',
+      label: 'Claude Code',
+      description: 'Claude Code 配置',
+      config_path_hint: '~/.claude/settings.json',
+      default_base_url: 'https://api.anthropic.com',
+      default_model: 'claude-sonnet-4-5',
+      model_slots: [
+        { key: 'default', label: '主模型', target: 'ANTHROPIC_MODEL', required: true },
+      ],
+    },
   ],
   providerPresets: [
     {
@@ -70,7 +81,14 @@ const context = {
       label: 'DeepSeek',
       description: 'DeepSeek',
       default_upstream: 'https://api.deepseek.com/v1',
-      known_models: ['deepseek-chat'],
+      known_models: ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],
+    },
+    {
+      slug: 'anthropic',
+      label: 'Anthropic',
+      description: 'Anthropic',
+      default_upstream: 'https://api.anthropic.com',
+      known_models: ['claude-sonnet-4-5'],
     },
     {
       slug: 'minimax',
@@ -78,6 +96,41 @@ const context = {
       description: 'MiniMax',
       default_upstream: 'https://api.minimaxi.com/v1',
       known_models: ['MiniMax-M2.7'],
+    },
+    {
+      slug: 'mimo',
+      label: 'MiMo',
+      description: 'MiMo',
+      default_upstream: 'https://api.mimo-v2.com/v1',
+      known_models: ['mimo-v2.5-pro'],
+    },
+    {
+      slug: 'longcat',
+      label: 'LongCat',
+      description: 'LongCat',
+      default_upstream: 'https://api.longcat.chat/v1',
+      known_models: ['LongCat-Flash-Chat'],
+    },
+    {
+      slug: 'kimi',
+      label: 'Kimi',
+      description: 'Kimi',
+      default_upstream: 'https://api.moonshot.cn/v1',
+      known_models: ['kimi-k2.5'],
+    },
+    {
+      slug: 'glm',
+      label: 'GLM',
+      description: 'GLM',
+      default_upstream: 'https://open.bigmodel.cn/api/paas/v4',
+      known_models: ['glm-5.1'],
+    },
+    {
+      slug: 'qwen',
+      label: 'Qwen',
+      description: 'Qwen',
+      default_upstream: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      known_models: ['qwen-max'],
     },
     {
       slug: 'custom',
@@ -104,6 +157,12 @@ const context = {
     return text.length > max ? text.slice(0, max - 3) + '...' : text;
   },
   maskKey: value => value ? 'sk-t****3456' : '',
+  document: {
+    getElementById: () => ({
+      classList: { toggle: () => {} },
+      innerHTML: '',
+    }),
+  },
 };
 
 vm.createContext(context);
@@ -169,5 +228,37 @@ const savePayload = JSON.parse(context.serializeAccountForBackend({
 assert.strictEqual(savePayload.client_kind, 'hermes');
 assert(!Object.prototype.hasOwnProperty.call(savePayload, 'target'));
 assert(!Object.prototype.hasOwnProperty.call(savePayload, '_editing_endpoint_id'));
+
+const claudeProviders = context.providersForClientKind('claude_code').map(provider => provider.slug);
+assert(claudeProviders.includes('deepseek'));
+assert(claudeProviders.includes('kimi'));
+assert(claudeProviders.includes('minimax'));
+assert(claudeProviders.includes('mimo'));
+assert(claudeProviders.includes('longcat'));
+assert(claudeProviders.includes('glm'));
+assert(claudeProviders.includes('qwen'));
+const hermesProviders = context.providersForClientKind('hermes').map(provider => provider.slug);
+assert(hermesProviders.includes('qwen'));
+assert.deepStrictEqual(
+  Array.from(context.clientProviderDefaults('claude_code', 'deepseek').known_models),
+  ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],
+);
+context.addAccount('deepseek', 'claude_code');
+assert.strictEqual(context.editingAccount.upstream, 'https://api.deepseek.com/anthropic');
+assert.strictEqual(context.editingAccount.default_model, 'deepseek-v4-pro[1m]');
+assert.strictEqual(context.editingAccount.client_options.auth_env, 'ANTHROPIC_AUTH_TOKEN');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').upstream, 'https://api.moonshot.cn/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').default_model, 'kimi-k2.5');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').upstream, 'https://api.minimaxi.com/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').api_key_env, 'ANTHROPIC_API_KEY');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://api.mimo-v2.com/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').upstream, 'https://api.longcat.chat/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').default_model, 'LongCat-Flash-Chat');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').api_key_env, 'ANTHROPIC_AUTH_TOKEN');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'qwen').upstream, 'https://dashscope.aliyuncs.com/apps/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'qwen').default_model, 'qwen3.6-plus');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'glm').upstream, 'https://open.bigmodel.cn/api/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'glm').default_model, 'glm-5.1');
 
 console.log('accounts render smoke ok');

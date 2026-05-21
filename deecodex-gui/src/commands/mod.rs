@@ -2966,8 +2966,10 @@ pub async fn fetch_upstream_models(
             }
         }
     }
-    if ["deepseek", "kimi", "minimax", "mimo", "longcat", "qwen", "glm"]
-        .contains(&profile.slug.as_str())
+    if [
+        "deepseek", "kimi", "minimax", "mimo", "longcat", "qwen", "glm",
+    ]
+    .contains(&profile.slug.as_str())
         && endpoint_kind
             .as_deref()
             .map(|kind| kind.to_ascii_lowercase().contains("anthropic"))

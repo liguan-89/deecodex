@@ -115,7 +115,7 @@ function renderThreadClientSwitcher(sources, total) {
     const title = Array.isArray(source.scan_paths) ? source.scan_paths.join('\n') : '';
     return `<button type="button" class="thread-source-tab${active}${issueClass}" onclick="selectThreadClient('${escAttr(kind)}')" title="${escAttr(title)}">
       ${threadClientGlyph(kind)}
-      <span>${esc(source.client_label || threadClientLabel(kind))}</span>
+      <span>${esc(threadClientLabel(kind))}</span>
       <em>${Number(source.count || 0)}</em>
     </button>`;
   }).join('');
@@ -146,7 +146,7 @@ function renderThreadSourceDiagnostics(sources) {
   const rows = sources
     .filter(source => Array.isArray(source.diagnostics) && source.diagnostics.length)
     .map(source => `<div class="thread-source-note">
-      <strong>${esc(source.client_label || threadClientLabel(source.client_kind))}</strong>
+      <strong>${esc(threadClientLabel(source.client_kind))}</strong>
       <span>${source.diagnostics.map(item => esc(item)).join('；')}</span>
     </div>`);
   return rows.length ? `<div class="thread-source-diagnostics">${rows.join('')}</div>` : '';

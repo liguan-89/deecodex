@@ -916,7 +916,7 @@ mod provider_tests {
         let minimax = presets.iter().find(|p| p.slug == "minimax").unwrap();
         let glm = presets.iter().find(|p| p.slug == "glm").unwrap();
 
-        assert_eq!(kimi.default_upstream, "https://api.moonshot.ai/v1");
+        assert_eq!(kimi.default_upstream, "https://api.moonshot.cn/v1");
         assert_eq!(glm.default_upstream, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(kimi.wire_protocol, WireProtocol::ChatCompletions);
         assert_eq!(kimi.model_discovery.endpoint, "models");
@@ -947,7 +947,7 @@ mod provider_tests {
                 "id": "old-1",
                 "name": "旧 Kimi 账号",
                 "provider": "",
-                "upstream": "https://api.moonshot.ai/v1",
+                "upstream": "https://api.moonshot.cn/v1",
                 "api_key": "sk-old",
                 "model_map": {"gpt-5": "moonshot-v1-8k"}
             }],

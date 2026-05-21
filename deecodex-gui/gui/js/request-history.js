@@ -31,14 +31,20 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 
 		function historyClientLabel(kind) {
 		  if (kind === 'all') return '全部';
-		  if (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS[kind]) return CLIENT_KIND_LABELS[kind];
-		  return kind || '未知客户端';
+		  const labels = (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS) || {
+		    codex: 'Codex',
+		    claude_code: 'Claude',
+		    openclaw: 'OpenClaw',
+		    hermes: 'Hermes',
+		    generic_client: '通用客户端',
+		  };
+		  return labels[kind] || kind || '未知客户端';
 		}
 
 		function historyClientProfiles() {
 		  const fallback = [
 		    { slug: 'codex', label: 'Codex' },
-		    { slug: 'claude_code', label: 'Claude Code' },
+		    { slug: 'claude_code', label: 'Claude' },
 		    { slug: 'openclaw', label: 'OpenClaw' },
 		    { slug: 'hermes', label: 'Hermes' },
 		    { slug: 'generic_client', label: '通用客户端' },
@@ -47,7 +53,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    return clientProfiles.map(p => {
 		      const raw = p.slug || p.kind;
 		      const slug = typeof normalizeClientKind === 'function' ? normalizeClientKind(raw) : raw;
-		      return { slug, label: p.label || historyClientLabel(slug) };
+		      return { slug, label: historyClientLabel(slug) };
 		    });
 		  }
 		  return fallback;
