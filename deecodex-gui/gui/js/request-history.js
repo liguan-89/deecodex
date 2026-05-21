@@ -113,7 +113,6 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		function renderHistory() {
 		  return `<div class="page-header">
 		    <h2>请求历史</h2>
-		    <p>持久化的 API 请求记录（客户端、账号、模型、Token 用量、耗时）</p>
 		  </div>
 		  <div id="historyClientSwitcher" class="client-switcher history-client-switcher">${renderHistoryClientSwitcher()}</div>
 		  <div id="historyStats" class="history-stats">

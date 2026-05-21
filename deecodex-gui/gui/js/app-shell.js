@@ -12,6 +12,8 @@ let selectedConfigClientKind = deeStorage.getItem(CONFIG_CLIENT_STORAGE_KEY) || 
 let endpointTemplates = [];
 let upstreamModels = [];
 let appRefreshTimer = null;
+let transientScrollbarTimers = new WeakMap();
+let transientScrollbarsReady = false;
 
 function cleanupPanelEffects(panelId) {
   if (panelId === 'sessions') window.stopHistoryAutoRefresh?.();
@@ -26,6 +28,8 @@ function cleanupPanelEffects(panelId) {
 // ═══════════════════════════════════════════════════════════════
 async function init() {
   initTheme();
+  initWindowDragging();
+  initTransientScrollbars();
   loadNav();
   switchPanel('status');
   await Promise.all([loadStatus(), loadConfig(), loadAccountsData()]);
@@ -61,6 +65,43 @@ async function init() {
   }, 10000);
 }
 
+function isWindowDragBlocked(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('button, a, input, select, textarea, label, summary, [role="button"], [role="link"], [contenteditable="true"]'));
+}
+
+function initWindowDragging() {
+  document.querySelectorAll('[data-window-drag-region]').forEach((region) => {
+    if (region.dataset.windowDragReady === 'true') return;
+    region.dataset.windowDragReady = 'true';
+    region.addEventListener('mousedown', (event) => {
+      if (event.button !== 0 || event.detail !== 1 || isWindowDragBlocked(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+      window.DeeCodexTauri?.startWindowDrag?.().catch((error) => {
+        console.warn('[deecodex] 窗口拖动失败:', error);
+      });
+    }, true);
+  });
+}
+
+function initTransientScrollbars() {
+  if (transientScrollbarsReady) return;
+  transientScrollbarsReady = true;
+  document.addEventListener('scroll', (event) => {
+    const target = event.target === document ? document.scrollingElement : event.target;
+    if (!target || !(target instanceof HTMLElement)) return;
+    target.classList.add('is-scrolling');
+    const oldTimer = transientScrollbarTimers.get(target);
+    if (oldTimer) clearTimeout(oldTimer);
+    transientScrollbarTimers.set(target, setTimeout(() => {
+      target.classList.remove('is-scrolling');
+      transientScrollbarTimers.delete(target);
+    }, 760));
+  }, true);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 导航
 // ═══════════════════════════════════════════════════════════════
@@ -79,6 +120,8 @@ function switchPanel(panelId) {
   if (previousPanel && previousPanel !== panelId) cleanupPanelEffects(previousPanel);
   currentPanel = panelId;
   const main = document.getElementById('mainContent');
+  if (main) main.classList.toggle('primary-shell-main', panelId !== 'dex-assistant');
+  if (main) main.classList.toggle('status-main', panelId === 'status');
   if (main) main.classList.toggle('dex-main', panelId === 'dex-assistant');
   if (main) main.classList.toggle('accounts-main', panelId === 'accounts' && accountsView === 'list');
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -110,22 +153,30 @@ function goToConfig(sectionId) {
   });
 }
 
+function wrapPrimaryPanel(panelId, html) {
+  if (panelId === 'status' || panelId === 'dex-assistant') return html;
+  const safePanelId = String(panelId || 'unknown').replace(/[^a-z0-9_-]/gi, '-');
+  return `<section class="primary-page-shell primary-page-shell-${safePanelId}" data-primary-panel="${escAttr(safePanelId)}">${html}</section>`;
+}
+
 function renderPanel(panelId) {
   const container = document.getElementById('mainContent');
+  if (container) container.classList.toggle('primary-shell-main', panelId !== 'dex-assistant');
+  if (container) container.classList.toggle('status-main', panelId === 'status');
   if (container) container.classList.toggle('dex-main', panelId === 'dex-assistant');
   if (container) container.classList.toggle('accounts-main', panelId === 'accounts' && accountsView === 'list');
   switch (panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
-    case 'config': container.innerHTML = renderConfig(); break;
-    case 'diagnostics': container.innerHTML = renderDiagnostics(); break;
-    case 'help': container.innerHTML = renderHelp(); break;
-    case 'sessions': container.innerHTML = renderHistory(); refreshHistory(); break;
-    case 'threads': container.innerHTML = renderThreads(); refreshThreads(); break;
-    case 'accounts': container.innerHTML = renderAccountsPanel(); loadAccountsData(); break;
-    case 'plugins': container.innerHTML = renderPluginsPanel(); loadPluginsData(); break;
+    case 'config': container.innerHTML = wrapPrimaryPanel(panelId, renderConfig()); break;
+    case 'diagnostics': container.innerHTML = wrapPrimaryPanel(panelId, renderDiagnostics()); break;
+    case 'help': container.innerHTML = wrapPrimaryPanel(panelId, renderHelp()); break;
+    case 'sessions': container.innerHTML = wrapPrimaryPanel(panelId, renderHistory()); refreshHistory(); break;
+    case 'threads': container.innerHTML = wrapPrimaryPanel(panelId, renderThreads()); refreshThreads(); break;
+    case 'accounts': container.innerHTML = wrapPrimaryPanel(panelId, renderAccountsPanel()); loadAccountsData(); break;
+    case 'plugins': container.innerHTML = wrapPrimaryPanel(panelId, renderPluginsPanel()); loadPluginsData(); break;
     case 'dex-assistant': container.innerHTML = renderDexAssistant(); break;
-    case 'profile': container.innerHTML = renderProfile(); break;
-    default: container.innerHTML = '<div class="empty-state">未知面板</div>';
+    case 'profile': container.innerHTML = wrapPrimaryPanel(panelId, renderProfile()); break;
+    default: container.innerHTML = wrapPrimaryPanel(panelId, '<div class="empty-state">未知面板</div>');
   }
 }
 

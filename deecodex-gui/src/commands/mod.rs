@@ -12,7 +12,7 @@ use std::sync::Arc;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 use deecodex::accounts::{
     AccountClientKind, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode,
@@ -159,6 +159,13 @@ fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> 
 }
 
 // ── 前端返回类型 ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn start_window_drag(window: WebviewWindow) -> Result<(), String> {
+    window
+        .start_dragging()
+        .map_err(|err| format!("窗口拖动失败: {err}"))
+}
 
 #[derive(Serialize, Clone)]
 pub struct ServiceInfo {

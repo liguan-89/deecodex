@@ -14,7 +14,7 @@
         "width": 1000,
         "height": 650,
         "resizable": true,
-        "titleBarStyle": "Transparent",
+        "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "fullscreen": false
       }

@@ -15,7 +15,8 @@
     window.DeeCodexTauri = {
       hasTauri: false,
       invoke: function () { return Promise.reject(new Error('非 Tauri 环境')); },
-      listen: function () { return Promise.reject(new Error('非 Tauri 环境')); }
+      listen: function () { return Promise.reject(new Error('非 Tauri 环境')); },
+      startWindowDrag: function () { return Promise.reject(new Error('非 Tauri 环境')); }
     };
     return;
   }
@@ -41,7 +42,24 @@
     return listenFn(eventName, handler);
   }
 
+  async function startWindowDrag() {
+    try {
+      return await invokeFn('start_window_drag');
+    } catch (error) {
+      var currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
+      if (currentWindow && typeof currentWindow.startDragging === 'function') {
+        return currentWindow.startDragging();
+      }
+      throw error;
+    }
+  }
+
   document.documentElement.dataset.runtime = 'tauri';
 
-  window.DeeCodexTauri = { hasTauri: true, invoke: invoke, listen: listen };
+  window.DeeCodexTauri = {
+    hasTauri: true,
+    invoke: invoke,
+    listen: listen,
+    startWindowDrag: startWindowDrag
+  };
 })();

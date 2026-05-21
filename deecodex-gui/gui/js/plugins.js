@@ -39,7 +39,6 @@ function renderPluginsPanel() {
   // list view
   return `<div class="page-header">
     <h2>插件管理</h2>
-    <p>安装和管理第三方通道插件</p>
   </div>
   <div class="plugin-console">
     <div class="plugin-install-bar">
@@ -71,7 +70,8 @@ async function loadPluginsData() {
       const focusedValue = input && 'value' in input ? input.value : null;
       const main = document.getElementById('mainContent');
       const scrollTop = main ? main.scrollTop : 0;
-      document.getElementById('mainContent').innerHTML = renderPluginsPanel();
+      const html = renderPluginsPanel();
+      document.getElementById('mainContent').innerHTML = typeof wrapPrimaryPanel === 'function' ? wrapPrimaryPanel('plugins', html) : html;
       const restored = focusedId ? document.getElementById(focusedId) : null;
       if (restored && focusedValue !== null && 'value' in restored) {
         restored.value = focusedValue;

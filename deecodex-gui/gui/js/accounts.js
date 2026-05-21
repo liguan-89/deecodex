@@ -552,7 +552,8 @@ function navigateAccounts(view) {
 function renderMainContent() {
   const main = document.getElementById('mainContent');
   main.classList.toggle('accounts-main', accountsView === 'list');
-  main.innerHTML = renderAccountsPanel();
+  const html = renderAccountsPanel();
+  main.innerHTML = typeof wrapPrimaryPanel === 'function' ? wrapPrimaryPanel('accounts', html) : html;
   afterRenderAccountsPanel();
 }
 

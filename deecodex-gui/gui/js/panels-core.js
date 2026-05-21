@@ -32,128 +32,6 @@ function serviceHostForClientUrl(host) {
   return urlHost.includes(':') && !(urlHost.startsWith('[') && urlHost.endsWith(']')) ? `[${urlHost}]` : urlHost;
 }
 
-function configServiceEndpoint() {
-  const status = window._statusData || {};
-  const running = Boolean(status.running);
-  const source = running ? status : (currentConfig || {});
-  const host = normalizeServiceHost(source.host || currentConfig?.host || '127.0.0.1');
-  const port = source.port || currentConfig?.port || 4446;
-  const urlHost = serviceHostForClientUrl(host);
-  const address = `http://${urlHost}:${port}`;
-  return { running, host, urlHost, port, address };
-}
-
-function normalizeEndpointKindName(kind) {
-  const value = String(kind || '').trim();
-  const normalized = value
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/-/g, '_')
-    .toLowerCase();
-  if (normalized === 'open_ai_chat' || normalized === 'custom_chat') return normalized;
-  if (normalized === 'open_ai_responses' || normalized === 'custom_responses') return normalized;
-  if (normalized === 'anthropic_messages') return normalized;
-  return '';
-}
-
-function codexActiveEndpointForConfig(account) {
-  if (!account) return null;
-  const endpoints = Array.isArray(account.endpoints) ? account.endpoints : [];
-  const activeId = accountsData?.active_endpoint_id;
-  const activeAccountId = accountsData?.active_account_id || accountsData?.active_id;
-  const activeEndpoint = activeId && (!activeAccountId || activeAccountId === account.id)
-    ? endpoints.find(endpoint => endpoint.id === activeId)
-    : null;
-  if (activeEndpoint) return activeEndpoint;
-  if (account.active_endpoint_kind || account.active_endpoint_name) {
-    return {
-      name: account.active_endpoint_name || account.name || '当前端点',
-      kind: account.active_endpoint_kind,
-    };
-  }
-  if (endpoints.length) return endpoints[0];
-  return {
-    name: account.name || '当前端点',
-    kind: account.translate_enabled === false ? 'open_ai_responses' : 'open_ai_chat',
-  };
-}
-
-function codexChannelInfo(account) {
-  const endpoint = codexActiveEndpointForConfig(account);
-  const kind = normalizeEndpointKindName(endpoint?.kind);
-  if (!account) {
-    return { endpointName: '未接入', protocol: '未配置', channel: '未配置', translation: '未配置', tone: 'pending' };
-  }
-  if (kind === 'open_ai_responses' || kind === 'custom_responses') {
-    return { endpointName: endpoint?.name || 'Responses', protocol: 'OpenAI Responses', channel: 'Responses 直连', translation: '不经过翻译层', tone: 'ok' };
-  }
-  if (kind === 'anthropic_messages') {
-    return { endpointName: endpoint?.name || 'Anthropic Messages', protocol: 'Anthropic Messages', channel: 'Messages 适配', translation: '适配到 Messages', tone: 'warn' };
-  }
-  return { endpointName: endpoint?.name || 'Chat Completions', protocol: 'OpenAI Chat', channel: 'Chat 翻译', translation: 'Responses → Chat', tone: 'info' };
-}
-
-function configProtocolEntryRows() {
-  const codexAccount = configPrimaryClientAccount('codex');
-  const codex = codexChannelInfo(codexAccount);
-  return [
-    {
-      kind: 'codex',
-      client: 'Codex',
-      baseRule: '服务地址 + /v1',
-      requestPath: '/v1/responses',
-      protocol: codex.protocol,
-      channel: codex.channel,
-      translation: codex.translation,
-      detail: `当前端点: ${codex.endpointName}`,
-      tone: codex.tone,
-    },
-    {
-      kind: 'claude_code',
-      client: 'Claude',
-      baseRule: '服务地址',
-      requestPath: '/v1/messages 或 /messages',
-      protocol: 'Anthropic Messages',
-      channel: '客户端代理',
-      translation: '不经过 Responses → Chat',
-      detail: 'Claude Code 使用 Anthropic 原生入口',
-      tone: 'info',
-    },
-    {
-      kind: 'openclaw',
-      client: 'OpenClaw',
-      baseRule: '服务地址 + /v1',
-      requestPath: '/v1/chat/completions',
-      protocol: 'OpenAI Chat',
-      channel: 'Chat 兼容代理',
-      translation: '不经过 Codex 翻译层',
-      detail: 'Agent gateway 使用 Chat Completions',
-      tone: 'info',
-    },
-    {
-      kind: 'hermes',
-      client: 'Hermes',
-      baseRule: '服务地址 + /v1',
-      requestPath: '/v1/chat/completions',
-      protocol: 'OpenAI Chat',
-      channel: 'Chat 兼容代理',
-      translation: '不经过 Codex 翻译层',
-      detail: 'Agent runtime 使用 Chat Completions',
-      tone: 'info',
-    },
-    {
-      kind: 'generic_client',
-      client: '通用客户端',
-      baseRule: '服务地址 + /v1',
-      requestPath: '/v1/chat/completions',
-      protocol: 'OpenAI Chat',
-      channel: 'Chat 兼容代理',
-      translation: '不经过 Codex 翻译层',
-      detail: '环境变量模板使用 OpenAI-compatible 入口',
-      tone: 'info',
-    },
-  ];
-}
-
 function renderStatus() {
   const s = window._statusData || {};
   const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
@@ -170,8 +48,6 @@ function renderStatus() {
     return value.toFixed(digits).replace(/\.0$/, '');
   };
   const clientLabel = (kind, profile) => clientKindUiLabel(kind, profile);
-  const statusPill = (state, text) => `<span class="gateway-pill ${state}">${esc(text)}</span>`;
-  const statusDot = (state) => `<span class="gateway-dot ${state}"></span>`;
   const kindOf = (account) => typeof accountClientKind === 'function' ? accountClientKind(account) : (account?.client_kind || account?.target || 'codex');
   const accounts = accountsData.accounts || [];
 
@@ -199,55 +75,28 @@ function renderStatus() {
       return true;
     });
   })();
-  const activeAccountForKind = (kind, list) => {
-    if (!list.length) return null;
-    const activeId = accountsData.active_account_id || accountsData.active_id;
-    if (kind === 'codex') return list.find(a => a.id === activeId) || list[0];
-    return list
-      .filter(a => Number(a.last_applied_at || 0) > 0)
-      .sort((a, b) => Number(b.last_applied_at || 0) - Number(a.last_applied_at || 0))[0] || list[0];
-  };
   const clientSummaries = clientKinds.map(kind => {
     const list = accounts.filter(a => kindOf(a) === kind.slug);
     const hasIssue = list.some(a => typeof clientAccountHasIssue === 'function' && clientAccountHasIssue(a));
-    const state = list.length ? (hasIssue ? 'warn' : 'ok') : 'idle';
-    const stateText = list.length ? (hasIssue ? '需处理' : '正常') : '未接入';
-    const active = activeAccountForKind(kind.slug, list);
-    return { ...kind, count: list.length, hasIssue, state, stateText, activeName: active?.name || '—' };
+    return { count: list.length, hasIssue };
   });
-  const connectedKinds = clientSummaries.filter(item => item.count > 0).length;
-  const disconnectedKinds = clientKinds.length - connectedKinds;
   const clientIssueCount = clientSummaries.filter(item => item.hasIssue).length;
   const todayRequests = Number(tokenStats.total || 0);
-  const problemCount = (running ? 0 : 1) + clientIssueCount + (connectedKinds === 0 ? 1 : 0);
+  const problemCount = (running ? 0 : 1) + clientIssueCount;
   const gatewayTitle = '接入状态';
   const version = s.version && s.version !== '—' ? `v${s.version}` : '版本 —';
   const hasUpdate = typeof deeStorage !== 'undefined' && deeStorage?.getItem?.('updateAvailable') === '1';
   const serviceHost = normalizeServiceHost(v(s.host, currentConfig?.host || '127.0.0.1'));
   const serviceAddress = port === '—' ? '—' : `${serviceHost.includes(':') ? `[${serviceHost}]` : serviceHost}:${port}`;
   const gatewaySummaryItems = [
-    `已接入 ${connectedKinds}/${clientKinds.length} 个工具`,
     `${problemCount} 个问题`,
     `今日 ${todayRequests} 次请求`,
     `服务地址 ${serviceAddress}`,
   ];
-  const clientRows = clientSummaries.map(kind => {
-    return `
-      <button class="tool-health-row ${kind.state}" type="button" onclick="selectedClientKind='${escAttr(kind.slug)}';switchPanel('accounts')">
-        <span class="tool-health-name">${statusDot(kind.state)}${esc(kind.label || clientLabel(kind.slug))}</span>
-        <span class="tool-health-status">${statusPill(kind.state, kind.stateText)}</span>
-        <span class="tool-health-active">${esc(kind.activeName)}</span>
-        <span class="tool-health-count">${esc(kind.count)} 个配置</span>
-        <span class="tool-health-action">${kind.count ? '查看' : '配置'}</span>
-      </button>`;
-  }).join('');
 
   return `
-    <div class="page-header status-page-header">
-      <p>统一管理 Codex、Claude Code、OpenClaw、Hermes 等 AI 工具的本地接入、运行健康与使用概览</p>
-    </div>
-
-    <div class="gateway-hero">
+    <section class="status-overview-shell" aria-label="接入状态总览">
+      <div class="gateway-hero">
       <div class="gateway-hero-main">
         <div class="gateway-title-row">
           <span>${esc(gatewayTitle)}</span>
@@ -257,18 +106,13 @@ function renderStatus() {
           ${gatewaySummaryItems.map(item => `<span>${esc(item)}</span>`).join('')}
         </div>
       </div>
-    </div>
+      </div>
 
-    <div class="gateway-metric-grid">
+      <div class="gateway-metric-grid">
       <div class="gateway-metric-card ${running ? 'ok' : 'fail'}" onclick="mgmtToggle()">
         <span class="metric-label">网关状态</span>
         <strong>${running ? '运行中' : '已停止'}</strong>
         <span class="metric-foot">${running ? `已运行 ${esc(fmtUptime(s.uptime_secs))}` : '当前未运行'}</span>
-      </div>
-      <div class="gateway-metric-card" onclick="switchPanel('accounts')">
-        <span class="metric-label">接入工具</span>
-        <strong>${esc(connectedKinds)} / ${esc(clientKinds.length)}</strong>
-        <span class="metric-foot">${disconnectedKinds ? `${disconnectedKinds} 个未接入` : '全部已接入'}</span>
       </div>
       <div class="gateway-metric-card ${problemCount ? 'warn' : 'ok'}" onclick="validateConfig()">
         <span class="metric-label">待处理问题</span>
@@ -280,34 +124,220 @@ function renderStatus() {
         <strong>${esc(todayRequests)}</strong>
         <span class="metric-foot">${esc(fmtStatusTokens(tokenStats.total_tokens))} tokens 今日累计</span>
       </div>
-    </div>
+      </div>
 
-    <section class="gateway-panel operations-panel">
+      <section class="gateway-panel operations-panel">
       <div class="gateway-section-title">服务操作</div>
       <div class="mgmt-actions gateway-actions">
         <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${running ? '◼ 停止网关' : '▶ 启动网关'}</button>
         <button class="btn btn-ghost" onclick="validateConfig()">◇ 运行诊断</button>
-        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex" style="border-color:rgba(0,200,232,0.35);color:var(--accent)">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
+        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
         <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart">⟳ 重启服务</button>
         <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
         <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
       </div>
-    </section>
+      </section>
 
-    <section class="gateway-panel tools-panel">
-      <div class="gateway-section-title">接入工具</div>
-      <div class="tool-health-list">
-        <div class="tool-health-head" aria-hidden="true">
-          <span>工具</span>
-          <span>状态</span>
-          <span>活跃账号</span>
-          <span>配置</span>
-          <span></span>
-        </div>
-        ${clientRows}
-      </div>
+      ${renderStatusClientDock(running)}
     </section>
   `;
+}
+
+function statusClientKinds() {
+  return [
+    { slug: 'codex_cli', label: 'Codex CLI', accountKind: 'codex', iconKind: 'codex' },
+    { slug: 'codex_desktop', label: 'Codex 桌面', accountKind: 'codex', iconKind: 'codex', desktopApp: 'Codex' },
+    { slug: 'claude_cli', label: 'Claude CLI', accountKind: 'claude_code', iconKind: 'claude_code' },
+    { slug: 'claude_desktop', label: 'Claude 桌面', accountKind: 'claude_code', iconKind: 'claude_code', desktopApp: 'Claude' },
+    { slug: 'openclaw', label: 'OpenClaw', accountKind: 'openclaw', iconKind: 'openclaw' },
+    { slug: 'hermes', label: 'Hermes', accountKind: 'hermes', iconKind: 'hermes' },
+  ];
+}
+
+function statusClientDockItem(kind) {
+  const normalized = String(kind || '');
+  return statusClientKinds().find(item => item.slug === normalized) || statusClientKinds()[0];
+}
+
+function statusClientAccountKind(kind) {
+  return statusClientDockItem(kind).accountKind || kind;
+}
+
+function statusClientPrimaryAccount(kind) {
+  const accountKind = statusClientAccountKind(kind);
+  const list = ((accountsData && accountsData.accounts) || [])
+    .filter(account => {
+      if (typeof accountClientKind === 'function') return accountClientKind(account) === accountKind;
+      return normalizeClientKind?.(account?.client_kind || account?.target || 'codex') === accountKind;
+    });
+  if (!list.length) return null;
+  const activeId = accountsData.active_account_id || accountsData.active_id;
+  if (accountKind === 'codex') return list.find(account => account.id === activeId) || list[0];
+  return list
+    .slice()
+    .sort((a, b) => Number(b.last_applied_at || 0) - Number(a.last_applied_at || 0))[0];
+}
+
+function statusProcessEntries(name) {
+  const entry = (window._clientProcessMap || {})[name];
+  if (!entry) return [];
+  if (Array.isArray(entry)) return entry;
+  if (Array.isArray(entry.instances)) return entry.instances;
+  return entry.running ? [{}] : [];
+}
+
+function statusProcessCommands(...names) {
+  return names.flatMap(name => statusProcessEntries(name))
+    .map(item => String(item?.command || item?.name || ''))
+    .filter(Boolean);
+}
+
+function statusCommandIsCodexDesktop(command) {
+  return /\/Codex\.app\//.test(command)
+    || /com\.openai\.codex/.test(command)
+    || /Codex Helper/.test(command)
+    || /Application Support\/Codex/.test(command);
+}
+
+function statusCommandIsClaudeDesktop(command) {
+  return /\/Claude\.app\//.test(command)
+    || /Claude Helper/.test(command)
+    || /Application Support\/Claude/.test(command);
+}
+
+function statusClientProcessRunning(kind) {
+  if (kind === 'codex_desktop') {
+    return statusProcessCommands('codex', 'Codex').some(statusCommandIsCodexDesktop);
+  }
+  if (kind === 'codex_cli') {
+    const commands = statusProcessCommands('codex', 'Codex');
+    if (!commands.length) return Boolean((window._clientProcessMap || {}).codex?.running);
+    return commands.some(command => !statusCommandIsCodexDesktop(command) && /(^|\/|\s)codex(\s|$)/i.test(command));
+  }
+  if (kind === 'claude_desktop') {
+    return statusProcessCommands('claude', 'Claude').some(statusCommandIsClaudeDesktop);
+  }
+  if (kind === 'claude_cli') {
+    const commands = statusProcessCommands('claude', 'Claude');
+    if (!commands.length) return Boolean((window._clientProcessMap || {}).claude?.running);
+    return commands.some(command => !statusCommandIsClaudeDesktop(command) && /(^|\/|\s)claude(\s|$)/i.test(command));
+  }
+  const entry = (window._clientProcessMap || {})[kind];
+  if (entry && typeof entry === 'object') return Boolean(entry.running);
+  if (kind === 'openclaw') return Boolean(entry);
+  if (kind === 'hermes') return Boolean(entry);
+  return false;
+}
+
+function statusClientEnabled(kind, account, gatewayRunning) {
+  if (kind === 'codex') return Boolean(gatewayRunning);
+  return Boolean(account?.client_options?.proxy_recording_enabled && account?.last_applied_at);
+}
+
+function statusClientInfo(kind, gatewayRunning) {
+  const account = statusClientPrimaryAccount(kind);
+  const enabled = statusClientEnabled(kind, account, gatewayRunning);
+  const processRunning = statusClientProcessRunning(kind);
+  const state = processRunning ? 'on' : 'off';
+  const text = processRunning ? '运行中' : '未运行';
+  return { account, enabled, processRunning, state, text };
+}
+
+function renderStatusClientDock(gatewayRunning) {
+  return `<section class="gateway-panel client-dock-panel" aria-label="客户端运行控制">
+    <div class="gateway-section-title client-dock-title">客户端接入</div>
+    <div class="client-dock-grid">
+      ${statusClientKinds().map(item => {
+        const kind = item.slug;
+        const label = item.label || clientKindUiLabel(item.accountKind);
+        const info = statusClientInfo(kind, gatewayRunning);
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" title="${escAttr(label + ' · ' + info.text)}">
+          <span class="client-dock-icon-wrap">
+            <span class="client-dock-icon">${typeof clientIcon === 'function' ? clientIcon(item.iconKind || item.accountKind || kind) : ''}</span>
+            <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
+          </span>
+          <span class="client-dock-label">${esc(label)}</span>
+        </button>`;
+      }).join('')}
+    </div>
+  </section>`;
+}
+
+async function refreshStatusClientDock() {
+  if (currentPanel !== 'status') return;
+  try {
+    const result = await invoke('dex_detect_processes');
+    const map = {};
+    (result.processes || []).forEach(item => {
+      map[item.process] = {
+        running: Boolean(item.running),
+        instances: Array.isArray(item.instances) ? item.instances : [],
+      };
+    });
+    window._clientProcessMap = map;
+    document.querySelectorAll('.client-dock-item').forEach(button => {
+      const kind = button.dataset.clientKind;
+      const info = statusClientInfo(kind, Boolean(window._statusData?.running));
+      button.classList.toggle('on', info.state === 'on');
+      button.classList.toggle('off', info.state === 'off');
+      button.classList.toggle('process-running', info.processRunning);
+      button.title = `${button.dataset.clientLabel || clientKindUiLabel(statusClientAccountKind(kind))} · ${info.text}`;
+      const runtime = button.querySelector('.client-dock-runtime');
+      if (runtime) {
+        runtime.classList.toggle('live', info.processRunning);
+        runtime.classList.toggle('idle', !info.processRunning);
+        runtime.title = info.processRunning ? '客户端进程运行中' : '未检测到客户端进程';
+      }
+    });
+  } catch (_) {}
+}
+
+async function toggleStatusClientKind(kind) {
+  const normalized = String(kind || '');
+  if (normalized === 'codex_cli') {
+    await mgmtToggle();
+    return;
+  }
+  if (normalized === 'codex_desktop' || normalized === 'claude_desktop') {
+    const running = statusClientProcessRunning(normalized);
+    try {
+      await invoke('dex_toggle_desktop_client', { kind: normalized, running });
+      showToast(`${statusClientDockItem(normalized).label} 已${running ? '关闭' : '打开'}`, running ? 'info' : 'success');
+      setTimeout(refreshStatusClientDock, 900);
+    } catch (err) {
+      showToast(`${statusClientDockItem(normalized).label} 操作失败: ` + err, 'error');
+    }
+    return;
+  }
+  const accountKind = statusClientAccountKind(normalized);
+  const account = statusClientPrimaryAccount(normalized);
+  if (!account) {
+    selectedClientKind = accountKind;
+    switchPanel('accounts');
+    showToast('请先添加该客户端账号', 'info');
+    return;
+  }
+  const enabled = statusClientEnabled(accountKind, account, Boolean(window._statusData?.running));
+  const next = JSON.parse(JSON.stringify(account));
+  next.client_options = next.client_options || {};
+  next.client_options.proxy_recording_enabled = !enabled;
+  if (!next.client_options.proxy_recording_enabled) {
+    delete next.client_options.proxy_base_url;
+  }
+  delete next._client_status_report;
+  try {
+    await invoke('update_account', { accountJson: JSON.stringify(next) });
+    const report = await invoke('apply_client_account', { accountId: next.id, dryRun: false });
+    showToast(report.ok
+      ? `${clientKindUiLabel(accountKind)} 已${enabled ? '关闭' : '开启'}`
+      : `${clientKindUiLabel(accountKind)} 配置写入后仍有问题`,
+      report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    if (currentPanel === 'status') renderPanel('status');
+    await refreshStatusClientDock();
+  } catch (err) {
+    showToast(`${clientKindUiLabel(accountKind)} 切换失败: ` + err, 'error');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -493,10 +523,6 @@ function configFieldByKey(key) {
 
 function renderCodexAdvancedSettings() {
   return `<div class="codex-advanced-layout">
-    <div class="codex-setting-note codex-scope-note">
-      <strong>Codex 专属</strong>
-      <span>这些设置只服务 Codex 的 <code>~/.codex/config.toml</code>、Responses 翻译、请求治理、tools 执行与 CDP 调试，不属于全局网关设置。</span>
-    </div>
     ${renderEditableConfigSections('codex')}
     <div class="codex-inline-actions">
       <button type="button" class="btn btn-ghost" onclick="mgmtLaunchCodex()">${window._cdpLaunched ? '停止 CDP' : '启动 CDP'}</button>
@@ -734,39 +760,6 @@ function renderConfigCommandStrip(kind) {
   </section>`;
 }
 
-function renderProtocolEntrySummary() {
-  const endpoint = configServiceEndpoint();
-  const rows = configProtocolEntryRows();
-  return `<section class="config-client-section config-protocol-section">
-    <div class="config-section-header">
-      <span class="section-icon">⌁</span>
-      <h3>协议入口与通道</h3>
-      <span class="section-desc">${endpoint.running ? '当前运行' : '配置预览'}</span>
-    </div>
-    <div class="config-protocol-address">
-      <span>服务地址</span>
-      <code>${esc(endpoint.address)}</code>
-      <em>${endpoint.running ? '客户端写入使用当前监听地址' : '服务未运行时使用保存配置'}</em>
-    </div>
-    <div class="config-protocol-table">
-      <div class="config-protocol-head" aria-hidden="true">
-        <span>客户端</span>
-        <span>Base URL</span>
-        <span>请求入口</span>
-        <span>协议通道</span>
-        <span>翻译关系</span>
-      </div>
-      ${rows.map(row => `<div class="config-protocol-row ${escAttr(row.tone || 'info')}">
-        <strong>${esc(row.client)}</strong>
-        <span>${esc(row.baseRule)}</span>
-        <code>${esc(row.requestPath)}</code>
-        <span>${esc(row.channel)}<small>${esc(row.detail)}</small></span>
-        <span>${esc(row.translation)}</span>
-      </div>`).join('')}
-    </div>
-  </section>`;
-}
-
 function renderConfigRuntimeNotice() {
   const status = window._statusData || {};
   if (!status.running) return '';
@@ -870,29 +863,20 @@ function renderConfig() {
   selectedConfigClientKind = normalizeConfigClientKind(selectedConfigClientKind);
   syncConfigSaveVisibility();
   const canEdit = configCanEditSelected();
-  const activeLabel = configClientLabel(selectedConfigClientKind);
-  const pageHint = selectedConfigClientKind === 'codex'
-    ? '仅配置 Codex 客户端专用行为，不进入全局网关设置'
-    : (canEdit
-      ? '修改配置后点击「保存配置」使其生效，部分变更需重启服务'
-      : `${esc(activeLabel)} 的运行治理、权限边界与诊断入口`);
   let html = `
     <div class="config-page-shell">
       <div class="page-header config-page-header">
         <div>
           <h2>高级设置</h2>
-          <p>${pageHint}</p>
         </div>
       </div>
       ${renderConfigClientSwitcher()}`;
 
   if (selectedConfigClientKind === 'codex') {
-    html += renderProtocolEntrySummary();
     html += renderCodexAdvancedSettings();
   } else {
     if (selectedConfigClientKind === 'global') {
       html += renderConfigRuntimeNotice();
-      html += renderProtocolEntrySummary();
     }
     html += canEdit ? renderEditableConfigSections(selectedConfigClientKind) : renderClientConfigOverview(selectedConfigClientKind);
   }
@@ -1007,7 +991,6 @@ function renderDiagnostics() {
   return `
     <div class="page-header">
       <h2>执行诊断</h2>
-      <p>全链路运行时诊断，涵盖服务状态、账号连通、Codex 路由、注入状态、运行环境</p>
     </div>
     <div class="diag-header">
       <button class="btn btn-primary" id="btnValidateDiag" onclick="validateConfig()">运行诊断</button>
@@ -1280,12 +1263,18 @@ async function loadStatus() {
       dot.className = 'indicator err'; label.textContent = '服务已停止';
     }
 
-    if (currentPanel === 'status') renderPanel('status');
+    if (currentPanel === 'status') {
+      renderPanel('status');
+      refreshStatusClientDock();
+    }
   } catch (err) {
     window._statusData = { running: false, port: '—', uptime_secs: 0 };
     document.getElementById('connDot').className = 'indicator err';
     document.getElementById('connLabel').textContent = '服务不可达';
-    if (currentPanel === 'status') renderPanel('status');
+    if (currentPanel === 'status') {
+      renderPanel('status');
+      refreshStatusClientDock();
+    }
   }
 }
 

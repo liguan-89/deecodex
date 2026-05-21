@@ -35,7 +35,6 @@ function threadClientGlyph(kind) {
 function renderThreads() {
   return `<div class="page-header">
     <h2>线程中心</h2>
-    <p>多客户端本地会话历史</p>
   </div>
   <div class="threads-console">
     <div class="threads-summary" id="threadsSummary">

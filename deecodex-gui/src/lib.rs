@@ -458,6 +458,7 @@ pub fn run() {
         .manage(ServerManager::new())
         .invoke_handler(tauri::generate_handler![
             commands::start_service,
+            commands::start_window_drag,
             commands::stop_service,
             commands::get_service_status,
             commands::get_config,
@@ -534,6 +535,7 @@ pub fn run() {
             commands::dex::dex_read_file,
             commands::dex::dex_list_directory,
             commands::dex::dex_detect_processes,
+            commands::dex::dex_toggle_desktop_client,
             commands::dex::dex_detect_ports,
             commands::dex::dex_get_env_info,
             commands::dex::dex_execute_shell,

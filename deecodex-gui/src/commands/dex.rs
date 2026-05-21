@@ -1461,7 +1461,9 @@ pub fn dex_list_directory(path: String) -> Result<Value, String> {
 /// DEX 助手：检测运行中的进程
 #[tauri::command]
 pub fn dex_detect_processes() -> Result<Value, String> {
-    let targets = ["codex", "deecodex", "claude", "openclaw", "hermes", "node"];
+    let targets = [
+        "codex", "Codex", "deecodex", "claude", "Claude", "openclaw", "hermes", "node",
+    ];
     let mut processes: Vec<Value> = Vec::new();
 
     for target in &targets {
@@ -1475,6 +1477,51 @@ pub fn dex_detect_processes() -> Result<Value, String> {
     }
 
     Ok(json!({ "processes": processes }))
+}
+
+/// 状态页客户端 Dock：打开或退出桌面版客户端。
+#[tauri::command]
+pub fn dex_toggle_desktop_client(kind: String, running: bool) -> Result<Value, String> {
+    let app_name = match kind.as_str() {
+        "codex_desktop" => "Codex",
+        "claude_desktop" => "Claude",
+        _ => return Err(format!("不支持的桌面客户端: {kind}")),
+    };
+    let action = if running { "quit" } else { "open" };
+
+    #[cfg(target_os = "macos")]
+    {
+        let result = if running {
+            std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(format!("quit app \"{app_name}\""))
+                .spawn()
+        } else {
+            std::process::Command::new("open")
+                .arg("-a")
+                .arg(app_name)
+                .spawn()
+        };
+        result.map_err(|e| {
+            format!(
+                "{} {} 失败: {e}",
+                if running { "退出" } else { "打开" },
+                app_name
+            )
+        })?;
+        return Ok(json!({
+            "ok": true,
+            "kind": kind,
+            "app": app_name,
+            "action": action,
+        }));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_name, action);
+        Err("桌面客户端开关暂只支持 macOS".to_string())
+    }
 }
 
 fn detect_process_instances(target: &str) -> Vec<Value> {
@@ -1513,7 +1560,13 @@ fn parse_pgrep_output(stdout: &str) -> Vec<Value> {
         .filter_map(|line| {
             let mut parts = line.splitn(2, ' ');
             let pid = parts.next()?.to_string();
-            let command = parts.next().unwrap_or("").to_string();
+            let command = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| process_command_for_pid(&pid))
+                .unwrap_or_default();
             Some(json!({ "pid": pid, "command": command }))
         })
         .collect()
@@ -1526,10 +1579,31 @@ fn parse_pgrep_l_output(stdout: &str) -> Vec<Value> {
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let pid = parts.next()?.to_string();
-            let command = parts.next().unwrap_or("").to_string();
+            let command = process_command_for_pid(&pid)
+                .or_else(|| parts.next().map(str::to_string))
+                .unwrap_or_default();
             Some(json!({ "pid": pid, "command": command }))
         })
         .collect()
+}
+
+fn process_command_for_pid(pid: &str) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .arg("-p")
+        .arg(pid)
+        .arg("-o")
+        .arg("command=")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command.is_empty() {
+        None
+    } else {
+        Some(command)
+    }
 }
 
 /// DEX 助手：检测端口占用
