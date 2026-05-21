@@ -138,6 +138,36 @@ function clientIcon(kind) {
   return `<span class="client-logo-box client-logo-${escAttr(slug)}"><img class="client-logo-img" src="${providerLogoSrc(logo)}" alt="" aria-hidden="true"></span>`;
 }
 
+function lineActionIcon(name) {
+  return `<span class="line-action-icon line-action-icon-${escAttr(name)}" aria-hidden="true"></span>`;
+}
+
+function renderAccountIconAction(label, icon, onclick, className = '', disabled = false) {
+  const disabledAttr = disabled ? ' disabled' : '';
+  const onclickAttr = onclick && !disabled ? ` onclick="${onclick}"` : '';
+  return `<button type="button" class="account-action account-icon-btn ${className}"${onclickAttr}${disabledAttr} title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    ${lineActionIcon(icon)}
+  </button>`;
+}
+
+function renderToolbarIconAction(label, icon, onclick, className = 'btn-ghost') {
+  return `<button type="button" class="btn ${className} account-toolbar-icon" onclick="${onclick}" title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    ${lineActionIcon(icon)}
+  </button>`;
+}
+
+function cardEndpointKind(account) {
+  if (isCodexAccount(account)) return currentEndpoint(account)?.kind || 'open_ai_chat';
+  const kind = accountClientKind(account);
+  if (kind === 'claude_code' || account?.provider === 'anthropic') return 'anthropic_messages';
+  return 'open_ai_chat';
+}
+
+function cardUpstream(account) {
+  if (isCodexAccount(account)) return currentEndpoint(account)?.base_url || account?.upstream || '';
+  return account?.upstream || account?.client_options?.base_url || '';
+}
+
 function renderCardActionMenu(a, isClient) {
   return '';
 }
@@ -582,26 +612,6 @@ function renderAccountList() {
     cards = '<div class="accounts-grid">' + filtered.map(a => {
       const active = a.id === (accountsData.active_account_id || accountsData.active_id);
       if (!isCodexAccount(a)) return renderClientAccountCard(a);
-      const ep = currentEndpoint(a);
-      const visionMode = ep?.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
-      const contextWindow = ep?.context_window_override ?? null;
-      const reasoningEffort = ep?.reasoning_effort_override ?? null;
-      const caps = accountCapabilityLabels(a).slice(0, 2);
-      const capabilityAccount = a.capability_account_id
-        ? list.find(candidate => candidate.id === a.capability_account_id)
-        : null;
-      const primaryTags = [
-        endpointKindLabel(ep?.kind),
-        ...caps,
-        visionModeLabel(visionMode),
-      ];
-      const advancedTags = [];
-      if (contextWindow) advancedTags.push(`上下文 ${contextWindow.toLocaleString()}`);
-      if (reasoningEffort) advancedTags.push(`推理 ${reasoningEffort}`);
-      if (a.capability_enabled) advancedTags.push(`能力 ${capabilityAccount ? capabilityAccount.name : '未配置'}`);
-      if (a.dev_pipeline_enabled) advancedTags.push(`开发 ${a.dev_pipeline_trigger_mode === 'always' ? '始终' : (a.dev_pipeline_command || '/dev-pipeline')}`);
-      const metaTags = primaryTags.slice(0, 3).map(label => `<span class="card-context">${esc(label)}</span>`).join('')
-        + (advancedTags.length ? `<span class="card-context tag-muted">+${advancedTags.length}</span>` : '');
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-mainline">
           <div class="account-card-primary">
@@ -615,11 +625,9 @@ function renderAccountList() {
               <div class="account-card-body">
                 <div class="account-card-main">
                   <div class="card-name">${esc(a.name)}</div>
-                  <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream, 64))}</div>
                 </div>
               </div>
             </div>
-            <div class="account-meta-tags mid-tags">${metaTags}</div>
           </div>
           <div class="account-card-side">
             <div class="card-balance" id="balance-${escAttr(a.id)}">
@@ -627,11 +635,11 @@ function renderAccountList() {
             </div>
             <div class="card-actions-row">
               ${active
-                ? '<button class="account-action account-applied" disabled>已应用</button>'
-                : `<button class="account-action account-apply" onclick="applyAccount('${escAttr(a.id)}')">应用</button>`}
-              <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
-              <button class="account-action account-refresh" onclick="refreshBalanceForCard('${escAttr(a.id)}')" title="刷新余额">刷新</button>
-              <button class="account-action danger" onclick="deleteAccount('${escAttr(a.id)}')">删除</button>
+                ? renderAccountIconAction('已应用', 'check', '', 'account-applied', true)
+                : renderAccountIconAction('应用', 'check', `applyAccount('${escAttr(a.id)}')`, 'account-apply')}
+              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
+              ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
+              ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
             </div>
           </div>
         </div>
@@ -644,9 +652,9 @@ function renderAccountList() {
       <div class="page-header accounts-page-header">
         <div><h2>账号管理</h2></div>
         <div class="page-header-actions">
-          <button class="btn btn-ghost" onclick="importFromCodex()">导入配置</button>
-          <button class="btn btn-ghost" onclick="scanClientAccounts()">扫描客户端</button>
-          <button class="btn btn-primary" onclick="navigateAccounts('add')">添加账号</button>
+          ${renderToolbarIconAction('导入配置', 'import', 'importFromCodex()')}
+          ${renderToolbarIconAction('扫描客户端', 'scan', 'scanClientAccounts()')}
+          ${renderToolbarIconAction('添加账号', 'plus', "navigateAccounts('add')", 'btn-primary')}
         </div>
       </div>
       ${renderClientSwitcher(list)}
@@ -661,10 +669,6 @@ function renderClientAccountCard(a) {
   const kind = accountClientKind(a);
   const profile = getClientProfile(kind);
   const statusId = `client-status-${escAttr(a.id)}`;
-  const path = a.client_options?.config_path || profile?.config_path_hint || '';
-  const last = a.last_applied_at ? formatTimeShort(a.last_applied_at) : '未写入';
-  const model = a.default_model || '未配置模型';
-  const metaTags = `<span class="card-context">${esc(model)}</span><span class="card-context tag-muted">${esc(last)}</span>`;
   return `<div class="account-card client-account-card">
     <div class="account-card-mainline">
       <div class="account-card-primary">
@@ -678,19 +682,17 @@ function renderClientAccountCard(a) {
           <div class="account-card-body">
             <div class="account-card-main">
               <div class="card-name">${esc(a.name)}</div>
-              <div class="card-upstream" title="${escAttr(a.upstream)}">${esc(trunc(a.upstream || path, 70))}</div>
             </div>
           </div>
         </div>
-        <div class="account-meta-tags mid-tags">${metaTags}</div>
       </div>
       <div class="account-card-side">
         <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
         <div class="card-actions-row">
-          <button class="account-action account-apply" onclick="applyClientAccount('${escAttr(a.id)}')">写入</button>
-          <button class="account-action" onclick="editAccount('${escAttr(a.id)}')">编辑</button>
-          <button class="account-action" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">刷新</button>
-          <button class="account-action danger" onclick="deleteAccount('${escAttr(a.id)}')">删除</button>
+          ${renderAccountIconAction('写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, 'account-apply')}
+          ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
+          ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`)}
+          ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
         </div>
       </div>
     </div>
@@ -2501,38 +2503,75 @@ async function refreshBalanceForCard(id) {
   await fetchBalanceForCard(a);
 }
 
+async function testAccountUpstreamForCard(id) {
+  const a = (accountsData.accounts || []).find(acc => acc.id === id);
+  if (!a) return;
+  const isCodex = isCodexAccount(a);
+  const el = document.getElementById(isCodex ? 'balance-' + id : 'client-status-' + id);
+  const upstream = cardUpstream(a);
+  if (!upstream) {
+    showToast('未配置上游 URL', 'error');
+    return;
+  }
+  if (el) el.innerHTML = '<span class="balance-loading">检测中...</span>';
+  try {
+    const result = await invoke('test_upstream_connectivity', {
+      upstream,
+      apiKey: a.api_key || '',
+      endpointKind: cardEndpointKind(a),
+    });
+    if (result.ok) {
+      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
+      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+    } else if (result.error) {
+      showToast('连通失败: ' + result.error, 'error');
+    } else {
+      showToast(`上游返回 HTTP ${result.status}`, 'error');
+    }
+  } catch (e) {
+    showToast('连通测试异常: ' + e, 'error');
+  } finally {
+    if (isCodex) await refreshBalanceForCard(id);
+    else await refreshClientAccountStatus(id);
+  }
+}
+
+function balanceQuotaText(current, total = null) {
+  if (current != null && current !== '' && total != null && total !== '') return `${current}/${total}`;
+  if (current != null && current !== '') return String(current);
+  if (total != null && total !== '') return String(total);
+  return '—';
+}
+
 function renderBalanceInfo(info) {
   if (info.mode === 'token_credit') {
     const remaining = info.credit_remaining;
     const limit = info.credit_limit;
     const pct = limit > 0 ? Math.round(remaining / limit * 100) : 0;
+    const safePct = Math.max(0, Math.min(pct, 100));
     const label = info.credit_label ? ` (${info.credit_label})` : '';
-    return `<div class="balance-row">
-      <span>💳 $${remaining != null ? remaining.toFixed(2) : '—'}${limit != null ? ' / $' + limit.toFixed(2) : ''}${label}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(pct, 100)}%"></div></div>
+    return `<div class="balance-pill balance-credit">
+      <span class="balance-credit-text"><span class="balance-card-mark" aria-hidden="true"></span>$${remaining != null ? remaining.toFixed(2) : '—'}${limit != null ? ' / $' + limit.toFixed(2) : ''}${label}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${safePct}%"></div></div>
     </div>`;
   }
   if (info.mode === 'subscription') {
-    return `<div class="balance-row">
-      <span>📅 ${info.weekly_remaining || '—'}/${info.weekly_limit || '—'}</span>
-      <span>⏱ 5h: ${info.hours_5_remaining || '—'}</span>
+    return `<div class="balance-pill balance-plan">
+      <span class="balance-quota"><em>5h</em><strong>${balanceQuotaText(info.hours_5_remaining)}</strong></span>
+      <span class="balance-quota"><em>周</em><strong>${balanceQuotaText(info.weekly_remaining, info.weekly_limit)}</strong></span>
     </div>`;
   }
   if (info.mode === 'coding_plan' && info.model_remains) {
     const coding = info.model_remains.find(m => m.model_name === 'MiniMax-M*') || info.model_remains[0];
-    if (!coding) return '<span class="balance-na">无模型数据</span>';
+    if (!coding) return '<div class="balance-pill balance-empty"><span class="balance-na">无模型数据</span></div>';
     const iRemain = coding.interval_total - coding.interval_used;
-    const iPct = coding.interval_total > 0 ? Math.round(iRemain / coding.interval_total * 100) : 0;
     const wRemain = coding.weekly_total - coding.weekly_used;
-    const wPct = coding.weekly_total > 0 ? Math.round(wRemain / coding.weekly_total * 100) : 0;
-    return `<div class="balance-row">
-      <span>5h ${iRemain}/${coding.interval_total}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(iPct, 100)}%"></div></div>
-      <span class="balance-sub-label">周 ${wRemain}/${coding.weekly_total}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.min(wPct, 100)}%"></div></div>
+    return `<div class="balance-pill balance-plan">
+      <span class="balance-quota"><em>5h</em><strong>${iRemain}/${coding.interval_total}</strong></span>
+      <span class="balance-quota"><em>周</em><strong>${wRemain}/${coding.weekly_total}</strong></span>
     </div>`;
   }
-  return '<span class="balance-na">不支持</span>';
+  return '<div class="balance-pill balance-empty"><span class="balance-na">不支持</span></div>';
 }
 
 // ═══════════════════════════════════════════════════════════════

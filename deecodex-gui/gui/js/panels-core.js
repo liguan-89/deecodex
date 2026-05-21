@@ -34,24 +34,11 @@ function serviceHostForClientUrl(host) {
 
 function renderStatus() {
   const s = window._statusData || {};
-  const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
   const tokenStats = s.token_stats || {};
-  const fmtStatusTokens = (n) => {
-    const value = Number(n || 0);
-    if (value >= 1000000000) return compactStatusNumber(value / 1000000000) + 'B';
-    if (value >= 1000000) return compactStatusNumber(value / 1000000) + 'M';
-    if (value >= 1000) return compactStatusNumber(value / 1000) + 'k';
-    return String(value);
-  };
-  const compactStatusNumber = (value) => {
-    const digits = value >= 10 ? 1 : 2;
-    return value.toFixed(digits).replace(/\.0$/, '');
-  };
   const clientLabel = (kind, profile) => clientKindUiLabel(kind, profile);
   const kindOf = (account) => typeof accountClientKind === 'function' ? accountClientKind(account) : (account?.client_kind || account?.target || 'codex');
   const accounts = accountsData.accounts || [];
 
-  const port = v(s.port, '—');
   const running = s.running;
   const clientKinds = (() => {
     const defaults = [
@@ -83,27 +70,15 @@ function renderStatus() {
   const clientIssueCount = clientSummaries.filter(item => item.hasIssue).length;
   const todayRequests = Number(tokenStats.total || 0);
   const problemCount = (running ? 0 : 1) + clientIssueCount;
-  const gatewayTitle = '接入状态';
   const version = s.version && s.version !== '—' ? `v${s.version}` : '版本 —';
   const hasUpdate = typeof deeStorage !== 'undefined' && deeStorage?.getItem?.('updateAvailable') === '1';
-  const serviceHost = normalizeServiceHost(v(s.host, currentConfig?.host || '127.0.0.1'));
-  const serviceAddress = port === '—' ? '—' : `${serviceHost.includes(':') ? `[${serviceHost}]` : serviceHost}:${port}`;
-  const gatewaySummaryItems = [
-    `${problemCount} 个问题`,
-    `今日 ${todayRequests} 次请求`,
-    `服务地址 ${serviceAddress}`,
-  ];
 
   return `
     <section class="status-overview-shell" aria-label="接入状态总览">
       <div class="gateway-hero">
       <div class="gateway-hero-main">
-        <div class="gateway-title-row">
-          <span>${esc(gatewayTitle)}</span>
+        <div class="gateway-version-line">
           <span class="gateway-version" id="dashboardVersion">${hasUpdate ? '<span class="update-dot"></span>' : ''}${esc(version)}</span>
-        </div>
-        <div class="gateway-summary-line">
-          ${gatewaySummaryItems.map(item => `<span>${esc(item)}</span>`).join('')}
         </div>
       </div>
       </div>
@@ -111,30 +86,45 @@ function renderStatus() {
       <div class="gateway-metric-grid">
       <div class="gateway-metric-card ${running ? 'ok' : 'fail'}" onclick="mgmtToggle()">
         <span class="metric-label">网关状态</span>
-        <strong>${running ? '运行中' : '已停止'}</strong>
-        <span class="metric-foot">${running ? `已运行 ${esc(fmtUptime(s.uptime_secs))}` : '当前未运行'}</span>
+        <span class="gateway-status-line ${running ? 'is-running' : 'is-stopped'}" aria-label="${running ? '运行中' : '已停止'}"></span>
       </div>
       <div class="gateway-metric-card ${problemCount ? 'warn' : 'ok'}" onclick="validateConfig()">
         <span class="metric-label">待处理问题</span>
         <strong>${esc(problemCount)}</strong>
-        <span class="metric-foot">${problemCount ? '运行诊断查看详情' : '暂无待处理项'}</span>
       </div>
       <div class="gateway-metric-card" onclick="switchPanel('sessions')">
-        <span class="metric-label">今日流量</span>
+        <span class="metric-label">今日消耗</span>
         <strong>${esc(todayRequests)}</strong>
-        <span class="metric-foot">${esc(fmtStatusTokens(tokenStats.total_tokens))} tokens 今日累计</span>
       </div>
       </div>
 
       <section class="gateway-panel operations-panel">
       <div class="gateway-section-title">服务操作</div>
       <div class="mgmt-actions gateway-actions">
-        <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">${running ? '◼ 停止网关' : '▶ 启动网关'}</button>
-        <button class="btn btn-ghost" onclick="validateConfig()">◇ 运行诊断</button>
-        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex">${window._cdpLaunched ? '◼ 停止 CDP' : '⬢ 启动 CDP'}</button>
-        <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart">⟳ 重启服务</button>
-        <button class="btn btn-ghost" onclick="mgmtLogs()">☰ 查看日志</button>
-        <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">⇡ 一键升级</button>
+        <button class="btn btn-primary" onclick="mgmtToggle()" id="btnToggle">
+          <span class="status-action-icon ${running ? 'status-action-icon-stop' : 'status-action-icon-start'}" aria-hidden="true"></span>
+          <span>${running ? '停止网关' : '启动网关'}</span>
+        </button>
+        <button class="btn btn-ghost" onclick="validateConfig()">
+          <span class="status-action-icon status-action-icon-diagnostics" aria-hidden="true"></span>
+          <span>运行诊断</span>
+        </button>
+        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex">
+          <span class="status-action-icon ${window._cdpLaunched ? 'status-action-icon-stop' : 'status-action-icon-cdp'}" aria-hidden="true"></span>
+          <span>${window._cdpLaunched ? '停止 CDP' : '启动 CDP'}</span>
+        </button>
+        <button class="btn btn-ghost" onclick="mgmtRestart()" id="btnRestart">
+          <span class="status-action-icon status-action-icon-restart" aria-hidden="true"></span>
+          <span>重启服务</span>
+        </button>
+        <button class="btn btn-ghost" onclick="mgmtLogs()">
+          <span class="status-action-icon status-action-icon-logs" aria-hidden="true"></span>
+          <span>查看日志</span>
+        </button>
+        <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">
+          <span class="status-action-icon status-action-icon-upgrade" aria-hidden="true"></span>
+          <span>一键升级</span>
+        </button>
       </div>
       </section>
 
@@ -251,7 +241,7 @@ function renderStatusClientDock(gatewayRunning) {
         const kind = item.slug;
         const label = item.label || clientKindUiLabel(item.accountKind);
         const info = statusClientInfo(kind, gatewayRunning);
-        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" title="${escAttr(label + ' · ' + info.text)}">
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
             <span class="client-dock-icon">${typeof clientIcon === 'function' ? clientIcon(item.iconKind || item.accountKind || kind) : ''}</span>
             <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
@@ -281,7 +271,7 @@ async function refreshStatusClientDock() {
       button.classList.toggle('on', info.state === 'on');
       button.classList.toggle('off', info.state === 'off');
       button.classList.toggle('process-running', info.processRunning);
-      button.title = `${button.dataset.clientLabel || clientKindUiLabel(statusClientAccountKind(kind))} · ${info.text}`;
+      button.setAttribute('aria-label', `${button.dataset.clientLabel || clientKindUiLabel(statusClientAccountKind(kind))} · ${info.text}`);
       const runtime = button.querySelector('.client-dock-runtime');
       if (runtime) {
         runtime.classList.toggle('live', info.processRunning);

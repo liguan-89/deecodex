@@ -203,10 +203,36 @@ assert(report.includes('备份'));
 context.accountsView = 'list';
 context.selectedClientKind = 'codex';
 const codexList = context.renderAccountList();
+assert(codexList.includes('line-action-icon-import'));
+assert(codexList.includes('aria-label="导入配置"'));
+assert(codexList.includes('line-action-icon-scan'));
+assert(codexList.includes('aria-label="添加账号"'));
+assert(codexList.includes('line-action-icon-check'));
 assert(codexList.includes("applyAccount('c1')"));
 assert(codexList.includes("editAccount('c1')"));
-assert(codexList.includes("refreshBalanceForCard('c1')"));
+assert(codexList.includes("testAccountUpstreamForCard('c1')"));
+assert(codexList.includes('aria-label="测试上游连接"'));
 assert(codexList.includes("deleteAccount('c1')"));
+assert(!codexList.includes('account-meta-tags mid-tags'));
+assert(!codexList.includes('<span class="card-context">Chat 兼容</span>'));
+assert(!codexList.includes('https://api.deepseek.com/v1'));
+
+context.selectedClientKind = 'hermes';
+const hermesList = context.renderAccountList();
+assert(hermesList.includes("applyClientAccount('h1')"));
+assert(hermesList.includes("testAccountUpstreamForCard('h1')"));
+assert(!hermesList.includes('account-meta-tags mid-tags'));
+assert(!hermesList.includes('https://api.minimaxi.com/v1'));
+
+assert(context.renderBalanceInfo({
+  mode: 'coding_plan',
+  model_remains: [{ model_name: 'MiniMax-M*', interval_total: 1500, interval_used: 20, weekly_total: 15000, weekly_used: 243 }],
+}).includes('balance-pill balance-plan'));
+assert(context.renderBalanceInfo({
+  mode: 'token_credit',
+  credit_remaining: -1.45,
+  credit_label: 'CNY',
+}).includes('balance-pill balance-credit'));
 
 const validation = context.renderConfigValidation({
   ok: true,
