@@ -507,6 +507,8 @@ async fn forward_client_proxy_request(
             .into_response();
     };
 
+    let body = sanitize_client_proxy_body(endpoint_kind, &account, body);
+
     let response_id = state.sessions.new_id();
     let start = Instant::now();
     let model = model_from_json_body(&body, &account.default_model);
@@ -2069,6 +2071,113 @@ fn patch_body_string_field(
         obj.insert(field.to_string(), serde_json::json!(value));
     }
     serde_json::to_vec(&v).map(axum::body::Bytes::from)
+}
+
+fn sanitize_client_proxy_body(
+    endpoint_kind: &str,
+    account: &Account,
+    body: axum::body::Bytes,
+) -> axum::body::Bytes {
+    if endpoint_kind != "anthropic_messages" {
+        return body;
+    }
+    let custom_rules = claude_custom_filter_rules(account);
+    strip_claude_code_anthropic_attribution(&body, &custom_rules).unwrap_or(body)
+}
+
+fn strip_claude_code_anthropic_attribution(
+    body: &axum::body::Bytes,
+    custom_rules: &[String],
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    let mut changed = false;
+
+    if let Some(system) = value.get_mut("system") {
+        match system {
+            Value::String(text) => {
+                if strip_claude_code_attribution_text(text, custom_rules) {
+                    changed = true;
+                }
+            }
+            Value::Array(parts) => {
+                for part in parts {
+                    if let Some(Value::String(text)) = part.get_mut("text") {
+                        if strip_claude_code_attribution_text(text, custom_rules) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !changed {
+        return Ok(body.clone());
+    }
+
+    tracing::info!("已移除 Claude Code Anthropic attribution header");
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn strip_claude_code_attribution_text(text: &mut String, custom_rules: &[String]) -> bool {
+    let original = text.clone();
+    let kept: Vec<&str> = original
+        .lines()
+        .filter(|line| !is_claude_code_filtered_line(line, custom_rules))
+        .collect();
+    let stripped = collapse_blank_lines(kept.join("\n").trim_matches('\n'));
+    if stripped == original {
+        return false;
+    }
+    *text = stripped;
+    true
+}
+
+fn is_claude_code_filtered_line(line: &str, custom_rules: &[String]) -> bool {
+    (line.contains("x-anthropic-billing-header:") && line.contains("cch="))
+        || custom_rules
+            .iter()
+            .any(|rule| !rule.is_empty() && line.contains(rule))
+}
+
+fn claude_custom_filter_rules(account: &Account) -> Vec<String> {
+    if !account
+        .client_options
+        .get("claude_custom_filter_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Vec::new();
+    }
+    account
+        .client_options
+        .get("claude_custom_filter_rules")
+        .and_then(Value::as_array)
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|rule| !rule.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn collapse_blank_lines(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut previous_blank = false;
+    for line in text.lines() {
+        let is_blank = line.trim().is_empty();
+        if is_blank && previous_blank {
+            continue;
+        }
+        out.push(line);
+        previous_blank = is_blank;
+    }
+    out.join("\n").trim().to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5428,6 +5537,110 @@ data: [DONE]
             proxy_token_from_headers(&headers).as_deref(),
             Some("dee-api-key")
         );
+    }
+
+    #[test]
+    fn test_strip_claude_code_anthropic_attribution_string_system() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": "x-anthropic-billing-header: cc_version=2.1.38; cc_entrypoint=cli; cch=abc12;\n\n你是有帮助的助手。\n\n请保持简洁。",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .unwrap(),
+        );
+
+        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+        let actual: Value = serde_json::from_slice(&stripped).unwrap();
+
+        assert_eq!(actual["system"], "你是有帮助的助手。\n\n请保持简洁。");
+        assert_eq!(actual["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn test_strip_claude_code_anthropic_attribution_array_system() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": [
+                    {
+                        "type": "text",
+                        "text": "规则 A\n\nx-anthropic-billing-header: cc_version=2.1.38; cc_entrypoint=cli; cch=fff00;\n\n规则 B"
+                    },
+                    {"type": "text", "text": "规则 C"},
+                    {"type": "cache_control", "cache_control": {"type": "ephemeral"}}
+                ],
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+            }))
+            .unwrap(),
+        );
+
+        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+        let actual: Value = serde_json::from_slice(&stripped).unwrap();
+
+        assert_eq!(actual["system"][0]["text"], "规则 A\n\n规则 B");
+        assert_eq!(actual["system"][1]["text"], "规则 C");
+        assert_eq!(
+            actual["system"][2]["cache_control"]["type"].as_str(),
+            Some("ephemeral")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_client_proxy_body_skips_non_anthropic_endpoints() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5",
+                "system": "x-anthropic-billing-header: cc_version=2.1.38; cch=abc12;\n真实提示词"
+            }))
+            .unwrap(),
+        );
+
+        let account: Account = serde_json::from_value(json!({
+            "id": "cc1",
+            "name": "Claude",
+            "provider": "anthropic",
+            "client_kind": "claude_code",
+            "upstream": "https://api.anthropic.com",
+            "api_key": "sk-test"
+        }))
+        .unwrap();
+        let sanitized = sanitize_client_proxy_body("openai_chat", &account, body.clone());
+
+        assert_eq!(sanitized, body);
+    }
+
+    #[test]
+    fn test_strip_claude_code_anthropic_attribution_keeps_text_without_cch() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": "x-anthropic-billing-header: cc_version=2.1.38; cc_entrypoint=cli;\n真实提示词"
+            }))
+            .unwrap(),
+        );
+
+        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+
+        assert_eq!(stripped, body);
+    }
+
+    #[test]
+    fn test_strip_claude_code_anthropic_attribution_applies_custom_rules() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": "保留 A\nx-custom-cache-noise: random-123\n保留 B"
+            }))
+            .unwrap(),
+        );
+
+        let stripped =
+            strip_claude_code_anthropic_attribution(&body, &["x-custom-cache-noise:".into()])
+                .unwrap();
+        let actual: Value = serde_json::from_slice(&stripped).unwrap();
+
+        assert_eq!(actual["system"], "保留 A\n保留 B");
     }
 
     #[test]

@@ -1339,6 +1339,52 @@ body {
   border-color: rgba(0, 200, 232, 0.42);
   background: var(--accent-dim);
 }
+.config-filter-panel {
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.config-filter-panel.disabled {
+  opacity: 0.72;
+}
+.config-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.config-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.config-filter-toggle input {
+  accent-color: var(--accent);
+}
+.config-filter-panel textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.config-filter-panel p {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.config-filter-panel code {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
 .config-client-empty {
   margin-top: 12px;
   padding: 9px 10px;
@@ -4451,6 +4497,11 @@ body {
 [data-theme="light"] .config-focus-tag,
 [data-theme="light"] .config-command-row button {
   background: rgba(255,255,255,0.50);
+}
+
+[data-theme="light"] .config-filter-panel {
+  background: rgba(255,255,255,0.45);
+  border-color: var(--border-subtle);
 }
 
 /* 亮色 mgmt-header */

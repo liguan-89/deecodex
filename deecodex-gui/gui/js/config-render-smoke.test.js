@@ -20,7 +20,7 @@ const context = {
     client_counts: { codex: 1, claude_code: 1, openclaw: 1, hermes: 1, generic_client: 1 },
     accounts: [
       { id: 'cx1', name: 'Codex OpenRouter', client_kind: 'codex', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', client_options: {} },
-      { id: 'cc1', name: 'Claude DeepSeek', client_kind: 'claude_code', provider: 'anthropic', upstream: 'https://api.deepseek.com/anthropic', default_model: 'deepseek-v4-pro', client_options: { auth_env: 'ANTHROPIC_AUTH_TOKEN', model_map: { default: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash' }, env: { ENABLE_TOOL_SEARCH: 'true' } }, last_check: { ok: true, message: 'Claude Code 配置已准备' } },
+      { id: 'cc1', name: 'Claude DeepSeek', client_kind: 'claude_code', provider: 'anthropic', upstream: 'https://api.deepseek.com/anthropic', default_model: 'deepseek-v4-pro', client_options: { auth_env: 'ANTHROPIC_AUTH_TOKEN', model_map: { default: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash' }, env: { ENABLE_TOOL_SEARCH: 'true' }, claude_custom_filter_enabled: true, claude_custom_filter_rules: ['x-custom-cache-noise:'] }, last_check: { ok: true, message: 'Claude Code 配置已准备' } },
       { id: 'oc1', name: 'OpenClaw OpenRouter', client_kind: 'openclaw', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', default_model: 'anthropic/claude-sonnet-4.5', client_options: { api_key_env: 'OPENROUTER_API_KEY', model_map: { default: 'anthropic/claude-sonnet-4.5', image: 'openai/gpt-4o-mini' } } },
       { id: 'hm1', name: 'Hermes MiniMax', client_kind: 'hermes', provider: 'minimax', upstream: 'https://api.minimaxi.com/v1', default_model: 'MiniMax-M2.7', client_options: { config_path: '~/.hermes/config.yaml', env_path: '~/.hermes/.env', api_key_env: 'MINIMAX_API_KEY', model_map: { default: 'MiniMax-M2.7', vision: 'MiniMax-M2.7' } }, last_check: { ok: false, message: 'Hermes 密钥为空' } },
       { id: 'gc1', name: '通用 Env', client_kind: 'generic_client', provider: 'custom', upstream: 'https://api.example.com/v1', default_model: 'gpt-5', client_options: { config_path: '~/.deecodex/client-env', api_key_env: 'OPENAI_API_KEY', model_map: { default: 'gpt-5', fast: 'gpt-5.4-mini' } } },
@@ -61,6 +61,7 @@ vm.createContext(context);
 vm.runInContext(`
   var currentPanel = 'config';
   var currentConfig = {
+    host: '127.0.0.1',
     port: 4446,
     max_body_mb: 64,
     chinese_thinking: true,
@@ -117,9 +118,12 @@ context.selectedConfigClientKind = 'global';
 let html = context.renderConfig();
 assert(html.includes('高级设置'));
 assert(html.includes('网关运行'));
+assert(html.includes('服务地址'));
 assert(html.includes('服务监听端口'));
 assert(html.includes('请求体上限'));
 assert(html.includes('运行数据目录'));
+assert(html.includes('<span>Claude</span>'));
+assert(!html.includes('<span>Claude Code</span>'));
 assert(!html.includes('Codex 响应翻译'));
 assert(!html.includes('中文推理输出'));
 assert(!html.includes('Hosted Prompts 目录'));
@@ -157,6 +161,9 @@ html = context.renderConfig();
 assert(html.includes('编程会话治理'));
 assert(html.includes('权限模式'));
 assert(html.includes('MCP 服务器'));
+assert(html.includes('自定义过滤'));
+assert(html.includes('x-custom-cache-noise:'));
+assert(html.includes('Anthropic system 行过滤'));
 assert(html.includes('claude doctor'));
 assert(html.includes('claude mcp list'));
 assert(!html.includes('config_client_auth_env'));

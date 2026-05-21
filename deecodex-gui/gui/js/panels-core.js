@@ -1,5 +1,37 @@
 // 状态面板
 // ═══════════════════════════════════════════════════════════════
+function clientKindUiLabel(kind, profile) {
+  const normalized = typeof normalizeClientKind === 'function' ? normalizeClientKind(kind) : String(kind || '');
+  const labels = (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS) || {
+    codex: 'Codex',
+    claude_code: 'Claude',
+    openclaw: 'OpenClaw',
+    hermes: 'Hermes',
+    generic_client: '通用客户端',
+  };
+  return labels[normalized] || profile?.label || normalized || '未知工具';
+}
+
+function normalizeServiceHost(host) {
+  const value = String(host || '').trim().replace(/\/+$/, '');
+  if (!value) return '127.0.0.1';
+  const withoutScheme = value.replace(/^https?:\/\//, '');
+  const hostPart = withoutScheme.split('/')[0] || withoutScheme;
+  if (hostPart.startsWith('[')) {
+    const end = hostPart.indexOf(']');
+    return end > 0 ? hostPart.slice(1, end) : hostPart;
+  }
+  const parts = hostPart.split(':');
+  if (parts.length === 2 && /^\d+$/.test(parts[1])) return parts[0] || '127.0.0.1';
+  return hostPart;
+}
+
+function serviceHostForClientUrl(host) {
+  const normalized = normalizeServiceHost(host);
+  const urlHost = ['0.0.0.0', '::', '*'].includes(normalized) ? '127.0.0.1' : normalized;
+  return urlHost.includes(':') && !(urlHost.startsWith('[') && urlHost.endsWith(']')) ? `[${urlHost}]` : urlHost;
+}
+
 function renderStatus() {
   const s = window._statusData || {};
   const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
@@ -15,7 +47,7 @@ function renderStatus() {
     const digits = value >= 10 ? 1 : 2;
     return value.toFixed(digits).replace(/\.0$/, '');
   };
-  const clientLabel = (kind) => CLIENT_KIND_LABELS?.[kind] || kind || '未知工具';
+  const clientLabel = (kind, profile) => clientKindUiLabel(kind, profile);
   const statusPill = (state, text) => `<span class="gateway-pill ${state}">${esc(text)}</span>`;
   const statusDot = (state) => `<span class="gateway-dot ${state}"></span>`;
   const kindOf = (account) => typeof accountClientKind === 'function' ? accountClientKind(account) : (account?.client_kind || account?.target || 'codex');
@@ -26,13 +58,16 @@ function renderStatus() {
   const clientKinds = (() => {
     const defaults = [
       { slug: 'codex', label: 'Codex' },
-      { slug: 'claude_code', label: 'Claude Code' },
+      { slug: 'claude_code', label: 'Claude' },
       { slug: 'openclaw', label: 'OpenClaw' },
       { slug: 'hermes', label: 'Hermes' },
       { slug: 'generic_client', label: '通用客户端' },
     ];
     const profiles = Array.isArray(clientProfiles) && clientProfiles.length
-      ? clientProfiles.map(p => ({ slug: normalizeClientKind?.(p.slug || p.kind), label: p.label || clientLabel(normalizeClientKind?.(p.slug || p.kind)) }))
+      ? clientProfiles.map(p => {
+        const slug = normalizeClientKind?.(p.slug || p.kind);
+        return { slug, label: clientLabel(slug, p) };
+      })
       : defaults;
     const seen = new Set();
     return profiles.concat(defaults).filter(item => {
@@ -66,7 +101,8 @@ function renderStatus() {
   const gatewayTitle = '接入状态';
   const version = s.version && s.version !== '—' ? `v${s.version}` : '版本 —';
   const hasUpdate = typeof deeStorage !== 'undefined' && deeStorage?.getItem?.('updateAvailable') === '1';
-  const serviceAddress = port === '—' ? '—' : `127.0.0.1:${port}`;
+  const serviceHost = normalizeServiceHost(v(s.host, currentConfig?.host || '127.0.0.1'));
+  const serviceAddress = port === '—' ? '—' : `${serviceHost.includes(':') ? `[${serviceHost}]` : serviceHost}:${port}`;
   const gatewaySummaryItems = [
     `已接入 ${connectedKinds}/${clientKinds.length} 个工具`,
     `${problemCount} 个问题`,
@@ -199,6 +235,11 @@ function configClientLabel(kind, profile) {
   return kind;
 }
 
+function configClientTabLabel(kind, profile) {
+  if (kind === 'global') return '全局';
+  return clientKindUiLabel(kind, profile);
+}
+
 function configClientIcon(kind) {
   if (kind === 'global') return '<span class="config-global-icon" aria-hidden="true"></span>';
   if (typeof clientIcon === 'function') return clientIcon(kind);
@@ -253,7 +294,7 @@ function renderConfigClientSwitcher() {
       const issueClass = issueCount ? ' has-issues' : '';
       return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectConfigClientKind('${escAttr(kind)}')" title="${escAttr(profile.description || '')}" role="tab" aria-selected="${kind === selectedConfigClientKind}">
         ${configClientIcon(kind)}
-        <span>${esc(configClientLabel(kind, profile))}</span>
+        <span>${esc(configClientTabLabel(kind, profile))}</span>
         <em>${count}</em>
         ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
       </button>`;
@@ -413,6 +454,7 @@ function configClientAdvancedSpec(kind) {
 
 function configClientAdvancedCommands(kind) {
   const port = currentConfig?.port || 4446;
+  const host = serviceHostForClientUrl(currentConfig?.host || '127.0.0.1');
   if (kind === 'claude_code') return [
     { label: '健康检查', command: 'claude doctor' },
     { label: 'MCP 列表', command: 'claude mcp list' },
@@ -430,9 +472,77 @@ function configClientAdvancedCommands(kind) {
     { label: '能力列表', command: 'hermes skills list && hermes tools list' },
   ];
   return [
-    { label: '最小模板', command: `export OPENAI_BASE_URL=http://127.0.0.1:${port}/v1\nexport OPENAI_API_KEY=<your-key>\nexport OPENAI_MODEL=<model-name>` },
+    { label: '最小模板', command: `export OPENAI_BASE_URL=http://${host}:${port}/v1\nexport OPENAI_API_KEY=<your-key>\nexport OPENAI_MODEL=<model-name>` },
     { label: '当前变量', command: "env | grep -E '^(OPENAI|ANTHROPIC|DEECODEX)_'" },
   ];
+}
+
+function claudeCustomFilterState(account) {
+  const opts = account?.client_options || {};
+  const rules = Array.isArray(opts.claude_custom_filter_rules)
+    ? opts.claude_custom_filter_rules
+        .map(rule => String(rule || '').trim())
+        .filter(Boolean)
+    : [];
+  return {
+    enabled: Boolean(opts.claude_custom_filter_enabled),
+    rules,
+  };
+}
+
+function renderClaudeCustomFilterSection(account) {
+  const state = claudeCustomFilterState(account);
+  const disabled = account ? '' : ' disabled';
+  const ruleText = state.rules.join('\n');
+  return `<section class="config-client-section">
+    <div class="config-section-header">
+      <span class="section-icon">⌬</span>
+      <h3>自定义过滤</h3>
+      <span class="section-desc">Anthropic system 行过滤</span>
+    </div>
+    <div class="config-filter-panel${account ? '' : ' disabled'}">
+      <div class="config-filter-head">
+        <label class="config-filter-toggle">
+          <input type="checkbox" id="claudeCustomFilterEnabled" ${state.enabled ? 'checked' : ''}${disabled}>
+          <span>启用自定义过滤</span>
+        </label>
+        <button type="button" class="btn btn-ghost" onclick="saveClaudeCustomFilters()"${disabled}>保存过滤规则</button>
+      </div>
+      <textarea id="claudeCustomFilterRules" spellcheck="false" placeholder="每行一个匹配片段，例如:&#10;x-custom-cache-noise:&#10;session_fingerprint:"${disabled}>${esc(ruleText)}</textarea>
+      <p>仅作用于 Claude Code 通过 Anthropic Messages 端口发送的顶层 <code>system</code> 文本；命中的整行会在转发前移除。内置已处理 <code>x-anthropic-billing-header</code> + <code>cch=</code>。</p>
+      ${account ? '' : '<div class="config-client-empty">暂无 Claude 账号。请先在账号管理中添加或扫描 Claude Code 账号，再保存过滤规则。</div>'}
+    </div>
+  </section>`;
+}
+
+async function saveClaudeCustomFilters() {
+  const account = configPrimaryClientAccount('claude_code');
+  if (!account) {
+    showToast('请先添加 Claude 账号', 'error');
+    return;
+  }
+  const enabled = Boolean(document.getElementById('claudeCustomFilterEnabled')?.checked);
+  const rules = (document.getElementById('claudeCustomFilterRules')?.value || '')
+    .split(/\r?\n/)
+    .map(rule => rule.trim())
+    .filter(Boolean);
+  const next = JSON.parse(JSON.stringify(account));
+  next.client_options = next.client_options || {};
+  next.client_options.claude_custom_filter_enabled = enabled;
+  if (rules.length) {
+    next.client_options.claude_custom_filter_rules = rules;
+  } else {
+    delete next.client_options.claude_custom_filter_rules;
+  }
+  delete next._client_status_report;
+  try {
+    await invoke('update_account', { accountJson: JSON.stringify(next) });
+    showToast('Claude 自定义过滤已保存', 'success');
+    await loadAccountsData();
+    renderPanel('config');
+  } catch (err) {
+    showToast('保存 Claude 过滤规则失败: ' + err, 'error');
+  }
 }
 
 function renderConfigClientMeta(kind, profile, accounts, account, status) {
@@ -541,10 +651,11 @@ function renderClientConfigOverview(kind) {
           ${hasAccount ? `<button class="btn btn-ghost" onclick="editConfigClientFile('${escAttr(kind)}')">打开原生配置</button>` : ''}
         </div>
       </div>
-      ${renderConfigClientMeta(kind, profile, accounts, account, status)}
+    ${renderConfigClientMeta(kind, profile, accounts, account, status)}
       ${hasAccount ? '' : `<div class="config-client-empty">暂无${esc(configClientLabel(kind, profile))}账号。高级设置仍展示该客户端的治理重点；账号、密钥、模型和端点请在账号管理中维护。</div>`}
     </section>
     ${renderConfigClientFocusRows(spec)}
+    ${kind === 'claude_code' ? renderClaudeCustomFilterSection(account) : ''}
     ${renderConfigCommandStrip(kind)}`;
 }
 
@@ -969,6 +1080,7 @@ async function loadStatus() {
 
     window._statusData = {
       running: status?.running ?? false,
+      host: status?.host || cfg?.host || '127.0.0.1',
       port: status?.port ?? '—',
       uptime_secs: status?.running ? status.uptime_secs : 0,
       version: status?.version || '—',
