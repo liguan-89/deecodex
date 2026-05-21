@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::accounts::{
-    Account, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
+    Account, AccountClientKind, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
     UnsupportedImagePolicy, VisionMode,
 };
 use crate::anthropic;
@@ -10,6 +10,7 @@ use crate::config::Args;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
+use crate::request_history::{HistoryContext, HistoryRecord};
 use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
@@ -25,8 +26,8 @@ use crate::{
 use anyhow::{bail, Result};
 use axum::{
     extract::{Multipart, Path, Query, Request, State},
-    http::header,
     http::StatusCode,
+    http::{header, HeaderMap},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -109,6 +110,7 @@ struct BlockingArgs<'a> {
     conversation_id: Option<String>,
     response_extra: Value,
     req: &'a ResponsesRequest,
+    history_context: HistoryContext,
     start: Instant,
 }
 
@@ -125,6 +127,7 @@ struct BypassArgs {
     store_response: bool,
     model: String,
     requested_service_tier: Option<String>,
+    history_context: HistoryContext,
 }
 
 struct CapabilityObservationResult {
@@ -147,6 +150,7 @@ struct AnthropicArgs<'a> {
     conversation_id: Option<String>,
     response_extra: Value,
     req: &'a ResponsesRequest,
+    history_context: HistoryContext,
     start: Instant,
 }
 
@@ -162,6 +166,7 @@ struct UpstreamFailureArgs<'a> {
     code: String,
     message: String,
     status: StatusCode,
+    history_context: HistoryContext,
 }
 
 struct DevPipelineResponseArgs<'a> {
@@ -172,6 +177,7 @@ struct DevPipelineResponseArgs<'a> {
     store_response: bool,
     conversation_id: Option<String>,
     response_extra: Value,
+    history_context: HistoryContext,
     start: Instant,
 }
 
@@ -215,9 +221,428 @@ async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) 
     (account, endpoint)
 }
 
+fn account_client_kind_slug(kind: &AccountClientKind) -> &'static str {
+    match kind {
+        AccountClientKind::Codex => "codex",
+        AccountClientKind::ClaudeCode => "claude_code",
+        AccountClientKind::Openclaw => "openclaw",
+        AccountClientKind::Hermes => "hermes",
+        AccountClientKind::GenericClient => "generic_client",
+    }
+}
+
+fn endpoint_kind_slug(kind: &EndpointKind) -> &'static str {
+    match kind {
+        EndpointKind::OpenAiChat => "openai_chat",
+        EndpointKind::OpenAiResponses => "openai_responses",
+        EndpointKind::AnthropicMessages => "anthropic_messages",
+        EndpointKind::CustomChat => "custom_chat",
+        EndpointKind::CustomResponses => "custom_responses",
+    }
+}
+
+fn history_context_for(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    request_path: &str,
+) -> HistoryContext {
+    let profile = providers::profile_for_account(account);
+    HistoryContext {
+        client_kind: account_client_kind_slug(&account.client_kind).into(),
+        account_id: account.id.clone(),
+        account_name: account.name.clone(),
+        endpoint_kind: endpoint_kind_slug(&endpoint.kind).into(),
+        request_path: request_path.into(),
+        provider: account.provider.clone(),
+        provider_profile: profile.slug,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_from_context(
+    context: &HistoryContext,
+    id: String,
+    model: String,
+    status: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    duration_ms: u64,
+    upstream_url: String,
+    error_msg: String,
+    cache_hit: bool,
+) -> HistoryRecord {
+    context.record(
+        id,
+        now_unix_secs(),
+        model,
+        status,
+        input_tokens,
+        output_tokens,
+        duration_ms,
+        upstream_url,
+        error_msg,
+        cache_hit,
+    )
+}
+
+fn client_proxy_enabled(account: &Account) -> bool {
+    account
+        .client_options
+        .get("proxy_recording_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn client_proxy_token(account: &Account) -> Option<&str> {
+    account
+        .client_options
+        .get("proxy_token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.trim().is_empty())
+}
+
+fn proxy_token_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        let value = value.trim();
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
+async fn account_for_proxy_token(state: &AppState, token: &str) -> Option<Account> {
+    let store = state.account_store.read().await;
+    store
+        .accounts
+        .iter()
+        .find(|account| {
+            !account.client_kind.is_codex()
+                && client_proxy_enabled(account)
+                && client_proxy_token(account) == Some(token)
+        })
+        .cloned()
+}
+
+fn history_context_for_client_proxy(
+    account: &Account,
+    endpoint_kind: &str,
+    request_path: &str,
+) -> HistoryContext {
+    let profile = providers::profile_for_account(account);
+    HistoryContext {
+        client_kind: account_client_kind_slug(&account.client_kind).into(),
+        account_id: account.id.clone(),
+        account_name: account.name.clone(),
+        endpoint_kind: endpoint_kind.into(),
+        request_path: request_path.into(),
+        provider: account.provider.clone(),
+        provider_profile: profile.slug,
+    }
+}
+
+fn model_from_json_body(body: &[u8], fallback: &str) -> String {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn join_proxy_upstream(base_url: &str, path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{base}/{path}")
+}
+
+fn anthropic_messages_path(base_url: &str) -> &'static str {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        "messages"
+    } else {
+        "v1/messages"
+    }
+}
+
+fn apply_proxy_upstream_headers(
+    mut builder: reqwest::RequestBuilder,
+    account: &Account,
+) -> reqwest::RequestBuilder {
+    let profile = providers::profile_for_account(account);
+    for (name, value) in providers::request_headers(&profile, &account.api_key) {
+        builder = builder.header(name, value);
+    }
+    for (name, value) in &account.custom_headers {
+        if let (Ok(header_name), Ok(header_value)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_str(value),
+        ) {
+            builder = builder.header(header_name, header_value);
+        }
+    }
+    builder
+}
+
+fn usage_from_object(usage: &serde_json::Map<String, Value>) -> (Option<u32>, Option<u32>, bool) {
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
+    (input, output, is_cache_hit(usage))
+}
+
+fn usage_from_value(value: &Value) -> (Option<u32>, Option<u32>, bool) {
+    if let Some(obj) = value.get("usage").and_then(Value::as_object) {
+        return usage_from_object(obj);
+    }
+    if let Some(obj) = value
+        .get("response")
+        .and_then(|r| r.get("usage"))
+        .and_then(Value::as_object)
+    {
+        return usage_from_object(obj);
+    }
+    if let Some(obj) = value.as_object() {
+        if obj.contains_key("input_tokens")
+            || obj.contains_key("prompt_tokens")
+            || obj.contains_key("output_tokens")
+            || obj.contains_key("completion_tokens")
+        {
+            return usage_from_object(obj);
+        }
+    }
+    (None, None, false)
+}
+
+fn extract_proxy_response_usage(bytes: &[u8]) -> (u32, u32, bool) {
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
+    let mut cache_hit = false;
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        let (input, output, hit) = usage_from_value(&value);
+        if let Some(input) = input {
+            input_tokens = input;
+        }
+        if let Some(output) = output {
+            output_tokens = output;
+        }
+        cache_hit |= hit;
+    }
+
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines() {
+        let data = line.strip_prefix("data: ").unwrap_or(line).trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        let (input, output, hit) = usage_from_value(&value);
+        if let Some(input) = input {
+            input_tokens = input;
+        }
+        if let Some(output) = output {
+            output_tokens = output;
+        }
+        cache_hit |= hit;
+    }
+    (input_tokens, output_tokens, cache_hit)
+}
+
+async fn forward_client_proxy_request(
+    state: AppState,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+    request_path: &'static str,
+    endpoint_kind: &'static str,
+    upstream_path: String,
+) -> Response {
+    let Some(token) = proxy_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "缺少 deecodex 客户端代理 token",
+                    "type": "authentication_error",
+                    "code": "missing_proxy_token"
+                }
+            })),
+        )
+            .into_response();
+    };
+    let Some(account) = account_for_proxy_token(&state, &token).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "客户端代理 token 无效或未启用请求记录",
+                    "type": "authentication_error",
+                    "code": "invalid_proxy_token"
+                }
+            })),
+        )
+            .into_response();
+    };
+
+    let response_id = state.sessions.new_id();
+    let start = Instant::now();
+    let model = model_from_json_body(&body, &account.default_model);
+    let upstream_url = join_proxy_upstream(&account.upstream, &upstream_path);
+    let history_context = history_context_for_client_proxy(&account, endpoint_kind, request_path);
+    let builder = state
+        .client
+        .post(&upstream_url)
+        .header("Content-Type", "application/json");
+    let mut builder = apply_proxy_upstream_headers(builder, &account);
+    if let Some(secs) = account.request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let result = builder.body(body.clone()).send().await;
+    let resp = match result {
+        Ok(resp) => resp,
+        Err(err) => {
+            state
+                .request_history
+                .record(record_from_context(
+                    &history_context,
+                    response_id,
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    upstream_url,
+                    format!("connection error: {err}"),
+                    false,
+                ))
+                .await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("upstream connection error: {err}"),
+                        "type": "api_error",
+                        "code": "upstream_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            state
+                .request_history
+                .record(record_from_context(
+                    &history_context,
+                    response_id,
+                    model,
+                    "failed".into(),
+                    0,
+                    0,
+                    start.elapsed().as_millis() as u64,
+                    upstream_url,
+                    format!("response read error: {err}"),
+                    false,
+                ))
+                .await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("upstream response read error: {err}"),
+                        "type": "api_error",
+                        "code": "upstream_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let (input_tokens, output_tokens, cache_hit) = if status.is_success() {
+        extract_proxy_response_usage(&bytes)
+    } else {
+        (0, 0, false)
+    };
+    state
+        .request_history
+        .record(record_from_context(
+            &history_context,
+            response_id,
+            model,
+            if status.is_success() {
+                "completed".into()
+            } else {
+                "failed".into()
+            },
+            input_tokens,
+            output_tokens,
+            start.elapsed().as_millis() as u64,
+            upstream_url,
+            if status.is_success() {
+                String::new()
+            } else {
+                format!("HTTP {}", status.as_u16())
+            },
+            cache_hit,
+        ))
+        .await;
+
+    let mut response = Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(axum::body::Body::from(bytes))
+        .unwrap();
+    if request_path == "/v1/chat/completions" {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-deecodex-client-kind"),
+            header::HeaderValue::from_str(account_client_kind_slug(&account.client_kind))
+                .unwrap_or_else(|_| header::HeaderValue::from_static("client")),
+        );
+    }
+    response
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/responses", post(handle_responses))
+        .route("/v1/chat/completions", post(handle_client_chat_completions))
+        .route("/v1/messages", post(handle_client_anthropic_messages_v1))
+        .route("/messages", post(handle_client_anthropic_messages))
         .route("/v1/responses/compact", post(handle_compact_response))
         .route("/v1/responses/input_tokens", post(handle_input_tokens))
         .route(
@@ -288,6 +713,15 @@ pub fn build_router(state: AppState) -> Router {
         // Codex 线程聚合（跨 provider）
         .route("/api/threads", get(handle_list_threads_api))
         .route("/api/threads/status", get(handle_threads_status_api))
+        .route("/api/threads/unified", get(handle_list_unified_threads_api))
+        .route(
+            "/api/threads/unified/status",
+            get(handle_unified_thread_sources_api),
+        )
+        .route(
+            "/api/threads/unified/content",
+            get(handle_unified_thread_content_api),
+        )
         .route("/api/threads/migrate", post(handle_migrate_threads_api))
         .route("/api/threads/restore", post(handle_restore_threads_api))
         .fallback(handle_fallback)
@@ -1215,6 +1649,43 @@ async fn handle_threads_status_api(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn handle_list_unified_threads_api(State(state): State<AppState>) -> Response {
+    let list = crate::client_threads::list_client_threads(&state.data_dir);
+    Json(serde_json::json!({ "ok": true, "threads": list.threads, "sources": list.sources, "total": list.total }))
+        .into_response()
+}
+
+async fn handle_unified_thread_sources_api(State(state): State<AppState>) -> Response {
+    let sources = crate::client_threads::get_thread_sources(&state.data_dir);
+    Json(serde_json::json!({ "ok": true, "sources": sources })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct UnifiedThreadContentQuery {
+    client_kind: String,
+    native_id: String,
+}
+
+async fn handle_unified_thread_content_api(
+    Query(query): Query<UnifiedThreadContentQuery>,
+) -> Response {
+    let Some(kind) = crate::client_threads::parse_client_kind(&query.client_kind) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "message": "未知客户端类型" })),
+        )
+            .into_response();
+    };
+    match crate::client_threads::get_client_thread_content(kind, &query.native_id) {
+        Ok(content) => Json(serde_json::json!({ "ok": true, "content": content })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "message": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn handle_migrate_threads_api(State(state): State<AppState>) -> Response {
     match crate::codex_threads::migrate(&state.data_dir) {
         Ok(diff) => Json(serde_json::json!({
@@ -1402,6 +1873,78 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         .with_label_values(&["POST", &status])
         .inc();
     response
+}
+
+async fn handle_client_chat_completions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    forward_client_proxy_request(
+        state,
+        headers,
+        body,
+        "/v1/chat/completions",
+        "openai_chat",
+        "chat/completions".into(),
+    )
+    .await
+}
+
+async fn handle_client_anthropic_messages_v1(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let upstream_path = {
+        let token = proxy_token_from_headers(&headers);
+        if let Some(token) = token.as_deref() {
+            if let Some(account) = account_for_proxy_token(&state, token).await {
+                anthropic_messages_path(&account.upstream).to_string()
+            } else {
+                "v1/messages".into()
+            }
+        } else {
+            "v1/messages".into()
+        }
+    };
+    forward_client_proxy_request(
+        state,
+        headers,
+        body,
+        "/v1/messages",
+        "anthropic_messages",
+        upstream_path,
+    )
+    .await
+}
+
+async fn handle_client_anthropic_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let upstream_path = {
+        let token = proxy_token_from_headers(&headers);
+        if let Some(token) = token.as_deref() {
+            if let Some(account) = account_for_proxy_token(&state, token).await {
+                anthropic_messages_path(&account.upstream).to_string()
+            } else {
+                "v1/messages".into()
+            }
+        } else {
+            "v1/messages".into()
+        }
+    };
+    forward_client_proxy_request(
+        state,
+        headers,
+        body,
+        "/messages",
+        "anthropic_messages",
+        upstream_path,
+    )
+    .await
 }
 
 /// 从 SSE 字节流中提取 usage 和上游回显信息。
@@ -1793,6 +2336,7 @@ async fn handle_responses_bypass(
 
     // 模型映射（直连模式下仅此一项处理）
     let (account, endpoint) = active_account_endpoint(&state).await;
+    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
     let fast_service_tier_status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
     match fast_service_tier_status {
         FastServiceTierStatus::Injected => tracing::info!(
@@ -1928,6 +2472,7 @@ async fn handle_responses_bypass(
         store_response,
         model,
         requested_service_tier: req.service_tier.clone(),
+        history_context,
     };
 
     let start = std::time::Instant::now();
@@ -1954,6 +2499,7 @@ async fn bypass_stream_forward(
         store_response: _,
         model,
         requested_service_tier,
+        history_context,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -1991,12 +2537,9 @@ async fn bypass_stream_forward(
             error!("bypass stream upstream request build error: {message}");
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id.clone(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
                     model.clone(),
                     "failed".into(),
                     0,
@@ -2005,7 +2548,7 @@ async fn bypass_stream_forward(
                     url.clone(),
                     message.clone(),
                     false,
-                )
+                ))
                 .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2031,12 +2574,9 @@ async fn bypass_stream_forward(
                 error!("bypass stream upstream exhausted retries: {e}");
                 let _ = state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id,
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
                         model,
                         "failed".into(),
                         0,
@@ -2045,7 +2585,7 @@ async fn bypass_stream_forward(
                         url,
                         format!("connection error: {e}"),
                         false,
-                    )
+                    ))
                     .await;
                 return (
                     StatusCode::BAD_GATEWAY,
@@ -2068,12 +2608,9 @@ async fn bypass_stream_forward(
         let error_body = resp.text().await.unwrap_or_default();
         let _ = state
             .request_history
-            .record(
+            .record(record_from_context(
+                &history_context,
                 response_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
                 model,
                 "failed".into(),
                 0,
@@ -2082,7 +2619,7 @@ async fn bypass_stream_forward(
                 url,
                 format!("HTTP {}", status.as_u16()),
                 false,
-            )
+            ))
             .await;
         // 上游可能返回 HTML，转为 JSON 错误
         let error_body = if error_body.trim_start().starts_with('<') {
@@ -2116,12 +2653,9 @@ async fn bypass_stream_forward(
             error!("bypass stream read body: {e}");
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
                     model,
                     "failed".into(),
                     0,
@@ -2130,7 +2664,7 @@ async fn bypass_stream_forward(
                     url,
                     format!("stream read error: {e}"),
                     false,
-                )
+                ))
                 .await;
             return (
                 StatusCode::BAD_GATEWAY,
@@ -2157,12 +2691,9 @@ async fn bypass_stream_forward(
     }
     let _ = state
         .request_history
-        .record(
+        .record(record_from_context(
+            &history_context,
             response_id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
             model,
             "completed".into(),
             input_tokens,
@@ -2171,7 +2702,7 @@ async fn bypass_stream_forward(
             url,
             String::new(),
             cache_hit,
-        )
+        ))
         .await;
 
     let body_stream = axum::body::Body::from(body_bytes);
@@ -2203,6 +2734,7 @@ async fn bypass_send_request(
         store_response,
         model,
         requested_service_tier,
+        history_context,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -2251,12 +2783,9 @@ async fn bypass_send_request(
             }
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
                     model,
                     "failed".into(),
                     0,
@@ -2265,7 +2794,7 @@ async fn bypass_send_request(
                     url,
                     message.into(),
                     false,
-                )
+                ))
                 .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2310,12 +2839,9 @@ async fn bypass_send_request(
             }
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
                     model,
                     "failed".into(),
                     0,
@@ -2324,7 +2850,7 @@ async fn bypass_send_request(
                     url,
                     format!("connection error: {e}"),
                     false,
-                )
+                ))
                 .await;
             (
                 StatusCode::BAD_GATEWAY,
@@ -2402,12 +2928,9 @@ async fn bypass_send_request(
                     .unwrap_or(false);
                 state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id,
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
                         model,
                         if status.is_success() {
                             "completed"
@@ -2421,7 +2944,7 @@ async fn bypass_send_request(
                         url,
                         String::new(),
                         cache_hit,
-                    )
+                    ))
                     .await;
             }
 
@@ -2467,6 +2990,7 @@ async fn handle_responses_inner(
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
     let (account, endpoint) = active_account_endpoint(&state).await;
+    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
     let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
     let store_response = req.store.unwrap_or(true);
@@ -2547,6 +3071,7 @@ async fn handle_responses_inner(
                     store_response,
                     conversation_id,
                     response_extra,
+                    history_context: history_context.clone(),
                     start: pipeline_start,
                 })
                 .await;
@@ -2776,6 +3301,7 @@ async fn handle_responses_inner(
             conversation_id,
             response_extra,
             req: &req,
+            history_context: history_context.clone(),
             start: Instant::now(),
         })
         .await;
@@ -2860,6 +3386,7 @@ async fn handle_responses_inner(
                 conversation_id: bg_conversation_id,
                 response_extra: response_extra.clone(),
                 req: &bg_req,
+                history_context: history_context.clone(),
                 start: Instant::now(),
             })
             .await;
@@ -2908,12 +3435,9 @@ async fn handle_responses_inner(
                 }
                 let _ = state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id.clone(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
                         mapped_model.clone(),
                         "completed".into(),
                         input_tokens,
@@ -2922,7 +3446,7 @@ async fn handle_responses_inner(
                         url.clone(),
                         String::new(),
                         true,
-                    )
+                    ))
                     .await;
                 return resp;
             }
@@ -2968,6 +3492,7 @@ async fn handle_responses_inner(
             request_timeout_secs: endpoint.request_timeout_secs,
             max_retries: endpoint.max_retries,
             request_history: state.request_history.clone(),
+            history_context: history_context.clone(),
             upstream_url: url,
             allow_missing_done: providers::profile_for_account(&account)
                 .capabilities
@@ -3005,6 +3530,7 @@ async fn handle_responses_inner(
             conversation_id,
             response_extra,
             req: &req,
+            history_context: history_context.clone(),
             start,
         })
         .await;
@@ -3155,6 +3681,7 @@ async fn dev_pipeline_response(args: DevPipelineResponseArgs<'_>) -> Response {
         store_response,
         conversation_id,
         response_extra,
+        history_context,
         start,
     } = args;
     let response_id = state.sessions.new_id();
@@ -3221,9 +3748,9 @@ async fn dev_pipeline_response(args: DevPipelineResponseArgs<'_>) -> Response {
     }
     let _ = state
         .request_history
-        .record(
+        .record(record_from_context(
+            &history_context,
             response_id,
-            now_unix_secs(),
             value
                 .get("model")
                 .and_then(Value::as_str)
@@ -3236,7 +3763,7 @@ async fn dev_pipeline_response(args: DevPipelineResponseArgs<'_>) -> Response {
             "dev-pipeline://local".into(),
             String::new(),
             false,
-        )
+        ))
         .await;
 
     if req.stream {
@@ -3325,6 +3852,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         conversation_id,
         response_extra,
         req,
+        history_context,
         start,
     } = args;
     let mut builder = state
@@ -3366,6 +3894,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 code: "request_builder_clone_failed".into(),
                 message: "failed to clone upstream request builder".into(),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
+                history_context: history_context.clone(),
             })
             .await;
         };
@@ -3409,9 +3938,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             }
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id,
-                    now_unix_secs(),
                     model,
                     "failed".into(),
                     0,
@@ -3420,7 +3949,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     url,
                     e.to_string(),
                     false,
-                )
+                ))
                 .await;
             (
                 StatusCode::BAD_GATEWAY,
@@ -3460,9 +3989,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             }
             let _ = state
                 .request_history
-                .record(
+                .record(record_from_context(
+                    &history_context,
                     response_id,
-                    now_unix_secs(),
                     model,
                     "failed".into(),
                     0,
@@ -3471,7 +4000,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     url,
                     format!("HTTP {}", status.as_u16()),
                     false,
-                )
+                ))
                 .await;
             // 上游可能返回 HTML，Codex 期望 JSON，统一转为 JSON 错误
             let error_message = if body.trim_start().starts_with('<') {
@@ -3516,9 +4045,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 }
                 let _ = state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id,
-                        now_unix_secs(),
                         model,
                         "failed".into(),
                         0,
@@ -3527,7 +4056,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         url,
                         e.to_string(),
                         false,
-                    )
+                    ))
                     .await;
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
@@ -3593,9 +4122,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
 
                 let _ = state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id.clone(),
-                        now_unix_secs(),
                         model.clone(),
                         "completed".into(),
                         chat_resp
@@ -3612,7 +4141,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         url.clone(),
                         String::new(),
                         false,
-                    )
+                    ))
                     .await;
 
                 let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
@@ -3662,6 +4191,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
         conversation_id,
         response_extra,
         req,
+        history_context,
         start,
     } = args;
 
@@ -3704,6 +4234,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 code: "request_builder_clone_failed".into(),
                 message: "failed to clone anthropic request builder".into(),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
+                history_context: history_context.clone(),
             })
             .await;
         };
@@ -3736,6 +4267,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 code: "connection_error".into(),
                 message: format!("anthropic upstream connection error: {e}"),
                 status: StatusCode::BAD_GATEWAY,
+                history_context: history_context.clone(),
             })
             .await
         }
@@ -3755,6 +4287,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 code: status.as_u16().to_string(),
                 message: body_text,
                 status: StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                history_context: history_context.clone(),
             })
             .await
         }
@@ -3773,6 +4306,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                     code: "parse_error".into(),
                     message: e.to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
+                    history_context: history_context.clone(),
                 })
                 .await
             }
@@ -3818,9 +4352,9 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                     .unwrap_or(0);
                 let _ = state
                     .request_history
-                    .record(
+                    .record(record_from_context(
+                        &history_context,
                         response_id.clone(),
-                        now_unix_secs(),
                         model.clone(),
                         "completed".into(),
                         input_tokens,
@@ -3829,7 +4363,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                         url,
                         String::new(),
                         false,
-                    )
+                    ))
                     .await;
 
                 let (resp, _) = translate::from_chat_response(response_id, &model, chat_resp);
@@ -3867,6 +4401,7 @@ async fn upstream_failure_response(args: UpstreamFailureArgs<'_>) -> Response {
         code,
         message,
         status,
+        history_context,
     } = args;
     if store_response {
         save_response_unless_cancelled(
@@ -3890,9 +4425,9 @@ async fn upstream_failure_response(args: UpstreamFailureArgs<'_>) -> Response {
     }
     let _ = state
         .request_history
-        .record(
+        .record(record_from_context(
+            &history_context,
             response_id,
-            now_unix_secs(),
             model,
             "failed".into(),
             0,
@@ -3901,7 +4436,7 @@ async fn upstream_failure_response(args: UpstreamFailureArgs<'_>) -> Response {
             url,
             message.clone(),
             false,
-        )
+        ))
         .await;
     (
         status,
@@ -4872,6 +5407,46 @@ data: [DONE]
         let (_, _, _, service_tier) = extract_bypass_response_observations(body);
 
         assert_eq!(service_tier.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn test_proxy_token_from_headers_accepts_bearer_and_x_api_key() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            header::HeaderValue::from_static("Bearer dee-token"),
+        );
+        headers.insert("x-api-key", header::HeaderValue::from_static("fallback"));
+        assert_eq!(
+            proxy_token_from_headers(&headers).as_deref(),
+            Some("dee-token")
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", header::HeaderValue::from_static("dee-api-key"));
+        assert_eq!(
+            proxy_token_from_headers(&headers).as_deref(),
+            Some("dee-api-key")
+        );
+    }
+
+    #[test]
+    fn test_extract_proxy_response_usage_reads_json_and_sse_usage() {
+        let (input, output, cache_hit) = extract_proxy_response_usage(
+            br#"{"usage":{"prompt_tokens":12,"completion_tokens":4}}"#,
+        );
+        assert_eq!((input, output, cache_hit), (12, 4, false));
+
+        let body = br#"event: message_delta
+data: {"usage":{"input_tokens":5,"output_tokens":1}}
+
+event: message_stop
+data: {"usage":{"input_tokens":9,"output_tokens":3}}
+
+data: [DONE]
+"#;
+        let (input, output, cache_hit) = extract_proxy_response_usage(body);
+        assert_eq!((input, output, cache_hit), (9, 3, false));
     }
 
     #[test]

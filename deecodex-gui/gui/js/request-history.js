@@ -8,9 +8,13 @@
 		let _historyRefreshMs = 0;
 		let _historyChartPeriod = 'hourly';
 		let _historyStatusFilter = 'all';
+		let _historyClientKindFilter = 'all';
+		let _historyAccountFilter = '';
 		let _historyDisplayLimit = 50;
 const _historyDisplayStep = 50;
 let _historyMonthlyStats = [];
+let _historyAccounts = [];
+let _historyAllEntries = [];
 let _historyOffline = false;
 let _historyReconnectTimer = null;
 const HISTORY_CACHE_KEY = 'deecodex.history.cache';
@@ -25,11 +29,87 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  }
 		}
 
+		function historyClientLabel(kind) {
+		  if (kind === 'all') return '全部';
+		  if (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS[kind]) return CLIENT_KIND_LABELS[kind];
+		  return kind || '未知客户端';
+		}
+
+		function historyClientProfiles() {
+		  const fallback = [
+		    { slug: 'codex', label: 'Codex' },
+		    { slug: 'claude_code', label: 'Claude Code' },
+		    { slug: 'openclaw', label: 'OpenClaw' },
+		    { slug: 'hermes', label: 'Hermes' },
+		    { slug: 'generic_client', label: '通用客户端' },
+		  ];
+		  if (typeof clientProfiles !== 'undefined' && Array.isArray(clientProfiles) && clientProfiles.length) {
+		    return clientProfiles.map(p => {
+		      const raw = p.slug || p.kind;
+		      const slug = typeof normalizeClientKind === 'function' ? normalizeClientKind(raw) : raw;
+		      return { slug, label: p.label || historyClientLabel(slug) };
+		    });
+		  }
+		  return fallback;
+		}
+
+		function renderHistoryClientSwitcher() {
+		  const entries = Array.isArray(_historyAllEntries) && _historyAllEntries.length ? _historyAllEntries : (_historyEntries || []);
+		  const profiles = [{ slug: 'all', label: '全部' }].concat(historyClientProfiles());
+		  return profiles.map(profile => {
+		    const kind = profile.slug;
+		    const count = kind === 'all' ? entries.length : entries.filter(e => (e.client_kind || 'codex') === kind).length;
+		    const active = kind === _historyClientKindFilter ? ' active' : '';
+		    return `<button type="button" class="client-tab${active}" onclick="setHistoryClientKind('${escAttr(kind)}')">
+		      <span>${esc(profile.label || historyClientLabel(kind))}</span><em>${count}</em>
+		    </button>`;
+		  }).join('');
+		}
+
+		function renderHistoryAccountOptions() {
+		  const kindOf = typeof accountClientKind === 'function' ? accountClientKind : (a => a?.client_kind || a?.target || 'codex');
+		  const accounts = (_historyAccounts || []).filter(a => _historyClientKindFilter === 'all' || kindOf(a) === _historyClientKindFilter);
+		  const options = ['<option value="">全部账号</option>'];
+		  for (const a of accounts) {
+		    options.push(`<option value="${escAttr(a.id)}" ${_historyAccountFilter === a.id ? 'selected' : ''}>${esc(a.name || a.id)}</option>`);
+		  }
+		  return options.join('');
+		}
+
+		function historyEntryMatchesActiveFilters(entry) {
+		  if (!entry) return false;
+		  const clientKind = entry.client_kind || 'codex';
+		  if (_historyClientKindFilter !== 'all' && clientKind !== _historyClientKindFilter) return false;
+		  if (_historyAccountFilter && (entry.account_id || '') !== _historyAccountFilter) return false;
+		  return true;
+		}
+
+		function visibleHistoryEntries(entries) {
+		  return (entries || []).filter(historyEntryMatchesActiveFilters);
+		}
+
+		function visibleMonthlyStats(stats) {
+		  return (stats || []).filter(s => {
+		    const clientKind = s.client_kind || 'codex';
+		    if (_historyClientKindFilter !== 'all' && clientKind !== _historyClientKindFilter) return false;
+		    if (_historyAccountFilter && (s.account_id || '') !== _historyAccountFilter) return false;
+		    return true;
+		  });
+		}
+
+		function historyFilterArgs(extra) {
+		  return Object.assign({}, extra || {}, {
+		    clientKind: _historyClientKindFilter === 'all' ? null : _historyClientKindFilter,
+		    accountId: _historyAccountFilter || null,
+		  });
+		}
+
 		function renderHistory() {
 		  return `<div class="page-header">
 		    <h2>请求历史</h2>
-		    <p>持久化的 API 请求记录（模型、Token 用量、耗时）</p>
+		    <p>持久化的 API 请求记录（客户端、账号、模型、Token 用量、耗时）</p>
 		  </div>
+		  <div id="historyClientSwitcher" class="client-switcher history-client-switcher">${renderHistoryClientSwitcher()}</div>
 		  <div id="historyStats" class="history-stats">
 		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">今日请求数</div></div>
 		    <div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div>
@@ -49,6 +129,9 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    <div id="historyChartBars" class="history-chart-bars"></div>
 		  </div>
 		  <div class="history-controls">
+		    <select class="history-select" id="historyAccountFilter" onchange="setHistoryAccountFilter(this.value)">
+		      ${renderHistoryAccountOptions()}
+		    </select>
 		    <select class="history-select" onchange="setStatusFilter(this.value)">
 		      <option value="all">全部状态</option>
 		      <option value="completed">仅成功</option>
@@ -119,7 +202,8 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		}
 
 		function renderHistoryCards(entries) {
-		  const filtered = _historyStatusFilter === 'all' ? entries : entries.filter(e => e.status === _historyStatusFilter);
+		  const scoped = visibleHistoryEntries(entries);
+		  const filtered = _historyStatusFilter === 'all' ? scoped : scoped.filter(e => e.status === _historyStatusFilter);
 		  if (!filtered.length) return '<div class="session-empty">无匹配的请求记录</div>';
 		  const limit = _historyDisplayLimit || 50;
 		  const show = filtered.slice(0, limit);
@@ -127,11 +211,16 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  for (const e of show) {
 		    const inputRatio = e.total_tokens > 0 ? Math.round((e.input_tokens || 0) / e.total_tokens * 100) : 50;
 		    const providerLabel = e.provider_profile || e.provider || '';
+		    const clientLabel = historyClientLabel(e.client_kind || 'codex');
+		    const accountLabel = e.account_name || e.account_id || '';
+		    const endpointLabel = e.endpoint_kind || '';
 		    html += `<div class="history-card${e.status === 'failed' ? ' failed' : ''}">
 		      <div class="hc-row">
 		        <span class="hc-time">${fmtTime(e.created_at)}</span>
 		        <span class="hc-model">${esc(e.model)}</span>
-		        ${providerLabel ? `<span class="hc-model" title="Provider profile">${esc(providerLabel)}</span>` : ''}
+		        <span class="hc-chip">${esc(clientLabel)}</span>
+		        ${accountLabel ? `<span class="hc-chip" title="${escAttr(e.account_id || '')}">${esc(accountLabel)}</span>` : ''}
+		        ${providerLabel ? `<span class="hc-chip" title="Provider profile">${esc(providerLabel)}</span>` : ''}
 		        ${statusBadge(e.status)}
 		        <span class="hc-dur">${fmtDuration(e.duration_ms)}</span>
 		      </div>
@@ -141,7 +230,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		        <span>总计:${fmtTokens(e.total_tokens)}</span>
 		      </div>
 		      <div class="hc-token-bar"><div class="hc-token-in" style="width:${inputRatio}%"></div><div class="hc-token-out" style="width:${100 - inputRatio}%"></div></div>
-		      <div class="hc-url" title="${escAttr(e.upstream_url)}">${esc(trunc(e.upstream_url, 50))}</div>
+		      <div class="hc-url" title="${escAttr(e.upstream_url)}">${endpointLabel ? esc(endpointLabel + ' · ') : ''}${esc(trunc(e.upstream_url, 50))}</div>
 		      ${e.error_msg ? `<div class="hc-error" onclick="this.nextElementSibling?.classList.toggle('hidden')">▸ 错误详情</div><div class="hc-error hidden" style="margin-top:2px;">${esc(e.error_msg)}</div>` : ''}
 		    </div>`;
 		  }
@@ -178,8 +267,8 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  } else {
 		    // 月度：从归档统计 + 当前月实时数据合并
 		    const statMap = {};
-		    for (const s of (_historyMonthlyStats || [])) {
-		      statMap[s.year_month] = s.total_tokens;
+		    for (const s of visibleMonthlyStats(_historyMonthlyStats)) {
+		      statMap[s.year_month] = (statMap[s.year_month] || 0) + (s.total_tokens || 0);
 		    }
 		    // 覆盖当前月（实时数据优先）
 		    const nowDate = new Date();
@@ -261,26 +350,50 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  if (container && _historyEntries.length) container.innerHTML = renderHistoryCards(_historyEntries);
 		}
 
+		function setHistoryClientKind(kind) {
+		  _historyClientKindFilter = kind || 'all';
+		  _historyAccountFilter = '';
+		  _historyDisplayLimit = 50;
+		  refreshHistory();
+		}
+
+		function setHistoryAccountFilter(accountId) {
+		  _historyAccountFilter = accountId || '';
+		  _historyDisplayLimit = 50;
+		  refreshHistory();
+		}
+
 		async function refreshHistory() {
 		  const statsEl = document.getElementById('historyStats');
 		  const barsEl = document.getElementById('historyChartBars');
 		  const cardsEl = document.getElementById('historyCardsContainer');
 		  try {
-		    const [entries, monthlyStats, todayStats] = await Promise.all([
-		      invoke('list_request_history', { limit: 3000 }),
-		      invoke('get_monthly_stats', { limit: 6 }),
-		      invoke('get_request_stats_since', { since: todayStartUnixSecs() }),
+		    const listArgs = historyFilterArgs({ limit: 3000 });
+		    const shouldLoadAllEntries = Boolean(listArgs.clientKind || listArgs.accountId);
+		    const [entries, allEntries, monthlyStats, todayStats, accountsPayload] = await Promise.all([
+		      invoke('list_request_history', listArgs),
+		      shouldLoadAllEntries ? invoke('list_request_history', { limit: 3000 }).catch(() => null) : Promise.resolve(null),
+		      invoke('get_monthly_stats', historyFilterArgs({ limit: 60 })),
+		      invoke('get_request_stats_since', historyFilterArgs({ since: todayStartUnixSecs() })),
+		      invoke('list_accounts', {}),
 		    ]);
 		    _historyEntries = entries || [];
+		    _historyAllEntries = Array.isArray(allEntries) ? allEntries : _historyEntries;
 		    _historyMonthlyStats = monthlyStats || [];
-		    saveHistoryCache(_historyEntries, _historyMonthlyStats);
+		    _historyAccounts = accountsPayload?.accounts || [];
+		    saveHistoryCache(_historyAllEntries, _historyMonthlyStats, _historyAccounts);
 		    _historyOffline = false;
 		    stopReconnectPolling();
 		    hideHistoryOfflineBanner();;
-		    if (_historyEntries.length) {
+		    const switcher = document.getElementById('historyClientSwitcher');
+		    if (switcher) switcher.innerHTML = renderHistoryClientSwitcher();
+		    const accountSel = document.getElementById('historyAccountFilter');
+		    if (accountSel) accountSel.innerHTML = renderHistoryAccountOptions();
+		    const visibleEntries = visibleHistoryEntries(_historyEntries);
+		    if (visibleEntries.length) {
 		      if (statsEl) updateStats(statsFromAggregate(todayStats));
-		      if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
-		      if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
+		      if (barsEl) barsEl.innerHTML = renderTrendChart(visibleEntries);
+		      if (cardsEl) cardsEl.innerHTML = renderHistoryCards(visibleEntries);
 		    } else {
 		      if (statsEl) statsEl.innerHTML = '<div class="history-stat"><div class="stat-value">0</div><div class="stat-label">今日请求数</div></div><div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div><div class="history-stat accent"><div class="stat-value">0</div><div class="stat-label">Token 消耗</div></div><div class="history-stat"><div class="stat-value">—</div><div class="stat-label">平均耗时</div></div><div class="history-stat cache"><div class="stat-value">—</div><div class="stat-label">命中缓存</div></div>';
 		      if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">暂无数据</div>';
@@ -289,17 +402,27 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  } catch (e) {
 		    const cached = loadHistoryCache();
 		    if (cached) {
-		      _historyEntries = cached.entries || [];
+		      _historyAllEntries = cached.entries || [];
+		      _historyEntries = visibleHistoryEntries(_historyAllEntries);
 		      _historyMonthlyStats = cached.monthlyStats || [];
+		      _historyAccounts = cached.accounts || [];
 		      _historyOffline = true;
 		      showHistoryOfflineBanner();
 		      startReconnectPolling();
-		      if (_historyEntries.length) {
-		        if (statsEl) updateStats(computeStats(filterToday(_historyEntries)));
-		        if (barsEl) barsEl.innerHTML = renderTrendChart(_historyEntries);
+		      const switcher = document.getElementById('historyClientSwitcher');
+		      if (switcher) switcher.innerHTML = renderHistoryClientSwitcher();
+		      const accountSel = document.getElementById('historyAccountFilter');
+		      if (accountSel) accountSel.innerHTML = renderHistoryAccountOptions();
+		      const visibleEntries = visibleHistoryEntries(_historyEntries);
+		      if (visibleEntries.length) {
+		        if (statsEl) updateStats(computeStats(filterToday(visibleEntries)));
+		        if (barsEl) barsEl.innerHTML = renderTrendChart(visibleEntries);
 		        if (cardsEl) cardsEl.innerHTML = renderHistoryCards(_historyEntries);
 		      } else {
-		        if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">暂无缓存数据，服务启动后将自动刷新</div>';
+		        if (statsEl) updateStats({ total: 0, successRate: 0, totalTokens: 0, avgMs: 0, cacheHitRate: 0 });
+		        if (barsEl) barsEl.innerHTML = '<div class="session-empty" style="font-size:11px;padding:10px;">暂无数据</div>';
+		        const emptyText = _historyAllEntries.length ? '无匹配的请求记录' : '暂无缓存数据，服务启动后将自动刷新';
+		        if (cardsEl) cardsEl.innerHTML = '<div class="session-empty">' + emptyText + '</div>';
 		      }
 		    } else {
 		      if (cardsEl) cardsEl.innerHTML = '<div class="session-empty" style="color:var(--red);">加载失败: ' + esc(e.message || String(e)) + '</div>';
@@ -317,11 +440,12 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  } catch (_) { return null; }
 		}
 
-		function saveHistoryCache(entries, monthlyStats) {
+		function saveHistoryCache(entries, monthlyStats, accounts) {
 		  try {
 		    deeStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify({
 		      entries: entries || [],
 		      monthlyStats: monthlyStats || [],
+		      accounts: accounts || [],
 		      savedAt: Date.now()
 		    }));
 		  } catch (_) {}
@@ -401,10 +525,13 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		}
 
 		async function clearHistory() {
-				  var ok = await showConfirm('确定要清空所有请求历史吗？此操作不可恢复。');
+		  const scope = _historyAccountFilter
+		    ? '当前账号'
+		    : (_historyClientKindFilter === 'all' ? '所有请求历史' : historyClientLabel(_historyClientKindFilter) + ' 请求历史');
+				  var ok = await showConfirm('确定要清空' + scope + '吗？此操作不可恢复。');
 		  if (!ok) return;
 		  try {
-		    await invoke('clear_request_history');
+		    await invoke('clear_request_history', historyFilterArgs());
 		    showToast('请求历史已清空', 'success');
 		    _historyEntries = [];
 		    _historyMonthlyStats = [];

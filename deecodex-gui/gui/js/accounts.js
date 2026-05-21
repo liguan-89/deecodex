@@ -171,6 +171,8 @@ function renderClientAccountDetail() {
   const configPath = a.client_options?.config_path || '';
   const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
   const authEnv = a.client_options?.auth_env || apiKeyEnv;
+  const proxyEnabled = Boolean(a.client_options?.proxy_recording_enabled);
+  const proxyBaseUrl = a.client_options?.proxy_base_url || '';
   const secretHint = kind === 'openclaw'
     ? 'OpenClaw 会写入 SecretRef，不把 Key 放进命令参数。'
     : (kind === 'hermes'
@@ -259,6 +261,13 @@ function renderClientAccountDetail() {
           <input type="text" id="edit_client_config_path" value="${escAttr(configPath)}" placeholder="${escAttr(profile.config_path_hint || '')}">
         </div>
         <div class="config-field">
+          <label>请求历史代理</label>
+          <label class="history-toggle${proxyEnabled ? ' on' : ''}" id="edit_client_proxy_toggle" onclick="toggleClientProxyRecording()">
+            <div class="toggle-dot"></div> 启用记录
+          </label>
+          <span class="hint">${proxyEnabled && proxyBaseUrl ? esc(proxyBaseUrl) : '开启后写入本地代理 URL，并用代理 token 识别账号。'}</span>
+        </div>
+        <div class="config-field">
           <label>Key 环境变量名</label>
           <input type="text" id="edit_client_api_key_env" value="${escAttr(apiKeyEnv)}" placeholder="OPENAI_API_KEY">
           <span class="hint">${esc(secretHint)}</span>
@@ -328,6 +337,14 @@ function selectClientKind(kind) {
         else fetchClientStatusForCard(a);
       });
   }
+}
+
+function toggleClientProxyRecording() {
+  if (!editingAccount || isCodexAccount(editingAccount)) return;
+  editingAccount.client_options = editingAccount.client_options || {};
+  editingAccount.client_options.proxy_recording_enabled = !Boolean(editingAccount.client_options.proxy_recording_enabled);
+  const toggle = document.getElementById('edit_client_proxy_toggle');
+  if (toggle) toggle.classList.toggle('on', editingAccount.client_options.proxy_recording_enabled);
 }
 
 function getProviderPreset(provider) {
@@ -1391,6 +1408,10 @@ function syncEditingDraftFromForm() {
       a.client_options.auth_env = authEnv.value || a.client_options.api_key_env || 'ANTHROPIC_API_KEY';
       a.client_options.api_key_env = a.client_options.auth_env;
     }
+    const proxyToggle = document.getElementById('edit_client_proxy_toggle');
+    if (proxyToggle) {
+      a.client_options.proxy_recording_enabled = proxyToggle.classList.contains('on');
+    }
     a.translate_enabled = false;
     a.endpoints = [];
     return;
@@ -1847,7 +1868,8 @@ async function scanClientAccounts() {
       const imported = Array.isArray(result.accounts) ? result.accounts[0] : null;
       if (imported) selectedClientKind = accountClientKind(imported);
       accountsView = 'list';
-      renderMainContent();
+      if (currentPanel === 'accounts') renderMainContent();
+      else if (currentPanel === 'config') renderPanel('config');
     }
   } catch (e) {
     showToast('客户端扫描失败: ' + e, 'error');

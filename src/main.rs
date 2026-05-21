@@ -6,6 +6,7 @@ mod capability;
 mod cdp;
 #[allow(dead_code)]
 mod client_integrations;
+mod client_threads;
 mod codex_config;
 mod codex_threads;
 mod config;

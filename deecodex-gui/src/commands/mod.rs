@@ -45,6 +45,49 @@ fn client_account_counts(store: &AccountStore) -> Value {
     json!(counts)
 }
 
+fn client_proxy_base_url(port: u16, kind: &AccountClientKind) -> String {
+    match kind {
+        AccountClientKind::ClaudeCode => format!("http://127.0.0.1:{port}"),
+        AccountClientKind::Openclaw
+        | AccountClientKind::Hermes
+        | AccountClientKind::GenericClient => {
+            format!("http://127.0.0.1:{port}/v1")
+        }
+        AccountClientKind::Codex => format!("http://127.0.0.1:{port}/v1"),
+    }
+}
+
+fn ensure_client_proxy_options(account: &mut deecodex::accounts::Account, port: u16) {
+    if account.client_kind.is_codex() {
+        return;
+    }
+    let enabled = account
+        .client_options
+        .get("proxy_recording_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    if account
+        .client_options
+        .get("proxy_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        let token = format!("dee_{}_{}", account.id, deecodex::accounts::generate_id());
+        account
+            .client_options
+            .insert("proxy_token".into(), Value::String(token));
+    }
+    account.client_options.insert(
+        "proxy_base_url".into(),
+        Value::String(client_proxy_base_url(port, &account.client_kind)),
+    );
+}
+
 fn append_account_event(
     data_dir: &Path,
     account_id: &str,
@@ -1456,6 +1499,7 @@ pub async fn add_account(
     };
 
     let data_dir = manager.data_dir.lock().await.clone();
+    let port = *manager.port.lock().await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
     let mut new_account = if let Some(json) = account_json {
@@ -1528,6 +1572,7 @@ pub async fn add_account(
     if !new_account.client_kind.is_codex() {
         new_account.translate_enabled = false;
         new_account.endpoints.clear();
+        ensure_client_proxy_options(&mut new_account, port);
     }
 
     let mut candidate_store = store.clone();
@@ -1568,6 +1613,7 @@ pub async fn update_account(
     use deecodex::accounts::{guess_provider, now_secs, Account};
 
     let data_dir = manager.data_dir.lock().await.clone();
+    let port = *manager.port.lock().await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
     let updated: Account = parse_account_json(&account_json)?;
@@ -1590,6 +1636,7 @@ pub async fn update_account(
     if !account.client_kind.is_codex() {
         account.translate_enabled = false;
         account.endpoints.clear();
+        ensure_client_proxy_options(&mut account, port);
     }
     account.normalize_v2();
     let endpoint_for_legacy = if store.active_account_id.as_ref() == Some(&account.id)
@@ -2476,8 +2523,9 @@ pub async fn test_client_account(
     account_id: Option<String>,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
+    let port = *manager.port.lock().await;
     let mut persisted_account_id = None;
-    let account = if let Some(raw) = account_json {
+    let mut account = if let Some(raw) = account_json {
         parse_account_json(&raw)?
     } else {
         let id = account_id.ok_or_else(|| "缺少 account_id 或 account_json".to_string())?;
@@ -2490,12 +2538,14 @@ pub async fn test_client_account(
             .cloned()
             .ok_or_else(|| "账号不存在".to_string())?
     };
+    ensure_client_proxy_options(&mut account, port);
     let mut draft = account.clone();
     let report = deecodex::client_integrations::apply(&mut draft, true)
         .map_err(|e| format!("客户端 dry-run 失败: {e}"))?;
     if let Some(id) = persisted_account_id {
         let mut store = deecodex::accounts::load_accounts(&data_dir);
         if let Some(existing) = store.accounts.iter_mut().find(|item| item.id == id) {
+            ensure_client_proxy_options(existing, port);
             existing.last_check = Some(deecodex::accounts::ClientCheckRecord {
                 ok: report.ok,
                 checked_at: deecodex::accounts::now_secs(),
@@ -2529,6 +2579,7 @@ pub async fn apply_client_account(
 ) -> Result<Value, String> {
     let dry_run = dry_run.unwrap_or(false);
     let data_dir = manager.data_dir.lock().await.clone();
+    let port = *manager.port.lock().await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
     let pos = store
         .accounts
@@ -2539,6 +2590,7 @@ pub async fn apply_client_account(
     if account.client_kind.is_codex() {
         return Err("Codex 账号请使用「应用」切换代理账号".into());
     }
+    ensure_client_proxy_options(&mut account, port);
     let report = deecodex::client_integrations::apply(&mut account, dry_run)
         .map_err(|e| format!("写入客户端配置失败: {e}"))?;
     let now = deecodex::accounts::now_secs();
@@ -3429,6 +3481,20 @@ pub async fn list_threads() -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn get_thread_sources(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let sources = deecodex::client_threads::get_thread_sources(&data_dir);
+    serde_json::to_value(sources).map_err(|e| format!("序列化失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn list_client_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let list = deecodex::client_threads::list_client_threads(&data_dir);
+    serde_json::to_value(list).map_err(|e| format!("序列化失败: {e}"))
+}
+
+#[tauri::command]
 pub async fn migrate_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
     let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("迁移失败: {e}"))?;
@@ -3457,6 +3523,18 @@ pub async fn calibrate_threads(manager: State<'_, ServerManager>) -> Result<Valu
 #[tauri::command]
 pub async fn get_thread_content(thread_id: String) -> Result<Value, String> {
     let content = deecodex::codex_threads::get_thread_content(&thread_id)
+        .map_err(|e| format!("获取线程内容失败: {e}"))?;
+    serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_client_thread_content(
+    client_kind: String,
+    native_id: String,
+) -> Result<Value, String> {
+    let kind = deecodex::client_threads::parse_client_kind(&client_kind)
+        .ok_or_else(|| format!("未知客户端类型: {client_kind}"))?;
+    let content = deecodex::client_threads::get_client_thread_content(kind, &native_id)
         .map_err(|e| format!("获取线程内容失败: {e}"))?;
     serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
 }
@@ -3737,34 +3815,55 @@ pub async fn test_upstream_connectivity(
 
 // ── 请求历史 ──────────────────────────────────────────────────────────────
 
+fn request_history_filter(
+    client_kind: Option<String>,
+    account_id: Option<String>,
+) -> deecodex::request_history::HistoryFilter {
+    deecodex::request_history::HistoryFilter {
+        client_kind: client_kind.filter(|v| !v.trim().is_empty()),
+        account_id: account_id.filter(|v| !v.trim().is_empty()),
+    }
+}
+
 #[tauri::command]
 pub async fn list_request_history(
     manager: State<'_, ServerManager>,
     limit: Option<usize>,
+    client_kind: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Value, String> {
+    let filter = request_history_filter(client_kind, account_id);
     let rh = manager.request_history.lock().await;
     if let Some(store) = rh.as_ref() {
-        let entries = store.list(limit.unwrap_or(3000)).await;
+        let entries = store.list(limit.unwrap_or(3000), &filter).await;
         return Ok(serde_json::to_value(entries).unwrap_or_default());
     }
     drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    let entries = state.request_history.list(limit.unwrap_or(100)).await;
+    let entries = state
+        .request_history
+        .list(limit.unwrap_or(100), &filter)
+        .await;
     Ok(serde_json::to_value(entries).unwrap_or_default())
 }
 
 #[tauri::command]
-pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<Value, String> {
+pub async fn clear_request_history(
+    manager: State<'_, ServerManager>,
+    client_kind: Option<String>,
+    account_id: Option<String>,
+) -> Result<Value, String> {
+    let filter = request_history_filter(client_kind, account_id);
     let rh = manager.request_history.lock().await;
     if let Some(store) = rh.as_ref() {
-        store.clear().await?;
+        store.clear(&filter).await?;
         return Ok(json!({ "ok": true }));
     }
     drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    state.request_history.clear().await?;
+    state.request_history.clear(&filter).await?;
     Ok(json!({ "ok": true }))
 }
 
@@ -3772,10 +3871,13 @@ pub async fn clear_request_history(manager: State<'_, ServerManager>) -> Result<
 pub async fn get_monthly_stats(
     manager: State<'_, ServerManager>,
     limit: Option<usize>,
+    client_kind: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Value, String> {
+    let filter = request_history_filter(client_kind, account_id);
     let rh = manager.request_history.lock().await;
     if let Some(store) = rh.as_ref() {
-        let stats = store.list_monthly_stats(limit.unwrap_or(6)).await;
+        let stats = store.list_monthly_stats(limit.unwrap_or(6), &filter).await;
         return Ok(serde_json::to_value(stats).unwrap_or_default());
     }
     drop(rh);
@@ -3783,7 +3885,7 @@ pub async fn get_monthly_stats(
     let state = guard.as_ref().ok_or("服务未启动")?;
     let stats = state
         .request_history
-        .list_monthly_stats(limit.unwrap_or(6))
+        .list_monthly_stats(limit.unwrap_or(6), &filter)
         .await;
     Ok(serde_json::to_value(stats).unwrap_or_default())
 }
@@ -3792,17 +3894,20 @@ pub async fn get_monthly_stats(
 pub async fn get_request_stats_since(
     manager: State<'_, ServerManager>,
     since: Option<u64>,
+    client_kind: Option<String>,
+    account_id: Option<String>,
 ) -> Result<Value, String> {
     let since_secs = since.unwrap_or(0);
+    let filter = request_history_filter(client_kind, account_id);
     let rh = manager.request_history.lock().await;
     if let Some(store) = rh.as_ref() {
-        let stats = store.stats_since(since_secs).await;
+        let stats = store.stats_since(since_secs, &filter).await;
         return Ok(serde_json::to_value(stats).unwrap_or_default());
     }
     drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    let stats = state.request_history.stats_since(since_secs).await;
+    let stats = state.request_history.stats_since(since_secs, &filter).await;
     Ok(serde_json::to_value(stats).unwrap_or_default())
 }
 

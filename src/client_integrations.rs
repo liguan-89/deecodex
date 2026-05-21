@@ -452,8 +452,8 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     let env = ensure_json_object_path(&mut next, &["env"]);
     let auth_env = claude_auth_env_name(account);
     let model_map = client_model_map(account);
-    set_json_string(env, &auth_env, &account.api_key);
-    set_json_string(env, "ANTHROPIC_BASE_URL", &account.upstream);
+    set_json_string(env, &auth_env, &client_config_api_key(account));
+    set_json_string(env, "ANTHROPIC_BASE_URL", &client_config_base_url(account));
     set_json_string(
         env,
         "ANTHROPIC_MODEL",
@@ -483,12 +483,19 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     }
 
     let mut diagnostics = base_diagnostics(account, &command, Some(&config_path));
-    if account.api_key.trim().is_empty() {
+    if client_config_api_key(account).trim().is_empty() {
         diagnostics.push(error("empty_key", "Claude Code API Key 为空"));
     }
     diagnostics.push(info(
         "secret_source",
-        &format!("Claude Code 密钥将写入 settings.json env.{auth_env}"),
+        &format!(
+            "Claude Code {}将写入 settings.json env.{auth_env}",
+            if proxy_recording_enabled(account) {
+                "代理 token "
+            } else {
+                "密钥"
+            }
+        ),
     ));
     Ok(report(
         account,
@@ -514,7 +521,10 @@ fn apply_openclaw(account: &Account, dry_run: bool) -> Result<ClientOperationRep
     let default_model = client_slot_model(account, &model_map, "default");
     let mut diff = vec![
         format!("provider: {}", redact_for_diff(&account.provider)),
-        format!("base_url: {}", redact_for_diff(&account.upstream)),
+        format!(
+            "base_url: {}",
+            redact_for_diff(&client_config_base_url(account))
+        ),
         format!("model: {}", redact_for_diff(&default_model)),
     ];
     let env_name =
@@ -699,7 +709,7 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     set_yaml_path(
         &mut yaml,
         &["model", "base_url"],
-        serde_yaml::Value::String(account.upstream.clone()),
+        serde_yaml::Value::String(client_config_base_url(account)),
     );
     set_yaml_path(
         &mut yaml,
@@ -712,8 +722,9 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
 
     let next_config = serde_yaml::to_string(&yaml)?;
     let mut env_map = read_env_file(&env_path)?;
-    if !account.api_key.trim().is_empty() {
-        env_map.insert(key_name.clone(), account.api_key.clone());
+    let config_api_key = client_config_api_key(account);
+    if !config_api_key.trim().is_empty() {
+        env_map.insert(key_name.clone(), config_api_key);
     }
     merge_client_env_map(&mut env_map, account);
     let next_env = render_env_file(&env_map);
@@ -740,7 +751,7 @@ fn apply_hermes(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     if default_model.trim().is_empty() {
         diagnostics.push(error("empty_model", "Hermes 默认模型为空"));
     }
-    if account.api_key.trim().is_empty() {
+    if client_config_api_key(account).trim().is_empty() {
         diagnostics.push(error(
             "empty_key",
             &format!("Hermes 密钥为空，应写入 {key_name}"),
@@ -800,8 +811,8 @@ fn apply_generic_client(account: &Account, dry_run: bool) -> Result<ClientOperat
     let key_name =
         client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into());
     let model_map = client_model_map(account);
-    env.insert("OPENAI_BASE_URL".into(), account.upstream.clone());
-    env.insert(key_name.clone(), account.api_key.clone());
+    env.insert("OPENAI_BASE_URL".into(), client_config_base_url(account));
+    env.insert(key_name.clone(), client_config_api_key(account));
     env.insert(
         "OPENAI_MODEL".into(),
         client_slot_model(account, &model_map, "default"),
@@ -1261,6 +1272,24 @@ fn base_diagnostics(
     if account.upstream.trim().is_empty() && account.client_kind != AccountClientKind::Codex {
         out.push(error("empty_base_url", "目标客户端 Base URL 为空"));
     }
+    if proxy_recording_enabled(account) {
+        if client_option_string(account, "proxy_base_url").is_none() {
+            out.push(error(
+                "proxy_base_url_empty",
+                "已启用请求记录，但本地代理 URL 为空",
+            ));
+        }
+        if client_option_string(account, "proxy_token").is_none() {
+            out.push(error(
+                "proxy_token_empty",
+                "已启用请求记录，但本地代理 token 为空",
+            ));
+        }
+        out.push(info(
+            "proxy_recording",
+            "请求将经 deecodex 本地代理转发并写入请求历史",
+        ));
+    }
     if account.default_model.trim().is_empty() && account.client_kind != AccountClientKind::Codex {
         out.push(warn(
             "empty_model",
@@ -1384,6 +1413,34 @@ fn client_option_string(account: &Account, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn client_option_bool(account: &Account, key: &str) -> bool {
+    account
+        .client_options
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn proxy_recording_enabled(account: &Account) -> bool {
+    client_option_bool(account, "proxy_recording_enabled")
+}
+
+fn client_config_base_url(account: &Account) -> String {
+    if proxy_recording_enabled(account) {
+        client_option_string(account, "proxy_base_url").unwrap_or_else(|| account.upstream.clone())
+    } else {
+        account.upstream.clone()
+    }
+}
+
+fn client_config_api_key(account: &Account) -> String {
+    if proxy_recording_enabled(account) {
+        client_option_string(account, "proxy_token").unwrap_or_default()
+    } else {
+        account.api_key.clone()
+    }
 }
 
 fn client_model_map(account: &Account) -> HashMap<String, String> {
@@ -2057,7 +2114,7 @@ fn openclaw_batch(account: &Account, env_name: &str) -> Value {
         json!({
             "path": "models.providers.deecodex",
             "value": {
-                "baseUrl": account.upstream.clone(),
+                "baseUrl": client_config_base_url(account),
                 "apiKey": {"provider": "default", "source": "env", "id": env_name},
                 "auth": "api-key",
                 "api": openclaw_api_adapter(&account.provider),
@@ -2086,8 +2143,9 @@ fn openclaw_batch(account: &Account, env_name: &str) -> Value {
 
 fn openclaw_command(account: &Account, env_name: &str) -> Command {
     let mut command = Command::new("openclaw");
-    if !account.api_key.trim().is_empty() {
-        command.env(env_name, account.api_key.trim());
+    let config_api_key = client_config_api_key(account);
+    if !config_api_key.trim().is_empty() {
+        command.env(env_name, config_api_key.trim());
     }
     command
 }
@@ -2263,6 +2321,18 @@ mod tests {
         .unwrap()
     }
 
+    fn enable_proxy_recording(account: &mut Account, base_url: &str, token: &str) {
+        account
+            .client_options
+            .insert("proxy_recording_enabled".into(), Value::Bool(true));
+        account
+            .client_options
+            .insert("proxy_base_url".into(), Value::String(base_url.into()));
+        account
+            .client_options
+            .insert("proxy_token".into(), Value::String(token.into()));
+    }
+
     #[test]
     fn client_profiles_include_requested_clients() {
         let profiles = get_client_profiles();
@@ -2366,6 +2436,8 @@ mod tests {
         let report = apply_claude(&account, false).unwrap();
         assert!(report.ok);
         let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["env"]["ANTHROPIC_BASE_URL"], account.upstream);
+        assert_eq!(written["env"]["ANTHROPIC_API_KEY"], account.api_key);
         assert_eq!(written["env"]["ANTHROPIC_MODEL"], "claude-sonnet-4-5");
         assert_eq!(
             written["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
@@ -2374,6 +2446,70 @@ mod tests {
         assert_eq!(
             written["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
             "claude-haiku-4-5"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn external_client_config_helpers_keep_direct_values_when_proxy_disabled() {
+        for kind in [
+            AccountClientKind::ClaudeCode,
+            AccountClientKind::Openclaw,
+            AccountClientKind::Hermes,
+            AccountClientKind::GenericClient,
+        ] {
+            let account = client_account(kind);
+            assert_eq!(client_config_base_url(&account), account.upstream);
+            assert_eq!(client_config_api_key(&account), account.api_key);
+        }
+    }
+
+    #[test]
+    fn claude_writer_uses_proxy_url_and_token_when_enabled() {
+        let dir = temp_dir("claude-proxy");
+        let path = dir.join("settings.json");
+        let mut account = client_account(AccountClientKind::ClaudeCode);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        enable_proxy_recording(&mut account, "http://127.0.0.1:4888", "dee-proxy-token");
+
+        let report = apply_claude(&account, false).unwrap();
+        assert!(report.ok);
+        let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["env"]["ANTHROPIC_BASE_URL"],
+            "http://127.0.0.1:4888"
+        );
+        assert_eq!(written["env"]["ANTHROPIC_API_KEY"], "dee-proxy-token");
+        assert_ne!(written["env"]["ANTHROPIC_API_KEY"], account.api_key);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generic_client_writer_uses_proxy_url_and_token_when_enabled() {
+        let dir = temp_dir("generic-proxy");
+        let path = dir.join("client-env");
+        let mut account = client_account(AccountClientKind::GenericClient);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        enable_proxy_recording(&mut account, "http://127.0.0.1:4888/v1", "dee-proxy-token");
+
+        let report = apply_generic_client(&account, false).unwrap();
+        assert!(report.ok);
+        let written = read_env_text(&fs::read_to_string(&path).unwrap());
+        assert_eq!(
+            written.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("http://127.0.0.1:4888/v1")
+        );
+        assert_eq!(
+            written.get("OPENAI_API_KEY").map(String::as_str),
+            Some("dee-proxy-token")
         );
 
         let _ = fs::remove_dir_all(dir);
@@ -2409,6 +2545,39 @@ mod tests {
         assert!(written.contains("OPENAI_MODEL=gpt-5"));
         assert!(written.contains("OPENAI_FAST_MODEL=gpt-4.1-mini"));
         assert!(written.contains("OPENAI_VISION_MODEL=gpt-4.1"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hermes_writer_uses_proxy_url_and_token_when_enabled() {
+        let dir = temp_dir("hermes-proxy");
+        let config_path = dir.join("config.yaml");
+        let env_path = dir.join(".env");
+        let mut account = client_account(AccountClientKind::Hermes);
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(config_path.display().to_string()),
+        );
+        account.client_options.insert(
+            "env_path".into(),
+            Value::String(env_path.display().to_string()),
+        );
+        enable_proxy_recording(&mut account, "http://127.0.0.1:4888/v1", "dee-proxy-token");
+
+        let report = apply_hermes(&account, false).unwrap();
+        assert!(report.ok);
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            yaml_string(&yaml, &["model", "base_url"]).unwrap(),
+            "http://127.0.0.1:4888/v1"
+        );
+        let written = read_env_text(&fs::read_to_string(&env_path).unwrap());
+        assert_eq!(
+            written.get("OPENROUTER_API_KEY").map(String::as_str),
+            Some("dee-proxy-token")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -2575,5 +2744,26 @@ mod tests {
         assert_eq!(batch[2]["value"], "deecodex/openai/gpt-4.1");
         assert_eq!(batch[3]["path"], "agents.defaults.imageGenerationModel");
         assert_eq!(batch[3]["value"], "deecodex/google/gemini-2.5-flash-image");
+    }
+
+    #[test]
+    fn openclaw_batch_and_command_use_proxy_url_and_token_when_enabled() {
+        let mut account = client_account(AccountClientKind::Openclaw);
+        enable_proxy_recording(&mut account, "http://127.0.0.1:4888/v1", "dee-proxy-token");
+
+        let batch = openclaw_batch(&account, "OPENROUTER_API_KEY");
+        assert_eq!(batch[0]["value"]["baseUrl"], "http://127.0.0.1:4888/v1");
+        let command = openclaw_command(&account, "OPENROUTER_API_KEY");
+        let token = command
+            .get_envs()
+            .find_map(|(key, value)| {
+                if key == std::ffi::OsStr::new("OPENROUTER_API_KEY") {
+                    value.map(|value| value.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(token, "dee-proxy-token");
     }
 }

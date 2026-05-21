@@ -515,6 +515,24 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: empty_params(),
         },
         BuiltinToolSpec {
+            name: "get_thread_sources",
+            tauri_cmd: "get_thread_sources",
+            level: 0,
+            confirm: None,
+            description: "获取多客户端线程源状态",
+            capability: "deecodex.ops",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
+            name: "list_client_threads",
+            tauri_cmd: "list_client_threads",
+            level: 0,
+            confirm: None,
+            description: "列出多客户端聚合线程",
+            capability: "deecodex.ops",
+            parameters: empty_params(),
+        },
+        BuiltinToolSpec {
             name: "get_thread_content",
             tauri_cmd: "get_thread_content",
             level: 0,
@@ -524,6 +542,18 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: params(
                 json!({"thread_id":{"type":"string","description":"线程 ID"}}),
                 &["thread_id"],
+            ),
+        },
+        BuiltinToolSpec {
+            name: "get_client_thread_content",
+            tauri_cmd: "get_client_thread_content",
+            level: 0,
+            confirm: None,
+            description: "获取多客户端聚合线程详情",
+            capability: "deecodex.ops",
+            parameters: params(
+                json!({"client_kind":{"type":"string","description":"客户端类型"},"native_id":{"type":"string","description":"客户端原生线程 ID"}}),
+                &["client_kind", "native_id"],
             ),
         },
         BuiltinToolSpec {
@@ -573,7 +603,11 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             description: "列出请求历史记录",
             capability: "deecodex.ops",
             parameters: params(
-                json!({"limit":{"type":"number","description":"返回数量上限"}}),
+                json!({
+                    "limit":{"type":"number","description":"返回数量上限"},
+                    "client_kind":{"type":"string","description":"客户端类型过滤，如 codex/claude_code/openclaw/hermes/generic_client"},
+                    "account_id":{"type":"string","description":"账号 ID 过滤"}
+                }),
                 &[],
             ),
         },
@@ -584,7 +618,13 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             confirm: Some("确定要清空所有请求历史记录吗？"),
             description: "清空所有请求历史记录",
             capability: "deecodex.ops",
-            parameters: empty_params(),
+            parameters: params(
+                json!({
+                    "client_kind":{"type":"string","description":"客户端类型过滤，省略则清空全部"},
+                    "account_id":{"type":"string","description":"账号 ID 过滤，省略则清空匹配客户端的全部"}
+                }),
+                &[],
+            ),
         },
         BuiltinToolSpec {
             name: "get_monthly_stats",
@@ -594,7 +634,11 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             description: "获取月度统计信息",
             capability: "deecodex.ops",
             parameters: params(
-                json!({"limit":{"type":"number","description":"返回月份数量"}}),
+                json!({
+                    "limit":{"type":"number","description":"返回月份数量"},
+                    "client_kind":{"type":"string","description":"客户端类型过滤"},
+                    "account_id":{"type":"string","description":"账号 ID 过滤"}
+                }),
                 &[],
             ),
         },
@@ -606,7 +650,11 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             description: "按指定 Unix 秒时间点之后聚合请求统计",
             capability: "deecodex.ops",
             parameters: params(
-                json!({"since":{"type":"number","description":"起始 Unix 秒时间戳，省略则统计当前明细表全部记录"}}),
+                json!({
+                    "since":{"type":"number","description":"起始 Unix 秒时间戳，省略则统计当前明细表全部记录"},
+                    "client_kind":{"type":"string","description":"客户端类型过滤"},
+                    "account_id":{"type":"string","description":"账号 ID 过滤"}
+                }),
                 &[],
             ),
         },

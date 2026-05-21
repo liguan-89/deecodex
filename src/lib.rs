@@ -5,6 +5,7 @@ pub mod cache;
 pub mod capability;
 pub mod cdp;
 pub mod client_integrations;
+pub mod client_threads;
 pub mod codex_config;
 pub mod codex_threads;
 pub mod config;

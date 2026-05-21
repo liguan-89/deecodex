@@ -17,7 +17,7 @@ use crate::{
         McpToolOutput,
     },
     metrics::Metrics,
-    request_history::RequestHistoryStore,
+    request_history::{HistoryContext, RequestHistoryStore},
     session::SessionStore,
     token_anomaly::TokenTracker,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
@@ -53,6 +53,7 @@ pub struct StreamArgs {
     pub request_timeout_secs: Option<u64>,
     pub max_retries: Option<u32>,
     pub request_history: Arc<RequestHistoryStore>,
+    pub history_context: HistoryContext,
     pub upstream_url: String,
     pub allow_missing_done: bool,
     pub start: std::time::Instant,
@@ -299,6 +300,7 @@ pub fn translate_stream(
         request_timeout_secs,
         max_retries: account_max_retries,
         request_history,
+        history_context,
         upstream_url,
         allow_missing_done,
         start,
@@ -412,7 +414,7 @@ pub fn translate_stream(
                         "response.failed",
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": status_code.to_string(), "message": error_msg}}}),
                     );
-                    let _ = request_history.record(
+                    let _ = request_history.record(history_context.record(
                         response_id,
                         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                         model,
@@ -422,7 +424,7 @@ pub fn translate_stream(
                         upstream_url,
                         format!("HTTP {}", status_code),
                         false,
-                    ).await;
+                    )).await;
                     return;
                 }
                 Err(e) => {
@@ -451,7 +453,7 @@ pub fn translate_stream(
                         "response.failed",
                         json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "connection_error", "message": e.to_string()}}}),
                     );
-                    let _ = request_history.record(
+                    let _ = request_history.record(history_context.record(
                         response_id,
                         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                         model,
@@ -461,7 +463,7 @@ pub fn translate_stream(
                         upstream_url,
                         e.to_string(),
                         false,
-                    ).await;
+                    )).await;
                     return;
                 }
             }
@@ -704,7 +706,7 @@ pub fn translate_stream(
                     "response.failed",
                     json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
                 );
-                let _ = request_history.record(
+                let _ = request_history.record(history_context.record(
                     response_id,
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                     model,
@@ -714,7 +716,7 @@ pub fn translate_stream(
                     upstream_url,
                     message,
                     false,
-                ).await;
+                )).await;
                 return;
             }
             if allow_missing_done {
@@ -740,7 +742,7 @@ pub fn translate_stream(
                     "response.failed",
                     json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "stream_incomplete", "message": message}}}),
                 );
-                let _ = request_history.record(
+                let _ = request_history.record(history_context.record(
                     response_id,
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                     model,
@@ -750,7 +752,7 @@ pub fn translate_stream(
                     upstream_url,
                     message,
                     false,
-                ).await;
+                )).await;
                 return;
             }
         }
@@ -1092,7 +1094,7 @@ pub fn translate_stream(
             }
         }
 
-        let _ = request_history.record(
+        let _ = request_history.record(history_context.record(
             response_id,
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
             model,
@@ -1103,7 +1105,7 @@ pub fn translate_stream(
             upstream_url,
             String::new(),
             false,
-        ).await;
+        )).await;
     };
 
     Sse::new(event_stream).keep_alive(KeepAlive::default())

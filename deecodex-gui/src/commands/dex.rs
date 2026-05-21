@@ -24,6 +24,7 @@ use super::dex_registry::{
     save_capability_states, DexCapability, DexToolDef,
 };
 use super::dex_security::{has_dangerous_shell_pattern, mask_sensitive_value};
+use deecodex::request_history::HistoryFilter;
 
 // ── 执行辅助函数 ──────────────────────────────────────────────────────────
 
@@ -814,6 +815,15 @@ pub async fn dex_execute_tool(
             "import_codex_config" => crate::commands::import_codex_config(manager).await?,
             "get_provider_presets" => crate::commands::get_provider_presets()?,
             "get_client_profiles" => crate::commands::get_client_profiles()?,
+            "get_thread_sources" => crate::commands::get_thread_sources(manager).await?,
+            "list_client_threads" => crate::commands::list_client_threads(manager).await?,
+            "get_client_thread_content" => {
+                crate::commands::get_client_thread_content(
+                    req_string(&args, "client_kind")?,
+                    req_string(&args, "native_id")?,
+                )
+                .await?
+            }
             "get_client_status" => {
                 crate::commands::get_client_status(manager, req_string(&args, "account_id")?)
                     .await?
@@ -954,14 +964,39 @@ pub async fn dex_execute_tool(
                 crate::commands::delete_thread(manager, req_string(&args, "thread_id")?).await?
             }
             "list_request_history" => {
-                crate::commands::list_request_history(manager, opt_usize(&args, "limit")).await?
+                crate::commands::list_request_history(
+                    manager,
+                    opt_usize(&args, "limit"),
+                    opt_string(&args, "client_kind"),
+                    opt_string(&args, "account_id"),
+                )
+                .await?
             }
-            "clear_request_history" => crate::commands::clear_request_history(manager).await?,
+            "clear_request_history" => {
+                crate::commands::clear_request_history(
+                    manager,
+                    opt_string(&args, "client_kind"),
+                    opt_string(&args, "account_id"),
+                )
+                .await?
+            }
             "get_monthly_stats" => {
-                crate::commands::get_monthly_stats(manager, opt_usize(&args, "limit")).await?
+                crate::commands::get_monthly_stats(
+                    manager,
+                    opt_usize(&args, "limit"),
+                    opt_string(&args, "client_kind"),
+                    opt_string(&args, "account_id"),
+                )
+                .await?
             }
             "get_request_stats_since" => {
-                crate::commands::get_request_stats_since(manager, opt_u64(&args, "since")).await?
+                crate::commands::get_request_stats_since(
+                    manager,
+                    opt_u64(&args, "since"),
+                    opt_string(&args, "client_kind"),
+                    opt_string(&args, "account_id"),
+                )
+                .await?
             }
             "list_plugins" => json!(crate::commands::list_plugins(manager).await?),
             "install_plugin" => {
@@ -1949,7 +1984,7 @@ pub async fn dex_self_check(manager: State<'_, ServerManager>) -> Result<Value, 
         .collect();
     let recent_request_errors = match manager.request_history.lock().await.as_ref() {
         Some(store) => store
-            .list(50)
+            .list(50, &HistoryFilter::default())
             .await
             .into_iter()
             .filter(|entry| entry.status != "completed" || !entry.error_msg.is_empty())
@@ -2003,7 +2038,7 @@ pub async fn dex_analyze_requests(manager: State<'_, ServerManager>) -> Result<V
     let store = rh
         .as_ref()
         .ok_or("请求历史不可用（服务未启动或数据库未初始化）")?;
-    let entries = store.list(1000).await;
+    let entries = store.list(1000, &HistoryFilter::default()).await;
 
     let total = entries.len();
     if total == 0 {
@@ -2338,7 +2373,7 @@ pub async fn dex_token_cost(manager: State<'_, ServerManager>) -> Result<Value, 
     let store = rh
         .as_ref()
         .ok_or("请求历史不可用（服务未启动或数据库未初始化）")?;
-    let entries = store.list(1000).await;
+    let entries = store.list(1000, &HistoryFilter::default()).await;
 
     let total = entries.len();
     if total == 0 {

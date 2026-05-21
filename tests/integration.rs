@@ -8,11 +8,13 @@ use axum::{
 };
 use deecodex::{
     accounts::{
-        Account, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode, EndpointKind,
-        GlueVisionStrategy, ModelProfile, ModelVisionMode, UnsupportedImagePolicy, VisionMode,
+        Account, AccountClientKind, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode,
+        EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode, UnsupportedImagePolicy,
+        VisionMode,
     },
     cache::RequestCache,
     handlers::{build_router, AppState},
+    request_history::HistoryFilter,
     session::SessionStore,
     stream::{translate_cached, translate_stream, CachedArgs, StreamArgs},
     types::{ChatMessage, ChatRequest},
@@ -185,6 +187,323 @@ async fn one_shot_upstream(response_body: &'static str) -> reqwest::Url {
         socket.write_all(response.as_bytes()).await.unwrap();
     });
     reqwest::Url::parse(&format!("http://{addr}/v1")).unwrap()
+}
+
+#[derive(Clone)]
+struct ProxyMockState {
+    status: StatusCode,
+    body: Arc<String>,
+    captured: Arc<Mutex<Vec<ProxyCapturedRequest>>>,
+}
+
+#[derive(Debug)]
+struct ProxyCapturedRequest {
+    path: String,
+    authorization: Option<String>,
+    x_api_key: Option<String>,
+    body: String,
+}
+
+async fn proxy_mock_handler(
+    State(state): State<ProxyMockState>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response<Body> {
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    state.captured.lock().unwrap().push(ProxyCapturedRequest {
+        path: uri.path().to_string(),
+        authorization: headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        x_api_key: headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        body: String::from_utf8_lossy(&bytes).to_string(),
+    });
+
+    let mut resp = Response::new(Body::from(state.body.as_str().to_string()));
+    *resp.status_mut() = state.status;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+async fn start_proxy_mock(
+    status: StatusCode,
+    response_body: &'static str,
+) -> (String, Arc<Mutex<Vec<ProxyCapturedRequest>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = ProxyMockState {
+        status,
+        body: Arc::new(response_body.to_string()),
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/v1/chat/completions", post(proxy_mock_handler))
+            .route("/v1/messages", post(proxy_mock_handler))
+            .route("/messages", post(proxy_mock_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (format!("http://{addr}"), captured)
+}
+
+fn proxy_account(kind: AccountClientKind, upstream: String, token: &str) -> Account {
+    serde_json::from_value(json!({
+        "id": "proxy-account",
+        "name": "代理账号",
+        "provider": "openai",
+        "client_kind": kind,
+        "upstream": upstream,
+        "api_key": "sk-upstream",
+        "default_model": "gpt-proxy",
+        "client_options": {
+            "proxy_recording_enabled": true,
+            "proxy_token": token
+        }
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn client_proxy_chat_records_usage_and_account_context() {
+    let (upstream_root, captured) = start_proxy_mock(
+        StatusCode::OK,
+        r#"{"id":"chatcmpl_1","usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+    )
+    .await;
+    let state = test_state();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![proxy_account(
+            AccountClientKind::GenericClient,
+            format!("{upstream_root}/v1"),
+            "dee-valid",
+        )];
+    }
+    let app = build_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method(Method::POST)
+                .header(header::AUTHORIZATION, "Bearer dee-valid")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-proxy","messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["usage"]["prompt_tokens"], 11);
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/v1/chat/completions");
+    assert_eq!(
+        captured[0].authorization.as_deref(),
+        Some("Bearer sk-upstream")
+    );
+    assert!(captured[0].body.contains("\"gpt-proxy\""));
+    drop(captured);
+
+    let entries = state
+        .request_history
+        .list(
+            10,
+            &HistoryFilter {
+                client_kind: Some("generic_client".into()),
+                account_id: Some("proxy-account".into()),
+            },
+        )
+        .await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, "completed");
+    assert_eq!(entries[0].input_tokens, 11);
+    assert_eq!(entries[0].output_tokens, 7);
+    assert_eq!(entries[0].client_kind, "generic_client");
+    assert_eq!(entries[0].account_name, "代理账号");
+    assert_eq!(entries[0].endpoint_kind, "openai_chat");
+    assert_eq!(entries[0].request_path, "/v1/chat/completions");
+}
+
+#[tokio::test]
+async fn client_proxy_rejects_invalid_token_without_history() {
+    let (upstream_root, captured) = start_proxy_mock(
+        StatusCode::OK,
+        r#"{"id":"chatcmpl_1","usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+    )
+    .await;
+    let state = test_state();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![proxy_account(
+            AccountClientKind::Openclaw,
+            format!("{upstream_root}/v1"),
+            "dee-valid",
+        )];
+    }
+    let app = build_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method(Method::POST)
+                .header(header::AUTHORIZATION, "Bearer wrong-token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"model":"gpt-proxy","messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "invalid_proxy_token");
+    assert!(captured.lock().unwrap().is_empty());
+    assert!(state
+        .request_history
+        .list(10, &HistoryFilter::default())
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn client_proxy_anthropic_message_paths_record_usage() {
+    let (upstream_root, captured) = start_proxy_mock(
+        StatusCode::OK,
+        r#"{"id":"msg_1","usage":{"input_tokens":5,"output_tokens":3}}"#,
+    )
+    .await;
+    let state = test_state();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![proxy_account(
+            AccountClientKind::ClaudeCode,
+            upstream_root,
+            "dee-claude",
+        )];
+    }
+    let app = build_router(state.clone());
+
+    for path in ["/v1/messages", "/messages"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .method(Method::POST)
+                    .header("x-api-key", "dee-claude")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"model":"claude-proxy","messages":[{"role":"user","content":"hi"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(captured.iter().all(|req| req.path == "/v1/messages"));
+    assert!(captured
+        .iter()
+        .all(|req| req.authorization.as_deref() == Some("Bearer sk-upstream")));
+    assert!(captured
+        .iter()
+        .all(|req| req.x_api_key.as_deref().is_none()));
+    drop(captured);
+
+    let entries = state
+        .request_history
+        .list(
+            10,
+            &HistoryFilter {
+                client_kind: Some("claude_code".into()),
+                account_id: Some("proxy-account".into()),
+            },
+        )
+        .await;
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| entry.input_tokens == 5));
+    assert!(entries.iter().all(|entry| entry.output_tokens == 3));
+    assert!(entries
+        .iter()
+        .all(|entry| entry.endpoint_kind == "anthropic_messages"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.request_path == "/v1/messages"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.request_path == "/messages"));
+}
+
+#[tokio::test]
+async fn client_proxy_records_upstream_failure_without_usage() {
+    let (upstream_root, _captured) = start_proxy_mock(
+        StatusCode::TOO_MANY_REQUESTS,
+        r#"{"error":{"message":"rate limited"}}"#,
+    )
+    .await;
+    let state = test_state();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![proxy_account(
+            AccountClientKind::Hermes,
+            format!("{upstream_root}/v1"),
+            "dee-hermes",
+        )];
+    }
+    let app = build_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method(Method::POST)
+                .header(header::AUTHORIZATION, "Bearer dee-hermes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"model":"hermes-proxy","messages":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let entries = state
+        .request_history
+        .list(
+            10,
+            &HistoryFilter {
+                client_kind: Some("hermes".into()),
+                account_id: Some("proxy-account".into()),
+            },
+        )
+        .await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, "failed");
+    assert_eq!(entries[0].total_tokens, 0);
+    assert_eq!(entries[0].error_msg, "HTTP 429");
 }
 
 #[tokio::test]
@@ -1646,6 +1965,7 @@ fn make_stream_args(
             deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
                 .unwrap(),
         ),
+        history_context: deecodex::request_history::HistoryContext::default(),
         upstream_url: url.to_string(),
         allow_missing_done: false,
         start: std::time::Instant::now(),
@@ -1698,6 +2018,7 @@ fn make_stream_args_custom(
             deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
                 .unwrap(),
         ),
+        history_context: deecodex::request_history::HistoryContext::default(),
         upstream_url: url.to_string(),
         allow_missing_done: false,
         start: std::time::Instant::now(),
@@ -3481,7 +3802,9 @@ async fn test_dev_pipeline_non_streaming_uses_role_accounts_and_persists() {
         input_items[0]["content"][0]["text"],
         "/dev-pipeline 开发一个任务面板"
     );
-    let history = request_history.list(10).await;
+    let history = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
     assert!(history
         .iter()
         .any(|entry| entry.id == response_id && entry.upstream_url == "dev-pipeline://local"));
