@@ -7,6 +7,8 @@ let editingAccount = null;
 let providerPresets = [];
 let clientProfiles = [];
 let selectedClientKind = 'codex';
+const CONFIG_CLIENT_STORAGE_KEY = 'deecodex.configClientKind';
+let selectedConfigClientKind = deeStorage.getItem(CONFIG_CLIENT_STORAGE_KEY) || 'global';
 let endpointTemplates = [];
 let upstreamModels = [];
 let appRefreshTimer = null;
@@ -84,7 +86,7 @@ function switchPanel(panelId) {
   });
   if (panelId === 'accounts') accountsView = 'list';
   const saveBtn = document.getElementById('sidebarSaveBtn');
-  saveBtn.style.display = (panelId === 'config') ? '' : 'none';
+  saveBtn.style.display = (panelId === 'config' && (typeof configCanEditSelected !== 'function' || configCanEditSelected())) ? '' : 'none';
   // 清理侧边栏残留消息
   const sidebarMsg = document.getElementById('sidebarMsg');
   if (sidebarMsg) { sidebarMsg.textContent = ''; sidebarMsg.className = 'sidebar-status'; }
@@ -92,11 +94,18 @@ function switchPanel(panelId) {
 }
 
 function goToConfig(sectionId) {
+  if (typeof configKindForSection === 'function') {
+    selectedConfigClientKind = configKindForSection(sectionId);
+    deeStorage.setItem(CONFIG_CLIENT_STORAGE_KEY, selectedConfigClientKind);
+  }
   switchPanel('config');
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       const el = document.getElementById('cfg-' + sectionId);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (el) {
+        if (el.tagName === 'DETAILS') el.open = true;
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     });
   });
 }

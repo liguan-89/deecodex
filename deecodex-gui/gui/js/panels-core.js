@@ -155,44 +155,469 @@ function renderStatus() {
 // ═══════════════════════════════════════════════════════════════
 // 配置面板
 // ═══════════════════════════════════════════════════════════════
-function renderConfig() {
-  if (!currentConfig) {
-    return `
-      <div class="page-header">
-        <h2>配置</h2>
-        <p>正在加载配置...</p>
-      </div>`;
+function normalizeConfigClientKind(kind) {
+  const value = String(kind || 'global');
+  if (value === 'global') return 'global';
+  if (typeof normalizeClientKind === 'function') return normalizeClientKind(value);
+  return ['codex', 'claude_code', 'openclaw', 'hermes', 'generic_client'].includes(value) ? value : 'global';
+}
+
+function configKindForSection(sectionId) {
+  const section = CONFIG_SECTIONS.find(sec => sec.id === sectionId);
+  return normalizeConfigClientKind(section?.scope || 'global');
+}
+
+function configCanEditKind(kind) {
+  const normalized = normalizeConfigClientKind(kind);
+  return normalized === 'global' || normalized === 'codex';
+}
+
+function configCanEditSelected() {
+  return configCanEditKind(selectedConfigClientKind);
+}
+
+function syncConfigSaveVisibility() {
+  const saveBtn = document.getElementById('sidebarSaveBtn');
+  if (saveBtn) saveBtn.style.display = currentPanel === 'config' && configCanEditSelected() ? '' : 'none';
+}
+
+function configClientProfiles() {
+  if (typeof clientProfiles !== 'undefined' && Array.isArray(clientProfiles) && clientProfiles.length) return clientProfiles;
+  return [
+    { slug: 'codex', label: 'Codex', description: 'deecodex 代理配置', config_path_hint: '~/.codex/config.toml', model_slots: [] },
+    { slug: 'claude_code', label: 'Claude Code', description: 'Claude 本地配置', config_path_hint: '~/.claude/settings.json', model_slots: [] },
+    { slug: 'openclaw', label: 'OpenClaw', description: 'OpenClaw 配置', config_path_hint: '~/.openclaw/openclaw.json', model_slots: [] },
+    { slug: 'hermes', label: 'Hermes', description: 'Hermes 配置', config_path_hint: '~/.hermes/config.yaml', model_slots: [] },
+    { slug: 'generic_client', label: '通用客户端', description: 'OpenAI 兼容 Env', config_path_hint: '~/.deecodex/client-env', model_slots: [] },
+  ];
+}
+
+function configClientLabel(kind, profile) {
+  if (kind === 'global') return '全局';
+  if (profile?.label) return profile.label;
+  if (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS[kind]) return CLIENT_KIND_LABELS[kind];
+  return kind;
+}
+
+function configClientIcon(kind) {
+  if (kind === 'global') return '<span class="config-global-icon" aria-hidden="true"></span>';
+  if (typeof clientIcon === 'function') return clientIcon(kind);
+  return '<span class="config-global-icon" aria-hidden="true"></span>';
+}
+
+function configClientAccounts(kind) {
+  const normalized = normalizeConfigClientKind(kind);
+  const list = (typeof accountsData !== 'undefined' && Array.isArray(accountsData.accounts)) ? accountsData.accounts : [];
+  return list.filter(account => {
+    if (typeof accountClientKind === 'function') return accountClientKind(account) === normalized;
+    return normalizeConfigClientKind(account?.client_kind || account?.target || 'codex') === normalized;
+  });
+}
+
+function configClientIssueCount(kind) {
+  return configClientAccounts(kind).filter(account => {
+    if (typeof clientAccountHasIssue === 'function') return clientAccountHasIssue(account);
+    const status = account?._client_status_report || account?.last_check;
+    return status?.ok === false;
+  }).length;
+}
+
+function configTimeLabel(ts) {
+  if (!ts) return '—';
+  if (typeof formatTimeShort === 'function') return formatTimeShort(ts);
+  return new Date(Number(ts) * 1000).toLocaleString();
+}
+
+function renderConfigClientSwitcher() {
+  const profiles = configClientProfiles();
+  const counts = (typeof accountsData !== 'undefined' && accountsData.client_counts) ? accountsData.client_counts : {};
+  const globalCount = CONFIG_SECTIONS
+    .filter(sec => (sec.scope || 'global') === 'global')
+    .reduce((sum, sec) => sum + sec.fields.length, 0);
+  const globalActive = selectedConfigClientKind === 'global' ? ' active' : '';
+  return `<div class="client-switcher config-client-switcher" role="tablist" aria-label="高级设置分类">
+    <button type="button" class="client-tab config-global-tab${globalActive}" onclick="selectConfigClientKind('global')" role="tab" aria-selected="${selectedConfigClientKind === 'global'}">
+      ${configClientIcon('global')}
+      <span>全局</span>
+      <em>${globalCount}</em>
+    </button>
+    ${profiles.map(profile => {
+      const kind = normalizeConfigClientKind(profile.slug || profile.kind);
+      const accounts = configClientAccounts(kind);
+      const settingsCount = CONFIG_SECTIONS
+        .filter(sec => normalizeConfigClientKind(sec.scope || 'global') === kind)
+        .reduce((sum, sec) => sum + sec.fields.length, 0);
+      const count = kind === 'codex' && settingsCount ? settingsCount : (counts[kind] || accounts.length || 0);
+      const issueCount = configClientIssueCount(kind);
+      const active = kind === selectedConfigClientKind ? ' active' : '';
+      const issueClass = issueCount ? ' has-issues' : '';
+      return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectConfigClientKind('${escAttr(kind)}')" title="${escAttr(profile.description || '')}" role="tab" aria-selected="${kind === selectedConfigClientKind}">
+        ${configClientIcon(kind)}
+        <span>${esc(configClientLabel(kind, profile))}</span>
+        <em>${count}</em>
+        ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
+function selectConfigClientKind(kind) {
+  selectedConfigClientKind = normalizeConfigClientKind(kind);
+  if (typeof deeStorage !== 'undefined' && typeof CONFIG_CLIENT_STORAGE_KEY !== 'undefined') {
+    deeStorage.setItem(CONFIG_CLIENT_STORAGE_KEY, selectedConfigClientKind);
   }
+  syncConfigSaveVisibility();
+  renderPanel('config');
+}
 
-  let html = `
-    <div class="page-header">
-      <h2>配置</h2>
-      <p>修改配置后点击「保存配置」使其生效，部分变更需重启服务</p>
-    </div>`;
+function openAccountsForConfigClient(kind) {
+  selectedClientKind = normalizeConfigClientKind(kind);
+  accountsView = 'list';
+  switchPanel('accounts');
+}
 
-  for (const sec of CONFIG_SECTIONS) {
-    html += `
-    <div class="config-section" id="cfg-${sec.id}">
+async function scanConfigClientAccounts(kind) {
+  selectedConfigClientKind = normalizeConfigClientKind(kind);
+  if (typeof deeStorage !== 'undefined' && typeof CONFIG_CLIENT_STORAGE_KEY !== 'undefined') {
+    deeStorage.setItem(CONFIG_CLIENT_STORAGE_KEY, selectedConfigClientKind);
+  }
+  if (typeof scanClientAccounts === 'function') {
+    await scanClientAccounts();
+    if (currentPanel === 'config') renderPanel('config');
+  }
+}
+
+function renderEditableConfigSections(kind) {
+  const sections = CONFIG_SECTIONS.filter(sec => normalizeConfigClientKind(sec.scope || 'global') === kind);
+  let html = '';
+  for (const sec of sections) {
+    const fieldsHtml = sec.fields.map(renderField).join('');
+    const sectionHeader = `
       <div class="config-section-header">
         <span class="section-icon">${sec.icon}</span>
         <h3>${sec.label}</h3>
         <span class="section-desc">${sec.fields.length} 项</span>
-      </div>
-      <div class="config-fields">`;
-    for (const f of sec.fields) {
-      html += renderField(f);
+      </div>`;
+
+    if (sec.collapsed) {
+      html += `
+    <details class="config-section config-section-collapsed" id="cfg-${sec.id}">
+      <summary>
+        ${sectionHeader}
+        ${sec.summary ? `<p>${esc(sec.summary)}</p>` : ''}
+      </summary>
+      <div class="config-fields">${fieldsHtml}</div>
+    </details>`;
+      continue;
     }
-    html += `</div></div>`;
+
+    html += `
+    <div class="config-section" id="cfg-${sec.id}">
+      ${sectionHeader}
+      <div class="config-fields">${fieldsHtml}</div>
+    </div>`;
+  }
+  return html;
+}
+
+function configFieldByKey(key) {
+  for (const section of CONFIG_SECTIONS) {
+    const field = section.fields.find(item => item.key === key);
+    if (field) return field;
+  }
+  return null;
+}
+
+function renderCodexAdvancedSettings() {
+  return `<div class="codex-advanced-layout">
+    <div class="codex-setting-note codex-scope-note">
+      <strong>Codex 专属</strong>
+      <span>这些设置只服务 Codex 的 <code>~/.codex/config.toml</code>、Responses 翻译、请求治理、tools 执行与 CDP 调试，不属于全局网关设置。</span>
+    </div>
+    ${renderEditableConfigSections('codex')}
+    <div class="codex-inline-actions">
+      <button type="button" class="btn btn-ghost" onclick="mgmtLaunchCodex()">${window._cdpLaunched ? '停止 CDP' : '启动 CDP'}</button>
+      <button type="button" class="btn btn-ghost" onclick="validateConfig()">运行诊断</button>
+    </div>
+  </div>`;
+}
+
+function configPrimaryClientAccount(kind) {
+  const accounts = configClientAccounts(kind);
+  if (!accounts.length) return null;
+  const activeId = accountsData?.active_id || accountsData?.active_account_id;
+  const active = accounts.find(account => account.id === activeId || account.active === true || account.is_active === true);
+  return active || accounts[0];
+}
+
+function configClientStatusInfo(account) {
+  if (!account) return { text: '未接入', detail: '暂无客户端账号', className: 'pending' };
+  const status = account._client_status_report || account.last_check || {};
+  if (status.ok === false) return { text: '需处理', detail: status.message || '最近检查发现问题', className: 'error' };
+  if (status.ok === true) return { text: '正常', detail: status.message || configTimeLabel(account.last_applied_at), className: 'ok' };
+  return { text: '待检查', detail: configTimeLabel(account.last_applied_at), className: 'pending' };
+}
+
+function escapeJsString(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+function configClientAdvancedSpec(kind) {
+  const specs = {
+    claude_code: {
+      heading: '编程会话治理',
+      summary: 'Claude Code 的高级设置重点是权限边界、项目上下文、MCP 与 Hooks，而不是账号字段。',
+      focus: [
+        { title: '权限模式', tag: '安全', tone: 'warn', body: '审计 permission-mode、allowedTools、disallowedTools 与 bypass 权限，避免编程会话默认拥有过宽命令能力。' },
+        { title: '项目上下文', tag: '上下文', tone: 'info', body: '检查 CLAUDE.md、.claude/settings.json、.claude/settings.local.json 与 --add-dir 的加载边界。' },
+        { title: 'MCP 服务器', tag: '工具', tone: 'info', body: '区分用户级与项目级 MCP；项目 .mcp.json 应明确启用范围，敏感服务不要默认批准。' },
+        { title: 'Hooks / Status Line', tag: '脚本', tone: 'info', body: 'Hooks 和 statusLine 会执行本地命令，适合放在这里做安全检查与诊断入口。' },
+      ],
+    },
+    openclaw: {
+      heading: 'Agent 网关治理',
+      summary: 'OpenClaw 是多通道 agent gateway，高级设置应围绕 gateway、channels、agent 路由、工具执行和 schema 校验。',
+      focus: [
+        { title: 'Gateway / Channels', tag: '通道', tone: 'info', body: '关注 gateway 暴露、通道账号、群组 allowlist 与 mention 规则，避免 agent 被错误渠道唤起。' },
+        { title: 'Agent 路由', tag: '路由', tone: 'info', body: '检查 agents.list、bindings、workspace 与 per-sender session，确保不同入口落到正确 agent。' },
+        { title: '执行审批', tag: '审批', tone: 'warn', body: 'OpenClaw 的 exec approvals 是高风险控制面，应审计本机、gateway 与 node 的有效策略。' },
+        { title: 'Schema 校验', tag: '配置', tone: 'ok', body: '先用官方 schema/validate 检查配置结构；供应商、密钥和模型关系继续留在账号管理。' },
+      ],
+    },
+    hermes: {
+      heading: 'Agent 运行时治理',
+      summary: 'Hermes 是带 skills、tools、memory、sessions 的 agent 产品，高级设置应帮助治理长期运行状态和工具负载。',
+      focus: [
+        { title: '配置体检 / 迁移', tag: '体检', tone: 'ok', body: '优先使用 hermes config check、doctor、migrate 处理缺失项和版本演进，不在这里复制账号表单。' },
+        { title: 'Skills / Tools', tag: '能力', tone: 'warn', body: '控制 skills 与 toolsets 的默认启用范围，避免每个会话加载过多工具描述。' },
+        { title: 'Sessions / Memory', tag: '记忆', tone: 'info', body: '关注 session 续接、memory 索引、压缩和检索配置，服务长任务与多 agent 协作。' },
+        { title: 'Workspace / Runtime', tag: '运行', tone: 'info', body: '检查 worktree、terminal backend、browser 与 gateway timeout，保证 agent 能稳定执行。' },
+      ],
+    },
+    generic_client: {
+      heading: '兼容客户端模板',
+      summary: '通用客户端只保留 OpenAI-compatible 环境模板、连通检查与账号管理入口，避免伪装成完整产品配置页。',
+      focus: [
+        { title: '环境模板', tag: '模板', tone: 'ok', body: '生成最小可用的环境变量模板；具体 Key、Provider、模型和端点仍由账号管理维护。' },
+        { title: '会话边界', tag: '隔离', tone: 'info', body: '建议按终端会话或项目目录加载 env，避免全局 shell 污染多个客户端。' },
+        { title: '兼容检查', tag: '协议', tone: 'info', body: '只检查 OpenAI-compatible 请求形状与认证变量，不承担特定客户端的工具权限治理。' },
+      ],
+    },
+  };
+  return specs[kind] || specs.generic_client;
+}
+
+function configClientAdvancedCommands(kind) {
+  const port = currentConfig?.port || 4446;
+  if (kind === 'claude_code') return [
+    { label: '健康检查', command: 'claude doctor' },
+    { label: 'MCP 列表', command: 'claude mcp list' },
+    { label: '安全模式试跑', command: 'claude --permission-mode plan --setting-sources user,project' },
+  ];
+  if (kind === 'openclaw') return [
+    { label: '配置文件', command: 'openclaw config file' },
+    { label: 'Schema 校验', command: 'openclaw config validate --json' },
+    { label: '审批策略', command: 'openclaw exec-policy show --json' },
+  ];
+  if (kind === 'hermes') return [
+    { label: '配置检查', command: 'hermes config check' },
+    { label: '运行体检', command: 'hermes doctor' },
+    { label: '迁移补全', command: 'hermes config migrate' },
+    { label: '能力列表', command: 'hermes skills list && hermes tools list' },
+  ];
+  return [
+    { label: '最小模板', command: `export OPENAI_BASE_URL=http://127.0.0.1:${port}/v1\nexport OPENAI_API_KEY=<your-key>\nexport OPENAI_MODEL=<model-name>` },
+    { label: '当前变量', command: "env | grep -E '^(OPENAI|ANTHROPIC|DEECODEX)_'" },
+  ];
+}
+
+function renderConfigClientMeta(kind, profile, accounts, account, status) {
+  const issueCount = configClientIssueCount(kind);
+  const configHint = profile.config_path_hint || '原生配置';
+  const accountLabel = account ? (account.name || '未命名账号') : '未接入';
+  const issueText = issueCount ? `${issueCount} 个` : '无';
+  return `<div class="config-client-meta-grid">
+    <div>
+      <span>账号覆盖</span>
+      <strong>${accounts.length ? `${accounts.length} 个` : '未接入'}</strong>
+    </div>
+    <div>
+      <span>当前账号</span>
+      <strong title="${escAttr(accountLabel)}">${esc(accountLabel)}</strong>
+    </div>
+    <div>
+      <span>待处理</span>
+      <strong class="${issueCount ? 'error' : 'ok'}">${esc(issueText)}</strong>
+    </div>
+    <div>
+      <span>原生配置</span>
+      <strong title="${escAttr(configHint)}">${esc(configHint)}</strong>
+    </div>
+    <div>
+      <span>最近检查</span>
+      <strong class="${escAttr(status.className)}" title="${escAttr(status.detail || '')}">${esc(status.text)}</strong>
+    </div>
+  </div>`;
+}
+
+function renderConfigClientFocusRows(spec) {
+  return `<section class="config-client-section">
+    <div class="config-section-header">
+      <span class="section-icon">◇</span>
+      <h3>高级治理项</h3>
+      <span class="section-desc">${spec.focus.length} 项</span>
+    </div>
+    <div class="config-client-focus-list">
+      ${spec.focus.map(item => `<div class="config-client-focus-row">
+        <div>
+          <span class="config-focus-tag ${escAttr(item.tone || 'info')}">${esc(item.tag || '建议')}</span>
+          <strong>${esc(item.title)}</strong>
+        </div>
+        <p>${esc(item.body)}</p>
+      </div>`).join('')}
+    </div>
+  </section>`;
+}
+
+function renderConfigCommandStrip(kind) {
+  const commands = configClientAdvancedCommands(kind);
+  if (!commands.length) return '';
+  return `<section class="config-client-section">
+    <div class="config-section-header">
+      <span class="section-icon">⌁</span>
+      <h3>原生命令</h3>
+      <span class="section-desc">复制到终端执行</span>
+    </div>
+    <div class="config-command-list">
+      ${commands.map(item => `<div class="config-command-row">
+        <span>${esc(item.label)}</span>
+        <code>${esc(item.command)}</code>
+        <button type="button" onclick="copyConfigCommand(this, '${escAttr(escapeJsString(item.command))}')">复制</button>
+      </div>`).join('')}
+    </div>
+  </section>`;
+}
+
+async function copyConfigCommand(btn, command) {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) throw new Error('剪贴板不可用');
+    await navigator.clipboard.writeText(command);
+    const oldText = btn?.textContent || '复制';
+    if (btn) {
+      btn.textContent = '已复制';
+      setTimeout(() => { btn.textContent = oldText; }, 1200);
+    }
+    showToast('命令已复制', 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err, 'error');
+  }
+}
+
+function renderClientConfigOverview(kind) {
+  const profile = configClientProfiles().find(item => normalizeConfigClientKind(item.slug || item.kind) === kind) || {};
+  const accounts = configClientAccounts(kind);
+  const account = configPrimaryClientAccount(kind);
+  const status = configClientStatusInfo(account);
+  const spec = configClientAdvancedSpec(kind);
+  const hasAccount = Boolean(account);
+  return `
+    <section class="config-client-overview">
+      <div class="config-client-hero">
+        <div class="config-client-title">
+          ${configClientIcon(kind)}
+          <div>
+            <h3>${esc(configClientLabel(kind, profile))}</h3>
+            <p>${esc(spec.heading)} · ${esc(spec.summary)}</p>
+          </div>
+        </div>
+        <div class="config-client-actions">
+          <button class="btn btn-ghost" onclick="openAccountsForConfigClient('${escAttr(kind)}')">账号管理</button>
+          <button class="btn btn-ghost" onclick="scanConfigClientAccounts('${escAttr(kind)}')">扫描客户端</button>
+          ${hasAccount ? `<button class="btn btn-ghost" onclick="refreshConfigClientAdvanced('${escAttr(kind)}')">刷新检查</button>` : ''}
+          ${hasAccount ? `<button class="btn btn-ghost" onclick="editConfigClientFile('${escAttr(kind)}')">打开原生配置</button>` : ''}
+        </div>
+      </div>
+      ${renderConfigClientMeta(kind, profile, accounts, account, status)}
+      ${hasAccount ? '' : `<div class="config-client-empty">暂无${esc(configClientLabel(kind, profile))}账号。高级设置仍展示该客户端的治理重点；账号、密钥、模型和端点请在账号管理中维护。</div>`}
+    </section>
+    ${renderConfigClientFocusRows(spec)}
+    ${renderConfigCommandStrip(kind)}`;
+}
+
+async function refreshConfigClientAdvanced(kind) {
+  const account = configPrimaryClientAccount(kind);
+  if (!account) {
+    showToast('请先添加该客户端账号', 'error');
+    return;
+  }
+  try {
+    const report = await invoke('refresh_client_status', { accountId: account.id });
+    showToast(report.ok ? '客户端状态正常' : '客户端状态有问题', report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    renderPanel('config');
+  } catch (err) {
+    showToast('刷新客户端状态失败: ' + err, 'error');
+  }
+}
+
+function editConfigClientFile(kind) {
+  const account = configPrimaryClientAccount(kind);
+  if (!account) {
+    showToast('请先添加该客户端账号', 'error');
+    return;
+  }
+  if (typeof editConfigFile === 'function') editConfigFile(account.id);
+  else if (typeof openClientConfig === 'function') openClientConfig(account.id);
+}
+
+function renderConfig() {
+  if (!currentConfig) {
+    return `
+      <div class="page-header">
+        <h2>高级设置</h2>
+        <p>正在加载配置...</p>
+      </div>`;
   }
 
-  html += `
+  selectedConfigClientKind = normalizeConfigClientKind(selectedConfigClientKind);
+  syncConfigSaveVisibility();
+  const canEdit = configCanEditSelected();
+  const activeLabel = configClientLabel(selectedConfigClientKind);
+  const pageHint = selectedConfigClientKind === 'codex'
+    ? '仅配置 Codex 客户端专用行为，不进入全局网关设置'
+    : (canEdit
+      ? '修改配置后点击「保存配置」使其生效，部分变更需重启服务'
+      : `${esc(activeLabel)} 的运行治理、权限边界与诊断入口`);
+  let html = `
+    <div class="config-page-shell">
+      <div class="page-header config-page-header">
+        <div>
+          <h2>高级设置</h2>
+          <p>${pageHint}</p>
+        </div>
+      </div>
+      ${renderConfigClientSwitcher()}`;
+
+  if (selectedConfigClientKind === 'codex') {
+    html += renderCodexAdvancedSettings();
+  } else {
+    html += canEdit ? renderEditableConfigSections(selectedConfigClientKind) : renderClientConfigOverview(selectedConfigClientKind);
+  }
+
+  if (canEdit) {
+    html += `
     <div class="config-actions">
       <button class="btn btn-primary" id="btnSave" onclick="saveConfig()">保存配置</button>
       <button class="btn btn-ghost" id="btnValidate" onclick="validateConfig()">验证配置</button>
       <span id="configMsg" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);align-self:center;margin-left:8px;"></span>
     </div>`;
+  }
 
-  return html;
+  return html + '</div>';
 }
 
 function renderField(f) {
