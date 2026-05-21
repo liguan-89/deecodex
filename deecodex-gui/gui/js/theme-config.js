@@ -58,6 +58,7 @@ const CONFIG_SECTIONS = [
   {
     id: 'gateway', scope: 'global', icon: '●', label: '网关运行',
     fields: [
+      { key: 'host', label: '服务地址', hint: '网关监听地址，默认 127.0.0.1；局域网接入可填 0.0.0.0', type: 'text', placeholder: '127.0.0.1', layout: 'half' },
       { key: 'port', label: '服务监听端口', hint: '所有已接入客户端连接 deecodex 网关的本地端口', type: 'number', min: 1, max: 65535, layout: 'half' },
       { key: 'max_body_mb', label: '请求体上限 (MB)', hint: '网关允许转发的单次上传或请求体大小', type: 'number', min: 1, max: 2048, layout: 'half' },
       { key: 'data_dir', label: '运行数据目录', hint: '网关配置、日志、PID 和运行状态存储位置', type: 'text', placeholder: '.deecodex', layout: 'half' },

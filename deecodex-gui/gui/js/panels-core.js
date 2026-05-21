@@ -32,6 +32,128 @@ function serviceHostForClientUrl(host) {
   return urlHost.includes(':') && !(urlHost.startsWith('[') && urlHost.endsWith(']')) ? `[${urlHost}]` : urlHost;
 }
 
+function configServiceEndpoint() {
+  const status = window._statusData || {};
+  const running = Boolean(status.running);
+  const source = running ? status : (currentConfig || {});
+  const host = normalizeServiceHost(source.host || currentConfig?.host || '127.0.0.1');
+  const port = source.port || currentConfig?.port || 4446;
+  const urlHost = serviceHostForClientUrl(host);
+  const address = `http://${urlHost}:${port}`;
+  return { running, host, urlHost, port, address };
+}
+
+function normalizeEndpointKindName(kind) {
+  const value = String(kind || '').trim();
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/-/g, '_')
+    .toLowerCase();
+  if (normalized === 'open_ai_chat' || normalized === 'custom_chat') return normalized;
+  if (normalized === 'open_ai_responses' || normalized === 'custom_responses') return normalized;
+  if (normalized === 'anthropic_messages') return normalized;
+  return '';
+}
+
+function codexActiveEndpointForConfig(account) {
+  if (!account) return null;
+  const endpoints = Array.isArray(account.endpoints) ? account.endpoints : [];
+  const activeId = accountsData?.active_endpoint_id;
+  const activeAccountId = accountsData?.active_account_id || accountsData?.active_id;
+  const activeEndpoint = activeId && (!activeAccountId || activeAccountId === account.id)
+    ? endpoints.find(endpoint => endpoint.id === activeId)
+    : null;
+  if (activeEndpoint) return activeEndpoint;
+  if (account.active_endpoint_kind || account.active_endpoint_name) {
+    return {
+      name: account.active_endpoint_name || account.name || '当前端点',
+      kind: account.active_endpoint_kind,
+    };
+  }
+  if (endpoints.length) return endpoints[0];
+  return {
+    name: account.name || '当前端点',
+    kind: account.translate_enabled === false ? 'open_ai_responses' : 'open_ai_chat',
+  };
+}
+
+function codexChannelInfo(account) {
+  const endpoint = codexActiveEndpointForConfig(account);
+  const kind = normalizeEndpointKindName(endpoint?.kind);
+  if (!account) {
+    return { endpointName: '未接入', protocol: '未配置', channel: '未配置', translation: '未配置', tone: 'pending' };
+  }
+  if (kind === 'open_ai_responses' || kind === 'custom_responses') {
+    return { endpointName: endpoint?.name || 'Responses', protocol: 'OpenAI Responses', channel: 'Responses 直连', translation: '不经过翻译层', tone: 'ok' };
+  }
+  if (kind === 'anthropic_messages') {
+    return { endpointName: endpoint?.name || 'Anthropic Messages', protocol: 'Anthropic Messages', channel: 'Messages 适配', translation: '适配到 Messages', tone: 'warn' };
+  }
+  return { endpointName: endpoint?.name || 'Chat Completions', protocol: 'OpenAI Chat', channel: 'Chat 翻译', translation: 'Responses → Chat', tone: 'info' };
+}
+
+function configProtocolEntryRows() {
+  const codexAccount = configPrimaryClientAccount('codex');
+  const codex = codexChannelInfo(codexAccount);
+  return [
+    {
+      kind: 'codex',
+      client: 'Codex',
+      baseRule: '服务地址 + /v1',
+      requestPath: '/v1/responses',
+      protocol: codex.protocol,
+      channel: codex.channel,
+      translation: codex.translation,
+      detail: `当前端点: ${codex.endpointName}`,
+      tone: codex.tone,
+    },
+    {
+      kind: 'claude_code',
+      client: 'Claude',
+      baseRule: '服务地址',
+      requestPath: '/v1/messages 或 /messages',
+      protocol: 'Anthropic Messages',
+      channel: '客户端代理',
+      translation: '不经过 Responses → Chat',
+      detail: 'Claude Code 使用 Anthropic 原生入口',
+      tone: 'info',
+    },
+    {
+      kind: 'openclaw',
+      client: 'OpenClaw',
+      baseRule: '服务地址 + /v1',
+      requestPath: '/v1/chat/completions',
+      protocol: 'OpenAI Chat',
+      channel: 'Chat 兼容代理',
+      translation: '不经过 Codex 翻译层',
+      detail: 'Agent gateway 使用 Chat Completions',
+      tone: 'info',
+    },
+    {
+      kind: 'hermes',
+      client: 'Hermes',
+      baseRule: '服务地址 + /v1',
+      requestPath: '/v1/chat/completions',
+      protocol: 'OpenAI Chat',
+      channel: 'Chat 兼容代理',
+      translation: '不经过 Codex 翻译层',
+      detail: 'Agent runtime 使用 Chat Completions',
+      tone: 'info',
+    },
+    {
+      kind: 'generic_client',
+      client: '通用客户端',
+      baseRule: '服务地址 + /v1',
+      requestPath: '/v1/chat/completions',
+      protocol: 'OpenAI Chat',
+      channel: 'Chat 兼容代理',
+      translation: '不经过 Codex 翻译层',
+      detail: '环境变量模板使用 OpenAI-compatible 入口',
+      tone: 'info',
+    },
+  ];
+}
+
 function renderStatus() {
   const s = window._statusData || {};
   const v = (val, fb) => (val !== undefined && val !== null) ? val : fb;
@@ -612,6 +734,57 @@ function renderConfigCommandStrip(kind) {
   </section>`;
 }
 
+function renderProtocolEntrySummary() {
+  const endpoint = configServiceEndpoint();
+  const rows = configProtocolEntryRows();
+  return `<section class="config-client-section config-protocol-section">
+    <div class="config-section-header">
+      <span class="section-icon">⌁</span>
+      <h3>协议入口与通道</h3>
+      <span class="section-desc">${endpoint.running ? '当前运行' : '配置预览'}</span>
+    </div>
+    <div class="config-protocol-address">
+      <span>服务地址</span>
+      <code>${esc(endpoint.address)}</code>
+      <em>${endpoint.running ? '客户端写入使用当前监听地址' : '服务未运行时使用保存配置'}</em>
+    </div>
+    <div class="config-protocol-table">
+      <div class="config-protocol-head" aria-hidden="true">
+        <span>客户端</span>
+        <span>Base URL</span>
+        <span>请求入口</span>
+        <span>协议通道</span>
+        <span>翻译关系</span>
+      </div>
+      ${rows.map(row => `<div class="config-protocol-row ${escAttr(row.tone || 'info')}">
+        <strong>${esc(row.client)}</strong>
+        <span>${esc(row.baseRule)}</span>
+        <code>${esc(row.requestPath)}</code>
+        <span>${esc(row.channel)}<small>${esc(row.detail)}</small></span>
+        <span>${esc(row.translation)}</span>
+      </div>`).join('')}
+    </div>
+  </section>`;
+}
+
+function renderConfigRuntimeNotice() {
+  const status = window._statusData || {};
+  if (!status.running) return '';
+  const runningHost = normalizeServiceHost(status.host || currentConfig?.host || '127.0.0.1');
+  const configuredHost = normalizeServiceHost(currentConfig?.host || '127.0.0.1');
+  const runningPort = String(status.port || '');
+  const configuredPort = String(currentConfig?.port || '');
+  const changed = runningHost !== configuredHost || runningPort !== configuredPort;
+  const runningEndpoint = `${runningHost.includes(':') ? `[${runningHost}]` : runningHost}:${runningPort || '—'}`;
+  const configuredEndpoint = `${configuredHost.includes(':') ? `[${configuredHost}]` : configuredHost}:${configuredPort || '—'}`;
+  return `<div class="config-runtime-notice ${changed ? 'warn' : ''}">
+    <strong>${changed ? '服务地址待重启' : '运行中配置提示'}</strong>
+    <span>${changed
+      ? `当前监听 ${runningEndpoint}，保存配置为 ${configuredEndpoint}；重启网关后切换到新入口。`
+      : '修改服务地址或端口后需要重启网关；运行中的客户端写入仍使用当前真实监听地址。'}</span>
+  </div>`;
+}
+
 async function copyConfigCommand(btn, command) {
   try {
     if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) throw new Error('剪贴板不可用');
@@ -714,8 +887,13 @@ function renderConfig() {
       ${renderConfigClientSwitcher()}`;
 
   if (selectedConfigClientKind === 'codex') {
+    html += renderProtocolEntrySummary();
     html += renderCodexAdvancedSettings();
   } else {
+    if (selectedConfigClientKind === 'global') {
+      html += renderConfigRuntimeNotice();
+      html += renderProtocolEntrySummary();
+    }
     html += canEdit ? renderEditableConfigSections(selectedConfigClientKind) : renderClientConfigOverview(selectedConfigClientKind);
   }
 
@@ -1131,12 +1309,17 @@ async function saveConfig() {
       currentConfig = await invoke('get_config');
     }
     const data = collectFormData();
+    const status = window._statusData || {};
+    const endpointChanged = Boolean(status.running) && (
+      normalizeServiceHost(data.host) !== normalizeServiceHost(status.host || currentConfig.host) ||
+      String(data.port || '') !== String(status.port || currentConfig.port || '')
+    );
     await invoke('save_config', { config: data });
 
-    const msg = '配置已保存';
+    const msg = endpointChanged ? '配置已保存，服务地址/端口重启后生效' : '配置已保存';
     if (sidebarMsg) { sidebarMsg.textContent = msg; sidebarMsg.className = 'sidebar-status success'; }
-    if (configMsg) { configMsg.textContent = msg; configMsg.style.color = 'var(--green)'; }
-    showToast('配置保存成功', 'success');
+    if (configMsg) { configMsg.textContent = msg; configMsg.style.color = endpointChanged ? 'var(--amber)' : 'var(--green)'; }
+    showToast(endpointChanged ? '配置保存成功，重启网关后切换服务入口' : '配置保存成功', 'success');
 
     await loadConfig();
   } catch (err) {

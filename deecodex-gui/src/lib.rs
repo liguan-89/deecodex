@@ -34,6 +34,7 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
 pub struct ServerManager {
     pub shutdown_tx: Mutex<Option<tokio::sync::watch::Sender<()>>>,
     pub handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub host: Mutex<String>,
     pub port: Mutex<u16>,
     pub start_time: Mutex<Option<std::time::Instant>>,
     pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
@@ -53,6 +54,7 @@ impl ServerManager {
         Self {
             shutdown_tx: Mutex::new(None),
             handle: Mutex::new(None),
+            host: Mutex::new(deecodex::config::default_host()),
             port: Mutex::new(4446),
             start_time: Mutex::new(None),
             tray: Mutex::new(None),

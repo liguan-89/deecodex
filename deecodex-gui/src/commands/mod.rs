@@ -45,19 +45,20 @@ fn client_account_counts(store: &AccountStore) -> Value {
     json!(counts)
 }
 
-fn client_proxy_base_url(port: u16, kind: &AccountClientKind) -> String {
+fn client_proxy_base_url(host: &str, port: u16, kind: &AccountClientKind) -> String {
+    let url_host = deecodex::config::client_url_host(host);
     match kind {
-        AccountClientKind::ClaudeCode => format!("http://127.0.0.1:{port}"),
+        AccountClientKind::ClaudeCode => format!("http://{url_host}:{port}"),
         AccountClientKind::Openclaw
         | AccountClientKind::Hermes
         | AccountClientKind::GenericClient => {
-            format!("http://127.0.0.1:{port}/v1")
+            format!("http://{url_host}:{port}/v1")
         }
-        AccountClientKind::Codex => format!("http://127.0.0.1:{port}/v1"),
+        AccountClientKind::Codex => format!("http://{url_host}:{port}/v1"),
     }
 }
 
-fn ensure_client_proxy_options(account: &mut deecodex::accounts::Account, port: u16) {
+fn ensure_client_proxy_options(account: &mut deecodex::accounts::Account, host: &str, port: u16) {
     if account.client_kind.is_codex() {
         return;
     }
@@ -84,7 +85,7 @@ fn ensure_client_proxy_options(account: &mut deecodex::accounts::Account, port: 
     }
     account.client_options.insert(
         "proxy_base_url".into(),
-        Value::String(client_proxy_base_url(port, &account.client_kind)),
+        Value::String(client_proxy_base_url(host, port, &account.client_kind)),
     );
 }
 
@@ -162,6 +163,7 @@ fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> 
 #[derive(Serialize, Clone)]
 pub struct ServiceInfo {
     pub running: bool,
+    pub host: String,
     pub port: u16,
     pub uptime_secs: Option<u64>,
     pub version: String,
@@ -171,6 +173,8 @@ pub struct ServiceInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct GuiConfig {
+    #[serde(default = "deecodex::config::default_host")]
+    pub host: String,
     pub port: u16,
     pub upstream: String,
     pub api_key: String,
@@ -205,6 +209,7 @@ pub struct GuiConfig {
 impl From<Args> for GuiConfig {
     fn from(a: Args) -> Self {
         Self {
+            host: deecodex::config::normalize_host(&a.host),
             port: a.port,
             upstream: a.upstream,
             api_key: a.api_key,
@@ -301,6 +306,7 @@ pub(crate) fn load_args() -> Args {
                 Args {
                     command: None,
                     config: None,
+                    host: deecodex::config::default_host(),
                     port: 4446,
                     upstream: "https://openrouter.ai/api/v1".into(),
                     api_key: String::new(),
@@ -344,11 +350,23 @@ pub(crate) fn load_args() -> Args {
         args.data_dir = normalize_data_dir(args.data_dir);
     }
     let mut args = args.merge_with_file();
+    args.host = deecodex::config::normalize_host(&args.host);
     // 文件里的旧 data_dir 也可能仍是相对路径，合并后再规整一次。
     if args.data_dir.is_relative() {
         args.data_dir = normalize_data_dir(args.data_dir);
     }
     args
+}
+
+async fn service_endpoint_for_manager(manager: &ServerManager) -> (String, u16) {
+    if manager.is_running().await {
+        let host = manager.host.lock().await.clone();
+        let port = *manager.port.lock().await;
+        (host, port)
+    } else {
+        let args = load_args();
+        (args.host, args.port)
+    }
 }
 
 /// 执行首次启动迁移：如果 accounts.json 不存在，从旧配置和 Codex config 迁移账号。
@@ -751,8 +769,9 @@ async fn sync_active_account_to_running_state(
     *app_state.active_account.write().await = target.clone();
     *app_state.account_store.write().await = store.clone();
 
+    let host = manager.host.lock().await.clone();
     let port = *manager.port.lock().await;
-    deecodex::codex_config::inject(port, target.context_window_override);
+    deecodex::codex_config::inject_with_host(&host, port, target.context_window_override);
 
     tracing::info!("已同步运行中账号: {} ({})", target.name, target.provider);
     Ok(())
@@ -767,6 +786,7 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
     }
 
     let args = load_args();
+    let host = args.host.clone();
     let port = args.port;
 
     let state = build_app_state(&args).map_err(|e| format!("构建服务状态失败: {e}"))?;
@@ -780,14 +800,18 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         args.max_body_mb * 1024 * 1024,
     ));
 
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr)
+    let addr = deecodex::config::format_host_port(&host, port);
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
-        .map_err(|e| format!("无法绑定端口 {port}: {e}"))?;
+        .map_err(|e| format!("无法绑定服务地址 {addr}: {e}"))?;
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject(port, load_active_account_context_window(&args.data_dir));
+        deecodex::codex_config::inject_with_host(
+            &host,
+            port,
+            load_active_account_context_window(&args.data_dir),
+        );
     }
 
     let (tx, mut rx) = tokio::sync::watch::channel(());
@@ -806,6 +830,7 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     *manager.shutdown_tx.lock().await = Some(tx);
     *manager.handle.lock().await = Some(handle);
+    *manager.host.lock().await = host.clone();
     *manager.port.lock().await = port;
     *manager.start_time.lock().await = Some(std::time::Instant::now());
 
@@ -846,7 +871,10 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
     let _ = std::fs::write(args.data_dir.join("deecodex.pid"), pid.to_string());
 
     manager.update_tray().await;
-    tracing::info!("服务已启动 → http://127.0.0.1:{port}");
+    tracing::info!(
+        "服务已启动 → http://{}:{port}",
+        deecodex::config::client_url_host(&host)
+    );
 
     Ok(get_status_internal(manager).await)
 }
@@ -912,7 +940,6 @@ pub async fn get_service_status(manager: State<'_, ServerManager>) -> Result<Ser
 
 async fn get_status_internal(manager: &ServerManager) -> ServiceInfo {
     let running = manager.is_running().await;
-    let port = *manager.port.lock().await;
     let uptime = if running {
         manager
             .start_time
@@ -923,8 +950,19 @@ async fn get_status_internal(manager: &ServerManager) -> ServiceInfo {
         None
     };
     let args = load_args();
+    let host = if running {
+        manager.host.lock().await.clone()
+    } else {
+        args.host.clone()
+    };
+    let port = if running {
+        *manager.port.lock().await
+    } else {
+        args.port
+    };
     ServiceInfo {
         running,
+        host,
         port,
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1022,14 +1060,18 @@ pub fn get_config() -> Result<GuiConfig, String> {
     Ok(GuiConfig::from(args))
 }
 
-#[tauri::command]
-pub fn save_config(config: GuiConfig) -> Result<(), String> {
+fn save_config_inner(
+    config: GuiConfig,
+    injection_endpoint: Option<(String, u16)>,
+) -> Result<(), String> {
+    let host = deecodex::config::normalize_host(&config.host);
     let data_dir = normalize_data_dir(&config.data_dir);
     let config_path = Args::default_config_path(&data_dir);
     let existing = Args::load_from_file(&config_path);
     let account_config = account_backed_config(existing.as_ref());
 
     // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
+    Args::sync_to_env_file(&data_dir, "DEECODEX_HOST", &host);
     Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
     Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &account_config.upstream);
     Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &account_config.api_key);
@@ -1039,6 +1081,7 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         command: None,
         config: None,
         port: config.port,
+        host,
         upstream: account_config.upstream,
         api_key: account_config.api_key,
         model_map: account_config.model_map,
@@ -1075,11 +1118,12 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
         .map_err(|e| format!("保存配置失败: {e}"))?;
 
     // 根据更新后的 Codex 注入开关立即应用/移除 Codex config.toml 修改
-    let port = args.port;
+    let (inject_host, inject_port) =
+        injection_endpoint.unwrap_or_else(|| (args.host.clone(), args.port));
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject(port, cw);
+        deecodex::codex_config::inject_with_host(&inject_host, inject_port, cw);
     } else {
         deecodex::codex_config::remove();
     }
@@ -1089,12 +1133,33 @@ pub fn save_config(config: GuiConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn save_config(
+    manager: State<'_, ServerManager>,
+    config: GuiConfig,
+) -> Result<(), String> {
+    let injection_endpoint = if manager.is_running().await {
+        let host = manager.host.lock().await.clone();
+        let port = *manager.port.lock().await;
+        Some((host, port))
+    } else {
+        None
+    };
+    save_config_inner(config, injection_endpoint)
+}
+
+pub fn save_config_without_runtime(config: GuiConfig) -> Result<(), String> {
+    save_config_inner(config, None)
+}
+
+#[tauri::command]
 pub fn validate_config(config: GuiConfig) -> Vec<Value> {
+    let host = deecodex::config::normalize_host(&config.host);
     let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
         port: config.port,
+        host,
         upstream: config.upstream,
         api_key: config.api_key,
         model_map: config.model_map,
@@ -1144,11 +1209,13 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
 /// 运行完整诊断（同步，含 14 项检查；连通性检测标记为 Info 待后续异步补全）
 #[tauri::command]
 pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
+    let host = deecodex::config::normalize_host(&config.host);
     let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
         port: config.port,
+        host,
         upstream: config.upstream,
         api_key: config.api_key,
         model_map: config.model_map,
@@ -1188,11 +1255,13 @@ pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
 /// 运行完整诊断（异步，包含上游 API 连通性检测）
 #[tauri::command]
 pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value, String> {
+    let host = deecodex::config::normalize_host(&config.host);
     let data_dir = normalize_data_dir(&config.data_dir);
     let args = Args {
         command: None,
         config: None,
         port: config.port,
+        host,
         upstream: config.upstream.clone(),
         api_key: config.api_key.clone(),
         model_map: config.model_map,
@@ -1499,7 +1568,7 @@ pub async fn add_account(
     };
 
     let data_dir = manager.data_dir.lock().await.clone();
-    let port = *manager.port.lock().await;
+    let (host, port) = service_endpoint_for_manager(&manager).await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
     let mut new_account = if let Some(json) = account_json {
@@ -1572,7 +1641,7 @@ pub async fn add_account(
     if !new_account.client_kind.is_codex() {
         new_account.translate_enabled = false;
         new_account.endpoints.clear();
-        ensure_client_proxy_options(&mut new_account, port);
+        ensure_client_proxy_options(&mut new_account, &host, port);
     }
 
     let mut candidate_store = store.clone();
@@ -1613,7 +1682,7 @@ pub async fn update_account(
     use deecodex::accounts::{guess_provider, now_secs, Account};
 
     let data_dir = manager.data_dir.lock().await.clone();
-    let port = *manager.port.lock().await;
+    let (host, port) = service_endpoint_for_manager(&manager).await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
 
     let updated: Account = parse_account_json(&account_json)?;
@@ -1636,7 +1705,7 @@ pub async fn update_account(
     if !account.client_kind.is_codex() {
         account.translate_enabled = false;
         account.endpoints.clear();
-        ensure_client_proxy_options(&mut account, port);
+        ensure_client_proxy_options(&mut account, &host, port);
     }
     account.normalize_v2();
     let endpoint_for_legacy = if store.active_account_id.as_ref() == Some(&account.id)
@@ -2523,7 +2592,7 @@ pub async fn test_client_account(
     account_id: Option<String>,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let port = *manager.port.lock().await;
+    let (host, port) = service_endpoint_for_manager(&manager).await;
     let mut persisted_account_id = None;
     let mut account = if let Some(raw) = account_json {
         parse_account_json(&raw)?
@@ -2538,14 +2607,14 @@ pub async fn test_client_account(
             .cloned()
             .ok_or_else(|| "账号不存在".to_string())?
     };
-    ensure_client_proxy_options(&mut account, port);
+    ensure_client_proxy_options(&mut account, &host, port);
     let mut draft = account.clone();
     let report = deecodex::client_integrations::apply(&mut draft, true)
         .map_err(|e| format!("客户端 dry-run 失败: {e}"))?;
     if let Some(id) = persisted_account_id {
         let mut store = deecodex::accounts::load_accounts(&data_dir);
         if let Some(existing) = store.accounts.iter_mut().find(|item| item.id == id) {
-            ensure_client_proxy_options(existing, port);
+            ensure_client_proxy_options(existing, &host, port);
             existing.last_check = Some(deecodex::accounts::ClientCheckRecord {
                 ok: report.ok,
                 checked_at: deecodex::accounts::now_secs(),
@@ -2579,7 +2648,7 @@ pub async fn apply_client_account(
 ) -> Result<Value, String> {
     let dry_run = dry_run.unwrap_or(false);
     let data_dir = manager.data_dir.lock().await.clone();
-    let port = *manager.port.lock().await;
+    let (host, port) = service_endpoint_for_manager(&manager).await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
     let pos = store
         .accounts
@@ -2590,7 +2659,7 @@ pub async fn apply_client_account(
     if account.client_kind.is_codex() {
         return Err("Codex 账号请使用「应用」切换代理账号".into());
     }
-    ensure_client_proxy_options(&mut account, port);
+    ensure_client_proxy_options(&mut account, &host, port);
     let report = deecodex::client_integrations::apply(&mut account, dry_run)
         .map_err(|e| format!("写入客户端配置失败: {e}"))?;
     let now = deecodex::accounts::now_secs();
@@ -2896,6 +2965,22 @@ pub async fn fetch_upstream_models(
                 tracing::info!("上游模型请求错误: {url} → {e}");
             }
         }
+    }
+    if ["deepseek", "kimi", "minimax", "mimo", "longcat", "qwen", "glm"]
+        .contains(&profile.slug.as_str())
+        && endpoint_kind
+            .as_deref()
+            .map(|kind| kind.to_ascii_lowercase().contains("anthropic"))
+            .unwrap_or(false)
+        && upstream.to_ascii_lowercase().contains("/anthropic")
+        && !profile.known_models.is_empty()
+    {
+        tracing::warn!(
+            provider = %profile.slug,
+            upstream = %upstream,
+            "Anthropic 兼容入口未返回可解析模型列表，使用内置模型模板"
+        );
+        return Ok(profile.known_models);
     }
     Err("无法从上游获取模型列表".to_string())
 }
@@ -4097,6 +4182,7 @@ mod tests {
             command: None,
             config: None,
             port: 4446,
+            host: deecodex::config::default_host(),
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             model_map: "{}".into(),

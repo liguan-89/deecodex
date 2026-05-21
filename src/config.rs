@@ -3,6 +3,75 @@ use std::path::PathBuf;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_HOST: &str = "127.0.0.1";
+
+pub fn default_host() -> String {
+    DEFAULT_HOST.to_string()
+}
+
+pub fn normalize_host(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return default_host();
+    }
+
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let host_part = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let host_part = if host_part.starts_with('[') {
+        host_part
+            .find(']')
+            .map(|end| &host_part[1..end])
+            .unwrap_or(host_part)
+    } else if host_part.matches(':').count() == 1 {
+        let mut parts = host_part.rsplitn(2, ':');
+        let possible_port = parts.next().unwrap_or_default();
+        let possible_host = parts.next().unwrap_or(host_part);
+        if possible_port.parse::<u16>().is_ok() {
+            possible_host
+        } else {
+            host_part
+        }
+    } else {
+        host_part
+    };
+
+    let host_part = host_part.trim();
+    if host_part.is_empty() {
+        default_host()
+    } else {
+        host_part.to_string()
+    }
+}
+
+pub fn client_url_host(host: &str) -> String {
+    let normalized = normalize_host(host);
+    let host = match normalized.as_str() {
+        "0.0.0.0" | "::" | "*" => DEFAULT_HOST,
+        _ => normalized.as_str(),
+    };
+    if host.starts_with('[') && host.ends_with(']') {
+        host.to_string()
+    } else if host.contains(':') {
+        format!("[{}]", host)
+    } else {
+        host.to_string()
+    }
+}
+
+pub fn format_host_port(host: &str, port: u16) -> String {
+    let normalized = normalize_host(host);
+    if normalized.starts_with('[') && normalized.ends_with(']') {
+        format!("{normalized}:{port}")
+    } else if normalized.contains(':') {
+        format!("[{normalized}]:{port}")
+    } else {
+        format!("{normalized}:{port}")
+    }
+}
+
 /// 跨平台获取用户 HOME 目录
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -31,6 +100,11 @@ pub struct Args {
 
     #[arg(long, env = "DEECODEX_PORT", default_value = "4446")]
     pub port: u16,
+
+    /// 网关监听地址。默认仅本机访问；如需局域网访问可设为 0.0.0.0。
+    #[serde(default = "default_host")]
+    #[arg(long, env = "DEECODEX_HOST", default_value = "127.0.0.1")]
+    pub host: String,
 
     #[arg(
         long,
@@ -320,10 +394,13 @@ impl Args {
         };
 
         if let Some(file) = Self::load_from_file(&config_path) {
+            let cli_host = normalize_host(&self.host);
+            let file_host = normalize_host(&file.host);
             Args {
                 command: self.command,
                 config: self.config,
                 port: pick(self.port, 4446, file.port),
+                host: pick_str(&cli_host, DEFAULT_HOST, &file_host),
                 upstream: pick_str(
                     &self.upstream,
                     "https://openrouter.ai/api/v1",
@@ -471,6 +548,7 @@ mod tests {
             command: None,
             config: None,
             port: 4446,
+            host: default_host(),
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             model_map: "{}".into(),
@@ -512,6 +590,7 @@ mod tests {
             command: None,
             config: None,
             port: 5555,
+            host: "0.0.0.0".into(),
             upstream: "https://example.com/api/v1".into(),
             api_key: "upstream-key".into(),
             model_map: "{}".into(),
@@ -549,6 +628,7 @@ mod tests {
             command: None,
             config: Some(config_path.to_string_lossy().to_string()),
             port: 4446,
+            host: default_host(),
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             model_map: "{}".into(),
@@ -589,6 +669,7 @@ mod tests {
         assert!(merged.mcp_executor_config.contains("mcp-filesystem"));
         assert_eq!(merged.mcp_executor_timeout_secs, 12);
         assert_eq!(merged.port, 5555);
+        assert_eq!(merged.host, "0.0.0.0");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

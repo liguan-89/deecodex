@@ -767,7 +767,7 @@ pub async fn dex_execute_tool(
                 serde_json::to_value(crate::commands::get_config()?).unwrap_or_default()
             }
             "save_config" => {
-                crate::commands::save_config(parse_gui_config(&args)?)?;
+                crate::commands::save_config_without_runtime(parse_gui_config(&args)?)?;
                 json!({ "ok": true })
             }
             "validate_config" => json!(crate::commands::validate_config(parse_gui_config(&args)?)),

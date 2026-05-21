@@ -122,7 +122,12 @@ pub(crate) fn codex_is_installed() -> bool {
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
 /// `context_window_override`: Some(size) 时生成 models_deecodex.json 并设置 model_catalog_json，
 /// 同时按 90% 设置 model_auto_compact_token_limit。None 时清除相关配置。
+#[allow(dead_code)]
 pub fn inject(port: u16, context_window_override: Option<u32>) {
+    inject_with_host(crate::config::DEFAULT_HOST, port, context_window_override);
+}
+
+pub fn inject_with_host(host: &str, port: u16, context_window_override: Option<u32>) {
     let Some(path) = codex_config_path() else {
         info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
         return;
@@ -149,9 +154,10 @@ pub fn inject(port: u16, context_window_override: Option<u32>) {
         clear_context_catalog();
     }
 
-    match do_inject(&path, port, context_window_override) {
-        Ok(true) => info!("已将 deecodex 配置注入 codex config.toml (port={port})"),
-        Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新端口"),
+    let url_host = crate::config::client_url_host(host);
+    match do_inject(&path, &url_host, port, context_window_override) {
+        Ok(true) => info!("已将 deecodex 配置注入 codex config.toml ({url_host}:{port})"),
+        Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新服务地址"),
         Err(e) => warn!("注入 codex 配置失败: {e}"),
     }
 }
@@ -174,6 +180,7 @@ pub fn remove() {
 
 fn do_inject(
     path: &std::path::Path,
+    url_host: &str,
     port: u16,
     context_window_override: Option<u32>,
 ) -> Result<bool> {
@@ -195,7 +202,7 @@ fn do_inject(
         );
     }
     doc["model_providers"]["deecodex"]["base_url"] =
-        toml_edit::value(format!("http://127.0.0.1:{}/v1", port));
+        toml_edit::value(format!("http://{}:{}/v1", url_host, port));
     doc["model_providers"]["deecodex"]["name"] = toml_edit::value("deecodex");
     doc["model_providers"]["deecodex"]["requires_openai_auth"] = toml_edit::value(false);
     doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value("");

@@ -332,6 +332,7 @@ async fn main() -> Result<()> {
 
     // 向后兼容: CODEX_RELAY_* → DEECODEX_*
     for (old, new) in [
+        ("CODEX_RELAY_HOST", "DEECODEX_HOST"),
         ("CODEX_RELAY_PORT", "DEECODEX_PORT"),
         ("CODEX_RELAY_UPSTREAM", "DEECODEX_UPSTREAM"),
         ("CODEX_RELAY_API_KEY", "DEECODEX_API_KEY"),
@@ -508,7 +509,8 @@ async fn main() -> Result<()> {
 
     // 从 config.json 加载持久化配置并合并
     let args = {
-        let merged = args.merge_with_file();
+        let mut merged = args.merge_with_file();
+        merged.host = config::normalize_host(&merged.host);
         // 启动时自动保存配置（确保 config.json 与当前 CLI/env 一致）
         let config_path = config::Args::default_config_path(&merged.data_dir);
         let _ = merged.save_to_file(&config_path);
@@ -771,7 +773,8 @@ async fn main() -> Result<()> {
 
     let app = handlers::build_router(state.clone()).layer(body_limit);
 
-    let addr = format!("127.0.0.1:{}", args.port);
+    let host = config::normalize_host(&args.host);
+    let addr = config::format_host_port(&host, args.port);
     info!(
         "listening {} -> {} | body:{}MB",
         addr,
@@ -779,12 +782,12 @@ async fn main() -> Result<()> {
         args.max_body_mb
     );
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind((host.as_str(), args.port)).await?;
 
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject(args.port, None);
+        codex_config::inject_with_host(&host, args.port, None);
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口

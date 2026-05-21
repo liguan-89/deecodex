@@ -18,8 +18,15 @@ const context = {
   },
   accountsData: {
     client_counts: { codex: 1, claude_code: 1, openclaw: 1, hermes: 1, generic_client: 1 },
+    active_id: 'cx1',
+    active_account_id: 'cx1',
+    active_endpoint_id: 'ep_chat',
     accounts: [
-      { id: 'cx1', name: 'Codex OpenRouter', client_kind: 'codex', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', client_options: {} },
+      { id: 'cx1', name: 'Codex OpenRouter', client_kind: 'codex', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', client_options: {}, active_endpoint_name: 'Chat Completions', active_endpoint_kind: 'OpenAiChat', endpoints: [
+        { id: 'ep_chat', name: 'Chat Completions', kind: 'open_ai_chat', base_url: 'https://openrouter.ai/api/v1' },
+        { id: 'ep_responses', name: 'Responses Direct', kind: 'open_ai_responses', base_url: 'https://api.openai.com/v1' },
+        { id: 'ep_messages', name: 'Anthropic Messages', kind: 'anthropic_messages', base_url: 'https://api.anthropic.com' },
+      ] },
       { id: 'cc1', name: 'Claude DeepSeek', client_kind: 'claude_code', provider: 'anthropic', upstream: 'https://api.deepseek.com/anthropic', default_model: 'deepseek-v4-pro', client_options: { auth_env: 'ANTHROPIC_AUTH_TOKEN', model_map: { default: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash' }, env: { ENABLE_TOOL_SEARCH: 'true' }, claude_custom_filter_enabled: true, claude_custom_filter_rules: ['x-custom-cache-noise:'] }, last_check: { ok: true, message: 'Claude Code 配置已准备' } },
       { id: 'oc1', name: 'OpenClaw OpenRouter', client_kind: 'openclaw', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', default_model: 'anthropic/claude-sonnet-4.5', client_options: { api_key_env: 'OPENROUTER_API_KEY', model_map: { default: 'anthropic/claude-sonnet-4.5', image: 'openai/gpt-4o-mini' } } },
       { id: 'hm1', name: 'Hermes MiniMax', client_kind: 'hermes', provider: 'minimax', upstream: 'https://api.minimaxi.com/v1', default_model: 'MiniMax-M2.7', client_options: { config_path: '~/.hermes/config.yaml', env_path: '~/.hermes/.env', api_key_env: 'MINIMAX_API_KEY', model_map: { default: 'MiniMax-M2.7', vision: 'MiniMax-M2.7' } }, last_check: { ok: false, message: 'Hermes 密钥为空' } },
@@ -120,6 +127,11 @@ assert(html.includes('高级设置'));
 assert(html.includes('网关运行'));
 assert(html.includes('服务地址'));
 assert(html.includes('服务监听端口'));
+assert(html.includes('协议入口与通道'));
+assert(html.includes('http://127.0.0.1:4446'));
+assert(html.includes('/v1/responses'));
+assert(html.includes('Chat 翻译'));
+assert(html.includes('服务地址 + /v1'));
 assert(html.includes('请求体上限'));
 assert(html.includes('运行数据目录'));
 assert(html.includes('<span>Claude</span>'));
@@ -143,6 +155,9 @@ assert(!html.includes('~/.codex/config.toml'));
 context.selectedConfigClientKind = 'codex';
 html = context.renderConfig();
 assert(html.includes('仅配置 Codex 客户端专用行为'));
+assert(html.includes('协议入口与通道'));
+assert(html.includes('当前端点: Chat Completions'));
+assert(html.includes('Responses → Chat'));
 assert(html.includes('Codex 配置注入'));
 assert(html.includes('Codex CDP 调试'));
 assert(html.includes('不属于全局网关设置'));
@@ -155,6 +170,27 @@ assert(html.includes('Codex 请求治理'));
 assert(html.includes('Codex 工具执行'));
 assert(html.includes('Codex Responses tools 的 MCP、Computer、Playwright 与 Browser-Use'));
 assert(html.includes('config-section-collapsed'));
+
+context.accountsData.active_endpoint_id = 'ep_responses';
+html = context.renderConfig();
+assert(html.includes('Responses 直连'));
+assert(html.includes('不经过翻译层'));
+
+context.accountsData.active_endpoint_id = 'ep_messages';
+html = context.renderConfig();
+assert(html.includes('Messages 适配'));
+assert(html.includes('适配到 Messages'));
+context.accountsData.active_endpoint_id = 'ep_chat';
+
+context.selectedConfigClientKind = 'global';
+context.window._statusData = { running: true, host: '127.0.0.1', port: 4446 };
+context.currentConfig.port = 5555;
+html = context.renderConfig();
+assert(html.includes('服务地址待重启'));
+assert(html.includes('127.0.0.1:4446'));
+assert(html.includes('127.0.0.1:5555'));
+context.currentConfig.port = 4446;
+context.window._statusData = null;
 
 context.selectedConfigClientKind = 'claude_code';
 html = context.renderConfig();

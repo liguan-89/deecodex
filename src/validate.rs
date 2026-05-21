@@ -73,6 +73,7 @@ pub struct DiagnosticReport {
 #[derive(Debug, Clone)]
 pub struct DiagnosticContext {
     pub data_dir: PathBuf,
+    pub host: String,
     pub port: u16,
     #[allow(dead_code)]
     pub upstream: String,
@@ -91,6 +92,7 @@ impl From<&Args> for DiagnosticContext {
     fn from(args: &Args) -> Self {
         Self {
             data_dir: args.data_dir.clone(),
+            host: crate::config::normalize_host(&args.host),
             port: args.port,
             upstream: args.upstream.clone(),
             api_key: args.api_key.clone(),
@@ -174,6 +176,11 @@ pub fn run_diagnostics_sync(ctx: &DiagnosticContext) -> DiagnosticReport {
             health: GroupHealth::Healthy, // 下面会重新计算
         },
         DiagnosticGroup {
+            name: "协议入口".into(),
+            items: check_protocol_entry_points(ctx),
+            health: GroupHealth::Healthy,
+        },
+        DiagnosticGroup {
             name: "账号连通".into(),
             items: vec![
                 check_deecodex_config(ctx),
@@ -242,8 +249,8 @@ fn check_service_running(ctx: &DiagnosticContext) -> DiagnosticItem {
             check_name: "服务运行状态".into(),
             message: format!("deecodex 服务正在运行 (PID: {})", pid),
             detail: Some(format!(
-                "端口: {}, PID 文件: {}",
-                ctx.port,
+                "服务地址: {}, PID 文件: {}",
+                crate::config::format_host_port(&ctx.host, ctx.port),
                 pid_path.display()
             )),
             suggestion: None,
@@ -385,6 +392,186 @@ fn check_client_accounts(ctx: &DiagnosticContext) -> Vec<DiagnosticItem> {
         .collect()
 }
 
+fn client_option_string(account: &accounts::Account, key: &str) -> Option<String> {
+    account
+        .client_options
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn client_proxy_enabled(account: &accounts::Account) -> bool {
+    account
+        .client_options
+        .get("proxy_recording_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn expected_client_base_url(ctx: &DiagnosticContext, kind: &accounts::AccountClientKind) -> String {
+    let host = crate::config::client_url_host(&ctx.host);
+    match kind {
+        accounts::AccountClientKind::ClaudeCode => format!("http://{}:{}", host, ctx.port),
+        accounts::AccountClientKind::Codex
+        | accounts::AccountClientKind::Openclaw
+        | accounts::AccountClientKind::Hermes
+        | accounts::AccountClientKind::GenericClient => format!("http://{}:{}/v1", host, ctx.port),
+    }
+}
+
+fn base_url_path(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let path = without_scheme
+        .find('/')
+        .map(|idx| &without_scheme[idx..])
+        .unwrap_or("");
+    path.trim_end_matches('/').to_string()
+}
+
+fn endpoint_channel_label(kind: &accounts::EndpointKind) -> &'static str {
+    match kind {
+        accounts::EndpointKind::OpenAiChat | accounts::EndpointKind::CustomChat => "Chat 翻译",
+        accounts::EndpointKind::OpenAiResponses | accounts::EndpointKind::CustomResponses => {
+            "Responses 直连"
+        }
+        accounts::EndpointKind::AnthropicMessages => "Anthropic Messages 适配",
+    }
+}
+
+fn codex_config_deecodex_base_url() -> Option<String> {
+    let path = codex_config::codex_config_path()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = codex_config::read_config_file(&path).ok()?;
+    let doc: toml_edit::DocumentMut = content.parse().ok()?;
+    doc.get("model_providers")
+        .and_then(|mp| mp.get("deecodex"))
+        .and_then(|d| d.get("base_url"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn check_codex_protocol_entry(
+    ctx: &DiagnosticContext,
+    store: &accounts::AccountStore,
+) -> DiagnosticItem {
+    let expected = expected_client_base_url(ctx, &accounts::AccountClientKind::Codex);
+    let endpoint = store.active_endpoint();
+    let channel = endpoint
+        .map(|item| endpoint_channel_label(&item.kind))
+        .unwrap_or("未配置");
+    let endpoint_name = endpoint.map(|item| item.name.as_str()).unwrap_or("未配置");
+    let actual = codex_config_deecodex_base_url();
+    let actual_path = actual.as_deref().map(base_url_path);
+    let status = match actual_path.as_deref() {
+        Some("/v1") => Status::Pass,
+        Some(_) => Status::Warn,
+        None => Status::Info,
+    };
+    let message = match status {
+        Status::Pass => format!("Codex 接入入口正确，当前上游通道为 {}", channel),
+        Status::Warn => "Codex deecodex base_url 路径不是 /v1".into(),
+        _ => "未读取到 Codex deecodex 注入入口".into(),
+    };
+    DiagnosticItem {
+        status,
+        check_name: "Codex 协议入口".into(),
+        message,
+        detail: Some(format!(
+            "推荐 base_url: {}; 请求入口: /v1/responses; 活跃端点: {} ({}){}",
+            expected,
+            endpoint_name,
+            channel,
+            actual
+                .as_ref()
+                .map(|value| format!("; 当前注入: {}", value))
+                .unwrap_or_default()
+        )),
+        suggestion: if status == Status::Warn {
+            Some("请重新注入 Codex 配置，确保 base_url 指向 deecodex 的 /v1 入口".into())
+        } else {
+            None
+        },
+    }
+}
+
+fn check_external_protocol_entry(
+    ctx: &DiagnosticContext,
+    account: &accounts::Account,
+) -> DiagnosticItem {
+    let expected = expected_client_base_url(ctx, &account.client_kind);
+    let actual = client_option_string(account, "proxy_base_url");
+    let expected_path = base_url_path(&expected);
+    let actual_path = actual.as_deref().map(base_url_path);
+    let status = match actual_path.as_deref() {
+        Some(path) if path == expected_path => Status::Pass,
+        Some(_) => Status::Warn,
+        None => Status::Warn,
+    };
+    let message = if status == Status::Pass {
+        "本地代理入口路径匹配客户端协议".into()
+    } else {
+        "本地代理入口路径可能与客户端协议错配".into()
+    };
+    DiagnosticItem {
+        status,
+        check_name: format!("协议入口 · {}", account.name),
+        message,
+        detail: Some(format!(
+            "客户端: {:?}; 推荐 base_url: {}; 当前 base_url: {}; 期望路径: {}",
+            account.client_kind,
+            expected,
+            actual.as_deref().unwrap_or("未写入 proxy_base_url"),
+            if expected_path.is_empty() {
+                "/"
+            } else {
+                &expected_path
+            }
+        )),
+        suggestion: if status == Status::Pass {
+            None
+        } else {
+            Some("请在账号管理中重新预检或写入客户端配置，避免请求落到错误协议入口".into())
+        },
+    }
+}
+
+fn check_protocol_entry_points(ctx: &DiagnosticContext) -> Vec<DiagnosticItem> {
+    let mut store = accounts::load_accounts(&ctx.data_dir);
+    store.normalize_v2();
+    let mut items = vec![check_codex_protocol_entry(ctx, &store)];
+    let mut has_external_proxy = false;
+    for account in store
+        .accounts
+        .iter()
+        .filter(|account| !account.client_kind.is_codex())
+        .filter(|account| client_proxy_enabled(account))
+    {
+        has_external_proxy = true;
+        items.push(check_external_protocol_entry(ctx, account));
+    }
+    if !has_external_proxy {
+        items.push(DiagnosticItem {
+            status: Status::Info,
+            check_name: "外部客户端协议入口".into(),
+            message: "外部客户端尚未启用本地代理入口".into(),
+            detail: Some(
+                "Claude/OpenClaw/Hermes 可直连上游；启用请求记录后会检查 deecodex Base URL 路径"
+                    .into(),
+            ),
+            suggestion: None,
+        });
+    }
+    items
+}
+
 /// 异步连通性检测结果，由调用方在 GUI/CLI 中异步获取后回填。
 #[allow(dead_code)]
 pub fn connectivity_check_result(
@@ -473,7 +660,11 @@ fn check_codex_third_party_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
     };
 
     let mut third_parties = Vec::new();
-    let deecodex_base = format!("http://127.0.0.1:{}/v1", ctx.port);
+    let deecodex_base = format!(
+        "http://{}:{}/v1",
+        crate::config::client_url_host(&ctx.host),
+        ctx.port
+    );
 
     if let Some(providers) = doc.get("model_providers").and_then(|mp| mp.as_table()) {
         for (key, value) in providers.iter() {
@@ -487,9 +678,7 @@ fn check_codex_third_party_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
                 .to_string();
 
             // 跳过本地 deecodex 地址
-            if (base_url.contains("127.0.0.1") || base_url.contains("localhost"))
-                && base_url == deecodex_base
-            {
+            if base_url == deecodex_base {
                 continue;
             }
 
@@ -579,7 +768,11 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
         .get("model_provider")
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
-    let expected_base = format!("http://127.0.0.1:{}/v1", ctx.port);
+    let expected_base = format!(
+        "http://{}:{}/v1",
+        crate::config::client_url_host(&ctx.host),
+        ctx.port
+    );
 
     let has_deecodex_section = doc
         .get("model_providers")
@@ -618,9 +811,11 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
         DiagnosticItem {
             status: Status::Warn,
             check_name: "deecodex 路由".into(),
-            message: "deecodex 路由已配置但端口不匹配".into(),
+            message: "deecodex 路由已配置但服务入口不匹配".into(),
             detail: Some(format!("期望: {}, 实际: {}", expected_base, actual_base)),
-            suggestion: Some("请在 deecodex 控制面板中点击「注入配置」以更新端口".into()),
+            suggestion: Some(
+                "请在 deecodex 控制面板中点击「注入配置」以更新服务地址和协议入口".into(),
+            ),
         }
     } else {
         DiagnosticItem {
@@ -723,7 +918,11 @@ fn check_injection_status(ctx: &DiagnosticContext) -> DiagnosticItem {
         })
         .unwrap_or(false);
 
-    let base_expected = format!("http://127.0.0.1:{}/v1", ctx.port);
+    let base_expected = format!(
+        "http://{}:{}/v1",
+        crate::config::client_url_host(&ctx.host),
+        ctx.port
+    );
 
     let base_matches = codex_config::codex_config_path()
         .and_then(|p| {
@@ -1171,11 +1370,12 @@ fn check_model_vision_profiles(ctx: &DiagnosticContext) -> DiagnosticItem {
 // ── 10. 端口冲突检测 ─────────────────────────────────────────────────────────
 
 fn check_port_conflict(ctx: &DiagnosticContext) -> DiagnosticItem {
-    match std::net::TcpListener::bind(("127.0.0.1", ctx.port)) {
+    let address = crate::config::format_host_port(&ctx.host, ctx.port);
+    match std::net::TcpListener::bind((ctx.host.as_str(), ctx.port)) {
         Ok(_) => DiagnosticItem {
             status: Status::Pass,
             check_name: "端口冲突".into(),
-            message: format!("端口 {} 未被占用", ctx.port),
+            message: format!("服务地址 {} 未被占用", address),
             detail: None,
             suggestion: None,
         },
@@ -1184,7 +1384,7 @@ fn check_port_conflict(ctx: &DiagnosticContext) -> DiagnosticItem {
                 return DiagnosticItem {
                     status: Status::Pass,
                     check_name: "端口冲突".into(),
-                    message: format!("端口 {} 由 deecodex 自身占用，无冲突", ctx.port),
+                    message: format!("服务地址 {} 由 deecodex 自身占用，无冲突", address),
                     detail: None,
                     suggestion: None,
                 };
@@ -1193,10 +1393,11 @@ fn check_port_conflict(ctx: &DiagnosticContext) -> DiagnosticItem {
             DiagnosticItem {
                 status: Status::Warn,
                 check_name: "端口冲突".into(),
-                message: format!("端口 {} 已被占用", ctx.port),
+                message: format!("服务地址 {} 无法绑定", address),
                 detail: occupant.map(|p| format!("占用进程: {}", p)),
                 suggestion: Some(
-                    "如果占用者是 deecodex 自身则正常，否则请关闭占用进程或更换端口".into(),
+                    "如果占用者是 deecodex 自身则正常，否则请关闭占用进程、更换端口或调整服务地址"
+                        .into(),
                 ),
             }
         }
@@ -1659,6 +1860,7 @@ pub struct Diagnostic {
 pub fn validate(args: &Args) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
 
+    check_host(args, &mut diags);
     check_data_dir(args, &mut diags);
     check_api_key(args, &mut diags);
     check_model_map(args, &mut diags);
@@ -1667,6 +1869,26 @@ pub fn validate(args: &Args) -> Vec<Diagnostic> {
     check_file_search(args, &mut diags);
 
     diags
+}
+
+fn check_host(args: &Args, diags: &mut Vec<Diagnostic>) {
+    let host = crate::config::normalize_host(&args.host);
+    if host.contains('/') {
+        diags.push(Diagnostic {
+            severity: Severity::Error,
+            category: "host",
+            message: "服务地址只需要填写主机地址，不应包含路径".into(),
+        });
+        return;
+    }
+
+    if host.contains(':') && host.parse::<std::net::IpAddr>().is_err() {
+        diags.push(Diagnostic {
+            severity: Severity::Error,
+            category: "host",
+            message: format!("服务地址格式无效: {}", args.host),
+        });
+    }
 }
 
 fn check_data_dir(args: &Args, diags: &mut Vec<Diagnostic>) {
@@ -2171,6 +2393,7 @@ mod tests {
             command: None,
             config: None,
             port: 4446,
+            host: crate::config::default_host(),
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: String::new(),
             model_map: "{}".into(),
@@ -2499,6 +2722,7 @@ mod tests {
     fn test_context() -> DiagnosticContext {
         DiagnosticContext {
             data_dir: PathBuf::from(".deecodex"),
+            host: crate::config::default_host(),
             port: 4446,
             upstream: "https://openrouter.ai/api/v1".into(),
             api_key: "sk-test".into(),
@@ -2514,13 +2738,33 @@ mod tests {
     fn new_diagnostic_report_has_correct_groups() {
         let ctx = test_context();
         let report = run_diagnostics_sync(&ctx);
-        assert_eq!(report.groups.len(), 6);
+        assert_eq!(report.groups.len(), 7);
         assert_eq!(report.groups[0].name, "服务状态");
-        assert_eq!(report.groups[1].name, "账号连通");
-        assert_eq!(report.groups[2].name, "客户端配置");
-        assert_eq!(report.groups[3].name, "Codex 路由");
-        assert_eq!(report.groups[4].name, "注入状态");
-        assert_eq!(report.groups[5].name, "运行环境");
+        assert_eq!(report.groups[1].name, "协议入口");
+        assert_eq!(report.groups[2].name, "账号连通");
+        assert_eq!(report.groups[3].name, "客户端配置");
+        assert_eq!(report.groups[4].name, "Codex 路由");
+        assert_eq!(report.groups[5].name, "注入状态");
+        assert_eq!(report.groups[6].name, "运行环境");
+    }
+
+    #[test]
+    fn protocol_base_url_paths_match_client_kinds() {
+        let ctx = test_context();
+        assert_eq!(
+            expected_client_base_url(&ctx, &accounts::AccountClientKind::Codex),
+            "http://127.0.0.1:4446/v1"
+        );
+        assert_eq!(
+            expected_client_base_url(&ctx, &accounts::AccountClientKind::ClaudeCode),
+            "http://127.0.0.1:4446"
+        );
+        assert_eq!(
+            expected_client_base_url(&ctx, &accounts::AccountClientKind::Hermes),
+            "http://127.0.0.1:4446/v1"
+        );
+        assert_eq!(base_url_path("http://127.0.0.1:4446/v1/"), "/v1");
+        assert_eq!(base_url_path("http://127.0.0.1:4446"), "");
     }
 
     #[test]
