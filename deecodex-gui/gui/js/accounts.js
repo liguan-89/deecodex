@@ -242,9 +242,10 @@ function renderClientAccountDetail() {
         <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
         <span id="clientModelFetchStatus"></span>
       </div>
-      <div class="client-model-map-head">
+      <div class="model-map-head client-model-map-head client-model-template">
         <span>客户端槽位</span>
         <span>上游模型</span>
+        <span></span>
       </div>
       <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
       <div class="model-add-row"><button onclick="addClientModelRow()">+ 添加自定义槽位</button></div>
@@ -1177,18 +1178,18 @@ function renderClientModelMappingRows(account) {
   });
   return rows.map(row => {
     const slotCell = row.readonly
-      ? `<div class="client-model-slot">
+      ? `<div class="model-label codex client-model-slot">
           <strong>${esc(row.label)}${row.required ? ' *' : ''}</strong>
           <span title="${escAttr(row.description || row.target)}">${esc(row.target)}</span>
           <input type="hidden" class="client-model-slot-key" value="${escAttr(row.key)}">
         </div>`
-      : `<div class="client-model-slot custom">
+      : `<div class="model-label client-model-slot custom">
           <input type="text" class="client-model-slot-key" value="${escAttr(row.key)}" placeholder="槽位名，如 rerank">
           <span>${esc(row.target)}</span>
         </div>`;
-    return `<div class="client-model-row">
+    return `<div class="model-row client-model-row client-model-template">
       ${slotCell}
-      <div class="client-model-value">
+      <div class="model-value client-model-value">
         <div class="model-autocomplete">
           <input type="text" class="client-model-value-input" value="${escAttr(row.value || '')}" placeholder="留空则不写入该槽位"
             onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">
@@ -1206,12 +1207,12 @@ function addClientModelRow() {
   const modelSource = upstreamModels.length > 0 ? upstreamModels : getProviderKnownModels(editingAccount?.provider || '');
   const suggestionsJson = escAttr(JSON.stringify(modelSource || []));
   const row = document.createElement('div');
-  row.className = 'client-model-row';
-  row.innerHTML = `<div class="client-model-slot custom">
+  row.className = 'model-row client-model-row client-model-template';
+  row.innerHTML = `<div class="model-label client-model-slot custom">
       <input type="text" class="client-model-slot-key" placeholder="槽位名，如 rerank">
       <span>自定义槽位</span>
     </div>
-    <div class="client-model-value">
+    <div class="model-value client-model-value">
       <div class="model-autocomplete">
         <input type="text" class="client-model-value-input" placeholder="上游模型名"
           onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">

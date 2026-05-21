@@ -121,6 +121,8 @@ assert(detail.includes('Hermes .env Key'));
 assert(detail.includes('最近备份'));
 assert(detail.includes('客户端模型映射'));
 assert(detail.includes('model.default'));
+assert(detail.includes('model-map-head client-model-map-head client-model-template'));
+assert(detail.includes('model-row client-model-row client-model-template'));
 assert(detail.includes('编辑配置文件'));
 
 const report = context.renderClientReport({
