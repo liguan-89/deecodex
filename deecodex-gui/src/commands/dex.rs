@@ -69,47 +69,45 @@ fn get_active_account_info(data_dir: &std::path::Path) -> Option<DexAccountInfo>
     ))
 }
 
-/// 安全路径检查：只允许 ~/.deecodex/、~/.codex/、/tmp/ 和当前工作区下的文件。
-fn is_path_allowed(path: &std::path::Path) -> bool {
-    let canonical = match path.canonicalize() {
-        Ok(p) => p,
+fn canonicalize_for_allowlist(path: &std::path::Path) -> Option<PathBuf> {
+    match path.canonicalize() {
+        Ok(p) => Some(p),
         Err(_) => {
-            if let Some(parent) = path.parent() {
-                match parent.canonicalize() {
-                    Ok(p) => p.join(path.file_name().unwrap_or_default()),
-                    Err(_) => return false,
-                }
-            } else {
-                return false;
-            }
+            let parent = path.parent()?;
+            parent
+                .canonicalize()
+                .ok()
+                .map(|parent| parent.join(path.file_name().unwrap_or_default()))
         }
+    }
+}
+
+fn is_under_allowed_root(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let Some(root) = canonicalize_for_allowlist(root) else {
+        return false;
+    };
+    path.starts_with(root)
+}
+
+/// 安全路径检查：只允许数据目录、常见客户端配置目录和系统临时目录。
+fn is_path_allowed(path: &std::path::Path) -> bool {
+    let Some(canonical) = canonicalize_for_allowlist(path) else {
+        return false;
     };
 
-    let path_str = canonical.to_string_lossy();
-    if path_str.starts_with("/tmp/") || path_str == "/tmp" {
+    let args = load_args();
+    if is_under_allowed_root(&canonical, &args.data_dir)
+        || is_under_allowed_root(&canonical, &std::env::temp_dir())
+        || is_under_allowed_root(&canonical, Path::new("/tmp"))
+    {
         return true;
     }
 
-    if let Ok(cwd) = std::env::current_dir().and_then(|p| p.canonicalize()) {
-        if path_str.starts_with(cwd.to_string_lossy().as_ref()) {
-            return true;
-        }
-    }
-
     if let Some(home) = deecodex::config::home_dir() {
-        let deecodex_dir = home.join(".deecodex");
-        let codex_dir = home.join(".codex");
-        let claude_dir = home.join(".claude");
-        let openclaw_dir = home.join(".openclaw");
-        let hermes_dir = home.join(".hermes");
-        if path_str.starts_with(deecodex_dir.to_string_lossy().as_ref())
-            || path_str.starts_with(codex_dir.to_string_lossy().as_ref())
-            || path_str.starts_with(claude_dir.to_string_lossy().as_ref())
-            || path_str.starts_with(openclaw_dir.to_string_lossy().as_ref())
-            || path_str.starts_with(hermes_dir.to_string_lossy().as_ref())
-        {
-            return true;
-        }
+        return [".deecodex", ".codex", ".claude", ".openclaw", ".hermes"]
+            .iter()
+            .map(|dir| home.join(dir))
+            .any(|root| is_under_allowed_root(&canonical, &root));
     }
 
     false
@@ -935,20 +933,17 @@ pub async fn dex_execute_tool(
                     .unwrap_or_default()
             }
             "test_upstream_connectivity" => {
-                let (upstream, api_key) = if args.get("upstream").is_some() {
-                    (
-                        req_string(&args, "upstream")?,
-                        opt_string(&args, "api_key").unwrap_or_default(),
-                    )
+                let account_id = if args.get("upstream").is_some() {
+                    opt_string(&args, "account_id")
                 } else {
                     let data_dir = manager.data_dir.lock().await.clone();
-                    let (upstream, api_key, _, _, _) = get_active_account_info(&data_dir)
-                        .ok_or("缺少 upstream/api_key，且没有活跃账号")?;
-                    (upstream, api_key)
+                    opt_string(&args, "account_id").or_else(|| active_account_id(&data_dir))
                 };
                 crate::commands::test_upstream_connectivity(
-                    upstream,
-                    api_key,
+                    manager,
+                    account_id,
+                    opt_string(&args, "upstream"),
+                    opt_string(&args, "api_key"),
                     opt_string(&args, "endpoint_kind"),
                 )
                 .await?
@@ -1109,8 +1104,13 @@ pub async fn dex_execute_tool(
             "health_summary" => dex_health_summary(manager).await?,
             "dex_self_check" => dex_self_check(manager).await?,
             "analyze_requests" => dex_analyze_requests(manager).await?,
-            "config_backup" => {
-                dex_config_backup(req_string(&args, "action")?, opt_string(&args, "name"))?
+            "config_backup" => dex_config_backup(
+                req_string(&args, "action")?,
+                opt_string(&args, "name"),
+                confirmed,
+            )?,
+            "config_restore" => {
+                dex_config_backup("restore".into(), opt_string(&args, "name"), confirmed)?
             }
             "config_diff" => dex_config_diff()?,
             "token_cost" => dex_token_cost(manager).await?,
@@ -1387,7 +1387,7 @@ pub fn dex_read_file(path: String, max_lines: Option<usize>) -> Result<Value, St
 
     if !is_path_allowed(&path) {
         return Err(format!(
-            "安全限制：只允许读取 ~/.deecodex/、~/.codex/、/tmp/ 下的文件，当前路径: {}",
+            "安全限制：只允许读取 deecodex 数据目录、常见客户端配置目录和系统临时目录下的文件，当前路径: {}",
             path.display()
         ));
     }
@@ -1423,7 +1423,7 @@ pub fn dex_list_directory(path: String) -> Result<Value, String> {
 
     if !is_path_allowed(&path) {
         return Err(format!(
-            "安全限制：只允许读取 ~/.deecodex/、~/.codex/、/tmp/ 下的目录，当前路径: {}",
+            "安全限制：只允许读取 deecodex 数据目录、常见客户端配置目录和系统临时目录下的目录，当前路径: {}",
             path.display()
         ));
     }
@@ -2960,7 +2960,15 @@ fn get_disk_free_gb(path: &std::path::Path) -> f64 {
 
 /// DEX 助手：配置备份/恢复
 #[tauri::command]
-pub fn dex_config_backup(action: String, name: Option<String>) -> Result<Value, String> {
+pub fn dex_config_backup(
+    action: String,
+    name: Option<String>,
+    confirmed: Option<bool>,
+) -> Result<Value, String> {
+    if action == "restore" && confirmed != Some(true) {
+        return Err("安全限制：恢复配置会覆盖当前 config.json/accounts.json，必须先确认".into());
+    }
+
     let args = load_args();
     let data_dir = &args.data_dir;
     let backup_dir = data_dir.join("backups");
@@ -4383,6 +4391,36 @@ mod tests {
             .find(|tool| tool.name == "execute_shell")
             .expect("execute_shell 工具应保留");
         assert_eq!(shell.level, 3);
+    }
+
+    #[test]
+    fn path_allowlist_uses_path_boundaries() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("deecodex-allow-{nonce}"));
+        let sibling = std::env::temp_dir().join(format!("deecodex-allow-{nonce}-sibling"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let allowed = root.join("file.txt");
+        let rejected = sibling.join("file.txt");
+        std::fs::write(&allowed, "ok").unwrap();
+        std::fs::write(&rejected, "no").unwrap();
+
+        let allowed = allowed.canonicalize().unwrap();
+        let rejected = rejected.canonicalize().unwrap();
+        assert!(is_under_allowed_root(&allowed, &root));
+        assert!(!is_under_allowed_root(&rejected, &root));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(sibling);
+    }
+
+    #[test]
+    fn config_restore_requires_confirmation() {
+        let err = dex_config_backup("restore".into(), Some("backup".into()), None).unwrap_err();
+        assert!(err.contains("必须先确认"));
     }
 
     #[test]

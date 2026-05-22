@@ -3107,6 +3107,32 @@ async function applyAccount(id) {
   }
 }
 
+function isRedactedSecret(value) {
+  return typeof value === 'string' && value.includes('****');
+}
+
+function buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind, options = {}) {
+  const args = { upstream, endpointKind };
+  if (editingAccount?.id && (options.forceStored || isRedactedSecret(apiKey))) {
+    args.accountId = editingAccount.id;
+  } else {
+    args.apiKey = apiKey || '';
+  }
+  return args;
+}
+
+function buildEditingVisionProbeArgs(upstream, apiKey, visionPath, adapterId) {
+  const args = { upstream, visionPath, adapterId };
+  if (editingAccount?.id && isRedactedSecret(apiKey)) {
+    args.accountId = editingAccount.id;
+    const endpointId = currentEndpoint(editingAccount)?.id;
+    if (endpointId) args.endpointId = endpointId;
+  } else {
+    args.apiKey = apiKey || '';
+  }
+  return args;
+}
+
 async function fetchAndPopulateModels() {
   const statusEl = document.getElementById('modelFetchStatus');
   if (statusEl) statusEl.innerHTML = '<span class="status-muted">获取中...</span>';
@@ -3118,9 +3144,10 @@ async function fetchAndPopulateModels() {
     if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
     const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
     const useStoredOfficialAccount = isCodexOfficialAccount(editingAccount) && editingAccount?.id;
-    upstreamModels = await invoke('fetch_upstream_models', useStoredOfficialAccount
-      ? { accountId: editingAccount.id }
-      : { upstream, apiKey, endpointKind });
+    upstreamModels = await invoke(
+      'fetch_upstream_models',
+      buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind, { forceStored: useStoredOfficialAccount })
+    );
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
       // 重新渲染模型映射行
@@ -3146,7 +3173,7 @@ async function fetchClientModels() {
     const endpointKind = accountClientKind(editingAccount) === 'claude_code' || provider === 'anthropic'
       ? 'anthropic_messages'
       : 'open_ai_chat';
-    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey, endpointKind });
+    upstreamModels = await invoke('fetch_upstream_models', buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind));
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
       syncEditingDraftFromForm();
@@ -3170,7 +3197,7 @@ async function testUpstreamConnectivity() {
   if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
   try {
     const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
-    const result = await invoke('test_upstream_connectivity', { upstream, apiKey, endpointKind });
+    const result = await invoke('test_upstream_connectivity', buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind));
     if (result.ok) {
       const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
       if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
@@ -3200,7 +3227,7 @@ async function testVisionConnectivity() {
   try {
     const visionPath = document.getElementById('edit_vision_endpoint')?.value?.trim() || 'v1/coding_plan/vlm';
     const adapterId = document.getElementById('edit_vision_adapter')?.value || 'minimax_coding_plan_vlm';
-    const result = await invoke('test_vision_connectivity', { upstream, apiKey, visionPath, adapterId });
+    const result = await invoke('test_vision_connectivity', buildEditingVisionProbeArgs(upstream, apiKey, visionPath, adapterId));
     if (result.ok) {
       const detail = result.detail ? `，${esc(result.detail)}` : '';
       if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${detail})</span>`;
@@ -3285,8 +3312,8 @@ async function testAccountUpstreamForCard(id) {
   if (el) el.innerHTML = '<span class="balance-loading">检测中...</span>';
   try {
     const result = await invoke('test_upstream_connectivity', {
+      accountId: id,
       upstream,
-      apiKey: a.api_key || '',
       endpointKind: cardEndpointKind(a),
     });
     if (result.ok) {

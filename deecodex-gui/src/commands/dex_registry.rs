@@ -1003,13 +1003,25 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
         BuiltinToolSpec {
             name: "config_backup",
             tauri_cmd: "dex_config_backup",
-            level: 0,
+            level: 1,
             confirm: None,
-            description: "备份/恢复/列出配置文件",
+            description: "备份/列出配置文件；恢复请使用 config_restore",
             capability: "deecodex.ops",
             parameters: params(
-                json!({"action":{"type":"string","description":"backup|restore|list"},"name":{"type":"string","description":"备份名称"}}),
+                json!({"action":{"type":"string","description":"backup|list"},"name":{"type":"string","description":"备份名称"}}),
                 &["action"],
+            ),
+        },
+        BuiltinToolSpec {
+            name: "config_restore",
+            tauri_cmd: "dex_config_backup",
+            level: 3,
+            confirm: Some("确定要恢复配置备份吗？当前 config.json/accounts.json 会被覆盖。"),
+            description: "恢复 deecodex 配置备份",
+            capability: "deecodex.ops",
+            parameters: params(
+                json!({"name":{"type":"string","description":"备份名称"}}),
+                &["name"],
             ),
         },
         BuiltinToolSpec {

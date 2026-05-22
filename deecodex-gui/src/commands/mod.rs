@@ -163,6 +163,17 @@ fn secret_is_redacted(value: &str) -> bool {
     value.contains("****")
 }
 
+fn non_empty_override(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn secret_override(value: Option<String>) -> Option<String> {
+    value.filter(|value| {
+        let value = value.trim();
+        !value.is_empty() && !secret_is_redacted(value)
+    })
+}
+
 fn mask_secret(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -3707,12 +3718,14 @@ pub async fn fetch_upstream_models(
             .ok_or_else(|| "账号不存在".to_string())?;
         let endpoint = endpoint_for_account_in_store(account, &store);
         (
-            endpoint
-                .map(|ep| ep.base_url.clone())
-                .unwrap_or_else(|| account.upstream.clone()),
-            account.api_key.clone(),
+            non_empty_override(upstream).unwrap_or_else(|| {
+                endpoint
+                    .map(|ep| ep.base_url.clone())
+                    .unwrap_or_else(|| account.upstream.clone())
+            }),
+            secret_override(api_key).unwrap_or_else(|| account.api_key.clone()),
             deecodex::providers::profile_for_account(account),
-            endpoint.map(|ep| format!("{:?}", ep.kind)),
+            endpoint_kind.or_else(|| endpoint.map(|ep| format!("{:?}", ep.kind))),
             matches!(
                 account.auth_mode,
                 deecodex::accounts::AccountAuthMode::OAuth
@@ -5154,6 +5167,39 @@ async fn do_test_connectivity_with_kind(
     }
 }
 
+async fn resolve_upstream_connectivity_args(
+    manager: &ServerManager,
+    account_id: Option<String>,
+    upstream: Option<String>,
+    api_key: Option<String>,
+    endpoint_kind: Option<String>,
+) -> Result<(String, String, Option<String>), String> {
+    if let Some(account_id) = non_empty_override(account_id) {
+        let data_dir = manager.data_dir.lock().await.clone();
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .ok_or_else(|| format!("账号不存在: {account_id}"))?;
+        let endpoint = endpoint_for_account_in_store(account, &store);
+        let upstream = non_empty_override(upstream).unwrap_or_else(|| {
+            endpoint
+                .map(|ep| ep.base_url.clone())
+                .unwrap_or_else(|| account.upstream.clone())
+        });
+        let api_key = secret_override(api_key).unwrap_or_else(|| account.api_key.clone());
+        let endpoint_kind = endpoint_kind.or_else(|| endpoint.map(|ep| format!("{:?}", ep.kind)));
+        return Ok((upstream, api_key, endpoint_kind));
+    }
+
+    Ok((
+        non_empty_override(upstream).ok_or("缺少 upstream 参数")?,
+        secret_override(api_key).unwrap_or_default(),
+        endpoint_kind,
+    ))
+}
+
 fn build_vision_probe_url(upstream: &str, vision_path: &str) -> Result<String, String> {
     let upstream = upstream.trim().trim_end_matches('/');
     if upstream.is_empty() {
@@ -5270,11 +5316,60 @@ fn model_probe_request(
     req
 }
 
+async fn resolve_vision_connectivity_args(
+    manager: &ServerManager,
+    account_id: Option<String>,
+    endpoint_id: Option<String>,
+    upstream: Option<String>,
+    api_key: Option<String>,
+    vision_path: Option<String>,
+) -> Result<(String, String, Option<String>), String> {
+    if let Some(account_id) = non_empty_override(account_id) {
+        let data_dir = manager.data_dir.lock().await.clone();
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .ok_or_else(|| format!("账号不存在: {account_id}"))?;
+        let endpoint = endpoint_id
+            .as_deref()
+            .and_then(|id| account.endpoints.iter().find(|endpoint| endpoint.id == id))
+            .or_else(|| endpoint_for_account_in_store(account, &store));
+        let stored_upstream = endpoint
+            .map(|endpoint| endpoint.vision.base_url.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| account.vision_upstream.clone());
+        let stored_api_key = endpoint
+            .map(|endpoint| endpoint.vision.api_key.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| account.vision_api_key.clone());
+        let stored_path = endpoint
+            .map(|endpoint| endpoint.vision.path.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| account.vision_endpoint.clone());
+        let upstream = non_empty_override(upstream).unwrap_or(stored_upstream);
+        let api_key = secret_override(api_key).unwrap_or(stored_api_key);
+        let vision_path =
+            non_empty_override(vision_path).or_else(|| non_empty_override(Some(stored_path)));
+        return Ok((upstream, api_key, vision_path));
+    }
+
+    Ok((
+        non_empty_override(upstream).ok_or("缺少视觉上游 URL")?,
+        secret_override(api_key).unwrap_or_default(),
+        vision_path,
+    ))
+}
+
 /// 测试胶水视觉 API 端点连通性
 #[tauri::command]
 pub async fn test_vision_connectivity(
-    upstream: String,
-    api_key: String,
+    manager: State<'_, ServerManager>,
+    account_id: Option<String>,
+    endpoint_id: Option<String>,
+    upstream: Option<String>,
+    api_key: Option<String>,
     vision_path: Option<String>,
     adapter_id: Option<String>,
 ) -> Result<Value, String> {
@@ -5291,6 +5386,15 @@ pub async fn test_vision_connectivity(
         }));
     }
 
+    let (upstream, api_key, vision_path) = resolve_vision_connectivity_args(
+        &manager,
+        account_id,
+        endpoint_id,
+        upstream,
+        api_key,
+        vision_path,
+    )
+    .await?;
     let endpoint = build_vision_probe_url(
         &upstream,
         vision_path.as_deref().unwrap_or("v1/coding_plan/vlm"),
@@ -5342,10 +5446,15 @@ pub async fn test_vision_connectivity(
 /// 测试上游 API 端点连通性
 #[tauri::command]
 pub async fn test_upstream_connectivity(
-    upstream: String,
-    api_key: String,
+    manager: State<'_, ServerManager>,
+    account_id: Option<String>,
+    upstream: Option<String>,
+    api_key: Option<String>,
     endpoint_kind: Option<String>,
 ) -> Result<Value, String> {
+    let (upstream, api_key, endpoint_kind) =
+        resolve_upstream_connectivity_args(&manager, account_id, upstream, api_key, endpoint_kind)
+            .await?;
     let r = do_test_connectivity_with_kind(&upstream, &api_key, endpoint_kind.as_deref()).await?;
     Ok(serde_json::json!({
         "ok": r.ok,
@@ -5672,6 +5781,16 @@ mod tests {
             browser_use_bridge_command: String::new(),
             daemon: false,
         }
+    }
+
+    #[test]
+    fn secret_override_rejects_redacted_values() {
+        assert_eq!(
+            secret_override(Some("sk-1234".into())).as_deref(),
+            Some("sk-1234")
+        );
+        assert!(secret_override(Some("sk-****-abcd".into())).is_none());
+        assert!(secret_override(Some("   ".into())).is_none());
     }
 
     fn test_account(id: &str) -> deecodex::accounts::Account {
