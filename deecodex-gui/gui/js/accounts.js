@@ -195,7 +195,6 @@ function renderCodexOfficialRuntimePanel(a) {
       </div>
     </div>
     <div class="official-runtime-actions">
-      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="refreshOfficialQuotaFromDetail('${accountId}')">刷新额度</button>` : ''}
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用账号池</button>` : ''}
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除冷却</button>` : ''}
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="resetAccountRuntime('${accountId}')">重置运行态</button>` : ''}
@@ -332,7 +331,7 @@ function renderOfficialQuotaInfo(info) {
 function renderOfficialQuotaSnapshot(a) {
   const snapshot = officialQuotaSnapshot(a);
   if (snapshot) return renderOfficialQuotaInfo(snapshot);
-  return `<div class="official-quota-empty">尚未刷新额度状态；刷新后会显示 Codex 5 小时/周剩余额度、套餐和恢复时间。</div>`;
+  return `<div class="official-quota-empty">尚未检测额度状态；检测上游连通性后会显示 Codex 5 小时/周剩余额度、套餐和恢复时间。</div>`;
 }
 
 function renderOfficialCardStatus(a) {
@@ -664,14 +663,6 @@ function selectClientKind(kind) {
   selectedClientKind = normalizeClientKind(kind);
   if (accountsView === 'add') accountsView = 'list';
   renderMainContent();
-  if (accountsView === 'list') {
-    (accountsData.accounts || [])
-      .filter(a => accountClientKind(a) === selectedClientKind)
-      .forEach(a => {
-        if (isCodexAccount(a)) fetchBalanceForCard(a);
-        else fetchClientStatusForCard(a);
-      });
-  }
 }
 
 function toggleClientProxyRecording() {
@@ -1800,18 +1791,6 @@ async function loadAccountsData() {
         accountsListRenderSignature = nextSignature;
         renderMainContent();
       }
-    }
-    // 异步加载余额（不阻塞渲染）
-    if (accountsView === 'list') {
-      (accountsData.accounts || [])
-        .filter(a => accountClientKind(a) === selectedClientKind)
-        .forEach(a => {
-          if (isCodexAccount(a)) {
-            fetchBalanceForCard(a);
-          } else {
-            fetchClientStatusForCard(a);
-          }
-        });
     }
   } catch (e) {
     showToast('加载账号失败: ' + e, 'error');
@@ -3072,6 +3051,8 @@ async function testUpstreamConnectivity() {
   } catch (e) {
     if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
     showToast('连通测试异常: ' + e, 'error');
+  } finally {
+    await refreshBalanceFromFormConnectivity();
   }
 }
 
@@ -3137,13 +3118,24 @@ async function refreshOfficialQuotaFromDetail(id) {
     const info = await invoke('fetch_balance', { accountId: id });
     balanceCache[id] = { info, ts: Date.now() };
     if (box) box.innerHTML = renderBalanceInfo(info);
-    await loadAccountsData();
+    const official = info?.official || null;
+    if (official) {
+      editingAccount.client_options = editingAccount.client_options || {};
+      editingAccount.client_options.oauth_quota = official;
+    }
+    const fresh = await invoke('list_accounts');
+    accountsData = fresh;
     refreshEditingAccountAfterManagement(id);
     showToast('额度状态已刷新', 'success');
   } catch (e) {
     if (box) box.innerHTML = `<span class="balance-na">${esc(String(e))}</span>`;
     showToast('刷新额度失败: ' + e, 'error');
   }
+}
+
+async function refreshBalanceFromFormConnectivity() {
+  if (!editingAccount || !editingAccount.id || !isCodexAccount(editingAccount)) return;
+  await refreshOfficialQuotaFromDetail(editingAccount.id);
 }
 
 async function testAccountUpstreamForCard(id) {
