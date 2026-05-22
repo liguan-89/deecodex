@@ -153,12 +153,23 @@ function statusClientAccountKind(kind) {
   return statusClientDockItem(kind).accountKind || kind;
 }
 
+function statusClientSurface(kind) {
+  const normalized = String(kind || '');
+  return normalized.endsWith('_desktop') ? 'desktop' : 'cli';
+}
+
 function statusClientPrimaryAccount(kind) {
   const accountKind = statusClientAccountKind(kind);
+  const surface = statusClientSurface(kind);
   const list = ((accountsData && accountsData.accounts) || [])
     .filter(account => {
-      if (typeof accountClientKind === 'function') return accountClientKind(account) === accountKind;
-      return normalizeClientKind?.(account?.client_kind || account?.target || 'codex') === accountKind;
+      const familyMatches = typeof accountClientKind === 'function'
+        ? accountClientKind(account) === accountKind
+        : normalizeClientKind?.(account?.client_kind || account?.target || 'codex') === accountKind;
+      if (!familyMatches) return false;
+      if (accountKind !== 'codex' && accountKind !== 'claude_code') return true;
+      if (typeof accountClientSurface === 'function') return accountClientSurface(account) === surface;
+      return String(account?.client_surface || account?.client_options?.client_surface || 'cli').toLowerCase() === surface;
     });
   if (!list.length) return null;
   const activeId = accountsData.active_account_id || accountsData.active_id;
@@ -220,7 +231,7 @@ function statusClientProcessRunning(kind) {
 }
 
 function statusClientEnabled(kind, account, gatewayRunning) {
-  if (kind === 'codex') return Boolean(gatewayRunning);
+  if (kind === 'codex' || kind === 'codex_cli' || kind === 'codex_desktop') return Boolean(gatewayRunning);
   return Boolean(account?.client_options?.proxy_recording_enabled && account?.last_applied_at);
 }
 
@@ -514,10 +525,6 @@ function configFieldByKey(key) {
 function renderCodexAdvancedSettings() {
   return `<div class="codex-advanced-layout">
     ${renderEditableConfigSections('codex')}
-    <div class="codex-inline-actions">
-      <button type="button" class="btn btn-ghost" onclick="mgmtLaunchCodex()">${window._cdpLaunched ? '停止 CDP' : '启动 CDP'}</button>
-      <button type="button" class="btn btn-ghost" onclick="validateConfig()">运行诊断</button>
-    </div>
   </div>`;
 }
 
@@ -646,7 +653,12 @@ function renderClaudeCustomFilterSection(account) {
         </label>
         <button type="button" class="btn btn-ghost" onclick="saveClaudeCustomFilters()"${disabled}>保存过滤规则</button>
       </div>
-      <textarea id="claudeCustomFilterRules" spellcheck="false" placeholder="每行一个匹配片段，例如:&#10;x-custom-cache-noise:&#10;session_fingerprint:"${disabled}>${esc(ruleText)}</textarea>
+      <div class="config-filter-example">
+        <span>每行一个匹配片段</span>
+        <code>x-custom-cache-noise:</code>
+        <code>session_fingerprint:</code>
+      </div>
+      <textarea id="claudeCustomFilterRules" spellcheck="false" aria-label="Claude 自定义过滤规则"${disabled}>${esc(ruleText)}</textarea>
       <p>仅作用于 Claude Code 通过 Anthropic Messages 端口发送的顶层 <code>system</code> 文本；命中的整行会在转发前移除。内置已处理 <code>x-anthropic-billing-header</code> + <code>cch=</code>。</p>
       ${account ? '' : '<div class="config-client-empty">暂无 Claude 账号。请先在账号管理中添加或扫描 Claude Code 账号，再保存过滤规则。</div>'}
     </div>
@@ -787,9 +799,7 @@ function renderClientConfigOverview(kind) {
   const profile = configClientProfiles().find(item => normalizeConfigClientKind(item.slug || item.kind) === kind) || {};
   const accounts = configClientAccounts(kind);
   const account = configPrimaryClientAccount(kind);
-  const status = configClientStatusInfo(account);
   const spec = configClientAdvancedSpec(kind);
-  const hasAccount = Boolean(account);
   return `
     <section class="config-client-overview">
       <div class="config-client-hero">
@@ -797,18 +807,10 @@ function renderClientConfigOverview(kind) {
           ${configClientIcon(kind)}
           <div>
             <h3>${esc(configClientLabel(kind, profile))}</h3>
-            <p>${esc(spec.heading)} · ${esc(spec.summary)}</p>
           </div>
         </div>
-        <div class="config-client-actions">
-          <button class="btn btn-ghost" onclick="openAccountsForConfigClient('${escAttr(kind)}')">账号管理</button>
-          <button class="btn btn-ghost" onclick="scanConfigClientAccounts('${escAttr(kind)}')">扫描客户端</button>
-          ${hasAccount ? `<button class="btn btn-ghost" onclick="refreshConfigClientAdvanced('${escAttr(kind)}')">刷新检查</button>` : ''}
-          ${hasAccount ? `<button class="btn btn-ghost" onclick="editConfigClientFile('${escAttr(kind)}')">打开原生配置</button>` : ''}
-        </div>
       </div>
-    ${renderConfigClientMeta(kind, profile, accounts, account, status)}
-      ${hasAccount ? '' : `<div class="config-client-empty">暂无${esc(configClientLabel(kind, profile))}账号。高级设置仍展示该客户端的治理重点；账号、密钥、模型和端点请在账号管理中维护。</div>`}
+      ${accounts.length ? '' : `<div class="config-client-empty">暂无${esc(configClientLabel(kind, profile))}账号。账号、密钥、模型和端点请在账号管理中维护。</div>`}
     </section>
     ${renderConfigClientFocusRows(spec)}
     ${kind === 'claude_code' ? renderClaudeCustomFilterSection(account) : ''}

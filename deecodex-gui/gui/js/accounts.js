@@ -6,8 +6,13 @@ const CLIENT_KIND_LABELS = {
   hermes: 'Hermes',
   generic_client: '通用客户端',
 };
+const CLIENT_SURFACE_LABELS = {
+  cli: 'CLI',
+  desktop: '桌面版',
+};
 var oauthLoginState = null;
 var oauthLoginPollTimer = null;
+var selectedClientSurface = typeof selectedClientSurface === 'string' ? selectedClientSurface : 'cli';
 
 function providerBadgeClass(p) {
   return 'badge-provider badge-' + (p || 'custom');
@@ -67,6 +72,37 @@ function accountClientKind(a) {
 
 function isCodexAccount(a) {
   return accountClientKind(a) === 'codex';
+}
+
+function clientKindSupportsSurface(kind) {
+  const normalized = normalizeClientKind(kind);
+  return normalized === 'codex' || normalized === 'claude_code';
+}
+
+function normalizeClientSurface(surface) {
+  const value = String(surface || 'cli').toLowerCase();
+  return value === 'desktop' ? 'desktop' : 'cli';
+}
+
+function selectedSurfaceForKind(kind) {
+  return clientKindSupportsSurface(kind) ? normalizeClientSurface(selectedClientSurface) : 'cli';
+}
+
+function accountClientSurface(a) {
+  const kind = accountClientKind(a);
+  if (!clientKindSupportsSurface(kind)) return 'cli';
+  return normalizeClientSurface(a?.client_surface || a?.client_options?.client_surface || 'cli');
+}
+
+function clientSurfaceLabel(surface) {
+  return CLIENT_SURFACE_LABELS[normalizeClientSurface(surface)] || 'CLI';
+}
+
+function clientSurfaceTitle(kind, surface) {
+  const normalized = normalizeClientKind(kind);
+  const base = CLIENT_KIND_LABELS[normalized] || normalized;
+  if (!clientKindSupportsSurface(normalized)) return base;
+  return `${base} ${normalizeClientSurface(surface) === 'desktop' ? '桌面版' : 'CLI'}`;
 }
 
 function accountDisplayTitle(a) {
@@ -505,11 +541,32 @@ function renderClientSwitcher(list) {
   </div>`;
 }
 
+function renderClientSurfaceSwitcher(list) {
+  if (!clientKindSupportsSurface(selectedClientKind)) return '';
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const kindLabel = CLIENT_KIND_LABELS[selectedClientKind] || '客户端';
+  return `<div class="client-switcher account-surface-switcher" role="tablist" aria-label="${escAttr(kindLabel + ' 形态')}">
+    ${['cli', 'desktop'].map(surface => {
+      const count = (list || []).filter(account => accountClientKind(account) === selectedClientKind && accountClientSurface(account) === surface).length;
+      const active = activeSurface === surface ? ' active' : '';
+      const label = `${kindLabel} ${clientSurfaceLabel(surface)}`;
+      return `<button type="button" class="client-tab account-surface-tab${active}" onclick="selectClientSurface('${surface}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${activeSurface === surface}">
+        <span class="surface-icon-stack">${clientIcon(selectedClientKind)}<span class="surface-glyph surface-${surface}" aria-hidden="true"></span></span>
+        <em>${count}</em>
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
 function renderClientAccountDetail() {
   const a = editingAccount;
   const kind = accountClientKind(a);
+  const surface = accountClientSurface(a);
   const profile = getClientProfile(kind) || {};
   const configPath = a.client_options?.config_path || '';
+  const configHint = kind === 'claude_code' && surface === 'desktop'
+    ? '~/.claude/claude_desktop_config.json'
+    : (profile.config_path_hint || '');
   const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
   const authEnv = a.client_options?.auth_env || apiKeyEnv;
   const proxyEnabled = Boolean(a.client_options?.proxy_recording_enabled);
@@ -536,7 +593,7 @@ function renderClientAccountDetail() {
   <div class="account-form client-account-form">
     <section class="account-edit-section">
       <div class="account-section-head">
-        <div class="section-sub-label">客户端账号</div>
+        <div class="section-sub-label">${esc(clientSurfaceTitle(kind, surface))}</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -594,7 +651,7 @@ function renderClientAccountDetail() {
       <div class="config-fields">
         <div class="config-field">
           <label>配置路径 <span class="optional-label">可选</span></label>
-          <input type="text" id="edit_client_config_path" value="${escAttr(configPath)}" placeholder="${escAttr(profile.config_path_hint || '')}">
+          <input type="text" id="edit_client_config_path" value="${escAttr(configPath)}" placeholder="${escAttr(configHint)}">
         </div>
         <div class="config-field">
           <label>请求历史代理</label>
@@ -661,6 +718,13 @@ function renderClientAccountDetail() {
 
 function selectClientKind(kind) {
   selectedClientKind = normalizeClientKind(kind);
+  if (!clientKindSupportsSurface(selectedClientKind)) selectedClientSurface = 'cli';
+  if (accountsView === 'add') accountsView = 'list';
+  renderMainContent();
+}
+
+function selectClientSurface(surface) {
+  selectedClientSurface = normalizeClientSurface(surface);
   if (accountsView === 'add') accountsView = 'list';
   renderMainContent();
 }
@@ -909,8 +973,10 @@ function renderAccountsFormPage(html, className = '') {
 function renderAccountList() {
   const list = accountsData.accounts || [];
   const activeId = accountsData.active_account_id || accountsData.active_id;
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
   const filtered = list
     .filter(a => accountClientKind(a) === selectedClientKind)
+    .filter(a => accountClientSurface(a) === activeSurface)
     .map((account, index) => ({ account, index }))
     .sort((left, right) => {
       const leftActive = left.account.id === activeId ? 0 : 1;
@@ -920,7 +986,7 @@ function renderAccountList() {
     .map(item => item.account);
   let cards = '';
   if (filtered.length === 0) {
-    cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}账号，点击上方按钮创建</div>`;
+    cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}${clientKindSupportsSurface(selectedClientKind) ? ' ' + esc(clientSurfaceLabel(activeSurface)) : ''}账号，点击上方按钮创建</div>`;
   } else {
     cards = '<div class="accounts-grid">' + filtered.map(a => {
       const active = a.id === activeId;
@@ -975,6 +1041,7 @@ function renderAccountList() {
         </div>
       </div>
       ${renderClientSwitcher(list)}
+      ${renderClientSurfaceSwitcher(list)}
     </div>
     <div class="accounts-scroll-region">
       ${selectedClientKind === 'codex' ? renderOfficialPoolOverview(filtered) : ''}
@@ -985,6 +1052,7 @@ function renderAccountList() {
 
 function renderClientAccountCard(a) {
   const kind = accountClientKind(a);
+  const surface = accountClientSurface(a);
   const profile = getClientProfile(kind);
   const statusId = `client-status-${escAttr(a.id)}`;
   return `<div class="account-card client-account-card">
@@ -993,7 +1061,7 @@ function renderClientAccountCard(a) {
         <div class="account-card-info">
           <div class="account-card-header">
             <div class="account-card-titlebar">
-              <span class="client-kind-badge">${clientIcon(kind)}${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
+              <span class="client-kind-badge">${clientIcon(kind)}${esc(clientSurfaceTitle(kind, surface))}</span>
               ${renderProviderBadge(a.provider)}
               ${accountRuntimeBadge(a)}
             </div>
@@ -1027,8 +1095,9 @@ function renderAddAccount() {
   } else {
     const providers = providersForClientKind(selectedClientKind);
     const officialCards = renderOfficialOAuthCards(selectedClientKind);
+    const surface = selectedSurfaceForKind(selectedClientKind);
     cards = officialCards + '<div class="provider-grid">' + providers.map(p => {
-      return `<div class="provider-card" role="button" tabindex="0" aria-label="添加 ${escAttr(p.label)} 账号" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')}">
+      return `<div class="provider-card" role="button" tabindex="0" aria-label="添加 ${escAttr(p.label)} 账号" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')}">
         <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
         <div class="provider-copy">
           <div class="provider-name">${esc(p.label)}</div>
@@ -1048,7 +1117,7 @@ function renderAddAccount() {
   <div class="page-header add-provider-header">
     <div class="add-provider-title-line">
       <h2>选择供应商</h2>
-      <span class="add-provider-client">${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}</span>
+      <span class="add-provider-client">${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}${clientKindSupportsSurface(selectedClientKind) ? ' · ' + esc(clientSurfaceLabel(selectedSurfaceForKind(selectedClientKind))) : ''}</span>
     </div>
   </div>
   <div class="provider-picker-shell">${cards}</div>`;
@@ -1056,15 +1125,16 @@ function renderAddAccount() {
 
 function renderOfficialOAuthCards(kind) {
   const normalized = normalizeClientKind(kind);
+  const surfaceTitle = clientSurfaceTitle(normalized, selectedSurfaceForKind(normalized));
   if (normalized === 'codex') {
     return `<div class="official-login-grid">
-      ${renderOfficialOAuthCard('codex', 'browser', '官方 Codex 登录', '使用 OpenAI 官方 OAuth 登录 Codex 账号', 'https://chatgpt.com/backend-api/codex')}
-      ${renderOfficialOAuthCard('codex', 'device', 'Codex 设备码登录', '无法完成本机回调时使用设备码登录', 'auth.openai.com/codex/device')}
+      ${renderOfficialOAuthCard('codex', 'browser', `官方 ${surfaceTitle} 登录`, '使用 OpenAI 官方 OAuth 登录 Codex 账号', 'https://chatgpt.com/backend-api/codex')}
+      ${renderOfficialOAuthCard('codex', 'device', `${surfaceTitle} 设备码登录`, '无法完成本机回调时使用设备码登录', 'auth.openai.com/codex/device')}
     </div>`;
   }
   if (normalized === 'claude_code') {
     return `<div class="official-login-grid">
-      ${renderOfficialOAuthCard('claude', 'browser', '官方 Claude 登录', '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com')}
+      ${renderOfficialOAuthCard('claude', 'browser', `官方 ${surfaceTitle} 登录`, '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com')}
     </div>`;
   }
   return '';
@@ -1745,6 +1815,7 @@ function accountListRenderSignature(data) {
   const activeEndpointId = data?.active_endpoint_id || '';
   const accounts = (data?.accounts || [])
     .filter(a => accountClientKind(a) === selectedClientKind)
+    .filter(a => accountClientSurface(a) === selectedSurfaceForKind(selectedClientKind))
     .map(a => {
       const routing = accountRouting(a);
       const runtime = a?.runtime_state || {};
@@ -1753,6 +1824,7 @@ function accountListRenderSignature(data) {
         name: a.name,
         provider: a.provider,
         client_kind: accountClientKind(a),
+        client_surface: accountClientSurface(a),
         auth_mode: a.auth_mode || 'api_key',
         active: a.id === activeId,
         active_endpoint: a.id === activeId ? activeEndpointId : '',
@@ -1770,6 +1842,7 @@ function accountListRenderSignature(data) {
     });
   return JSON.stringify({
     selectedClientKind,
+    selectedClientSurface: selectedSurfaceForKind(selectedClientKind),
     activeId,
     activeEndpointId,
     accounts,
@@ -1905,6 +1978,9 @@ function removeModelMapRow(btn) {
 function syncEditingDraftFromForm() {
   if (!editingAccount) return;
   const a = editingAccount;
+  a.client_surface = accountClientSurface(a);
+  a.client_options = a.client_options || {};
+  a.client_options.client_surface = a.client_surface;
   const nameInput = document.getElementById('edit_name');
   if (nameInput) a.name = nameInput.value.trim() || a.name;
   const keyInput = document.getElementById('edit_api_key');
@@ -1917,7 +1993,6 @@ function syncEditingDraftFromForm() {
     if (upstream) a.upstream = upstream.value.trim();
     const defaultModel = document.getElementById('edit_default_model');
     if (defaultModel) a.default_model = defaultModel.value.trim();
-    if (!a.client_options) a.client_options = {};
     const clientModels = collectClientModelMap();
     if (Object.keys(clientModels).length) {
       if (!clientModels.default && a.default_model) clientModels.default = a.default_model;
@@ -2204,6 +2279,8 @@ async function startOAuthAccountLogin(provider, mode = 'browser') {
       provider,
       clientKind: selectedClientKind,
       client_kind: selectedClientKind,
+      clientSurface: selectedSurfaceForKind(selectedClientKind),
+      client_surface: selectedSurfaceForKind(selectedClientKind),
       mode,
     });
     oauthLoginState = { ...result, status: 'pending' };
@@ -2238,7 +2315,10 @@ async function pollOAuthAccountLogin() {
       stopOAuthLoginPolling();
       showToast('官方账号登录成功', 'success');
       await loadAccountsData();
-      if (result.account) selectedClientKind = accountClientKind(result.account);
+      if (result.account) {
+        selectedClientKind = accountClientKind(result.account);
+        selectedClientSurface = accountClientSurface(result.account);
+      }
       accountsView = 'list';
       oauthLoginState = null;
       renderMainContent();
@@ -2362,8 +2442,9 @@ async function applyAccountRoutingFromDetail(id) {
   }
 }
 
-function addAccount(provider, clientKind) {
+function addAccount(provider, clientKind, clientSurface) {
   const kind = normalizeClientKind(clientKind || selectedClientKind || 'codex');
+  const surface = clientKindSupportsSurface(kind) ? normalizeClientSurface(clientSurface || selectedSurfaceForKind(kind)) : 'cli';
   const preset = providerPresets.find(p => p.slug === provider);
   if (!preset) return;
   const clientProfile = getClientProfile(kind);
@@ -2371,14 +2452,16 @@ function addAccount(provider, clientKind) {
   const codexModelMap = kind === 'codex' ? codexProviderModelMap(provider) : {};
   editingAccount = {
     id: '',
-    name: kind === 'codex' ? preset.label + ' 账号' : `${clientProfile?.label || CLIENT_KIND_LABELS[kind]} · ${preset.label}`,
+    name: kind === 'codex' ? `${preset.label} ${clientSurfaceLabel(surface)} 账号` : `${clientSurfaceTitle(kind, surface)} · ${preset.label}`,
     provider: provider,
     client_kind: kind,
+    client_surface: surface,
     target: kind,
     upstream: kind === 'codex' ? preset.default_upstream : defaults.upstream,
     api_key: '',
     default_model: kind === 'codex' ? '' : (defaults.default_model || clientProfile?.default_model || ''),
-    client_options: kind === 'codex' ? {} : {
+    client_options: kind === 'codex' ? { client_surface: surface } : {
+      client_surface: surface,
       api_key_env: defaults.api_key_env,
       ...(kind === 'claude_code' ? { auth_env: defaults.api_key_env } : {}),
       model_map: {

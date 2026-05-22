@@ -385,6 +385,7 @@ pub fn extract_account_from_codex_config() -> Option<crate::accounts::Account> {
             name,
             provider: provider.to_string(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: base_url,
             api_key,

@@ -185,10 +185,15 @@ context.window._statusData = null;
 
 context.selectedConfigClientKind = 'claude_code';
 html = context.renderConfig();
-assert(html.includes('编程会话治理'));
+assert(!html.includes('编程会话治理'));
+assert(!html.includes('config-client-actions'));
+assert(!html.includes('config-client-meta-grid'));
 assert(html.includes('权限模式'));
 assert(html.includes('MCP 服务器'));
 assert(html.includes('自定义过滤'));
+assert(html.includes('config-filter-example'));
+assert(html.includes('aria-label="Claude 自定义过滤规则"'));
+assert(!html.includes('placeholder="每行一个匹配片段'));
 assert(html.includes('x-custom-cache-noise:'));
 assert(html.includes('Anthropic system 行过滤'));
 assert(html.includes('claude doctor'));
@@ -199,7 +204,7 @@ assert(!html.includes('保存高级设置'));
 
 context.selectedConfigClientKind = 'openclaw';
 html = context.renderConfig();
-assert(html.includes('Agent 网关治理'));
+assert(!html.includes('Agent 网关治理'));
 assert(html.includes('Gateway / Channels'));
 assert(html.includes('执行审批'));
 assert(html.includes('openclaw config validate --json'));
@@ -209,7 +214,7 @@ assert(!html.includes('agents.defaults.model'));
 
 context.selectedConfigClientKind = 'hermes';
 html = context.renderConfig();
-assert(html.includes('Agent 运行时治理'));
+assert(!html.includes('Agent 运行时治理'));
 assert(html.includes('Skills / Tools'));
 assert(html.includes('Sessions / Memory'));
 assert(html.includes('hermes config check'));
@@ -219,7 +224,7 @@ assert(!html.includes('auxiliary.vision.model'));
 
 context.selectedConfigClientKind = 'generic_client';
 html = context.renderConfig();
-assert(html.includes('兼容客户端模板'));
+assert(!html.includes('兼容客户端模板'));
 assert(html.includes('环境模板'));
 assert(html.includes('OPENAI_BASE_URL'));
 assert(html.includes('OPENAI_MODEL'));

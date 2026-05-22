@@ -576,6 +576,7 @@ async fn main() -> Result<()> {
         name: "默认账号".into(),
         provider: crate::accounts::guess_provider(&args.upstream).into(),
         client_kind: Default::default(),
+        client_surface: Default::default(),
         wire_protocol: Default::default(),
         upstream: args.upstream.clone(),
         api_key: args.api_key.clone(),

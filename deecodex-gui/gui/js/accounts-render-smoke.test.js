@@ -267,6 +267,7 @@ assert(report.includes('备份'));
 
 context.accountsView = 'list';
 context.selectedClientKind = 'codex';
+context.selectedClientSurface = 'cli';
 const codexList = context.renderAccountList();
 assert(codexList.includes('line-action-icon-import'));
 assert(codexList.includes('aria-label="导入配置"'));
@@ -280,6 +281,10 @@ assert(codexList.includes('aria-label="测试上游连接"'));
 assert(codexList.includes("deleteAccount('c1')"));
 assert(codexList.includes('池已启用'));
 assert(codexList.includes('official-pool-overview'));
+assert(codexList.includes('account-surface-switcher'));
+assert(codexList.includes('account-surface-tab'));
+assert(codexList.includes('surface-cli'));
+assert(codexList.includes('surface-desktop'));
 assert(codexList.includes('1/1 已启用'));
 assert(codexList.includes('balance-official'));
 assert(codexList.includes('额度冷却'));
@@ -312,14 +317,19 @@ assert(addPanel.includes('provider-picker-shell'));
 assert(addPanel.includes('provider-copy'));
 assert(addPanel.includes('provider-card-arrow'));
 assert(addPanel.includes('role="button"'));
-assert(addPanel.includes('官方 Codex 登录'));
-assert(addPanel.includes('Codex 设备码登录'));
+assert(addPanel.includes('官方 Codex CLI 登录'));
+assert(addPanel.includes('Codex CLI 设备码登录'));
 assert(addPanel.includes("startOAuthAccountLogin('codex', 'browser')"));
 
 context.selectedClientKind = 'claude_code';
+context.selectedClientSurface = 'cli';
 const claudeAddPanel = context.renderAccountsPanel();
-assert(claudeAddPanel.includes('官方 Claude 登录'));
+assert(claudeAddPanel.includes('官方 Claude CLI 登录'));
 assert(claudeAddPanel.includes("startOAuthAccountLogin('claude', 'browser')"));
+
+context.selectedClientSurface = 'desktop';
+const claudeDesktopAddPanel = context.renderAccountsPanel();
+assert(claudeDesktopAddPanel.includes('官方 Claude 桌面版 登录'));
 
 context.oauthLoginState = {
   state: 'oauth-state',
@@ -334,6 +344,7 @@ assert(oauthPanel.includes('ABCD-EFGH'));
 assert(oauthPanel.includes('cancelOAuthAccountLogin()'));
 context.oauthLoginState = null;
 context.selectedClientKind = 'codex';
+context.selectedClientSurface = 'cli';
 
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c1');
 context.editingAccount.name = 'DeepSeek 账号';
@@ -439,6 +450,7 @@ assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('
   'codex-auto-review': 'deepseek-v4-flash',
 });
 context.addAccount('deepseek', 'codex');
+assert.strictEqual(context.editingAccount.client_surface, 'cli');
 assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'deepseek-v4-pro');
 assert.strictEqual(context.editingAccount.model_map['gpt-5'], 'deepseek-v4-flash');
 assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.4'], 'deepseek-v4-flash');
@@ -448,6 +460,11 @@ const codexDefaultVisionDetail = context.renderAccountsPanel();
 assert(codexDefaultVisionDetail.includes('data-mode="native"'));
 assert(!codexDefaultVisionDetail.includes('collapsible-toggle open'));
 assert(!codexDefaultVisionDetail.includes('collapsible-content open'));
+
+context.selectedClientSurface = 'desktop';
+context.addAccount('anthropic', 'claude_code');
+assert.strictEqual(context.editingAccount.client_surface, 'desktop');
+assert.strictEqual(context.editingAccount.client_options.client_surface, 'desktop');
 assert.deepStrictEqual(
   Array.from(context.clientProviderDefaults('claude_code', 'deepseek').known_models),
   ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],

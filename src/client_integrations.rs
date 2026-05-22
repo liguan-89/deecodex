@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::accounts::{now_secs, Account, AccountClientKind};
+use crate::accounts::{now_secs, Account, AccountClientKind, AccountClientSurface};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientProfile {
@@ -348,7 +348,7 @@ pub fn restore_backup_for_account(
         return Err(err).with_context(|| format!("恢复备份失败: {}", backup.display()));
     }
 
-    let command = command_status_for(&account.client_kind);
+    let command = command_status_for_account(account);
     let mut diagnostics = base_diagnostics(account, &command, Some(&target_path));
     diagnostics.push(info(
         "restore_ok",
@@ -379,7 +379,7 @@ pub fn restore_backup_for_account(
 }
 
 pub fn status(account: &Account) -> ClientOperationReport {
-    let command = command_status_for(&account.client_kind);
+    let command = command_status_for_account(account);
     let (config_path, env_path) = resolve_paths(account);
     let mut diagnostics = base_diagnostics(account, &command, config_path.as_deref());
     if let Some(env_path) = env_path.as_deref() {
@@ -444,9 +444,8 @@ pub fn apply(account: &mut Account, dry_run: bool) -> Result<ClientOperationRepo
 }
 
 fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationReport> {
-    let command = command_status_for(&account.client_kind);
-    let config_path = configured_path(account, "config_path")
-        .unwrap_or_else(|| home_path(&[".claude", "settings.json"]));
+    let command = command_status_for_account(account);
+    let config_path = claude_config_path(account);
     let current = read_json_object(&config_path)?;
     let mut next = current.clone();
     let env = ensure_json_object_path(&mut next, &["env"]);
@@ -484,24 +483,29 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
 
     let mut diagnostics = base_diagnostics(account, &command, Some(&config_path));
     if client_config_api_key(account).trim().is_empty() {
-        diagnostics.push(error("empty_key", "Claude Code API Key 为空"));
+        diagnostics.push(error(
+            "empty_key",
+            &format!("{} API Key 为空", claude_client_label(account)),
+        ));
     }
     diagnostics.push(info(
         "secret_source",
         &format!(
-            "Claude Code {}将写入 settings.json env.{auth_env}",
+            "{} {}将写入 {} env.{auth_env}",
+            claude_client_label(account),
             if proxy_recording_enabled(account) {
                 "代理 token "
             } else {
                 "密钥"
-            }
+            },
+            claude_config_file_label(account)
         ),
     ));
     Ok(report(
         account,
         ReportDraft {
             dry_run,
-            message: "Claude Code 配置已准备".into(),
+            message: format!("{} 配置已准备", claude_client_label(account)),
             command,
             config_path: Some(config_path),
             env_path: None,
@@ -943,15 +947,60 @@ fn command_status_for(kind: &AccountClientKind) -> ClientCommandStatus {
     }
 }
 
+fn command_status_for_account(account: &Account) -> ClientCommandStatus {
+    if client_surface(account) == AccountClientSurface::Desktop {
+        let command = match account.client_kind {
+            AccountClientKind::Codex => "Codex Desktop",
+            AccountClientKind::ClaudeCode => "Claude Desktop",
+            _ => return command_status_for(&account.client_kind),
+        };
+        return ClientCommandStatus {
+            installed: true,
+            command: command.into(),
+            version: Some("桌面版".into()),
+            error: None,
+        };
+    }
+    command_status_for(&account.client_kind)
+}
+
+fn client_surface(account: &Account) -> AccountClientSurface {
+    if account.client_kind.supports_desktop_surface() {
+        account.client_surface.clone()
+    } else {
+        AccountClientSurface::Cli
+    }
+}
+
+fn claude_client_label(account: &Account) -> &'static str {
+    if client_surface(account) == AccountClientSurface::Desktop {
+        "Claude 桌面版"
+    } else {
+        "Claude Code"
+    }
+}
+
+fn claude_config_file_label(account: &Account) -> &'static str {
+    if client_surface(account) == AccountClientSurface::Desktop {
+        "claude_desktop_config.json"
+    } else {
+        "settings.json"
+    }
+}
+
+fn claude_config_path(account: &Account) -> PathBuf {
+    configured_path(account, "config_path").unwrap_or_else(|| {
+        if client_surface(account) == AccountClientSurface::Desktop {
+            home_path(&[".claude", "claude_desktop_config.json"])
+        } else {
+            home_path(&[".claude", "settings.json"])
+        }
+    })
+}
+
 fn resolve_paths(account: &Account) -> (Option<PathBuf>, Option<PathBuf>) {
     match account.client_kind {
-        AccountClientKind::ClaudeCode => (
-            Some(
-                configured_path(account, "config_path")
-                    .unwrap_or_else(|| home_path(&[".claude", "settings.json"])),
-            ),
-            None,
-        ),
+        AccountClientKind::ClaudeCode => (Some(claude_config_path(account)), None),
         AccountClientKind::Openclaw => (
             Some(
                 openclaw_config_path()
@@ -1507,7 +1556,8 @@ fn secret_source_for(account: &Account) -> Option<String> {
     match account.client_kind {
         AccountClientKind::Codex => None,
         AccountClientKind::ClaudeCode => Some(format!(
-            "settings.json env.{}",
+            "{} env.{}",
+            claude_config_file_label(account),
             claude_auth_env_name(account)
         )),
         AccountClientKind::Openclaw => Some(format!(

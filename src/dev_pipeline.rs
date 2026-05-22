@@ -624,6 +624,7 @@ mod tests {
             name: "主账号".into(),
             provider: "custom".into(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://example.com/v1".into(),
             api_key: String::new(),

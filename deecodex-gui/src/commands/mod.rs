@@ -15,7 +15,8 @@ use serde_json::{json, Value};
 use tauri::{State, WebviewWindow};
 
 use deecodex::accounts::{
-    AccountClientKind, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode,
+    AccountClientKind, AccountClientSurface, AccountStore, DevPipelineToolMode,
+    DevPipelineTriggerMode,
 };
 use deecodex::config::Args;
 use deecodex::handlers;
@@ -270,6 +271,7 @@ fn restore_redacted_account_secrets(
 struct OAuthLoginSession {
     provider: deecodex::oauth_accounts::OAuthProvider,
     client_kind: AccountClientKind,
+    client_surface: AccountClientSurface,
     mode: String,
     pkce: Option<deecodex::oauth_accounts::PkceCodes>,
     auth_url: String,
@@ -306,6 +308,7 @@ fn oauth_http_client() -> Result<reqwest::Client, String> {
 pub async fn start_oauth_account_login(
     provider: String,
     client_kind: Option<String>,
+    client_surface: Option<String>,
     mode: Option<String>,
 ) -> Result<Value, String> {
     let provider =
@@ -321,6 +324,10 @@ pub async fn start_oauth_account_login(
                 AccountClientKind::Codex
             }
         });
+    let client_surface = client_surface
+        .as_deref()
+        .map(|value| parse_account_client_surface(value, &client_kind))
+        .unwrap_or_default();
     let state = deecodex::oauth_accounts::generate_state().map_err(|e| e.to_string())?;
     let client = oauth_http_client()?;
 
@@ -334,6 +341,7 @@ pub async fn start_oauth_account_login(
         OAuthLoginSession {
             provider,
             client_kind,
+            client_surface: client_surface.clone(),
             mode: mode.clone(),
             pkce: None,
             auth_url: device.verification_url.clone(),
@@ -355,6 +363,7 @@ pub async fn start_oauth_account_login(
         OAuthLoginSession {
             provider,
             client_kind,
+            client_surface: client_surface.clone(),
             mode: "browser".into(),
             pkce: Some(pkce),
             auth_url,
@@ -374,6 +383,7 @@ pub async fn start_oauth_account_login(
     let response = json!({
         "state": state,
         "provider": session.provider.as_str(),
+        "client_surface": session.client_surface,
         "mode": session.mode,
         "url": session.auth_url,
         "verification_url": session.verification_url,
@@ -473,6 +483,16 @@ fn parse_account_client_kind(value: &str) -> AccountClientKind {
         "hermes" | "Hermes" => AccountClientKind::Hermes,
         "generic_client" | "GenericClient" => AccountClientKind::GenericClient,
         _ => AccountClientKind::Codex,
+    }
+}
+
+fn parse_account_client_surface(value: &str, kind: &AccountClientKind) -> AccountClientSurface {
+    if !kind.supports_desktop_surface() {
+        return AccountClientSurface::Cli;
+    }
+    match value {
+        "desktop" | "Desktop" => AccountClientSurface::Desktop,
+        _ => AccountClientSurface::Cli,
     }
 }
 
@@ -626,6 +646,7 @@ async fn create_oauth_account(
         name,
         provider,
         client_kind,
+        client_surface: session.client_surface.clone(),
         wire_protocol: Default::default(),
         upstream,
         api_key: token.access_token.clone(),
@@ -977,6 +998,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 name: "旧配置导入".into(),
                 provider: provider.to_string(),
                 client_kind: Default::default(),
+                client_surface: Default::default(),
                 wire_protocol: Default::default(),
                 upstream: file_args.upstream.clone(),
                 api_key: file_args.api_key.clone(),
@@ -1046,6 +1068,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             name: "默认账号".into(),
             provider: "openrouter".into(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: openrouter.wire_protocol.clone(),
             upstream: openrouter.default_upstream.clone(),
             api_key: String::new(),
@@ -2165,6 +2188,7 @@ pub async fn add_account(
             name: format!("{} 账号", preset.label),
             provider: provider.clone(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: preset.wire_protocol.clone(),
             upstream: preset.default_upstream.clone(),
             api_key: String::new(),
@@ -2881,7 +2905,13 @@ fn account_config_target(
         .as_deref()
         .ok_or_else(|| "客户端配置路径不可用".to_string())?;
     let (format, label) = match account.client_kind {
-        AccountClientKind::ClaudeCode => ("json", "Claude Code settings.json"),
+        AccountClientKind::ClaudeCode => {
+            if account.client_surface == AccountClientSurface::Desktop {
+                ("json", "Claude 桌面版 claude_desktop_config.json")
+            } else {
+                ("json", "Claude Code settings.json")
+            }
+        }
         AccountClientKind::Openclaw => ("json", "OpenClaw 配置"),
         AccountClientKind::Hermes => ("yaml", "Hermes config.yaml"),
         AccountClientKind::GenericClient => ("env", "通用客户端 env"),
@@ -3404,6 +3434,7 @@ pub async fn import_client_accounts(manager: State<'_, ServerManager>) -> Result
             name: candidate.name.clone(),
             provider: candidate.provider.clone(),
             client_kind: candidate.client_kind.clone(),
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: candidate.upstream.clone(),
             api_key: candidate.api_key.clone(),
@@ -3505,6 +3536,9 @@ fn same_client_account(
     candidate: &deecodex::client_integrations::ClientImportCandidate,
 ) -> bool {
     if account.client_kind != candidate.client_kind {
+        return false;
+    }
+    if account.client_surface != AccountClientSurface::Cli {
         return false;
     }
     let existing_path = account
@@ -4849,6 +4883,7 @@ fn account_to_value_with_endpoint(
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     });
+    value["client_surface"] = json!(a.client_surface);
     value["dev_pipeline_enabled"] = json!(a.dev_pipeline_enabled);
     value["dev_pipeline_trigger_mode"] = json!(a.dev_pipeline_trigger_mode);
     value["dev_pipeline_command"] = json!(a.dev_pipeline_command);
@@ -5560,6 +5595,7 @@ mod tests {
             name: "Test".into(),
             provider: "deepseek".into(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
@@ -5748,6 +5784,7 @@ mod tests {
             name: "主账号".into(),
             provider: "deepseek".into(),
             client_kind: Default::default(),
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),

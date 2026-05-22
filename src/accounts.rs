@@ -38,6 +38,18 @@ impl AccountClientKind {
     pub fn is_codex(&self) -> bool {
         matches!(self, Self::Codex)
     }
+
+    pub fn supports_desktop_surface(&self) -> bool {
+        matches!(self, Self::Codex | Self::ClaudeCode)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountClientSurface {
+    #[default]
+    Cli,
+    Desktop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -381,6 +393,9 @@ pub struct Account {
     /// 账号面向的 AI 客户端。Codex 账号走 deecodex 代理；其他客户端只管理本地配置。
     #[serde(default, alias = "target")]
     pub client_kind: AccountClientKind,
+    /// 同一客户端家族下的使用形态。仅 Codex/Claude 区分 CLI 与桌面版，其他客户端固定为 CLI。
+    #[serde(default, alias = "surface")]
+    pub client_surface: AccountClientSurface,
     #[serde(default)]
     pub wire_protocol: WireProtocol,
     pub upstream: String,
@@ -538,6 +553,9 @@ impl Account {
     }
 
     pub fn normalize_v2(&mut self) {
+        if !self.client_kind.supports_desktop_surface() {
+            self.client_surface = AccountClientSurface::Cli;
+        }
         if !self.client_kind.is_codex() {
             self.translate_enabled = false;
             self.endpoints.clear();
@@ -1173,6 +1191,9 @@ pub fn hydrate_account_defaults(store: &mut AccountStore) {
             account.translate_enabled = false;
             account.endpoints.clear();
         }
+        if !account.client_kind.supports_desktop_surface() {
+            account.client_surface = AccountClientSurface::Cli;
+        }
     }
 }
 
@@ -1385,6 +1406,7 @@ mod capability_tests {
             name: format!("账号 {id}"),
             provider: "custom".into(),
             client_kind: AccountClientKind::Codex,
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://example.com/v1".into(),
             api_key: String::new(),
@@ -1548,6 +1570,7 @@ mod tests {
             name: "测试账号".into(),
             provider: "deepseek".into(),
             client_kind: AccountClientKind::Codex,
+            client_surface: Default::default(),
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
