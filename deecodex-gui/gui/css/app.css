@@ -9674,11 +9674,57 @@ body {
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-box {
   width: 42px !important;
   height: 42px !important;
-  border: 1px solid rgba(0,0,0,0.24) !important;
+  border: 1px solid rgba(0,0,0,0.07) !important;
   border-radius: 11px !important;
   background: #ffffff !important;
-  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.032), 0 3px 8px rgba(20,24,30,0.024) !important;
   overflow: hidden;
+  transform-origin: center;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    opacity 140ms ease,
+    filter 140ms ease,
+    transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-icon {
+  transform-origin: center;
+  transition: opacity 140ms ease, filter 140ms ease, transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item.off .client-dock-icon {
+  opacity: 0.62;
+  filter: saturate(0.78) contrast(0.96);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item.off .client-dock-icon .client-logo-box {
+  border-color: rgba(0,0,0,0.045) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.016) !important;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-icon,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon,
+[data-theme="light"] .status-overview-shell .client-dock-item.process-running .client-dock-icon {
+  opacity: 1;
+  filter: none;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-icon,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon {
+  transform: translateY(-2px) scale(1.045);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-icon .client-logo-box,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon .client-logo-box,
+[data-theme="light"] .status-overview-shell .client-dock-item.process-running .client-dock-icon .client-logo-box {
+  border-color: rgba(0,0,0,0.11) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.052), 0 5px 12px rgba(20,24,30,0.038) !important;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-icon .client-logo-box,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon .client-logo-box {
+  transform: rotate(-1deg);
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-img,
@@ -9720,6 +9766,13 @@ body {
   right: -5px;
   bottom: -3px;
   border-color: #ffffff;
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18), box-shadow 140ms ease;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-runtime,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-runtime {
+  transform: scale(1.16);
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-label {
