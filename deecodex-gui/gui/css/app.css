@@ -509,6 +509,34 @@ body {
   position: relative;
   z-index: 2;
 }
+.accounts-client-row {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 10px 22px 10px 10px;
+  border: 1px solid rgba(29,29,31,0.075);
+  border-radius: 22px;
+  background: rgba(255,255,255,0.58);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.54), 0 8px 18px rgba(20,24,30,0.032);
+  overflow: visible;
+  min-width: 0;
+}
+.accounts-client-row .client-switcher {
+  flex: 0 0 auto;
+  margin-bottom: 0 !important;
+}
+.accounts-client-row .page-header-actions {
+  align-self: center;
+  margin-left: 0;
+  gap: 12px;
+  padding-left: 16px;
+  border-left: 1px solid rgba(29,29,31,0.14);
+}
 .accounts-scroll-region {
   flex: 1 1 auto;
   min-height: 0;
@@ -2529,14 +2557,7 @@ body {
 .client-tab.active .client-logo-img {
   filter: none;
 }
-.account-surface-switcher {
-  margin-top: -8px;
-  margin-bottom: 16px;
-  gap: 10px;
-}
 .account-surface-tab {
-  min-height: 44px;
-  padding: 5px 9px;
   gap: 8px;
 }
 .surface-icon-stack {
@@ -2546,7 +2567,7 @@ body {
 }
 .surface-glyph {
   position: absolute;
-  right: -4px;
+  left: -4px;
   bottom: -4px;
   width: 15px;
   height: 15px;
@@ -9759,6 +9780,33 @@ body {
   justify-content: center;
 }
 
+.accounts-client-row .account-toolbar-icon,
+[data-theme="light"] .accounts-client-row .account-toolbar-icon {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 !important;
+  border-radius: 11px !important;
+  border: 1px solid rgba(0,0,0,0.16) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 5px 12px rgba(20,24,30,0.052) !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+}
+
+.accounts-client-row .account-toolbar-icon .line-action-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.accounts-client-row .account-toolbar-icon:hover,
+[data-theme="light"] .accounts-client-row .account-toolbar-icon:hover {
+  border-color: rgba(0,0,0,0.22) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 7px 14px rgba(20,24,30,0.06) !important;
+}
+
 .account-card-mainline {
   grid-template-columns: minmax(0, 1fr) minmax(214px, 236px);
 }
@@ -9913,6 +9961,140 @@ body {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
+}
+
+/* 账号客户端入口：8 个客户端共用一条滑槽，数量作为 App 风格角标贴在图标上。 */
+.accounts-static-header .client-switcher,
+[data-theme="light"] .accounts-static-header .client-switcher {
+  width: fit-content !important;
+  max-width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 19px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+
+.accounts-static-header .client-tab,
+[data-theme="light"] .accounts-static-header .client-tab {
+  width: 44px !important;
+  min-width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  padding: 0 !important;
+  border-radius: 12px !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+
+.accounts-static-header .client-tab:hover,
+[data-theme="light"] .accounts-static-header .client-tab:hover {
+  background: rgba(29,29,31,0.035) !important;
+}
+
+.accounts-static-header .client-tab.active,
+[data-theme="light"] .accounts-static-header .client-tab.active {
+  width: 44px !important;
+  min-width: 44px !important;
+  border-color: rgba(10,132,255,0.34) !important;
+  background: rgba(10,132,255,0.08) !important;
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.14), 0 6px 14px rgba(10,132,255,0.10) !important;
+}
+
+.accounts-static-header .client-tab.active::after,
+[data-theme="light"] .accounts-static-header .client-tab.active::after {
+  content: none !important;
+}
+
+.accounts-static-header .client-tab .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab .client-logo-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  border: 1px solid rgba(0,0,0,0.24);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075);
+  overflow: hidden;
+}
+
+.accounts-static-header .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
+.accounts-static-header .client-logo-codex .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-codex .client-logo-img {
+  width: 54px;
+  height: 54px;
+  margin: -6px;
+  object-fit: cover;
+}
+
+.accounts-static-header .client-logo-claude_code .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-claude_code .client-logo-img {
+  width: 44px;
+  height: 44px;
+  margin: -1px;
+  padding: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  object-fit: cover;
+}
+
+.accounts-static-header .client-logo-generic_client .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-generic_client .client-logo-img {
+  width: 42px;
+  height: 42px;
+  object-fit: cover;
+}
+
+.accounts-static-header .client-tab em,
+[data-theme="light"] .accounts-static-header .client-tab em,
+.accounts-static-header .client-tab.active em,
+[data-theme="light"] .accounts-static-header .client-tab.active em {
+  position: absolute;
+  top: -7px;
+  right: -8px;
+  z-index: 3;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #edf1f6;
+  color: #838b98;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.92);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.accounts-static-header .client-tab.active em,
+[data-theme="light"] .accounts-static-header .client-tab.active em {
+  right: -8px;
+  background: #eef1f6;
+  color: #8b93a1;
+}
+
+.accounts-static-header .surface-glyph {
+  left: 1px;
+  bottom: 1px;
+  z-index: 4;
 }
 
 [data-theme="light"] .account-icon-btn {
@@ -10370,6 +10552,16 @@ body {
 }
 
 @media (max-width: 760px) {
+  .accounts-client-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .accounts-client-row .page-header-actions {
+    margin-left: 0;
+  }
+
   .accounts-page-header .page-header-actions {
     display: flex;
     width: auto;

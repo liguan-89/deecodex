@@ -523,36 +523,31 @@ function renderClientSwitcher(list) {
     { slug: 'hermes', label: 'Hermes', description: 'Hermes 配置' },
     { slug: 'generic_client', label: '通用客户端', description: 'OpenAI 兼容 Env' },
   ];
+  const tabs = profiles.flatMap(profile => {
+    const kind = normalizeClientKind(profile.slug || profile.kind);
+    if (!clientKindSupportsSurface(kind)) return [{ profile, kind, surface: 'cli' }];
+    return [
+      { profile, kind, surface: 'cli' },
+      { profile, kind, surface: 'desktop' },
+    ];
+  });
   return `<div class="client-switcher" role="tablist" aria-label="账号客户端分类">
-    ${profiles.map(profile => {
-      const kind = normalizeClientKind(profile.slug || profile.kind);
-      const clientAccounts = list.filter(a => accountClientKind(a) === kind);
-      const count = counts[kind] || clientAccounts.length || 0;
+    ${tabs.map(tab => {
+      const { profile, kind, surface } = tab;
+      const supportsSurface = clientKindSupportsSurface(kind);
+      const clientAccounts = list.filter(a => accountClientKind(a) === kind && (!supportsSurface || accountClientSurface(a) === surface));
+      const count = supportsSurface ? clientAccounts.length : (counts[kind] || clientAccounts.length || 0);
       const issueCount = clientAccounts.filter(clientAccountHasIssue).length;
-      const active = kind === selectedClientKind ? ' active' : '';
+      const active = kind === selectedClientKind && (!supportsSurface || selectedSurfaceForKind(kind) === surface) ? ' active' : '';
       const issueClass = issueCount ? ' has-issues' : '';
-      const label = CLIENT_KIND_LABELS[kind] || profile.label || kind;
-      return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${kind === selectedClientKind}">
-        ${clientIcon(kind)}
-        <em>${count}</em>
+      const label = supportsSurface ? clientSurfaceTitle(kind, surface) : (CLIENT_KIND_LABELS[kind] || profile.label || kind);
+      const icon = supportsSurface
+        ? `<span class="surface-icon-stack">${clientIcon(kind)}<span class="surface-glyph surface-${surface}" aria-hidden="true"></span></span>`
+        : clientIcon(kind);
+      return `<button type="button" class="client-tab${supportsSurface ? ' account-surface-tab' : ''}${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}', '${escAttr(surface)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${active ? 'true' : 'false'}">
+        ${icon}
+        ${count > 0 ? `<em>${count}</em>` : ''}
         ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
-      </button>`;
-    }).join('')}
-  </div>`;
-}
-
-function renderClientSurfaceSwitcher(list) {
-  if (!clientKindSupportsSurface(selectedClientKind)) return '';
-  const activeSurface = selectedSurfaceForKind(selectedClientKind);
-  const kindLabel = CLIENT_KIND_LABELS[selectedClientKind] || '客户端';
-  return `<div class="client-switcher account-surface-switcher" role="tablist" aria-label="${escAttr(kindLabel + ' 形态')}">
-    ${['cli', 'desktop'].map(surface => {
-      const count = (list || []).filter(account => accountClientKind(account) === selectedClientKind && accountClientSurface(account) === surface).length;
-      const active = activeSurface === surface ? ' active' : '';
-      const label = `${kindLabel} ${clientSurfaceLabel(surface)}`;
-      return `<button type="button" class="client-tab account-surface-tab${active}" onclick="selectClientSurface('${surface}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${activeSurface === surface}">
-        <span class="surface-icon-stack">${clientIcon(selectedClientKind)}<span class="surface-glyph surface-${surface}" aria-hidden="true"></span></span>
-        <em>${count}</em>
       </button>`;
     }).join('')}
   </div>`;
@@ -716,9 +711,11 @@ function renderClientAccountDetail() {
   </div>`;
 }
 
-function selectClientKind(kind) {
+function selectClientKind(kind, surface) {
   selectedClientKind = normalizeClientKind(kind);
-  if (!clientKindSupportsSurface(selectedClientKind)) selectedClientSurface = 'cli';
+  selectedClientSurface = clientKindSupportsSurface(selectedClientKind)
+    ? normalizeClientSurface(surface || selectedClientSurface)
+    : 'cli';
   if (accountsView === 'add') accountsView = 'list';
   renderMainContent();
 }
@@ -1034,14 +1031,15 @@ function renderAccountList() {
     <div class="accounts-static-header">
       <div class="page-header accounts-page-header">
         <div><h2>账号管理</h2></div>
+      </div>
+      <div class="accounts-client-row">
+        ${renderClientSwitcher(list)}
         <div class="page-header-actions">
           ${renderToolbarIconAction('导入配置', 'import', 'importFromCodex()')}
           ${renderToolbarIconAction('扫描客户端', 'scan', 'scanClientAccounts()')}
           ${renderToolbarIconAction('添加账号', 'plus', "navigateAccounts('add')", 'btn-primary')}
         </div>
       </div>
-      ${renderClientSwitcher(list)}
-      ${renderClientSurfaceSwitcher(list)}
     </div>
     <div class="accounts-scroll-region">
       ${selectedClientKind === 'codex' ? renderOfficialPoolOverview(filtered) : ''}
