@@ -61,7 +61,6 @@ async function init() {
   if (appRefreshTimer) clearInterval(appRefreshTimer);
   appRefreshTimer = setInterval(async () => {
     if (currentPanel === 'status') await loadStatus();
-    else if (currentPanel === 'accounts' && accountsView === 'list') await loadAccountsData();
   }, 10000);
 }
 
