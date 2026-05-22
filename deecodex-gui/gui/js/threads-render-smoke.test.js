@@ -35,6 +35,8 @@ assert(switcher.includes('thread-source-tab active'));
 assert(switcher.includes('Claude'));
 assert(!switcher.includes('Claude Code'));
 assert(switcher.includes('has-issues'));
+assert(switcher.includes('thread-client-tabs'));
+assert(switcher.includes('client-logo-codex'));
 
 const rows = context.renderThreadRows([
   {
@@ -61,6 +63,8 @@ const rows = context.renderThreadRows([
 assert(rows.includes("deleteThreadRow('codex','codex-thread-1')"));
 assert(!rows.includes("deleteThreadRow('hermes','hermes-thread-1')"));
 assert(rows.includes('5 条消息'));
+assert(rows.includes('thread-actions-cell'));
+assert(rows.includes('line-action-icon-trash'));
 
 const codexActions = context.renderCodexThreadActions({
   migrated: false,
@@ -68,6 +72,7 @@ const codexActions = context.renderCodexThreadActions({
   calibration_needed: false,
   active_provider: 'deecodex',
 });
+assert(codexActions.includes('<details'));
 assert(codexActions.includes('Codex 专属操作'));
 assert(codexActions.includes('聚合 Codex 线程'));
 assert(codexActions.includes('还原 Codex 隔离'));
@@ -75,5 +80,6 @@ assert(codexActions.includes('还原 Codex 隔离'));
 const diagnostics = context.renderThreadSourceDiagnostics(sources);
 assert(diagnostics.includes('OpenClaw'));
 assert(diagnostics.includes('暂未发现可读线程源'));
+assert(diagnostics.includes('source-muted'));
 
 console.log('threads render smoke ok');

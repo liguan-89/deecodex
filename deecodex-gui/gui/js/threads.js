@@ -26,25 +26,62 @@ function threadClientLabel(kind) {
   return THREAD_CLIENT_LABELS[normalized] || normalized;
 }
 
-function threadClientGlyph(kind) {
+function threadProviderLogoSrc(p) {
+  const files = {
+    codex: 'codex.png',
+    'claude-code': 'claude-code.png',
+    openclaw: 'openclaw.png',
+    hermes: 'hermes.png',
+    custom: 'custom.svg',
+  };
+  const key = files[p] ? p : 'custom';
+  return `assets/provider-logos/${files[key]}`;
+}
+
+function threadClientIcon(kind) {
+  if (String(kind || '') === 'all') {
+    return `<span class="thread-client-glyph thread-client-all" aria-hidden="true">All</span>`;
+  }
   const normalized = normalizeThreadClientKind(kind);
-  const glyphs = { codex: 'C', claude_code: 'Cl', openclaw: 'O', hermes: 'H', generic_client: 'G' };
-  return `<span class="thread-client-glyph thread-client-${escAttr(normalized)}">${esc(glyphs[normalized] || '?')}</span>`;
+  const logo = normalized === 'claude_code' ? 'claude-code' : (normalized === 'generic_client' ? 'custom' : normalized);
+  return `<span class="client-logo-box client-logo-${escAttr(normalized)}"><img class="client-logo-img" src="${threadProviderLogoSrc(logo)}" alt="" aria-hidden="true"></span>`;
+}
+
+function threadLineActionIcon(name) {
+  return `<span class="line-action-icon line-action-icon-${escAttr(name)}" aria-hidden="true"></span>`;
+}
+
+function renderThreadIconAction(label, icon, onclick, className = '') {
+  return `<button type="button" class="btn btn-ghost account-toolbar-icon thread-toolbar-icon ${className}" onclick="${onclick}" title="${escAttr(label)}" aria-label="${escAttr(label)}">${threadLineActionIcon(icon)}</button>`;
+}
+
+function threadJsArg(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+function threadSourceTone(source) {
+  const diagnostics = Array.isArray(source?.diagnostics) ? source.diagnostics.join(' ') : '';
+  if (!diagnostics) return 'ok';
+  if (/暂未发现|没有统一历史格式|后续适配|占位/.test(diagnostics)) return 'muted';
+  return 'warn';
 }
 
 function renderThreads() {
-  return `<div class="page-header">
-    <h2>线程中心</h2>
+  return `<div class="page-header threads-page-header">
+    <h2>线程聚合</h2>
+    <div class="page-header-actions">
+      ${renderThreadIconAction('刷新线程', 'thread-refresh', 'refreshThreads()')}
+    </div>
   </div>
   <div class="threads-console">
     <div class="threads-summary" id="threadsSummary">
-      <div class="threads-stat"><span class="stat-label">总线程</span><span class="stat-value">—</span></div>
-      <div class="threads-stat"><span class="stat-label">客户端</span><span class="stat-value">—</span></div>
-      <div class="threads-stat other"><span class="stat-label">可读源</span><span class="stat-value">—</span></div>
-      <div class="threads-stat migrated"><span class="stat-label">筛选</span><span class="stat-value">全部</span></div>
-    </div>
-    <div class="threads-actions">
-      <button class="btn btn-ghost" onclick="refreshThreads()">刷新</button>
+      <div class="threads-stat"><span class="stat-label thread-summary-label">总线程</span><span class="stat-value thread-summary-value">—</span></div>
+      <div class="threads-stat other"><span class="stat-label thread-summary-label">可读源</span><span class="stat-value thread-summary-value">—</span></div>
+      <div class="threads-stat migrated"><span class="stat-label thread-summary-label">筛选</span><span class="stat-value thread-summary-value">全部</span></div>
     </div>
   </div>
   <div id="threadClientSwitcher" class="thread-source-switcher"></div>
@@ -53,8 +90,8 @@ function renderThreads() {
   <div class="threads-list-head">线程列表</div>
   <div class="threads-table-wrap">
     <table class="threads-table">
-      <thead><tr><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>线程 ID</th></tr></thead>
-      <tbody id="threadsTableBody"><tr><td colspan="5" style="text-align:center;color:var(--text-muted);">加载中...</td></tr></tbody>
+      <thead><tr><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>线程 ID</th><th>操作</th></tr></thead>
+      <tbody id="threadsTableBody"><tr><td colspan="6" class="threads-empty-cell">加载中...</td></tr></tbody>
     </table>
   </div>`;
 }
@@ -70,11 +107,10 @@ async function refreshThreads() {
     _threadsData = { sources, list, codexStatus };
 
     const cards = document.querySelectorAll('#threadsSummary .stat-value');
-    if (cards.length >= 4) {
+    if (cards.length >= 3) {
       cards[0].textContent = unified?.total ?? list.length;
-      cards[1].textContent = sources.length;
-      cards[2].textContent = sources.filter(s => s.available).length;
-      cards[3].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
+      cards[1].textContent = `${sources.filter(s => s.available).length}/${sources.length || 0}`;
+      cards[2].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
     }
 
     const switcher = document.getElementById('threadClientSwitcher');
@@ -91,7 +127,7 @@ async function refreshThreads() {
   } catch (err) {
     showToast('加载线程数据失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
   }
 }
 
@@ -102,26 +138,27 @@ function filteredThreadList(list) {
 
 function renderThreadClientSwitcher(sources, total) {
   const allActive = selectedThreadClientKind === 'all' ? ' active' : '';
-  const allButton = `<button type="button" class="thread-source-tab${allActive}" onclick="selectThreadClient('all')">
-    <span class="thread-client-glyph thread-client-all">All</span>
-    <span>全部</span>
+  const allButton = `<button type="button" class="client-tab thread-source-tab${allActive}" onclick="selectThreadClient('all')" title="全部线程" aria-label="全部线程">
+    ${threadClientIcon('all')}
     <em>${Number(total || 0)}</em>
   </button>`;
   const sourceButtons = sources.map(source => {
     const kind = normalizeThreadClientKind(source.client_kind);
     const active = selectedThreadClientKind === kind ? ' active' : '';
-    const issueClass = Array.isArray(source.diagnostics) && source.diagnostics.length ? ' has-issues' : '';
+    const tone = threadSourceTone(source);
+    const issueClass = tone !== 'ok' ? ` has-issues source-${tone}` : '';
     const title = Array.isArray(source.scan_paths) ? source.scan_paths.join('\n') : '';
-    return `<button type="button" class="thread-source-tab${active}${issueClass}" onclick="selectThreadClient('${escAttr(kind)}')" title="${escAttr(title)}">
-      ${threadClientGlyph(kind)}
-      <span>${esc(threadClientLabel(kind))}</span>
+    const label = threadClientLabel(kind);
+    return `<button type="button" class="client-tab thread-source-tab${active}${issueClass}" onclick="selectThreadClient('${escAttr(kind)}')" title="${escAttr(label + (title ? '\n' + title : ''))}" aria-label="${escAttr(label)}">
+      ${threadClientIcon(kind)}
       <em>${Number(source.count || 0)}</em>
     </button>`;
   }).join('');
-  return allButton + sourceButtons;
+  return `<div class="client-switcher thread-client-tabs" role="tablist" aria-label="线程客户端分类">${allButton}${sourceButtons}</div>`;
 }
 
 function renderCodexThreadActions(status) {
+  if (selectedThreadClientKind !== 'all' && selectedThreadClientKind !== 'codex') return '';
   if (!status || status.error) {
     return `<div class="codex-thread-muted">Codex 专属操作不可用${status?.error ? ': ' + esc(status.error) : ''}</div>`;
   }
@@ -131,46 +168,63 @@ function renderCodexThreadActions(status) {
   const restoreDisabled = !status.migrated ? ' disabled' : '';
   const calibrateStyle = status.calibration_needed ? '' : ' style="display:none;"';
   const active = status.calibration_needed ? '需要校准' : (status.active_provider || '—');
-  return `<div class="codex-thread-tools">
-    <span class="codex-thread-label">Codex 专属操作</span>
-    <span class="tag tag-current">归属: ${esc(active)}</span>
-    <span class="tag tag-other">待统一: ${Number(status.non_unified_count || 0)}</span>
-    <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateHidden}${migrateDisabled}>聚合 Codex 线程</button>
-    <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()"${restoreHidden}${restoreDisabled}>还原 Codex 隔离</button>
-    <button class="btn btn-warning" id="btnCalibrate" onclick="doCalibrate()"${calibrateStyle}>校准 Codex</button>
-  </div>`;
+  const openAttr = selectedThreadClientKind === 'codex' || status.calibration_needed ? ' open' : '';
+  return `<details class="codex-thread-tools"${openAttr}>
+    <summary>
+      <span class="codex-thread-label">Codex 专属操作</span>
+      <span class="tag tag-current">归属: ${esc(active)}</span>
+      <span class="tag tag-other">待统一: ${Number(status.non_unified_count || 0)}</span>
+    </summary>
+    <div class="codex-thread-tool-row">
+      <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateHidden}${migrateDisabled}>聚合 Codex 线程</button>
+      <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()"${restoreHidden}${restoreDisabled}>还原 Codex 隔离</button>
+      <button class="btn btn-warning" id="btnCalibrate" onclick="doCalibrate()"${calibrateStyle}>校准 Codex</button>
+    </div>
+  </details>`;
 }
 
 function renderThreadSourceDiagnostics(sources) {
   const rows = sources
     .filter(source => Array.isArray(source.diagnostics) && source.diagnostics.length)
-    .map(source => `<div class="thread-source-note">
-      <strong>${esc(threadClientLabel(source.client_kind))}</strong>
-      <span>${source.diagnostics.map(item => esc(item)).join('；')}</span>
-    </div>`);
-  return rows.length ? `<div class="thread-source-diagnostics">${rows.join('')}</div>` : '';
+    .map(source => {
+      const tone = threadSourceTone(source);
+      return `<div class="thread-source-note source-${escAttr(tone)}">
+        <strong>${esc(threadClientLabel(source.client_kind))}</strong>
+        <span>${source.diagnostics.map(item => esc(item)).join('；')}</span>
+      </div>`;
+    });
+  return rows.length ? `<details class="thread-source-diagnostics">
+    <summary>源状态</summary>
+    <div class="thread-source-note-list">${rows.join('')}</div>
+  </details>` : '';
 }
 
 function renderThreadRows(list) {
   if (!list || list.length === 0) {
-    return '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">无线程数据</td></tr>';
+    return '<tr><td colspan="6" class="threads-empty-cell">无线程数据</td></tr>';
   }
   return list.map(t => {
     const kind = normalizeThreadClientKind(t.client_kind);
     const provider = t.model || t.provider || '—';
     const time = formatThreadTime(t.updated_at_ms || t.created_at_ms);
     const messageCount = Number(t.message_count || 0);
-    const meta = messageCount ? `<span class="thread-meta-line">${messageCount} 条消息</span>` : '';
+    const preview = String(t.preview || '').trim();
+    const metaParts = [];
+    if (messageCount) metaParts.push(`${messageCount} 条消息`);
+    if (preview) metaParts.push(trunc(preview, 72));
+    const meta = metaParts.length ? `<span class="thread-meta-line">${esc(metaParts.join(' · '))}</span>` : '';
     const deleteAction = t.delete_available
-      ? `<span class="tag-delete" onclick="event.stopPropagation();deleteThreadRow('${escAttr(kind)}','${escAttr(t.native_id)}')">删除</span>`
+      ? `<button type="button" class="thread-row-action danger" onclick="event.stopPropagation();deleteThreadRow('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>`
       : '';
     const rowClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
-    return `<tr class="${rowClass}" onclick="openThread('${escAttr(kind)}','${escAttr(t.native_id)}')">
-      <td title="${escAttr(t.title)}"><span class="td-title-text">${esc(t.title || '(无标题)')}</span>${meta}${deleteAction}</td>
+    const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')"` : '';
+    return `<tr class="${rowClass}"${rowClick}>
+      <td title="${escAttr(t.title)}"><span class="td-title-text">${esc(t.title || '(无标题)')}</span>${meta}</td>
       <td><span class="tag tag-current">${esc(threadClientLabel(kind))}</span></td>
       <td title="${escAttr(provider)}">${esc(provider)}</td>
       <td>${esc(time)}</td>
       <td title="${escAttr(t.native_id)}">${esc(trunc(t.native_id || '', 18))}</td>
+      <td class="thread-actions-cell">${deleteAction}</td>
     </tr>`;
   }).join('');
 }
@@ -179,9 +233,11 @@ function selectThreadClient(kind) {
   selectedThreadClientKind = kind === 'all' ? 'all' : normalizeThreadClientKind(kind);
   if (_threadsData) {
     const cards = document.querySelectorAll('#threadsSummary .stat-value');
-    if (cards.length >= 4) cards[3].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
+    if (cards.length >= 3) cards[2].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
     const switcher = document.getElementById('threadClientSwitcher');
     if (switcher) switcher.innerHTML = renderThreadClientSwitcher(_threadsData.sources, _threadsData.list.length);
+    const codexActions = document.getElementById('codexThreadActions');
+    if (codexActions) codexActions.innerHTML = renderCodexThreadActions(_threadsData.codexStatus);
     const tbody = document.getElementById('threadsTableBody');
     if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
   }
@@ -256,9 +312,9 @@ function openThread(clientKind, nativeId) {
   if (!container) return;
   container.innerHTML = `<div class="detail-panel">
     <div class="detail-header">
-      <button class="detail-back-btn" onclick="closeThreadDetail()">← 返回</button>
+      <button class="detail-back-btn" onclick="closeThreadDetail()" title="返回线程列表" aria-label="返回线程列表">${threadLineActionIcon('back')}</button>
       <h2 id="detailTitle">加载中...</h2>
-      <button class="detail-delete-btn" id="detailDeleteBtn" style="display:none;" onclick="deleteThreadFromDetail()">删除</button>
+      <button class="detail-delete-btn" id="detailDeleteBtn" style="display:none;" onclick="deleteThreadFromDetail()" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>
     </div>
     <div class="detail-messages" id="detailMessages">
       <div class="detail-loading">加载中...</div>
