@@ -439,14 +439,25 @@ function renderClaudeAuthEnvSelect(value) {
 
 function clientModelSlots(kind) {
   const profile = getClientProfile(kind);
-  if (profile && Array.isArray(profile.model_slots) && profile.model_slots.length) return profile.model_slots;
   const slug = normalizeClientKind(kind);
-  if (slug === 'claude_code') return [
+  const claudeSlots = [
     { key: 'default', label: '主模型', target: 'ANTHROPIC_MODEL', required: true },
     { key: 'sonnet', label: 'Sonnet 模型', target: 'ANTHROPIC_DEFAULT_SONNET_MODEL' },
     { key: 'opus', label: 'Opus 模型', target: 'ANTHROPIC_DEFAULT_OPUS_MODEL' },
     { key: 'haiku', label: 'Haiku 模型', target: 'ANTHROPIC_DEFAULT_HAIKU_MODEL' },
   ];
+  if (profile && Array.isArray(profile.model_slots) && profile.model_slots.length) {
+    if (slug === 'claude_code') {
+      const profileByKey = new Map(profile.model_slots.map(slot => [slot.key, slot]));
+      const merged = claudeSlots.map(slot => ({ ...slot, ...(profileByKey.get(slot.key) || {}) }));
+      profile.model_slots.forEach(slot => {
+        if (!claudeSlots.some(base => base.key === slot.key)) merged.push(slot);
+      });
+      return merged;
+    }
+    return profile.model_slots;
+  }
+  if (slug === 'claude_code') return claudeSlots;
   if (slug === 'openclaw') return [
     { key: 'default', label: '默认 Agent 模型', target: 'agents.defaults.model', required: true },
     { key: 'image', label: '图片理解模型', target: 'agents.defaults.imageModel' },
@@ -472,6 +483,21 @@ function clientModelSlots(kind) {
 function clientModelMap(account) {
   const map = account?.client_options?.model_map;
   return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+}
+
+const CLAUDE_ONE_M_SUFFIX = '[1m]';
+
+function isClaudeOneMModelSlot(kind, key) {
+  return normalizeClientKind(kind) === 'claude_code'
+    && ['default', 'sonnet', 'opus', 'haiku'].includes(String(key || ''));
+}
+
+function stripClaudeOneMSuffix(value) {
+  return String(value || '').trim().replace(/\s*\[1m\]$/i, '');
+}
+
+function hasClaudeOneMSuffix(value) {
+  return /\[1m\]$/i.test(String(value || '').trim());
 }
 
 function clientIcon(kind) {
@@ -630,10 +656,10 @@ function renderClientAccountDetail() {
         <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
         <span id="clientModelFetchStatus"></span>
       </div>
-      <div class="model-map-head client-model-map-head client-model-template">
+      <div class="model-map-head client-model-map-head client-model-template${kind === 'claude_code' ? ' claude-one-m-head' : ''}">
         <span>客户端槽位</span>
         <span>上游模型</span>
-        <span></span>
+        <span>${kind === 'claude_code' ? '1M 上下文' : ''}</span>
       </div>
       <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
       <div class="model-add-row"><button onclick="addClientModelRow()">+ 添加自定义槽位</button></div>
@@ -1720,6 +1746,13 @@ function renderClientModelMappingRows(account) {
     rows.push({ key, label: key, target: '自定义槽位', required: false, value, readonly: false });
   });
   return rows.map(row => {
+    const oneMEnabled = hasClaudeOneMSuffix(row.value);
+    const oneMToggle = row.readonly && isClaudeOneMModelSlot(kind, row.key)
+      ? `<label class="claude-one-m-toggle toggle-label${oneMEnabled ? ' on' : ''}" title="开启 1M 上下文后，模型名会追加 ${CLAUDE_ONE_M_SUFFIX}">
+          <input type="checkbox" class="claude-one-m-input" aria-label="${escAttr(row.label)} 1M 上下文" ${oneMEnabled ? 'checked' : ''} onchange="toggleClaudeOneMContext(this)">
+          <span>1M</span>
+        </label>`
+      : '';
     const slotCell = row.readonly
       ? `<div class="model-label codex client-model-slot">
           <strong>${esc(row.label)}${row.required ? ' *' : ''}</strong>
@@ -1730,18 +1763,38 @@ function renderClientModelMappingRows(account) {
           <input type="text" class="client-model-slot-key" value="${escAttr(row.key)}" placeholder="槽位名，如 rerank">
           <span>${esc(row.target)}</span>
         </div>`;
-    return `<div class="model-row client-model-row client-model-template">
+    return `<div class="model-row client-model-row client-model-template${oneMToggle ? ' claude-one-m-row' : ''}">
       ${slotCell}
       <div class="model-value client-model-value">
         <div class="model-autocomplete">
           <input type="text" class="client-model-value-input" value="${escAttr(row.value || '')}" placeholder="留空则不写入该槽位"
-            onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">
+            onfocus="showSuggestions(this)" oninput="filterSuggestions(this); syncClaudeOneMContextToggle(this)" onblur="hideSuggestions(this)" autocomplete="off">
           <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
         </div>
-        ${row.readonly ? '<span class="model-remove-placeholder"></span>' : '<button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>'}
+        ${oneMToggle || (row.readonly ? '<span class="model-remove-placeholder"></span>' : '<button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>')}
       </div>
     </div>`;
   }).join('');
+}
+
+function syncClaudeOneMContextToggle(input) {
+  const row = input?.closest?.('.client-model-row');
+  const toggle = row?.querySelector?.('.claude-one-m-toggle');
+  const checkbox = toggle?.querySelector?.('.claude-one-m-input');
+  if (!toggle || !checkbox) return;
+  const enabled = hasClaudeOneMSuffix(input.value);
+  checkbox.checked = enabled;
+  toggle.classList.toggle('on', enabled);
+}
+
+function toggleClaudeOneMContext(checkbox) {
+  const row = checkbox?.closest?.('.client-model-row');
+  const input = row?.querySelector?.('.client-model-value-input');
+  if (!input) return;
+  const base = stripClaudeOneMSuffix(input.value);
+  input.value = checkbox.checked && base ? `${base}${CLAUDE_ONE_M_SUFFIX}` : base;
+  syncClaudeOneMContextToggle(input);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function addClientModelRow() {

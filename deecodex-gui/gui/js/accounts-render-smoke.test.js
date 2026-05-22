@@ -129,6 +129,9 @@ const context = {
       default_model: 'claude-sonnet-4-5',
       model_slots: [
         { key: 'default', label: '主模型', target: 'ANTHROPIC_MODEL', required: true },
+        { key: 'sonnet', label: 'Sonnet 模型', target: 'ANTHROPIC_DEFAULT_SONNET_MODEL' },
+        { key: 'opus', label: 'Opus 模型', target: 'ANTHROPIC_DEFAULT_OPUS_MODEL' },
+        { key: 'haiku', label: 'Haiku 模型', target: 'ANTHROPIC_DEFAULT_HAIKU_MODEL' },
       ],
     },
   ],
@@ -473,6 +476,13 @@ context.addAccount('deepseek', 'claude_code');
 assert.strictEqual(context.editingAccount.upstream, 'https://api.deepseek.com/anthropic');
 assert.strictEqual(context.editingAccount.default_model, 'deepseek-v4-pro[1m]');
 assert.strictEqual(context.editingAccount.client_options.auth_env, 'ANTHROPIC_AUTH_TOKEN');
+const claudeDetail = context.renderClientAccountDetail();
+assert.strictEqual((claudeDetail.match(/claude-one-m-toggle/g) || []).length, 4);
+assert(claudeDetail.includes('开启 1M 上下文后，模型名会追加 [1m]'));
+assert(claudeDetail.includes('claude-one-m-toggle toggle-label on'));
+assert(claudeDetail.includes('ANTHROPIC_DEFAULT_SONNET_MODEL'));
+assert(claudeDetail.includes('ANTHROPIC_DEFAULT_OPUS_MODEL'));
+assert(claudeDetail.includes('ANTHROPIC_DEFAULT_HAIKU_MODEL'));
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').upstream, 'https://api.moonshot.cn/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').default_model, 'kimi-k2.5');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').upstream, 'https://api.minimaxi.com/anthropic');
