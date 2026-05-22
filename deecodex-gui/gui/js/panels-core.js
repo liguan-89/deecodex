@@ -640,6 +640,7 @@ function claudeCustomFilterState(account) {
         .filter(Boolean)
     : [];
   return {
+    cchEnabled: opts.claude_cch_filter_enabled !== false,
     enabled: Boolean(opts.claude_custom_filter_enabled),
     rules,
   };
@@ -658,10 +659,16 @@ function renderClaudeCustomFilterSection(account) {
     <div class="config-filter-panel${account ? '' : ' disabled'}">
       <div class="config-filter-head">
         <label class="config-filter-toggle">
-          <input type="checkbox" id="claudeCustomFilterEnabled" ${state.enabled ? 'checked' : ''}${disabled}>
-          <span>启用自定义过滤</span>
+          <input type="checkbox" id="claudeCchFilterEnabled" ${state.cchEnabled ? 'checked' : ''}${disabled}>
+          <span>启用 cch 过滤</span>
         </label>
-        <button type="button" class="btn btn-ghost" onclick="saveClaudeCustomFilters()"${disabled}>保存过滤规则</button>
+        <button type="button" class="btn btn-ghost" onclick="saveClaudeCustomFilters()"${disabled}>保存过滤设置</button>
+      </div>
+      <div class="config-filter-head secondary">
+        <label class="config-filter-toggle">
+          <input type="checkbox" id="claudeCustomFilterEnabled" ${state.enabled ? 'checked' : ''}${disabled}>
+          <span>启用自定义过滤规则</span>
+        </label>
       </div>
       <div class="config-filter-example">
         <span>每行一个匹配片段</span>
@@ -681,6 +688,7 @@ async function saveClaudeCustomFilters() {
     showToast('请先添加 Claude 账号', 'error');
     return;
   }
+  const cchEnabled = Boolean(document.getElementById('claudeCchFilterEnabled')?.checked);
   const enabled = Boolean(document.getElementById('claudeCustomFilterEnabled')?.checked);
   const rules = (document.getElementById('claudeCustomFilterRules')?.value || '')
     .split(/\r?\n/)
@@ -688,6 +696,7 @@ async function saveClaudeCustomFilters() {
     .filter(Boolean);
   const next = JSON.parse(JSON.stringify(account));
   next.client_options = next.client_options || {};
+  next.client_options.claude_cch_filter_enabled = cchEnabled;
   next.client_options.claude_custom_filter_enabled = enabled;
   if (rules.length) {
     next.client_options.claude_custom_filter_rules = rules;

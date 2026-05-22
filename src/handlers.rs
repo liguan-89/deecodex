@@ -2509,12 +2509,14 @@ fn sanitize_client_proxy_body(
     if endpoint_kind != "anthropic_messages" {
         return body;
     }
+    let strip_builtin_cch = claude_cch_filter_enabled(account);
     let custom_rules = claude_custom_filter_rules(account);
-    strip_claude_code_anthropic_attribution(&body, &custom_rules).unwrap_or(body)
+    strip_claude_code_anthropic_attribution(&body, strip_builtin_cch, &custom_rules).unwrap_or(body)
 }
 
 fn strip_claude_code_anthropic_attribution(
     body: &axum::body::Bytes,
+    strip_builtin_cch: bool,
     custom_rules: &[String],
 ) -> Result<axum::body::Bytes, serde_json::Error> {
     let mut value: Value = serde_json::from_slice(body)?;
@@ -2523,12 +2525,14 @@ fn strip_claude_code_anthropic_attribution(
     if let Some(system) = value.get_mut("system") {
         match system {
             Value::String(text) => {
-                changed |= strip_claude_code_attribution_text(text, custom_rules);
+                changed |=
+                    strip_claude_code_attribution_text(text, strip_builtin_cch, custom_rules);
             }
             Value::Array(parts) => {
                 for part in parts {
                     if let Some(Value::String(text)) = part.get_mut("text") {
-                        if strip_claude_code_attribution_text(text, custom_rules) {
+                        if strip_claude_code_attribution_text(text, strip_builtin_cch, custom_rules)
+                        {
                             changed = true;
                         }
                     }
@@ -2546,11 +2550,15 @@ fn strip_claude_code_anthropic_attribution(
     serde_json::to_vec(&value).map(axum::body::Bytes::from)
 }
 
-fn strip_claude_code_attribution_text(text: &mut String, custom_rules: &[String]) -> bool {
+fn strip_claude_code_attribution_text(
+    text: &mut String,
+    strip_builtin_cch: bool,
+    custom_rules: &[String],
+) -> bool {
     let original = text.clone();
     let kept: Vec<&str> = original
         .lines()
-        .filter(|line| !is_claude_code_filtered_line(line, custom_rules))
+        .filter(|line| !is_claude_code_filtered_line(line, strip_builtin_cch, custom_rules))
         .collect();
     let stripped = collapse_blank_lines(kept.join("\n").trim_matches('\n'));
     if stripped == original {
@@ -2560,11 +2568,23 @@ fn strip_claude_code_attribution_text(text: &mut String, custom_rules: &[String]
     true
 }
 
-fn is_claude_code_filtered_line(line: &str, custom_rules: &[String]) -> bool {
-    (line.contains("x-anthropic-billing-header:") && line.contains("cch="))
+fn is_claude_code_filtered_line(
+    line: &str,
+    strip_builtin_cch: bool,
+    custom_rules: &[String],
+) -> bool {
+    (strip_builtin_cch && line.contains("x-anthropic-billing-header:") && line.contains("cch="))
         || custom_rules
             .iter()
             .any(|rule| !rule.is_empty() && line.contains(rule))
+}
+
+fn claude_cch_filter_enabled(account: &Account) -> bool {
+    account
+        .client_options
+        .get("claude_cch_filter_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 fn claude_custom_filter_rules(account: &Account) -> Vec<String> {
@@ -6524,7 +6544,7 @@ data: [DONE]
             .unwrap(),
         );
 
-        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+        let stripped = strip_claude_code_anthropic_attribution(&body, true, &[]).unwrap();
         let actual: Value = serde_json::from_slice(&stripped).unwrap();
 
         assert_eq!(actual["system"], "你是有帮助的助手。\n\n请保持简洁。");
@@ -6549,7 +6569,7 @@ data: [DONE]
             .unwrap(),
         );
 
-        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+        let stripped = strip_claude_code_anthropic_attribution(&body, true, &[]).unwrap();
         let actual: Value = serde_json::from_slice(&stripped).unwrap();
 
         assert_eq!(actual["system"][0]["text"], "规则 A\n\n规则 B");
@@ -6585,6 +6605,33 @@ data: [DONE]
     }
 
     #[test]
+    fn test_sanitize_client_proxy_body_respects_disabled_cch_filter() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": "x-anthropic-billing-header: cc_version=2.1.38; cch=abc12;\n真实提示词"
+            }))
+            .unwrap(),
+        );
+
+        let account: Account = serde_json::from_value(json!({
+            "id": "cc1",
+            "name": "Claude",
+            "provider": "anthropic",
+            "client_kind": "claude_code",
+            "upstream": "https://api.anthropic.com",
+            "api_key": "sk-test",
+            "client_options": {
+                "claude_cch_filter_enabled": false
+            }
+        }))
+        .unwrap();
+        let sanitized = sanitize_client_proxy_body("anthropic_messages", &account, body.clone());
+
+        assert_eq!(sanitized, body);
+    }
+
+    #[test]
     fn test_strip_claude_code_anthropic_attribution_keeps_text_without_cch() {
         let body = axum::body::Bytes::from(
             serde_json::to_vec(&json!({
@@ -6594,7 +6641,22 @@ data: [DONE]
             .unwrap(),
         );
 
-        let stripped = strip_claude_code_anthropic_attribution(&body, &[]).unwrap();
+        let stripped = strip_claude_code_anthropic_attribution(&body, true, &[]).unwrap();
+
+        assert_eq!(stripped, body);
+    }
+
+    #[test]
+    fn test_strip_claude_code_anthropic_attribution_respects_cch_switch() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "claude-sonnet-4",
+                "system": "x-anthropic-billing-header: cc_version=2.1.38; cch=abc12;\n真实提示词"
+            }))
+            .unwrap(),
+        );
+
+        let stripped = strip_claude_code_anthropic_attribution(&body, false, &[]).unwrap();
 
         assert_eq!(stripped, body);
     }
@@ -6610,7 +6672,7 @@ data: [DONE]
         );
 
         let stripped =
-            strip_claude_code_anthropic_attribution(&body, &["x-custom-cache-noise:".into()])
+            strip_claude_code_anthropic_attribution(&body, true, &["x-custom-cache-noise:".into()])
                 .unwrap();
         let actual: Value = serde_json::from_slice(&stripped).unwrap();
 

@@ -191,6 +191,8 @@ assert(!html.includes('config-client-meta-grid'));
 assert(html.includes('权限模式'));
 assert(html.includes('MCP 服务器'));
 assert(html.includes('自定义过滤'));
+assert(html.includes('id="claudeCchFilterEnabled" checked'));
+assert(html.includes('启用 cch 过滤'));
 assert(html.includes('config-filter-example'));
 assert(html.includes('aria-label="Claude 自定义过滤规则"'));
 assert(!html.includes('placeholder="每行一个匹配片段'));
