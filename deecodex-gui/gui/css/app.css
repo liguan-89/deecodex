@@ -9312,23 +9312,24 @@ body {
   --status-shell-radius: calc(var(--main-content-radius) - var(--status-outer-gap));
   padding: var(--status-outer-gap);
   background: #f7f8fa;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 [data-theme="light"] .primary-page-shell {
   width: 100%;
-  min-height: calc(100vh - (var(--status-outer-gap) * 2));
+  height: calc(100vh - (var(--status-outer-gap) * 2));
+  min-height: 0;
   padding: var(--status-shell-vpad) var(--status-shell-hpad);
   border: 1px solid rgba(29,29,31,0.14);
   border-radius: var(--status-shell-radius);
   background: #ffffff;
   box-shadow: none;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 [data-theme="light"] .primary-page-shell-accounts {
   display: flex;
-  height: calc(100vh - (var(--status-outer-gap) * 2));
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -9342,6 +9343,10 @@ body {
 
 [data-theme="light"] .primary-page-shell-accounts .accounts-scroll-region {
   padding-bottom: clamp(18px, 2.8vh, 28px);
+}
+
+[data-theme="light"] .main.status-main {
+  overflow-y: auto;
 }
 
 [data-theme="light"] .main.status-main .status-overview-shell {
