@@ -939,6 +939,7 @@ function navigateAccounts(view) {
 function renderMainContent() {
   const main = document.getElementById('mainContent');
   main.classList.toggle('accounts-main', accountsView === 'list');
+  main.classList.toggle('accounts-form-main', accountsView !== 'list');
   const html = renderAccountsPanel();
   main.innerHTML = typeof wrapPrimaryPanel === 'function' ? wrapPrimaryPanel('accounts', html) : html;
   afterRenderAccountsPanel();
@@ -1042,7 +1043,6 @@ function renderAccountList() {
       </div>
     </div>
     <div class="accounts-scroll-region">
-      ${selectedClientKind === 'codex' ? renderOfficialPoolOverview(filtered) : ''}
       ${cards}
     </div>
   </div>`;

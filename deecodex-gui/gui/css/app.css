@@ -504,7 +504,7 @@ body {
 }
 .accounts-static-header {
   flex: 0 0 auto;
-  padding-bottom: 12px;
+  padding-bottom: 6px;
   background: transparent;
   position: relative;
   z-index: 2;
@@ -517,7 +517,7 @@ body {
   align-items: center;
   justify-content: flex-start;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   padding: 10px 22px 10px 10px;
   border: 1px solid rgba(29,29,31,0.075);
   border-radius: 22px;
@@ -542,7 +542,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 14px 2px 2px 0;
+  padding: 7px 2px 2px 0;
 }
 .accounts-form-shell {
   min-height: 0;
@@ -8095,6 +8095,23 @@ body {
   scrollbar-color: rgba(29,29,31,0.2) transparent;
 }
 
+.accounts-scroll-region,
+.accounts-scroll-region.is-scrolling,
+[data-theme="light"] .accounts-scroll-region,
+[data-theme="light"] .accounts-scroll-region.is-scrolling {
+  scrollbar-width: none !important;
+  scrollbar-color: transparent transparent !important;
+}
+
+.accounts-scroll-region::-webkit-scrollbar,
+.accounts-scroll-region.is-scrolling::-webkit-scrollbar,
+[data-theme="light"] .accounts-scroll-region::-webkit-scrollbar,
+[data-theme="light"] .accounts-scroll-region.is-scrolling::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
 [data-theme="light"] .main.is-scrolling::-webkit-scrollbar,
 [data-theme="light"] .accounts-scroll-region.is-scrolling::-webkit-scrollbar,
 [data-theme="light"] .threads-table-wrap.is-scrolling::-webkit-scrollbar,
@@ -9422,14 +9439,38 @@ body {
   overflow: hidden;
 }
 
+[data-theme="light"] .main.accounts-form-main .primary-page-shell-accounts {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 [data-theme="light"] .primary-page-shell-accounts > .accounts-page-shell {
   flex: 1 1 auto;
   min-height: 0;
   margin-bottom: calc(var(--status-shell-vpad) * -1);
 }
 
+[data-theme="light"] .main.accounts-form-main .primary-page-shell-accounts > .accounts-form-shell {
+  height: auto;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
 [data-theme="light"] .primary-page-shell-accounts .accounts-scroll-region {
   padding-bottom: clamp(18px, 2.8vh, 28px);
+}
+
+[data-theme="light"] .main.accounts-form-main .primary-page-shell-accounts .accounts-form-scroll {
+  overflow: visible;
+  padding-bottom: 0;
+}
+
+[data-theme="light"] .primary-page-shell-accounts .accounts-form-scroll .account-form,
+[data-theme="light"] .primary-page-shell-accounts .accounts-form-scroll .client-account-form,
+[data-theme="light"] .primary-page-shell-accounts .provider-picker-shell {
+  width: 100%;
+  max-width: none;
 }
 
 [data-theme="light"] .main.status-main {
