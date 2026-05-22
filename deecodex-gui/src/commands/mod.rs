@@ -3578,7 +3578,7 @@ pub async fn fetch_upstream_models(
     api_key: Option<String>,
     endpoint_kind: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let (upstream, api_key, profile, endpoint_kind) = if let Some(id) = account_id {
+    let (upstream, api_key, profile, endpoint_kind, oauth_account) = if let Some(id) = account_id {
         let data_dir = manager.data_dir.lock().await.clone();
         let store = deecodex::accounts::load_accounts(&data_dir);
         let account = store
@@ -3594,17 +3594,42 @@ pub async fn fetch_upstream_models(
             account.api_key.clone(),
             deecodex::providers::profile_for_account(account),
             endpoint.map(|ep| format!("{:?}", ep.kind)),
+            matches!(
+                account.auth_mode,
+                deecodex::accounts::AccountAuthMode::OAuth
+            ),
         )
     } else {
         let upstream = upstream.ok_or("缺少 upstream 参数")?;
-        let provider = deecodex::providers::guess_provider(&upstream).to_string();
+        let provider = if endpoint_kind
+            .as_deref()
+            .map(endpoint_kind_is_codex_official)
+            .unwrap_or(false)
+            || upstream_is_codex_official(&upstream)
+        {
+            "codex".to_string()
+        } else {
+            deecodex::providers::guess_provider(&upstream).to_string()
+        };
         (
             upstream,
             api_key.unwrap_or_default(),
             deecodex::providers::profile_by_slug(&provider),
             endpoint_kind,
+            false,
         )
     };
+
+    if should_use_known_model_list(&profile, &upstream, endpoint_kind.as_deref(), oauth_account)
+        && !profile.known_models.is_empty()
+    {
+        tracing::warn!(
+            provider = %profile.slug,
+            upstream = %upstream,
+            "官方 OAuth 账号不探测真实 /models，按 CLIProxyAPI registry 模式使用内置模型列表"
+        );
+        return Ok(profile.known_models);
+    }
 
     let urls = deecodex::providers::model_discovery_url(&profile, &upstream, &api_key)
         .map(|url| vec![url])
@@ -3661,6 +3686,30 @@ pub async fn fetch_upstream_models(
         return Ok(profile.known_models);
     }
     Err("无法从上游获取模型列表".to_string())
+}
+
+fn endpoint_kind_is_codex_official(kind: &str) -> bool {
+    let normalized = kind.to_ascii_lowercase();
+    normalized.contains("codex_official") || normalized.contains("codexofficial")
+}
+
+fn upstream_is_codex_official(upstream: &str) -> bool {
+    let normalized = upstream.to_ascii_lowercase();
+    normalized.contains("chatgpt.com/backend-api/codex")
+}
+
+fn should_use_known_model_list(
+    profile: &deecodex::providers::ProviderProfile,
+    upstream: &str,
+    endpoint_kind: Option<&str>,
+    oauth_account: bool,
+) -> bool {
+    profile.slug == "codex"
+        && (oauth_account
+            || upstream_is_codex_official(upstream)
+            || endpoint_kind
+                .map(endpoint_kind_is_codex_official)
+                .unwrap_or(false))
 }
 
 /// 查询余额/额度信息，自动探测端点与计费模式

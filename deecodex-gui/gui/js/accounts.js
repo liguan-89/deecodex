@@ -917,13 +917,22 @@ function renderAccountsFormPage(html, className = '') {
 
 function renderAccountList() {
   const list = accountsData.accounts || [];
-  const filtered = list.filter(a => accountClientKind(a) === selectedClientKind);
+  const activeId = accountsData.active_account_id || accountsData.active_id;
+  const filtered = list
+    .filter(a => accountClientKind(a) === selectedClientKind)
+    .map((account, index) => ({ account, index }))
+    .sort((left, right) => {
+      const leftActive = left.account.id === activeId ? 0 : 1;
+      const rightActive = right.account.id === activeId ? 0 : 1;
+      return leftActive - rightActive || left.index - right.index;
+    })
+    .map(item => item.account);
   let cards = '';
   if (filtered.length === 0) {
     cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}账号，点击上方按钮创建</div>`;
   } else {
     cards = '<div class="accounts-grid">' + filtered.map(a => {
-      const active = a.id === (accountsData.active_account_id || accountsData.active_id);
+      const active = a.id === activeId;
       if (!isCodexAccount(a)) return renderClientAccountCard(a);
       const official = isCodexOfficialAccount(a);
       const displayName = official ? (officialAccountEmail(a) || accountDisplayTitle(a)) : accountDisplayTitle(a);
@@ -2995,7 +3004,10 @@ async function fetchAndPopulateModels() {
     const apiKey = keyInput ? keyInput.value.trim() : '';
     if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
     const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
-    upstreamModels = await invoke('fetch_upstream_models', { upstream, apiKey, endpointKind });
+    const useStoredOfficialAccount = isCodexOfficialAccount(editingAccount) && editingAccount?.id;
+    upstreamModels = await invoke('fetch_upstream_models', useStoredOfficialAccount
+      ? { accountId: editingAccount.id }
+      : { upstream, apiKey, endpointKind });
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
       // 重新渲染模型映射行

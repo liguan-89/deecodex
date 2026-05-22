@@ -10398,6 +10398,30 @@ body {
   flex: 0 0 68px;
 }
 
+.official-quota-panel .balance-official {
+  width: min(100%, 460px);
+  padding: 12px 14px;
+}
+
+.official-quota-panel .official-quota-bars {
+  width: min(100%, 420px);
+  gap: 10px;
+}
+
+.official-quota-panel .official-quota-line {
+  grid-template-columns: minmax(260px, 420px);
+  gap: 6px;
+}
+
+.official-quota-panel .official-quota-line-head {
+  width: 100%;
+}
+
+.official-quota-panel .official-quota-track {
+  width: 100%;
+  height: 8px;
+}
+
 .balance-empty .balance-na {
   display: none;
 }
@@ -10407,26 +10431,32 @@ body {
   display: none;
 }
 
-/* 活跃账号只用“活跃”标签表达，不让整张卡和按钮跳出当前线性体系。 */
+/* 已应用账号：整卡使用极淡选中底色，同时强化原有勾选按钮。 */
 .account-card.active,
 [data-theme="light"] .account-card.active,
 [data-theme="light"] .account-card.active:hover {
-  border-color: var(--content-border-soft) !important;
-  background: #ffffff !important;
-  box-shadow: none !important;
+  border-color: rgba(10,111,216,0.18) !important;
+  background: rgba(10,111,216,0.035) !important;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.025) !important;
 }
 
 .account-icon-btn.account-applied,
 [data-theme="light"] .account-icon-btn.account-applied {
   color: #0a6fd8 !important;
-  background: transparent !important;
-  border-color: transparent !important;
-  box-shadow: none !important;
+  background: rgba(10,111,216,0.10) !important;
+  border: 1px solid rgba(10,111,216,0.18) !important;
+  box-shadow: 0 1px 2px rgba(10,111,216,0.08) !important;
 }
 
 .account-icon-btn.account-applied:hover,
 [data-theme="light"] .account-icon-btn.account-applied:hover {
-  background: transparent !important;
+  background: rgba(10,111,216,0.13) !important;
+}
+
+.account-icon-btn.account-applied .line-action-icon,
+[data-theme="light"] .account-icon-btn.account-applied .line-action-icon {
+  opacity: 1;
+  transform: scale(1.16);
 }
 
 .balance-credit-text {

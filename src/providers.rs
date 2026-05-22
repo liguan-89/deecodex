@@ -453,6 +453,8 @@ pub fn guess_provider(upstream: &str) -> &str {
         "glm"
     } else if upstream.contains("dashscope.aliyuncs.com") || upstream.contains("bailian") {
         "qwen"
+    } else if upstream.contains("chatgpt.com/backend-api/codex") {
+        "codex"
     } else if upstream.contains("api.openai.com") {
         "openai"
     } else if upstream.contains("anthropic.com") {
@@ -637,6 +639,10 @@ mod tests {
         assert_eq!(
             guess_provider("https://open.bigmodel.cn/api/paas/v4"),
             "glm"
+        );
+        assert_eq!(
+            guess_provider("https://chatgpt.com/backend-api/codex"),
+            "codex"
         );
     }
 
