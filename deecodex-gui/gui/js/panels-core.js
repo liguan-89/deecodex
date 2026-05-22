@@ -244,6 +244,36 @@ function statusClientInfo(kind, gatewayRunning) {
   return { account, enabled, processRunning, state, text };
 }
 
+function statusClientLifecycleMeta(kind, info) {
+  const status = (window._clientLifecycleMap || {})[kind] || {};
+  const installedKnown = typeof status.installed === 'boolean';
+  const accountKnown = typeof status.account_exists === 'boolean';
+  const installed = installedKnown ? status.installed : true;
+  const accountReady = accountKnown ? status.account_exists : Boolean(info.account);
+  const configured = status.account_configured !== false && accountReady;
+  const action = status.next_action || (installed ? (accountReady ? 'launch' : 'configure') : 'install');
+  const installLabel = installedKnown ? (installed ? '已安装' : '未安装') : '检测中';
+  const accountLabel = accountKnown ? (accountReady ? (configured ? '已配置' : '待写入') : '需账号') : (info.account ? '已配置' : '需账号');
+  const runLabel = info.processRunning ? '运行中' : '待启动';
+  const classes = [
+    installed ? 'is-installed' : 'needs-install',
+    accountReady ? 'has-account' : 'needs-account',
+    configured ? 'config-ready' : 'config-pending',
+    action ? `next-${action}` : '',
+  ].filter(Boolean).join(' ');
+  return {
+    status,
+    action,
+    classes,
+    installLabel,
+    accountLabel,
+    runLabel,
+    installed,
+    accountReady,
+    configured,
+  };
+}
+
 function statusClientIcon(item) {
   const accountKind = item.iconKind || item.accountKind || item.slug;
   const icon = typeof clientIcon === 'function' ? clientIcon(accountKind) : '';
@@ -262,10 +292,16 @@ function renderStatusClientDock(gatewayRunning) {
         const kind = item.slug;
         const label = item.label || clientKindUiLabel(item.accountKind);
         const info = statusClientInfo(kind, gatewayRunning);
-        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
+        const lifecycle = statusClientLifecycleMeta(kind, info);
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
             <span class="client-dock-icon">${statusClientIcon(item)}</span>
             <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
+          </span>
+          <span class="client-dock-state-row" aria-hidden="true">
+            <span class="client-dock-state-dot install" title="${escAttr(lifecycle.installLabel)}"></span>
+            <span class="client-dock-state-dot account" title="${escAttr(lifecycle.accountLabel)}"></span>
+            <span class="client-dock-state-dot runtime" title="${escAttr(lifecycle.runLabel)}"></span>
           </span>
           <span class="client-dock-label">${esc(label)}</span>
         </button>`;
@@ -292,6 +328,12 @@ async function refreshStatusClientDock() {
       button.classList.toggle('on', info.state === 'on');
       button.classList.toggle('off', info.state === 'off');
       button.classList.toggle('process-running', info.processRunning);
+      const lifecycle = statusClientLifecycleMeta(kind, info);
+      ['is-installed', 'needs-install', 'has-account', 'needs-account', 'config-ready', 'config-pending', 'next-install', 'next-configure', 'next-launch', 'next-running'].forEach(cls => {
+        button.classList.remove(cls);
+      });
+      lifecycle.classes.split(/\s+/).filter(Boolean).forEach(cls => button.classList.add(cls));
+      button.dataset.nextAction = lifecycle.action || '';
       button.setAttribute('aria-label', `${button.dataset.clientLabel || clientKindUiLabel(statusClientAccountKind(kind))} · ${info.text}`);
       const runtime = button.querySelector('.client-dock-runtime');
       if (runtime) {
@@ -299,7 +341,16 @@ async function refreshStatusClientDock() {
         runtime.classList.toggle('idle', !info.processRunning);
         runtime.title = info.processRunning ? '客户端进程运行中' : '未检测到客户端进程';
       }
+      const installDot = button.querySelector('.client-dock-state-dot.install');
+      const accountDot = button.querySelector('.client-dock-state-dot.account');
+      const runtimeDot = button.querySelector('.client-dock-state-dot.runtime');
+      if (installDot) installDot.title = lifecycle.installLabel;
+      if (accountDot) accountDot.title = lifecycle.accountLabel;
+      if (runtimeDot) runtimeDot.title = lifecycle.runLabel;
     });
+    if (typeof refreshClientLifecycleDock === 'function') {
+      refreshClientLifecycleDock();
+    }
   } catch (_) {}
 }
 

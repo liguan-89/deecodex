@@ -478,6 +478,8 @@ pub async fn cancel_oauth_account_login(state: String) -> Result<Value, String> 
 
 fn parse_account_client_kind(value: &str) -> AccountClientKind {
     match value {
+        "codex" | "codex_cli" | "codex_desktop" | "Codex" => AccountClientKind::Codex,
+        "claude_cli" | "claude_desktop" => AccountClientKind::ClaudeCode,
         "claude_code" | "ClaudeCode" => AccountClientKind::ClaudeCode,
         "openclaw" | "Openclaw" => AccountClientKind::Openclaw,
         "hermes" | "Hermes" => AccountClientKind::Hermes,
@@ -584,10 +586,9 @@ async fn create_oauth_account(
                 template_version: 1,
                 model_map: HashMap::new(),
                 model_profiles: HashMap::new(),
-                vision: {
-                    let mut vision = deecodex::accounts::VisionConfig::default();
-                    vision.mode = VisionMode::Native;
-                    vision
+                vision: deecodex::accounts::VisionConfig {
+                    mode: VisionMode::Native,
+                    ..Default::default()
                 },
                 custom_headers: HashMap::new(),
                 request_timeout_secs: None,
@@ -2267,6 +2268,90 @@ pub async fn add_account(
     }
 
     Ok(account_to_value(&new_account))
+}
+
+/// 服务概览轻量接入：创建账号并立即准备对应客户端配置。
+#[tauri::command]
+pub async fn dex_quick_configure_client(
+    manager: State<'_, ServerManager>,
+    kind: String,
+    surface: Option<String>,
+    account_json: String,
+) -> Result<Value, String> {
+    use deecodex::accounts::{generate_id, guess_provider, now_secs, Account};
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (host, port) = service_endpoint_for_manager(&manager).await;
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let mut account: Account = parse_account_json(&account_json)?;
+    let client_kind = parse_account_client_kind(&kind);
+    account.id = generate_id();
+    account.client_kind = client_kind.clone();
+    account.client_surface =
+        parse_account_client_surface(surface.as_deref().unwrap_or("cli"), &client_kind);
+    if account.provider.trim().is_empty() {
+        account.provider = guess_provider(&account.upstream).to_string();
+    }
+    if account.provider_options.is_empty() {
+        account.provider_options =
+            deecodex::providers::provider_options_for_slug(&account.provider);
+    }
+    let now = now_secs();
+    account.created_at = now;
+    account.updated_at = now;
+    account.normalize_v2();
+
+    let mut report = None;
+    if account.client_kind.is_codex() {
+        account.translate_enabled = true;
+        if account.endpoints.is_empty() {
+            account.normalize_v2();
+        }
+    } else {
+        account.translate_enabled = false;
+        account.endpoints.clear();
+        ensure_client_proxy_options(&mut account, &host, port);
+        let apply_report = deecodex::client_integrations::apply(&mut account, false)
+            .map_err(|e| format!("写入客户端配置失败: {e}"))?;
+        report = Some(serde_json::to_value(&apply_report).unwrap_or_default());
+        append_account_event(
+            &data_dir,
+            &account.id,
+            &account.client_kind,
+            "client_account_apply",
+            apply_report.ok,
+            &apply_report.message,
+            serde_json::to_value(&apply_report).unwrap_or_default(),
+        );
+    }
+
+    let mut candidate_store = store.clone();
+    candidate_store.accounts.push(account.clone());
+    deecodex::accounts::validate_capability_links(&candidate_store).map_err(|e| e.to_string())?;
+    deecodex::accounts::validate_dev_pipeline_links(&candidate_store).map_err(|e| e.to_string())?;
+
+    store.accounts.push(account.clone());
+    if account.client_kind.is_codex() {
+        let endpoint_id = account
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.id.clone());
+        store.active_id = Some(account.id.clone());
+        store.active_account_id = Some(account.id.clone());
+        store.active_endpoint_id = endpoint_id;
+        sync_active_account_to_running_state(&manager, &store, &account).await?;
+    } else {
+        sync_account_store_to_running_state(&manager, &store).await;
+    }
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+
+    Ok(json!({
+        "ok": true,
+        "account": account_to_value_for_store(&account, &store),
+        "report": report,
+    }))
 }
 
 /// 更新账号信息（从前端接收完整 JSON）

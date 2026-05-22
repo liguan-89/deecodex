@@ -3828,6 +3828,36 @@ body {
 .client-apply-modal-actions .btn {
   min-width: 92px;
 }
+.client-quick-box {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 720px;
+}
+.client-quick-body {
+  padding: 16px 18px;
+}
+.client-quick-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.client-quick-fields .config-field.wide {
+  grid-column: 1 / -1;
+}
+.client-quick-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+.client-quick-official {
+  margin-right: auto;
+}
+@media (max-width: 640px) {
+  .client-quick-fields {
+    grid-template-columns: 1fr;
+  }
+}
 .config-editor-modal {
   width: min(1180px, calc(100vw - 32px));
   max-width: 1180px;
@@ -8626,6 +8656,50 @@ body {
   background: var(--green);
 }
 
+.client-dock-state-row {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 7px);
+  gap: 5px;
+  min-height: 7px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms;
+}
+
+.client-dock-item:hover .client-dock-state-row,
+.client-dock-item:focus-visible .client-dock-state-row,
+.client-dock-item:active .client-dock-state-row {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.client-dock-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  opacity: 0.72;
+}
+
+.client-dock-item.is-installed .client-dock-state-dot.install,
+.client-dock-item.has-account .client-dock-state-dot.account,
+.client-dock-item.process-running .client-dock-state-dot.runtime {
+  background: var(--green);
+  opacity: 1;
+}
+
+.client-dock-item.needs-install .client-dock-state-dot.install,
+.client-dock-item.needs-account .client-dock-state-dot.account,
+.client-dock-item.config-pending.has-account .client-dock-state-dot.account {
+  background: var(--amber);
+  opacity: 1;
+}
+
 .client-dock-label {
   display: block;
   max-width: 100%;
@@ -8695,6 +8769,23 @@ body {
 
 [data-theme="light"] .client-dock-runtime.live {
   background: #3f7f67;
+}
+
+[data-theme="light"] .client-dock-state-dot {
+  background: #c5cbd3;
+  box-shadow: 0 0 0 1px rgba(29,29,31,0.04);
+}
+
+[data-theme="light"] .client-dock-item.is-installed .client-dock-state-dot.install,
+[data-theme="light"] .client-dock-item.has-account .client-dock-state-dot.account,
+[data-theme="light"] .client-dock-item.process-running .client-dock-state-dot.runtime {
+  background: #3f7f67;
+}
+
+[data-theme="light"] .client-dock-item.needs-install .client-dock-state-dot.install,
+[data-theme="light"] .client-dock-item.needs-account .client-dock-state-dot.account,
+[data-theme="light"] .client-dock-item.config-pending.has-account .client-dock-state-dot.account {
+  background: #aa6a2a;
 }
 
 [data-theme="light"] .client-dock-label {
