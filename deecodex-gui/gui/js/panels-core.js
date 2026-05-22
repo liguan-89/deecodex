@@ -244,6 +244,16 @@ function statusClientInfo(kind, gatewayRunning) {
   return { account, enabled, processRunning, state, text };
 }
 
+function statusClientIcon(item) {
+  const accountKind = item.iconKind || item.accountKind || item.slug;
+  const icon = typeof clientIcon === 'function' ? clientIcon(accountKind) : '';
+  if (item.accountKind === 'codex' || item.accountKind === 'claude_code') {
+    const surface = statusClientSurface(item.slug);
+    return `<span class="surface-icon-stack">${icon}<span class="surface-glyph surface-${escAttr(surface)}" aria-hidden="true"></span></span>`;
+  }
+  return icon;
+}
+
 function renderStatusClientDock(gatewayRunning) {
   return `<section class="gateway-panel client-dock-panel" aria-label="客户端运行控制">
     <div class="gateway-section-title client-dock-title">客户端接入</div>
@@ -252,9 +262,9 @@ function renderStatusClientDock(gatewayRunning) {
         const kind = item.slug;
         const label = item.label || clientKindUiLabel(item.accountKind);
         const info = statusClientInfo(kind, gatewayRunning);
-        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" aria-label="${escAttr(label + ' · ' + info.text)}">
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" onclick="toggleStatusClientKind('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
-            <span class="client-dock-icon">${typeof clientIcon === 'function' ? clientIcon(item.iconKind || item.accountKind || kind) : ''}</span>
+            <span class="client-dock-icon">${statusClientIcon(item)}</span>
             <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
           </span>
           <span class="client-dock-label">${esc(label)}</span>

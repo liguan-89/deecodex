@@ -9666,51 +9666,52 @@ body {
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon-wrap {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   margin-inline: auto;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-box {
-  width: 46px !important;
-  height: 46px !important;
-  border: 0 !important;
-  border-radius: 15px !important;
+  width: 42px !important;
+  height: 42px !important;
+  border: 1px solid rgba(0,0,0,0.24) !important;
+  border-radius: 11px !important;
   background: #ffffff !important;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px rgba(16,24,40,0.08) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075) !important;
+  overflow: hidden;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-img,
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-openclaw .client-logo-img,
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-hermes .client-logo-img,
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-generic_client .client-logo-img {
-  width: 100% !important;
-  height: 100% !important;
+  width: 42px !important;
+  height: 42px !important;
   object-fit: cover !important;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-codex {
-  background: transparent !important;
-  box-shadow: none !important;
   overflow: hidden;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-codex .client-logo-img {
-  width: 56px !important;
-  height: 56px !important;
-  border-radius: 15px !important;
-  filter: drop-shadow(0 1px 2px rgba(16,24,40,0.12));
+  width: 54px !important;
+  height: 54px !important;
+  margin: -6px;
+  border-radius: 0 !important;
+  filter: none;
+  object-fit: cover !important;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-claude_code {
-  background: transparent !important;
-  box-shadow: none !important;
+  overflow: hidden;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-claude_code .client-logo-img {
-  width: 40px !important;
-  height: 40px !important;
-  border-radius: 15px !important;
+  width: 44px !important;
+  height: 44px !important;
+  margin: -1px;
+  border-radius: 10px !important;
   object-fit: cover !important;
   filter: none;
 }
@@ -9733,6 +9734,50 @@ body {
 [data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-label,
 [data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-label {
   color: #202124 !important;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item {
+  overflow: visible;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-label {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  z-index: 8;
+  max-width: none;
+  padding: 4px 8px;
+  border: 1px solid rgba(29,29,31,0.10);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 4px 12px rgba(20,24,30,0.08);
+  color: #3f4650 !important;
+  font-size: 12px !important;
+  line-height: 1.1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -1px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  white-space: nowrap;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-label,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-label {
+  opacity: 1;
+  transform: translate(-50%, 2px);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-icon .surface-icon-stack {
+  width: 44px;
+  height: 44px;
+  display: inline-grid;
+  place-items: center;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-icon .surface-glyph {
+  left: 1px;
+  bottom: 1px;
+  z-index: 4;
 }
 
 /* 账号管理动作收敛为导航栏同源的线条图标，不在卡片层重复显示能力标签。 */
