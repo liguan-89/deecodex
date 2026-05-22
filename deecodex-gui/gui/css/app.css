@@ -9337,6 +9337,11 @@ body {
 [data-theme="light"] .primary-page-shell-accounts > .accounts-page-shell {
   flex: 1 1 auto;
   min-height: 0;
+  margin-bottom: calc(var(--status-shell-vpad) * -1);
+}
+
+[data-theme="light"] .primary-page-shell-accounts .accounts-scroll-region {
+  padding-bottom: clamp(18px, 2.8vh, 28px);
 }
 
 [data-theme="light"] .main.status-main .status-overview-shell {
