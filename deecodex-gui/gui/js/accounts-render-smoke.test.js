@@ -359,7 +359,7 @@ assert(officialDetail.includes('value="codex-official"'));
 assert(officialDetail.includes('id="edit_routing_priority" value="20"'));
 assert(officialDetail.includes('id="edit_routing_weight" value="2"'));
 assert(officialDetail.includes("applyAccountRoutingFromDetail('c2')"));
-assert(officialDetail.includes("refreshOfficialQuotaFromDetail('c2')"));
+assert(!officialDetail.includes("refreshOfficialQuotaFromDetail('c2')"));
 assert(officialDetail.includes('official-runtime-summary'));
 assert(officialDetail.includes('official-quota-panel'));
 assert(officialDetail.includes('5h'));
