@@ -10121,6 +10121,45 @@ body {
   background: #fff;
   box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075);
   overflow: hidden;
+  transform-origin: center;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+.accounts-static-header .client-tab:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab.account-surface-tab .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab .surface-icon-stack {
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+.accounts-static-header .client-tab:hover:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab:focus-visible:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab.account-surface-tab:hover .surface-icon-stack,
+.accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab:hover:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab:hover .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-icon-stack {
+  transform: translateY(-2px) scale(1.045);
+}
+
+.accounts-static-header .client-tab:hover .client-logo-box,
+.accounts-static-header .client-tab:focus-visible .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:hover .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible .client-logo-box {
+  border-color: rgba(0,0,0,0.18);
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 6px 14px rgba(20,24,30,0.06);
+}
+
+.accounts-static-header .client-tab:hover .client-logo-img,
+.accounts-static-header .client-tab:focus-visible .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-tab:hover .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible .client-logo-img {
+  transform: scale(1.02);
 }
 
 .accounts-static-header .client-logo-img,
@@ -10128,6 +10167,8 @@ body {
   width: 42px;
   height: 42px;
   object-fit: contain;
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18);
 }
 
 .accounts-static-header .client-logo-codex .client-logo-img,
@@ -10193,6 +10234,12 @@ body {
   left: 1px;
   bottom: 1px;
   z-index: 4;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18), box-shadow 140ms ease;
+}
+
+.accounts-static-header .client-tab.account-surface-tab:hover .surface-glyph,
+.accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-glyph {
+  transform: scale(1.08);
 }
 
 [data-theme="light"] .account-icon-btn {
