@@ -1116,9 +1116,19 @@ function togglePass(fieldId, btn) {
   const input = document.getElementById(fieldId);
   if (!input) return;
   if (input.type === 'password') {
-    input.type = 'text'; btn.textContent = '⊘'; btn.title = '隐藏';
+    input.type = 'text';
+    if (btn) {
+      btn.title = '隐藏';
+      btn.setAttribute('aria-label', '隐藏');
+      btn.setAttribute('aria-pressed', 'true');
+    }
   } else {
-    input.type = 'password'; btn.textContent = '⊙'; btn.title = '显示';
+    input.type = 'password';
+    if (btn) {
+      btn.title = '显示';
+      btn.setAttribute('aria-label', '显示');
+      btn.setAttribute('aria-pressed', 'false');
+    }
   }
 }
 

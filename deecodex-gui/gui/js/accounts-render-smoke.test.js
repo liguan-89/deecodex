@@ -170,6 +170,10 @@ const source = fs.readFileSync(path.join(__dirname, 'accounts.js'), 'utf8');
 vm.runInContext(source, context, { filename: 'accounts.js' });
 
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'h1');
+context.accountsView = 'edit';
+const editablePanel = context.renderAccountsPanel();
+assert(editablePanel.includes('accounts-form-shell accounts-edit-shell'));
+assert(editablePanel.includes('accounts-scroll-region accounts-form-scroll'));
 
 const switcher = context.renderClientSwitcher(context.accountsData.accounts);
 assert(switcher.includes('client-tab active has-issues'));
@@ -178,6 +182,10 @@ assert(switcher.includes('Hermes'));
 const detail = context.renderClientAccountDetail();
 assert(detail.includes('Hermes .env Key'));
 assert(detail.includes('最近备份'));
+assert(!detail.includes('account-section-desc'));
+assert(!detail.includes('只记录外部客户端配置操作'));
+assert(detail.includes('account-back-icon'));
+assert(!detail.includes('← 账号列表'));
 assert(detail.includes('客户端模型映射'));
 assert(detail.includes('model.default'));
 assert(detail.includes('model-map-head client-model-map-head client-model-template'));
@@ -216,6 +224,21 @@ assert(codexList.includes("deleteAccount('c1')"));
 assert(!codexList.includes('account-meta-tags mid-tags'));
 assert(!codexList.includes('<span class="card-context">Chat 兼容</span>'));
 assert(!codexList.includes('https://api.deepseek.com/v1'));
+
+context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c1');
+context.editingAccount.name = 'DeepSeek 账号';
+context.accountsView = 'edit';
+const codexDetail = context.renderAccountsPanel();
+assert(!codexDetail.includes('一个账号就是一组供应商'));
+assert(!codexDetail.includes('account-section-desc'));
+assert(codexDetail.includes('<h2>DeepSeek</h2>'));
+assert(!codexDetail.includes('<h2>DeepSeek 账号</h2>'));
+assert(!codexDetail.includes('badge-provider badge-deepseek'));
+assert(codexDetail.includes('model-map-table'));
+assert(codexDetail.includes('model-map-row'));
+assert(codexDetail.includes('model-upstream-cell'));
+assert(codexDetail.includes('model-vision-cell'));
+assert(!codexDetail.includes('model-remove-placeholder'));
 
 context.selectedClientKind = 'hermes';
 const hermesList = context.renderAccountList();
@@ -265,6 +288,24 @@ assert(claudeProviders.includes('glm'));
 assert(claudeProviders.includes('qwen'));
 const hermesProviders = context.providersForClientKind('hermes').map(provider => provider.slug);
 assert(hermesProviders.includes('qwen'));
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('deepseek'))), {
+  'gpt-5.5': 'deepseek-v4-pro',
+  'gpt-5.4': 'deepseek-v4-flash',
+  'gpt-5.4-mini': 'deepseek-v4-flash',
+  'gpt-5.3-codex': 'deepseek-v4-flash',
+  'gpt-5': 'deepseek-v4-flash',
+  'codex-auto-review': 'deepseek-v4-flash',
+});
+context.addAccount('deepseek', 'codex');
+assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'deepseek-v4-pro');
+assert.strictEqual(context.editingAccount.model_map['gpt-5'], 'deepseek-v4-flash');
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.4'], 'deepseek-v4-flash');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
+context.editingAccount.endpoints[0].path = '/v1/chat/completions';
+const codexDefaultVisionDetail = context.renderAccountsPanel();
+assert(codexDefaultVisionDetail.includes('data-mode="native"'));
+assert(!codexDefaultVisionDetail.includes('collapsible-toggle open'));
+assert(!codexDefaultVisionDetail.includes('collapsible-content open'));
 assert.deepStrictEqual(
   Array.from(context.clientProviderDefaults('claude_code', 'deepseek').known_models),
   ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],

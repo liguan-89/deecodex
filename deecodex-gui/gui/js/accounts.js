@@ -67,6 +67,18 @@ function isCodexAccount(a) {
   return accountClientKind(a) === 'codex';
 }
 
+function accountDisplayTitle(a) {
+  const provider = getProviderPreset(a?.provider);
+  const providerLabel = provider?.label || '';
+  const name = String(a?.name || providerLabel || '').trim();
+  const suffix = /\s*账号\s*$/;
+  if (providerLabel && suffix.test(name)) {
+    const base = name.replace(suffix, '').trim();
+    if (base === providerLabel || base.toLowerCase() === String(a?.provider || '').toLowerCase()) return providerLabel;
+  }
+  return name.replace(suffix, '').trim() || providerLabel || name;
+}
+
 function clientAccountHasIssue(a) {
   if (!a || isCodexAccount(a)) return false;
   const status = a._client_status_report || a.last_check;
@@ -189,9 +201,9 @@ function renderClientSwitcher(list) {
       const issueCount = clientAccounts.filter(clientAccountHasIssue).length;
       const active = kind === selectedClientKind ? ' active' : '';
       const issueClass = issueCount ? ' has-issues' : '';
-      return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}')" title="${escAttr(profile.description || '')}" role="tab" aria-selected="${kind === selectedClientKind}">
+      const label = CLIENT_KIND_LABELS[kind] || profile.label || kind;
+      return `<button type="button" class="client-tab${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${kind === selectedClientKind}">
         ${clientIcon(kind)}
-        <span>${esc(CLIENT_KIND_LABELS[kind] || profile.label || kind)}</span>
         <em>${count}</em>
         ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
       </button>`;
@@ -213,18 +225,15 @@ function renderClientAccountDetail() {
     : (kind === 'hermes'
       ? 'Hermes 会把非密钥配置写入 config.yaml，密钥写入 .env。'
       : '写入前会展示脱敏 diff，不显示完整密钥。');
-  return `<div class="breadcrumb">
-    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
-    <span> / ${esc(a.name)}</span>
+  return `<div class="breadcrumb account-detail-breadcrumb">
+    <button type="button" class="account-back-icon" onclick="navigateAccounts('list')" title="返回账号列表" aria-label="返回账号列表">←</button>
   </div>
   <div class="page-header account-detail-header">
     <div class="account-detail-title">
       ${clientIcon(kind)}
       <div>
         <div class="account-detail-heading">
-          <h2>${esc(a.name)}</h2>
-          <span class="client-kind-badge">${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
-          ${renderProviderBadge(a.provider)}
+          <h2>${esc(accountDisplayTitle(a))}</h2>
         </div>
       </div>
     </div>
@@ -234,7 +243,6 @@ function renderClientAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">客户端账号</div>
-        <div class="account-section-desc">此账号直接写入 ${esc(profile.label || '外部客户端')} 配置，不经过 deecodex 端点翻译。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -271,7 +279,6 @@ function renderClientAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">客户端模型映射</div>
-        <div class="account-section-desc">不同客户端会写入不同模型槽位；默认模型会同步到上方默认模型字段。</div>
       </div>
       <div class="section-action-row">
         <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
@@ -289,7 +296,6 @@ function renderClientAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">配置写入</div>
-        <div class="account-section-desc">写入前会做 dry-run 并生成备份；OpenClaw 优先使用官方 config dry-run/validate。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -331,7 +337,6 @@ function renderClientAccountDetail() {
       <div class="account-section-head">
         <div>
           <div class="section-sub-label">最近备份</div>
-          <div class="account-section-desc">正式写入或手动恢复前都会生成备份；恢复也会先备份当前文件。</div>
         </div>
         ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientBackupsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
       </div>
@@ -344,7 +349,6 @@ function renderClientAccountDetail() {
       <div class="account-section-head">
         <div>
           <div class="section-sub-label">最近配置事件</div>
-          <div class="account-section-desc">只记录外部客户端配置操作，不混入 deecodex 代理请求历史。</div>
         </div>
         ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientEventsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
       </div>
@@ -542,7 +546,7 @@ function createEndpointFromTemplate(template, account) {
     model_map: { ...(account?.model_map || {}) },
     model_profiles: {},
     vision: {
-      mode: tpl.default_vision_mode || 'off',
+      mode: 'native',
       unsupported_image_policy: 'reject',
       glue_strategy: 'final_answer',
       adapter_id: 'minimax_coding_plan_vlm',
@@ -595,9 +599,17 @@ function afterRenderAccountsPanel() {
 }
 
 function renderAccountsPanel() {
-  if (accountsView === 'add') return renderAddAccount();
-  if (accountsView === 'edit') return renderAccountDetail();
+  if (accountsView === 'add') return renderAccountsFormPage(renderAddAccount(), 'accounts-add-shell');
+  if (accountsView === 'edit') return renderAccountsFormPage(renderAccountDetail(), 'accounts-edit-shell');
   return renderAccountList();
+}
+
+function renderAccountsFormPage(html, className = '') {
+  return `<div class="accounts-page-shell accounts-form-shell ${escAttr(className)}">
+    <div class="accounts-scroll-region accounts-form-scroll">
+      ${html}
+    </div>
+  </div>`;
 }
 
 // ── Level 1: 账号列表 ──
@@ -835,7 +847,7 @@ function renderAccountDetail() {
   if (!isCodexAccount(a)) return renderClientAccountDetail();
   ensureAccountEndpoints(a);
   const ep = currentEndpoint(a) || {};
-  const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'off');
+  const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'native');
   const contextWindow = ep.context_window_override ?? null;
   const reasoningEffort = ep.reasoning_effort_override ?? null;
   const thinkingTokens = ep.thinking_tokens ?? null;
@@ -846,17 +858,15 @@ function renderAccountDetail() {
   const maxRetries = ep.max_retries ?? a.max_retries;
   const knownModels = getProviderKnownModels(a.provider);
 
-  return `<div class="breadcrumb">
-    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
-    <span> / ${esc(a.name)}</span>
+  return `<div class="breadcrumb account-detail-breadcrumb">
+    <button type="button" class="account-back-icon" onclick="navigateAccounts('list')" title="返回账号列表" aria-label="返回账号列表">←</button>
   </div>
   <div class="page-header account-detail-header">
     <div class="account-detail-title">
       <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
       <div>
         <div class="account-detail-heading">
-          <h2>${esc(a.name)}</h2>
-          ${renderProviderBadge(a.provider)}
+          <h2>${esc(accountDisplayTitle(a))}</h2>
         </div>
       </div>
     </div>
@@ -866,7 +876,6 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">账号凭据</div>
-        <div class="account-section-desc">一个账号就是一组供应商、协议、URL 和 Key；同一个 Key 可创建多个账号分别保存。</div>
       </div>
       <div class="config-fields">
         <div class="config-field account-name-field">
@@ -898,7 +907,6 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">上游</div>
-        <div class="account-section-desc">配置当前账号的协议模式、上游 URL 和余额探测。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -922,25 +930,25 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">模型</div>
-        <div class="account-section-desc">每一行就是一个模型的映射和图片处理方式。</div>
       </div>
       <div class="section-action-row">
         <button class="btn btn-ghost" onclick="fetchAndPopulateModels()">从上游获取模型列表</button>
         <span id="modelFetchStatus"></span>
       </div>
-      <div class="model-map-head">
-        <span>Codex 请求模型</span>
-        <span>上游模型</span>
-        <span>图片处理</span>
+      <div class="model-map-table">
+        <div class="model-map-head">
+          <span>Codex 请求模型</span>
+          <span>上游模型</span>
+          <span>图片处理</span>
+        </div>
+        <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
       </div>
-      <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
       <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
     </section>
 
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">其他模型图片处理</div>
-        <div class="account-section-desc">上方没有单独配置的模型，才使用这里。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -1010,7 +1018,6 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">运行参数</div>
-        <div class="account-section-desc">按账号覆盖上下文窗口和推理预算。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -1073,7 +1080,6 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">能力补全</div>
-        <div class="account-section-desc">触发图片、computer、浏览器、MCP 或插件工具时，可先由另一个账号执行观察。</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
@@ -1093,7 +1099,6 @@ function renderAccountDetail() {
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">开发协作编排</div>
-        <div class="account-section-desc">用角色账号协作完成开发任务：方案设计、实现填充、验收收口；不绑定任何固定供应商。</div>
       </div>
       <div class="config-fields">
         <div class="config-field wide">
@@ -1165,10 +1170,10 @@ function renderAccountDetail() {
     </section>
 
   <div class="collapsible-section">
-    <button class="collapsible-toggle${Object.keys(customHeaders).length > 0 || requestTimeout || ep.path ? ' open' : ''}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+    <button class="collapsible-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
       <span class="arrow">▸</span> 高级端点
     </button>
-    <div class="collapsible-content${Object.keys(customHeaders).length > 0 || requestTimeout || ep.path ? ' open' : ''}">
+    <div class="collapsible-content">
       <div class="config-fields nested-fields">
         <div class="config-field">
           <label>请求路径 <span class="optional-label">可选</span></label>
@@ -1226,24 +1231,24 @@ function renderModelMappingRows(knownModels) {
     const labelExtra = r.readonly ? '' : ' (自定义)';
     const upstreamModel = r.val || r.codexModel;
     const profile = (ep.model_profiles || {})[upstreamModel] || {};
-    const visionMode = profile.vision_mode || ep.vision?.mode || 'off';
+    const visionMode = profile.vision_mode || ep.vision?.mode || 'native';
     const removeControl = r.readonly
-      ? '<span class="model-remove-placeholder"></span>'
+      ? ''
       : '<button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>';
-    return `<div class="model-row">
+    return `<div class="model-row model-map-row${r.readonly ? '' : ' removable'}">
       <div class="model-label codex">${esc(r.codexModel)}${labelExtra}</div>
-      <div class="model-value">
-        <div class="model-autocomplete">
-          <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)"
-            data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
-            onchange="syncModelVisionTarget(this)"
-            onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)"
-            autocomplete="off">
-          <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
-        </div>
-        ${renderModelVisionSegments(upstreamModel, visionMode)}
-        ${removeControl}
+      <div class="model-autocomplete model-upstream-cell">
+        <input type="text" value="${escAttr(r.val)}" placeholder="未映射 (使用原名)"
+          data-codex="${escAttr(r.codexModel)}" data-readonly="${r.readonly}"
+          onchange="syncModelVisionTarget(this)"
+          onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)"
+          autocomplete="off">
+        <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
       </div>
+      <div class="model-vision-cell">
+        ${renderModelVisionSegments(upstreamModel, visionMode)}
+      </div>
+      ${removeControl}
     </div>`;
   }).join('');
 }
@@ -1330,8 +1335,8 @@ function collectClientModelMap() {
 }
 
 function normalizedVisionMode(mode) {
-  const value = String(mode || 'off').toLowerCase();
-  return ['off', 'native', 'glue'].includes(value) ? value : 'off';
+  const value = String(mode || 'native').toLowerCase();
+  return ['off', 'native', 'glue'].includes(value) ? value : 'native';
 }
 
 function parseOptionalInteger(value) {
@@ -1404,6 +1409,14 @@ async function loadEndpointTemplates() {
 function getProviderKnownModels(provider) {
   const p = providerPresets.find(pp => pp.slug === provider);
   return p ? p.known_models : [];
+}
+
+function codexProviderModelMap(provider) {
+  if (provider !== 'deepseek') return {};
+  return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
+    model,
+    model === 'gpt-5.5' ? 'deepseek-v4-pro' : 'deepseek-v4-flash',
+  ]));
 }
 
 function defaultApiKeyEnvForClient(account) {
@@ -1549,8 +1562,8 @@ function syncEditingDraftFromForm() {
   if (!ep.vision) ep.vision = {};
   const visionMode = document.getElementById('edit_vision_mode');
   if (visionMode) {
-    ep.vision.mode = visionMode.value || 'off';
-    a.vision_enabled = ep.vision.mode === 'glue';
+    ep.vision.mode = visionMode.value || 'native';
+    a.vision_enabled = ep.vision.mode !== 'off';
   }
   const visionUpstream = document.getElementById('edit_vision_upstream');
   if (visionUpstream) { ep.vision.base_url = visionUpstream.value.trim(); a.vision_upstream = ep.vision.base_url; }
@@ -1683,18 +1696,18 @@ function addModelRow(containerId, knownModelsJson) {
 
   const container = document.getElementById(containerId);
   const row = document.createElement('div');
-  row.className = 'model-row';
+  row.className = 'model-row model-map-row removable';
   row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名"></div>
-    <div class="model-value">
-      <div class="model-autocomplete">
-        <input type="text" placeholder="上游模型名" autocomplete="off"
-          onchange="syncModelVisionTarget(this)"
-          onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)">
-        <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
-      </div>
-      ${renderModelVisionSegments('', document.getElementById('edit_vision_mode')?.value || 'off')}
-      <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>
-    </div>`;
+    <div class="model-autocomplete model-upstream-cell">
+      <input type="text" placeholder="上游模型名" autocomplete="off"
+        onchange="syncModelVisionTarget(this)"
+        onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)">
+      <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+    </div>
+    <div class="model-vision-cell">
+      ${renderModelVisionSegments('', document.getElementById('edit_vision_mode')?.value || 'native')}
+    </div>
+    <button class="model-remove" onclick="removeModelMapRow(this)" title="移除">✕</button>`;
   container.appendChild(row);
 }
 
@@ -1740,7 +1753,7 @@ function collectModelProfiles() {
     const inputs = row.querySelectorAll('input[type="text"]');
     const upstreamInput = inputs.length === 2 ? inputs[1] : inputs[0];
     const model = upstreamInput?.value?.trim() || upstreamInput?.dataset?.codex || row.querySelector('.custom-codex-model')?.value?.trim();
-    const mode = row.querySelector('.model-vision-segments')?.dataset.mode || 'off';
+    const mode = row.querySelector('.model-vision-segments')?.dataset.mode || 'native';
     if (model) {
       result[model] = { vision_mode: mode };
     }
@@ -1767,6 +1780,7 @@ function addAccount(provider, clientKind) {
   if (!preset) return;
   const clientProfile = getClientProfile(kind);
   const defaults = clientProviderDefaults(kind, provider, preset);
+  const codexModelMap = kind === 'codex' ? codexProviderModelMap(provider) : {};
   editingAccount = {
     id: '',
     name: kind === 'codex' ? preset.label + ' 账号' : `${clientProfile?.label || CLIENT_KIND_LABELS[kind]} · ${preset.label}`,
@@ -1785,7 +1799,7 @@ function addAccount(provider, clientKind) {
     },
     last_applied_at: null,
     last_check: null,
-    model_map: {},
+    model_map: codexModelMap,
     vision_enabled: false,
     vision_upstream: '',
     vision_api_key: '',

@@ -516,6 +516,21 @@ body {
   overflow-x: hidden;
   padding: 14px 2px 2px 0;
 }
+.accounts-form-shell {
+  min-height: 0;
+}
+.accounts-form-scroll {
+  padding: 0 2px 28px 0;
+}
+.accounts-form-scroll .account-form {
+  padding-bottom: 34px;
+}
+.account-section-desc {
+  display: none !important;
+}
+.accounts-form-scroll .config-field .hint {
+  display: none !important;
+}
 
 /* ── Status Grid ── */
 .gateway-hero {
@@ -2363,6 +2378,28 @@ body {
   margin-bottom: 14px; letter-spacing: 0.04em;
 }
 .breadcrumb span { color: var(--text-secondary); }
+.account-detail-breadcrumb {
+  margin-bottom: 18px;
+}
+.account-back-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+.account-back-icon:hover {
+  color: var(--text-primary);
+  background: rgba(107,127,168,0.08);
+}
 
 .accounts-grid {
   display: grid;
@@ -2375,23 +2412,24 @@ body {
 .client-switcher {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px;
-  margin: 0 0 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--bg-card);
+  gap: 12px;
+  padding: 0;
+  margin: 0 0 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   overflow-x: auto;
-  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  box-shadow: none;
 }
 .client-tab {
-  min-height: 42px;
+  min-height: 50px;
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 13px;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 10px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--font-sans);
@@ -2403,22 +2441,22 @@ body {
   position: relative;
 }
 .client-tab:hover {
-  background: var(--bg-elevated);
+  background: rgba(107,127,168,0.08);
   color: var(--text-primary);
 }
 .client-tab.active {
-  border-color: rgba(10,132,255,0.34);
-  background: rgba(10,132,255,0.10);
+  border-color: var(--border-subtle);
+  background: var(--bg-card);
   color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px rgba(10,132,255,0.16), 0 1px 2px rgba(16,24,40,0.05);
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
 }
 .client-tab.active::after {
   content: '';
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 4px;
-  height: 3px;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
   border-radius: 999px;
   background: var(--accent);
   box-shadow: none;
@@ -2435,8 +2473,8 @@ body {
   text-align: center;
 }
 .client-tab.active em {
-  background: var(--accent);
-  color: #fff;
+  background: rgba(10,132,255,0.10);
+  color: var(--accent);
   font-weight: 800;
 }
 .client-tab.has-issues {
@@ -2465,6 +2503,11 @@ body {
   background: #fff;
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px rgba(16,24,40,0.08);
   overflow: hidden;
+}
+.client-tab .client-logo-box {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
 }
 .client-logo-img {
   width: 100%;
@@ -2565,7 +2608,7 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .account-card-body {
   display: flex;
@@ -2717,6 +2760,8 @@ body {
   padding: 2px 6px; border-radius: var(--radius-sm);
   color: var(--accent); background: var(--accent-dim);
   border: 1px solid rgba(0,200,232,0.2);
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* Balance display */
@@ -3043,22 +3088,28 @@ body {
   padding: 6px 0; border-bottom: 1px solid var(--border-subtle);
 }
 
+.model-map-table {
+  --codex-model-label-width: 164px;
+  --vision-segment-width: 192px;
+  --model-map-control-height: 34px;
+  width: 100%;
+  min-width: 0;
+}
 .model-map-head {
   display: grid;
-  grid-template-columns: minmax(132px, 0.7fr) minmax(220px, 1.5fr) 126px 24px;
-  gap: 8px;
-  padding: 0 0 4px;
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width);
+  gap: 12px;
+  padding: 0 0 8px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
 }
 .model-map-head span:nth-child(2) {
   padding-left: 2px;
 }
 .model-map-head span:nth-child(3) {
-  grid-column: 3 / 5;
   text-align: center;
 }
 .model-map-head.client-model-template {
@@ -3071,22 +3122,31 @@ body {
 
 .model-row {
   display: grid;
-  grid-template-columns: minmax(132px, 0.7fr) minmax(220px, 1.5fr) 126px 24px;
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width);
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 0;
 }
 .model-row .model-label {
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+  font-family: var(--font-sans); font-size: 12.5px; color: var(--text-secondary);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .model-row .model-label.codex {
+  width: var(--codex-model-label-width);
+  max-width: 100%;
+  min-height: var(--model-map-control-height);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid rgba(29,29,31,0.08);
+  border-radius: 9px;
+  background: rgba(245,247,250,0.78);
   color: var(--text-primary);
-  font-weight: 600;
+  font-weight: 500;
 }
 .model-row.client-model-template {
   grid-template-columns: minmax(132px, 0.7fr) minmax(220px, 1.5fr) 24px;
@@ -3138,7 +3198,8 @@ body {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  padding: 7px 10px;
+  min-height: var(--model-map-control-height);
+  padding: 6px 10px;
   font-size: 12px;
   font-family: var(--font-mono);
   outline: none;
@@ -3165,7 +3226,7 @@ body {
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-input);
-  width: 126px;
+  width: 100%;
   min-height: 27px;
   align-self: stretch;
 }
@@ -9242,7 +9303,7 @@ body {
 }
 
 .account-card-mainline {
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 220px);
+  grid-template-columns: minmax(0, 1fr) minmax(214px, 236px);
 }
 
 .account-card-primary {
@@ -9305,35 +9366,47 @@ body {
   border-color: rgba(217,45,32,0.16) !important;
 }
 
-/* 账号卡片右侧收束成一个连续控制区，避免额度和动作按钮割裂。 */
+/* 账号卡片右侧收束成一条无外框控制带，状态与动作同层显示。 */
 .account-card-side {
-  gap: 7px;
+  display: grid;
+  grid-template-columns: minmax(52px, max-content) auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-left: 0;
+  border-left: 0;
+  min-height: 46px;
 }
 
 .account-card .card-actions-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 0;
-  width: 100%;
-  min-height: 36px;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: var(--bg-card);
+  width: auto;
+  min-height: 32px;
+  margin-top: 0;
+  padding-left: 10px;
+  overflow: visible;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
 }
 
 .account-icon-btn {
-  width: auto;
-  min-width: 0;
-  min-height: 36px;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
   border: 0 !important;
-  border-radius: 0 !important;
+  border-radius: 8px !important;
   box-shadow: none !important;
   background: transparent !important;
 }
 
 .account-icon-btn + .account-icon-btn {
-  border-left: 1px solid var(--border-subtle) !important;
+  margin-left: 3px;
+  border-left: 0 !important;
 }
 
 .account-icon-btn:hover {
@@ -9346,21 +9419,29 @@ body {
 
 .card-balance,
 [data-theme="light"] .card-balance {
-  min-height: 38px !important;
+  min-height: 32px !important;
   padding: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .balance-pill {
-  min-height: 38px;
-  border-radius: 999px;
+  min-height: 32px;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .balance-empty {
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .balance-empty .balance-na {
@@ -9372,9 +9453,9 @@ body {
 
 [data-theme="light"] .account-card .card-actions-row,
 [data-theme="light"] .balance-pill {
-  border-color: rgba(29,29,31,0.12);
-  background: rgba(255,255,255,0.78);
-  box-shadow: inset 0 1px 1px rgba(20,24,30,0.025);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 [data-theme="light"] .account-icon-btn {
@@ -9383,6 +9464,10 @@ body {
 
 [data-theme="light"] .account-icon-btn + .account-icon-btn {
   border-left-color: rgba(29,29,31,0.10) !important;
+}
+
+[data-theme="light"] .account-card .card-actions-row {
+  border-left-color: transparent !important;
 }
 
 [data-theme="light"] .account-icon-btn:hover {
@@ -9399,6 +9484,434 @@ body {
   background: rgba(217,45,32,0.055) !important;
 }
 
+[data-theme="light"] .client-switcher {
+  gap: 12px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+[data-theme="light"] .client-tab {
+  min-height: 50px !important;
+  padding: 6px 10px !important;
+  border-radius: 12px !important;
+  border-color: transparent;
+  background: transparent;
+}
+
+[data-theme="light"] .client-tab:hover {
+  background: rgba(29,29,31,0.045);
+}
+
+[data-theme="light"] .client-tab.active {
+  border-color: rgba(29,29,31,0.10);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.04), 0 8px 18px rgba(20,24,30,0.035);
+}
+
+/* 密码输入统一为一个控件，避免眼睛按钮像独立胶囊挂在右侧。 */
+.config-field .pass-group,
+[data-theme="light"] .config-field .pass-group {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+  min-height: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px !important;
+  background: var(--bg-input);
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.config-field .pass-group:focus-within,
+[data-theme="light"] .config-field .pass-group:focus-within {
+  border-color: rgba(10,132,255,0.34);
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.08);
+}
+
+.config-field .pass-group input,
+[data-theme="light"] .config-field .pass-group input {
+  min-height: 32px;
+  padding: 6px 44px 6px 10px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.config-field .pass-group button,
+[data-theme="light"] .config-field .pass-group button {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 !important;
+  transform: translateY(-50%);
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .config-field .pass-group {
+  border-color: var(--sink-border);
+  background-color: #ffffff;
+  box-shadow: var(--sink-shadow);
+}
+
+[data-theme="light"] .config-field .pass-group button {
+  border-left-color: transparent !important;
+  color: #5f6772;
+}
+
+.config-field .pass-group button:hover,
+[data-theme="light"] .config-field .pass-group button:hover,
+.config-field .pass-group button[aria-pressed="true"],
+[data-theme="light"] .config-field .pass-group button[aria-pressed="true"] {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+}
+
+.pass-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.config-field .pass-group input:focus,
+[data-theme="light"] .config-field .pass-group input:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.config-field .pass-group input:focus + button,
+[data-theme="light"] .config-field .pass-group input:focus + button {
+  border-left-color: transparent !important;
+}
+
+/* 全局开关：白/灰胶囊轨道 + 圆形滑块 + ON/OFF 文案，不使用蓝色底。 */
+:root {
+  --switch-track-off: #ffffff;
+  --switch-track-on: #d9dde3;
+  --switch-border: rgba(29,29,31,0.14);
+  --switch-border-on: rgba(29,29,31,0.18);
+  --switch-knob-off: #cfd5dd;
+  --switch-knob-on: #ffffff;
+  --switch-shadow: 0 1px 2px rgba(20,24,30,0.045);
+}
+
+.toggle-label,
+.check-row,
+.config-filter-toggle,
+.history-toggle {
+  gap: 7px !important;
+}
+
+.toggle-label input[type="checkbox"],
+.check-row input[type="checkbox"],
+.config-filter-toggle input[type="checkbox"] {
+  appearance: none !important;
+  width: 36px !important;
+  height: 20px !important;
+  min-width: 36px !important;
+  min-height: 20px !important;
+  flex: 0 0 36px !important;
+  padding: 0 !important;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 999px !important;
+  background: var(--switch-track-off) !important;
+  box-shadow: var(--switch-shadow) !important;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.toggle-label input[type="checkbox"]::before,
+.check-row input[type="checkbox"]::before,
+.config-filter-toggle input[type="checkbox"]::before {
+  content: none !important;
+  display: none !important;
+}
+
+.toggle-label input[type="checkbox"]::after,
+.check-row input[type="checkbox"]::after,
+.config-filter-toggle input[type="checkbox"]::after {
+  content: "" !important;
+  position: absolute !important;
+  top: 2px !important;
+  left: 3px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--switch-knob-off) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.12) !important;
+  transform: none !important;
+  transition: transform var(--transition), background var(--transition);
+}
+
+.toggle-label input[type="checkbox"]:checked,
+.check-row input[type="checkbox"]:checked,
+.config-filter-toggle input[type="checkbox"]:checked {
+  border-color: var(--switch-border-on) !important;
+  background: var(--switch-track-on) !important;
+}
+
+.toggle-label input[type="checkbox"]:checked::before,
+.check-row input[type="checkbox"]:checked::before,
+.config-filter-toggle input[type="checkbox"]:checked::before {
+  content: none !important;
+  display: none !important;
+}
+
+.toggle-label input[type="checkbox"]:checked::after,
+.check-row input[type="checkbox"]:checked::after,
+.config-filter-toggle input[type="checkbox"]:checked::after {
+  background: var(--switch-knob-on) !important;
+  transform: translateX(16px) !important;
+}
+
+.toggle-label input[type="checkbox"]:focus-visible,
+.check-row input[type="checkbox"]:focus-visible,
+.config-filter-toggle input[type="checkbox"]:focus-visible,
+.history-toggle:focus-visible .toggle-dot,
+.threads-toggle-track:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(95,103,114,0.12), var(--switch-shadow) !important;
+}
+
+.history-toggle .toggle-dot,
+.threads-toggle-track {
+  width: 36px !important;
+  height: 20px !important;
+  min-width: 36px !important;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 999px !important;
+  background: var(--switch-track-off) !important;
+  box-shadow: var(--switch-shadow) !important;
+  position: relative;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.history-toggle .toggle-dot::before,
+.threads-toggle-track::before {
+  content: none !important;
+  display: none !important;
+}
+
+.history-toggle .toggle-dot::after,
+.threads-toggle-knob {
+  top: 2px !important;
+  left: 3px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: var(--switch-knob-off) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.12) !important;
+  transition: transform var(--transition), background var(--transition) !important;
+}
+
+.history-toggle.on .toggle-dot,
+.threads-toggle-track.on {
+  border-color: var(--switch-border-on) !important;
+  background: var(--switch-track-on) !important;
+}
+
+.history-toggle.on .toggle-dot::before,
+.threads-toggle-track.on::before {
+  content: none !important;
+  display: none !important;
+}
+
+.history-toggle.on .toggle-dot::after,
+.threads-toggle-track.on .threads-toggle-knob {
+  background: var(--switch-knob-on) !important;
+  transform: translateX(16px) !important;
+}
+
+/* 三段式滑块统一参考主题切换：外层胶囊 + 选中浮块。 */
+.vision-mode-segments,
+.model-vision-segments,
+[data-theme="light"] .vision-mode-segments,
+[data-theme="light"] .model-vision-segments {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+  box-shadow: var(--switch-shadow) !important;
+  overflow: hidden;
+}
+
+.model-vision-segments,
+[data-theme="light"] .model-vision-segments {
+  width: var(--vision-segment-width, 192px);
+  min-width: 0;
+  min-height: var(--model-map-control-height, 34px);
+  align-self: center;
+}
+
+.vision-mode-segments,
+[data-theme="light"] .vision-mode-segments {
+  width: var(--vision-segment-width, 192px);
+  max-width: 100%;
+  min-height: var(--model-map-control-height, 34px);
+}
+
+.vision-mode-option,
+.model-vision-segments button,
+[data-theme="light"] .vision-mode-option,
+[data-theme="light"] .model-vision-segments button {
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1;
+}
+
+.model-vision-segments button,
+[data-theme="light"] .model-vision-segments button {
+  min-height: 26px !important;
+  padding: 0 7px !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+}
+
+.vision-mode-option:hover,
+.model-vision-segments button:hover,
+[data-theme="light"] .vision-mode-option:hover,
+[data-theme="light"] .model-vision-segments button:hover {
+  color: var(--text-primary) !important;
+  background: rgba(29,29,31,0.035) !important;
+}
+
+.vision-mode-option.active,
+.model-vision-segments button.active,
+[data-theme="light"] .vision-mode-option.active,
+[data-theme="light"] .model-vision-segments button.active {
+  color: var(--text-primary) !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 4px 10px rgba(20,24,30,0.045) !important;
+}
+
+/* 模型映射表格：明确三列，预设行不渲染隐藏删除占位，避免右侧溢出。 */
+.model-map-head:not(.client-model-template) {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width, 192px);
+  column-gap: 20px;
+  padding-right: 0;
+}
+
+.model-map-head:not(.client-model-template) span:nth-child(3) {
+  grid-column: auto;
+  text-align: center;
+}
+
+.model-map-row {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width, 192px);
+  column-gap: 20px;
+  overflow: visible;
+  border-bottom: 0 !important;
+}
+
+.model-map-row.removable {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width, 192px) 24px;
+}
+
+.model-map-row .model-upstream-cell,
+.model-map-row .model-vision-cell {
+  min-width: 0;
+}
+
+.model-map-row .model-upstream-cell input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--model-map-control-height, 34px);
+  padding: 0 14px !important;
+  border-radius: 9px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.model-map-row .model-vision-cell {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.model-map-row .model-vision-segments,
+[data-theme="light"] .model-map-row .model-vision-segments {
+  width: var(--vision-segment-width, 192px);
+  min-width: 0;
+}
+
+.model-map-row .model-vision-segments button,
+[data-theme="light"] .model-map-row .model-vision-segments button {
+  white-space: nowrap;
+  word-break: keep-all;
+  padding: 0 6px !important;
+}
+
+.model-map-row .model-remove {
+  width: 24px;
+  min-width: 24px;
+  justify-self: center;
+}
+
+/* 账号表单里的折叠标题跟分区标题保持同一文字等级。 */
+.account-form .collapsible-toggle,
+[data-theme="light"] .account-form .collapsible-toggle {
+  width: auto;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-heading) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  font-variation-settings: "wght" 500 !important;
+  line-height: 1.2;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.account-form .collapsible-toggle .arrow,
+[data-theme="light"] .account-form .collapsible-toggle .arrow {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 14px !important;
+  line-height: 1;
+  transform-origin: 50% 50%;
+}
+
+.account-form .collapsible-toggle.open .arrow,
+[data-theme="light"] .account-form .collapsible-toggle.open .arrow {
+  transform: rotate(90deg);
+}
+
 @media (max-width: 760px) {
   .accounts-page-header .page-header-actions {
     display: flex;
@@ -9411,5 +9924,125 @@ body {
 
   .account-card .card-actions-row {
     justify-content: flex-start;
+  }
+}
+
+/* 账号卡片右侧：余额/状态与动作按钮稳定分栏，避免配额文本挤到按钮区。 */
+.account-card-mainline {
+  grid-template-columns: minmax(0, 1fr) 430px !important;
+  gap: 18px;
+}
+
+.account-card-side {
+  position: relative;
+  grid-template-columns: 250px 148px !important;
+  justify-content: stretch !important;
+  gap: 32px !important;
+  min-width: 0;
+}
+
+.account-card-side::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 166px;
+  width: 1px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(29,29,31,0.10);
+  transform: translateY(-50%);
+}
+
+.account-card .card-actions-row {
+  width: 148px !important;
+  min-width: 148px;
+  justify-content: flex-end !important;
+  padding-left: 0 !important;
+  border-left: 0 !important;
+}
+
+.card-balance,
+[data-theme="light"] .card-balance {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.balance-pill {
+  width: auto;
+  min-width: 0;
+}
+
+.balance-plan {
+  justify-content: flex-end;
+  gap: 22px;
+  white-space: nowrap;
+}
+
+.balance-quota {
+  grid-template-columns: max-content max-content;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.balance-credit {
+  display: grid;
+  grid-template-columns: max-content 68px;
+  justify-content: stretch;
+  gap: 12px;
+}
+
+.balance-credit-text {
+  flex: 0 1 auto;
+  max-width: none;
+}
+
+.balance-pill .bar-track {
+  flex: 0 0 68px;
+}
+
+.balance-empty .balance-na {
+  display: none;
+}
+
+.balance-empty::before {
+  content: none;
+  display: none;
+}
+
+/* 活跃账号只用“活跃”标签表达，不让整张卡和按钮跳出当前线性体系。 */
+.account-card.active,
+[data-theme="light"] .account-card.active,
+[data-theme="light"] .account-card.active:hover {
+  border-color: var(--content-border-soft) !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.account-icon-btn.account-applied,
+[data-theme="light"] .account-icon-btn.account-applied {
+  color: #0a6fd8 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.account-icon-btn.account-applied:hover,
+[data-theme="light"] .account-icon-btn.account-applied:hover {
+  background: transparent !important;
+}
+
+.balance-credit-text {
+  max-width: none;
+}
+
+@media (max-width: 920px) {
+  .account-card-mainline {
+    grid-template-columns: 1fr !important;
+  }
+
+  .account-card-side {
+    grid-template-columns: minmax(0, 1fr) auto !important;
   }
 }
