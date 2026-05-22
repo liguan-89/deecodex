@@ -184,7 +184,9 @@ async fn run_stage(
         EndpointKind::AnthropicMessages => {
             call_anthropic_stage(ctx, &account, &endpoint, &model, label, &prompt).await?
         }
-        EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => {
+        EndpointKind::OpenAiResponses
+        | EndpointKind::CustomResponses
+        | EndpointKind::CodexOfficial => {
             call_responses_stage(ctx, &account, &endpoint, &model, label, &prompt).await?
         }
     };
@@ -625,8 +627,10 @@ mod tests {
             wire_protocol: Default::default(),
             upstream: "https://example.com/v1".into(),
             api_key: String::new(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::new(),

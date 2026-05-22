@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use crate::accounts::{
-    Account, AccountClientKind, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
-    UnsupportedImagePolicy, VisionMode,
+    account_routing_options, Account, AccountAuthMode, AccountClientKind, AccountRuntimeStatus,
+    AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy, UnsupportedImagePolicy,
+    VisionMode,
 };
 use crate::anthropic;
 use crate::cache::RequestCache;
@@ -35,16 +36,20 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use futures_util::TryStreamExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
+use sha2::Digest;
 
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_items";
+static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -182,11 +187,29 @@ struct DevPipelineResponseArgs<'a> {
 }
 
 async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) {
+    let (mut account, mut endpoint) = active_account_endpoint_without_hot_overrides(state).await;
+    // AppState 的热字段仍是运行时真值；测试和托盘切换都会直接更新它。
+    endpoint.base_url = state.upstream.read().await.to_string();
+    account.sync_legacy_from_endpoint(&endpoint);
+    (account, endpoint)
+}
+
+async fn active_account_endpoint_without_hot_overrides(
+    state: &AppState,
+) -> (Account, EndpointConfig) {
     let mut account = state.active_account.read().await.clone();
     account.normalize_v2();
     let endpoint_id = state.account_store.read().await.active_endpoint_id.clone();
-    let mut endpoint = account
-        .active_endpoint(endpoint_id.as_deref())
+    account_endpoint_or_fallback(account, endpoint_id.as_deref())
+}
+
+fn account_endpoint_or_fallback(
+    mut account: Account,
+    active_endpoint_id: Option<&str>,
+) -> (Account, EndpointConfig) {
+    account.normalize_v2();
+    let endpoint = account
+        .active_endpoint(active_endpoint_id)
         .cloned()
         .or_else(|| account.endpoints.first().cloned())
         .unwrap_or_else(|| {
@@ -215,10 +238,138 @@ async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) 
             fallback.model_map = account.model_map.clone();
             fallback
         });
-    // AppState 的热字段仍是运行时真值；测试和托盘切换都会直接更新它。
-    endpoint.base_url = state.upstream.read().await.to_string();
     account.sync_legacy_from_endpoint(&endpoint);
     (account, endpoint)
+}
+
+async fn codex_official_account_endpoint(
+    state: &AppState,
+    requested_model: &str,
+) -> (Account, EndpointConfig) {
+    let store = state.account_store.read().await.clone();
+    let cursor = CODEX_OFFICIAL_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+    if let Some((account, endpoint)) = select_codex_official_account_endpoint(
+        &store,
+        requested_model,
+        crate::accounts::now_secs(),
+        cursor,
+    ) {
+        return (account, endpoint);
+    }
+
+    active_account_endpoint_without_hot_overrides(state).await
+}
+
+fn select_codex_official_account_endpoint(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+) -> Option<(Account, EndpointConfig)> {
+    let active_account = store.active_account()?;
+    let active_endpoint = active_official_endpoint(store, active_account)?;
+    if active_endpoint.kind != EndpointKind::CodexOfficial {
+        return None;
+    }
+    let mut fallback_account = active_account.clone();
+    fallback_account.sync_legacy_from_endpoint(&active_endpoint);
+    let fallback = (fallback_account, active_endpoint.clone());
+
+    let active_pool = account_routing_options(active_account).pool;
+    let mut candidates: Vec<(Account, EndpointConfig, i64, u32)> = store
+        .accounts
+        .iter()
+        .filter(|account| account.client_kind.is_codex())
+        .filter_map(|account| {
+            let routing = account_routing_options(account);
+            if !routing.effective_enabled() || routing.pool != active_pool {
+                return None;
+            }
+            let endpoint = official_endpoint_for_account(store, account)?;
+            let mapped_model = resolve_model(requested_model, &endpoint.model_map);
+            if !account_runtime_ready(account, &mapped_model, now) {
+                return None;
+            }
+            let mut account = account.clone();
+            account.sync_legacy_from_endpoint(&endpoint);
+            Some((account, endpoint, routing.priority, routing.weight))
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| left.0.id.cmp(&right.0.id))
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+    let Some(max_priority) = candidates.first().map(|candidate| candidate.2) else {
+        return Some(fallback);
+    };
+    let top: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| candidate.2 == max_priority)
+        .collect();
+    let total_weight: u64 = top
+        .iter()
+        .map(|candidate| u64::from(candidate.3.max(1)))
+        .sum();
+    if total_weight == 0 {
+        return Some(fallback);
+    }
+    let mut slot = cursor % total_weight;
+    for (account, endpoint, _priority, weight) in top {
+        let weight = u64::from(weight.max(1));
+        if slot < weight {
+            return Some((account, endpoint));
+        }
+        slot = slot.saturating_sub(weight);
+    }
+    Some(fallback)
+}
+
+fn active_official_endpoint(store: &AccountStore, account: &Account) -> Option<EndpointConfig> {
+    account
+        .active_endpoint(store.active_endpoint_id.as_deref())
+        .filter(|endpoint| endpoint.kind == EndpointKind::CodexOfficial)
+        .cloned()
+}
+
+fn official_endpoint_for_account(
+    store: &AccountStore,
+    account: &Account,
+) -> Option<EndpointConfig> {
+    if store.active_account_id.as_deref() == Some(&account.id)
+        || store.active_id.as_deref() == Some(&account.id)
+    {
+        if let Some(endpoint) = active_official_endpoint(store, account) {
+            return Some(endpoint);
+        }
+    }
+    account
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.kind == EndpointKind::CodexOfficial)
+        .cloned()
+}
+
+fn account_runtime_ready(account: &Account, mapped_model: &str, now: u64) -> bool {
+    runtime_retry_ready(account.runtime_state.next_retry_after, now)
+        && account
+            .runtime_state
+            .model_states
+            .get(mapped_model)
+            .is_none_or(|state| {
+                runtime_retry_ready(state.next_retry_after, now)
+                    || !matches!(
+                        state.status,
+                        AccountRuntimeStatus::CoolingDown | AccountRuntimeStatus::QuotaExceeded
+                    )
+            })
+}
+
+fn runtime_retry_ready(next_retry_after: Option<u64>, now: u64) -> bool {
+    next_retry_after.is_none_or(|retry_at| retry_at <= now)
 }
 
 fn account_client_kind_slug(kind: &AccountClientKind) -> &'static str {
@@ -236,6 +387,7 @@ fn endpoint_kind_slug(kind: &EndpointKind) -> &'static str {
         EndpointKind::OpenAiChat => "openai_chat",
         EndpointKind::OpenAiResponses => "openai_responses",
         EndpointKind::AnthropicMessages => "anthropic_messages",
+        EndpointKind::CodexOfficial => "codex_official",
         EndpointKind::CustomChat => "custom_chat",
         EndpointKind::CustomResponses => "custom_responses",
     }
@@ -380,14 +532,10 @@ fn anthropic_messages_path(base_url: &str) -> &'static str {
     }
 }
 
-fn apply_proxy_upstream_headers(
+fn apply_account_custom_headers(
     mut builder: reqwest::RequestBuilder,
     account: &Account,
 ) -> reqwest::RequestBuilder {
-    let profile = providers::profile_for_account(account);
-    for (name, value) in providers::request_headers(&profile, &account.api_key) {
-        builder = builder.header(name, value);
-    }
     for (name, value) in &account.custom_headers {
         if let (Ok(header_name), Ok(header_value)) = (
             header::HeaderName::from_bytes(name.as_bytes()),
@@ -397,6 +545,171 @@ fn apply_proxy_upstream_headers(
         }
     }
     builder
+}
+
+fn apply_proxy_upstream_headers(
+    mut builder: reqwest::RequestBuilder,
+    account: &Account,
+) -> reqwest::RequestBuilder {
+    let profile = providers::profile_for_account(account);
+    for (name, value) in providers::request_headers(&profile, &account.api_key) {
+        builder = builder.header(name, value);
+    }
+    apply_account_custom_headers(builder, account)
+}
+
+fn oauth_provider_slug(account: &Account) -> Option<&str> {
+    account
+        .client_options
+        .get("oauth")
+        .and_then(Value::as_object)
+        .and_then(|oauth| oauth.get("provider"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+}
+
+fn is_claude_official_oauth_proxy_account(account: &Account) -> bool {
+    account.auth_mode == AccountAuthMode::OAuth
+        && account.client_kind == AccountClientKind::ClaudeCode
+        && account.provider.eq_ignore_ascii_case("anthropic")
+        && oauth_provider_slug(account)
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("claude"))
+}
+
+fn header_or_default(headers: &HeaderMap, name: &'static str, default: &'static str) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn merge_claude_beta_header(headers: &HeaderMap) -> String {
+    let mut betas = headers
+        .get("anthropic-beta")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28")
+        .to_string();
+    if !betas.contains("oauth") {
+        betas.push_str(",oauth-2025-04-20");
+    }
+    if !betas.contains("interleaved-thinking") {
+        betas.push_str(",interleaved-thinking-2025-05-14");
+    }
+    betas
+}
+
+fn stable_claude_session_id(account: &Account, token: &str) -> String {
+    let seed = format!("{}:{token}", account.id);
+    let digest = sha2::Sha256::digest(seed.as_bytes());
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0],
+        digest[1],
+        digest[2],
+        digest[3],
+        digest[4],
+        digest[5],
+        digest[6],
+        digest[7],
+        digest[8],
+        digest[9],
+        digest[10],
+        digest[11],
+        digest[12],
+        digest[13],
+        digest[14],
+        digest[15],
+    )
+}
+
+fn client_proxy_body_streams(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn apply_claude_oauth_proxy_headers(
+    mut builder: reqwest::RequestBuilder,
+    inbound_headers: &HeaderMap,
+    account: &Account,
+    access_token: &str,
+    stream: bool,
+) -> reqwest::RequestBuilder {
+    let session_id = inbound_headers
+        .get("x-claude-code-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| stable_claude_session_id(account, access_token));
+
+    builder = builder
+        .bearer_auth(access_token)
+        .header(
+            "Anthropic-Version",
+            header_or_default(inbound_headers, "anthropic-version", "2023-06-01"),
+        )
+        .header("Anthropic-Beta", merge_claude_beta_header(inbound_headers))
+        .header("X-App", header_or_default(inbound_headers, "x-app", "cli"))
+        .header(
+            "X-Stainless-Retry-Count",
+            header_or_default(inbound_headers, "x-stainless-retry-count", "0"),
+        )
+        .header(
+            "X-Stainless-Runtime",
+            header_or_default(inbound_headers, "x-stainless-runtime", "node"),
+        )
+        .header(
+            "X-Stainless-Lang",
+            header_or_default(inbound_headers, "x-stainless-lang", "js"),
+        )
+        .header(
+            "X-Stainless-Timeout",
+            header_or_default(inbound_headers, "x-stainless-timeout", "600"),
+        )
+        .header(
+            "X-Stainless-Package-Version",
+            header_or_default(inbound_headers, "x-stainless-package-version", "0.74.0"),
+        )
+        .header(
+            "X-Stainless-Runtime-Version",
+            header_or_default(inbound_headers, "x-stainless-runtime-version", "v24.3.0"),
+        )
+        .header(
+            "X-Stainless-Os",
+            header_or_default(inbound_headers, "x-stainless-os", "MacOS"),
+        )
+        .header(
+            "X-Stainless-Arch",
+            header_or_default(inbound_headers, "x-stainless-arch", "arm64"),
+        )
+        .header("X-Claude-Code-Session-Id", session_id)
+        .header(
+            "User-Agent",
+            header_or_default(
+                inbound_headers,
+                "user-agent",
+                "claude-cli/2.1.63 (external, cli)",
+            ),
+        )
+        .header("Connection", "keep-alive");
+    if stream {
+        builder = builder
+            .header("Accept", "text/event-stream")
+            .header("Accept-Encoding", "identity");
+    } else {
+        builder = builder
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "gzip, deflate, br, zstd");
+    }
+    apply_account_custom_headers(builder, account)
 }
 
 fn usage_from_object(usage: &serde_json::Map<String, Value>) -> (Option<u32>, Option<u32>, bool) {
@@ -493,7 +806,7 @@ async fn forward_client_proxy_request(
         )
             .into_response();
     };
-    let Some(account) = account_for_proxy_token(&state, &token).await else {
+    let Some(mut account) = account_for_proxy_token(&state, &token).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -518,7 +831,95 @@ async fn forward_client_proxy_request(
         .client
         .post(&upstream_url)
         .header("Content-Type", "application/json");
-    let mut builder = apply_proxy_upstream_headers(builder, &account);
+    let mut builder = if is_claude_official_oauth_proxy_account(&account) {
+        match fresh_oauth_access_token(&state, &mut account).await {
+            Ok(access_token) if !access_token.trim().is_empty() => {
+                apply_claude_oauth_proxy_headers(
+                    builder,
+                    &headers,
+                    &account,
+                    &access_token,
+                    client_proxy_body_streams(&body),
+                )
+            }
+            Ok(_) => {
+                update_runtime_result(
+                    &state,
+                    &account.id,
+                    &model,
+                    StatusCode::UNAUTHORIZED,
+                    "Claude 官方 OAuth access token 为空".into(),
+                    None,
+                )
+                .await;
+                state
+                    .request_history
+                    .record(record_from_context(
+                        &history_context,
+                        response_id,
+                        model,
+                        "failed".into(),
+                        0,
+                        0,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        "missing oauth token".into(),
+                        false,
+                    ))
+                    .await;
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": {
+                            "message": "Claude 官方账号缺少 OAuth access token",
+                            "type": "authentication_error",
+                            "code": "missing_oauth_token"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                update_runtime_result(
+                    &state,
+                    &account.id,
+                    &model,
+                    StatusCode::UNAUTHORIZED,
+                    format!("Claude OAuth token refresh failed: {err}"),
+                    None,
+                )
+                .await;
+                state
+                    .request_history
+                    .record(record_from_context(
+                        &history_context,
+                        response_id,
+                        model,
+                        "failed".into(),
+                        0,
+                        0,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        format!("oauth refresh failed: {err}"),
+                        false,
+                    ))
+                    .await;
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": {
+                            "message": format!("Claude OAuth token refresh failed: {err}"),
+                            "type": "authentication_error",
+                            "code": "oauth_refresh_failed"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        apply_proxy_upstream_headers(builder, &account)
+    };
     if let Some(secs) = account.request_timeout_secs {
         builder = builder.timeout(std::time::Duration::from_secs(secs));
     }
@@ -527,6 +928,15 @@ async fn forward_client_proxy_request(
     let resp = match result {
         Ok(resp) => resp,
         Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                &model,
+                StatusCode::BAD_GATEWAY,
+                format!("upstream connection error: {err}"),
+                None,
+            )
+            .await;
             state
                 .request_history
                 .record(record_from_context(
@@ -557,6 +967,7 @@ async fn forward_client_proxy_request(
     };
 
     let status = resp.status();
+    let retry_after = retry_after_secs(resp.headers());
     let content_type = resp
         .headers()
         .get(header::CONTENT_TYPE)
@@ -600,6 +1011,19 @@ async fn forward_client_proxy_request(
     } else {
         (0, 0, false)
     };
+    update_runtime_result(
+        &state,
+        &account.id,
+        &model,
+        status,
+        if status.is_success() {
+            String::new()
+        } else {
+            format!("HTTP {}", status.as_u16())
+        },
+        retry_after,
+    )
+    .await;
     state
         .request_history
         .record(record_from_context(
@@ -1752,6 +2176,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         EndpointKind::OpenAiChat | EndpointKind::CustomChat => "translate",
         EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => "bypass",
         EndpointKind::AnthropicMessages => "anthropic",
+        EndpointKind::CodexOfficial => "codex_official",
     };
     tracing::info!(
         "⇢ {mode} {model} → {} ({})",
@@ -1765,6 +2190,9 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
     // 直连模式：仅做模型映射，其他全部透传
     if endpoint.kind.is_responses_like() {
         return handle_responses_bypass(state, req, body).await;
+    }
+    if endpoint.kind == EndpointKind::CodexOfficial {
+        return handle_codex_official(state, req, body).await;
     }
 
     // ── 以下仅翻译/代理模式生效 ──
@@ -2095,9 +2523,7 @@ fn strip_claude_code_anthropic_attribution(
     if let Some(system) = value.get_mut("system") {
         match system {
             Value::String(text) => {
-                if strip_claude_code_attribution_text(text, custom_rules) {
-                    changed = true;
-                }
+                changed |= strip_claude_code_attribution_text(text, custom_rules);
             }
             Value::Array(parts) => {
                 for part in parts {
@@ -2592,6 +3018,438 @@ async fn handle_responses_bypass(
     };
     tracing::info!("⇠ bypass done in {}ms", start.elapsed().as_millis());
     result
+}
+
+async fn handle_codex_official(
+    state: AppState,
+    mut req: ResponsesRequest,
+    mut body: axum::body::Bytes,
+) -> Response {
+    let original_model = req.model.clone();
+    let (mut account, endpoint) = codex_official_account_endpoint(&state, &original_model).await;
+    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
+    let model_map = endpoint.model_map.clone();
+    let mapped_model = resolve_model(&original_model, &model_map);
+    req.model = mapped_model.clone();
+    if mapped_model != original_model {
+        match serde_json::to_vec(&req) {
+            Ok(updated) => body = axum::body::Bytes::from(updated),
+            Err(err) => {
+                warn!("Codex 官方请求模型映射序列化失败，继续使用原始请求体: {err}");
+            }
+        }
+    }
+
+    let token = match fresh_oauth_access_token(&state, &mut account).await {
+        Ok(token) if !token.trim().is_empty() => token,
+        Ok(_) => account.api_key.clone(),
+        Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                &mapped_model,
+                StatusCode::UNAUTHORIZED,
+                format!("OAuth token refresh failed: {err}"),
+                None,
+            )
+            .await;
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": {
+                        "message": format!("OAuth token refresh failed: {err}"),
+                        "type": "authentication_error",
+                        "code": "oauth_refresh_failed"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if token.trim().is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": {
+                    "message": "Codex 官方账号缺少 OAuth access token",
+                    "type": "authentication_error",
+                    "code": "missing_oauth_token"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let upstream = Url::parse(&endpoint.base_url)
+        .unwrap_or_else(|_| Url::parse("https://chatgpt.com/backend-api/codex").unwrap());
+    let path = if endpoint.path.trim().is_empty() {
+        "responses"
+    } else {
+        endpoint.effective_path()
+    };
+    let url = format!("{}{}", join_base(&upstream), path);
+    let response_id = state.sessions.new_id();
+    let start = Instant::now();
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .bearer_auth(token)
+        .header("Originator", "codex_cli_rs")
+        .header(
+            "User-Agent",
+            "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.3",
+        )
+        .header("Connection", "Keep-Alive");
+    if req.stream {
+        builder = builder
+            .header("Accept", "text/event-stream")
+            .header("Accept-Encoding", "identity");
+    } else {
+        builder = builder.header("Accept", "application/json");
+    }
+    if let Some(session_id) = codex_session_id_from_body(&body) {
+        builder = builder.header("Session_id", session_id);
+    }
+    if let Some(account_id) = oauth_account_id(&account) {
+        builder = builder.header("Chatgpt-Account-Id", account_id);
+    }
+    for (k, v) in &endpoint.custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if let Some(secs) = endpoint.request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let result = builder.body(body).send().await;
+    let upstream_resp = match result {
+        Ok(resp) => resp,
+        Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                &mapped_model,
+                StatusCode::BAD_GATEWAY,
+                format!("Codex 官方上游连接失败: {err}"),
+                None,
+            )
+            .await;
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("Codex 官方上游连接失败: {err}"),
+                        "type": "api_error",
+                        "code": "upstream_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let status = upstream_resp.status();
+    let retry_after = retry_after_secs(upstream_resp.headers());
+
+    let content_type = upstream_resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(if req.stream {
+            "text/event-stream"
+        } else {
+            "application/json"
+        })
+        .to_string();
+
+    if req.stream {
+        update_runtime_result(
+            &state,
+            &account.id,
+            &mapped_model,
+            status,
+            if status.is_success() {
+                String::new()
+            } else {
+                format!("HTTP {}", status.as_u16())
+            },
+            retry_after,
+        )
+        .await;
+        let stream = upstream_resp.bytes_stream().map_err(std::io::Error::other);
+        state
+            .request_history
+            .record(record_from_context(
+                &history_context,
+                response_id,
+                mapped_model,
+                if status.is_success() {
+                    "completed".into()
+                } else {
+                    "failed".into()
+                },
+                0,
+                0,
+                start.elapsed().as_millis() as u64,
+                url,
+                if status.is_success() {
+                    String::new()
+                } else {
+                    format!("HTTP {}", status.as_u16())
+                },
+                false,
+            ))
+            .await;
+        return Response::builder()
+            .status(status)
+            .header("Content-Type", content_type)
+            .body(axum::body::Body::from_stream(stream))
+            .unwrap();
+    }
+
+    let bytes = match upstream_resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": {
+                        "message": format!("Codex 官方响应读取失败: {err}"),
+                        "type": "api_error",
+                        "code": "upstream_read_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let retry_after = codex_usage_retry_after_secs(status, &bytes, retry_after);
+    update_runtime_result(
+        &state,
+        &account.id,
+        &mapped_model,
+        status,
+        if status.is_success() {
+            String::new()
+        } else {
+            codex_error_message(status, &bytes)
+        },
+        retry_after,
+    )
+    .await;
+    let (input_tokens, output_tokens, cache_hit) = if status.is_success() {
+        extract_proxy_response_usage(&bytes)
+    } else {
+        (0, 0, false)
+    };
+    state
+        .request_history
+        .record(record_from_context(
+            &history_context,
+            response_id,
+            mapped_model,
+            if status.is_success() {
+                "completed".into()
+            } else {
+                "failed".into()
+            },
+            input_tokens,
+            output_tokens,
+            start.elapsed().as_millis() as u64,
+            url,
+            if status.is_success() {
+                String::new()
+            } else {
+                format!("HTTP {}", status.as_u16())
+            },
+            cache_hit,
+        ))
+        .await;
+
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(axum::body::Body::from(bytes))
+        .unwrap()
+}
+
+fn codex_session_id_from_body(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("Session_id").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn oauth_account_id(account: &Account) -> Option<String> {
+    account
+        .client_options
+        .get("oauth")
+        .and_then(Value::as_object)
+        .and_then(|oauth| oauth.get("account_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+async fn fresh_oauth_access_token(state: &AppState, account: &mut Account) -> Result<String> {
+    let Some(oauth_value) = account.client_options.get("oauth").cloned() else {
+        return Ok(account.api_key.clone());
+    };
+    let Some(token) = crate::oauth_accounts::oauth_token_from_value(&oauth_value) else {
+        return Ok(account.api_key.clone());
+    };
+    let now = crate::oauth_accounts::now_secs();
+    if token.expired_at == 0 || token.expired_at > now.saturating_add(60) {
+        return Ok(token.access_token);
+    }
+    if token.refresh_token.trim().is_empty() {
+        return Ok(token.access_token);
+    }
+    let provider = crate::oauth_accounts::OAuthProvider::parse(&token.provider)?;
+    let refreshed =
+        crate::oauth_accounts::refresh_token(&state.client, &provider, &token.refresh_token)
+            .await?;
+    let login_mode = oauth_value
+        .get("login_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("browser");
+    account.api_key = refreshed.access_token.clone();
+    account.client_options.insert(
+        "oauth".into(),
+        crate::oauth_accounts::oauth_token_to_value(&refreshed, login_mode),
+    );
+    persist_refreshed_oauth_account(state, account.clone()).await;
+    Ok(refreshed.access_token)
+}
+
+async fn persist_refreshed_oauth_account(state: &AppState, account: Account) {
+    let store_to_save = {
+        let mut store = state.account_store.write().await;
+        if let Some(existing) = store
+            .accounts
+            .iter_mut()
+            .find(|candidate| candidate.id == account.id)
+        {
+            existing.api_key = account.api_key.clone();
+            existing.client_options = account.client_options.clone();
+            existing.updated_at = crate::accounts::now_secs();
+        }
+        store.clone()
+    };
+    if state.active_account.read().await.id == account.id {
+        *state.active_account.write().await = account;
+    }
+    if let Err(err) = crate::accounts::save_accounts(state.data_dir.as_ref(), &store_to_save) {
+        warn!("保存刷新后的 OAuth token 失败: {err}");
+    }
+}
+
+async fn update_runtime_result(
+    state: &AppState,
+    account_id: &str,
+    model: &str,
+    status: StatusCode,
+    message: String,
+    retry_after_secs: Option<u64>,
+) {
+    let now = crate::accounts::now_secs();
+    let mut active_update = None;
+    let store_to_save = {
+        let mut store = state.account_store.write().await;
+        if let Some(account) = store
+            .accounts
+            .iter_mut()
+            .find(|candidate| candidate.id == account_id)
+        {
+            if status.is_success() {
+                account.record_runtime_success(model, now);
+            } else {
+                account.record_runtime_failure(
+                    model,
+                    status.as_u16(),
+                    message,
+                    retry_after_secs,
+                    now,
+                );
+            }
+            active_update = Some(account.clone());
+        }
+        store.clone()
+    };
+    if let Some(account) = active_update {
+        if state.active_account.read().await.id == account.id {
+            *state.active_account.write().await = account;
+        }
+    }
+    if let Err(err) = crate::accounts::save_accounts(state.data_dir.as_ref(), &store_to_save) {
+        warn!("保存账号运行态失败: {err}");
+    }
+}
+
+fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn codex_usage_retry_after_secs(
+    status: StatusCode,
+    body: &[u8],
+    header_retry_after: Option<u64>,
+) -> Option<u64> {
+    if header_retry_after.is_some() || status != StatusCode::TOO_MANY_REQUESTS || body.is_empty() {
+        return header_retry_after;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
+    let error = value.get("error").unwrap_or(&value);
+    let error_type = error
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if error_type != "usage_limit_reached" {
+        return None;
+    }
+    let now = crate::accounts::now_secs();
+    if let Some(resets_at) = error.get("resets_at").and_then(Value::as_u64) {
+        if resets_at > now {
+            return Some(resets_at.saturating_sub(now));
+        }
+    }
+    error
+        .get("resets_in_seconds")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+}
+
+fn codex_error_message(status: StatusCode, body: &[u8]) -> String {
+    let fallback = format!("HTTP {}", status.as_u16());
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return fallback;
+    };
+    value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or(fallback)
 }
 
 async fn bypass_stream_forward(
@@ -5272,6 +6130,122 @@ mod tests {
         assert_eq!(items[0]["id"], "item_0");
         assert_eq!(items[0]["status"], "completed");
         assert_eq!(items[0]["output"], Value::Null);
+    }
+
+    fn official_codex_account(id: &str, priority: i64, weight: u32) -> Account {
+        let mut account: Account = serde_json::from_value(json!({
+            "id": id,
+            "name": format!("Codex {id}"),
+            "provider": "codex",
+            "client_kind": "codex",
+            "upstream": "https://chatgpt.com/backend-api/codex",
+            "api_key": format!("token-{id}"),
+            "auth_mode": "oauth",
+            "endpoints": [{
+                "id": format!("ep-{id}"),
+                "name": "Codex 官方",
+                "kind": "codex_official",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "model_map": {
+                    "gpt-5": format!("official-{id}")
+                }
+            }]
+        }))
+        .unwrap();
+        crate::accounts::set_account_routing_options(
+            &mut account,
+            crate::accounts::AccountRoutingOptions {
+                priority,
+                weight,
+                ..Default::default()
+            },
+        );
+        account
+    }
+
+    fn official_store(accounts: Vec<Account>, active_id: &str) -> AccountStore {
+        AccountStore {
+            version: crate::accounts::ACCOUNT_STORE_VERSION,
+            accounts,
+            active_id: Some(active_id.into()),
+            active_account_id: Some(active_id.into()),
+            active_endpoint_id: Some(format!("ep-{active_id}")),
+        }
+    }
+
+    #[test]
+    fn codex_official_selector_skips_cooled_account() {
+        let mut cooled = official_codex_account("cooled", 100, 1);
+        cooled.runtime_state.next_retry_after = Some(2_000);
+        let ready = official_codex_account("ready", 10, 1);
+        let store = official_store(vec![cooled, ready], "cooled");
+
+        let (account, _) =
+            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+
+        assert_eq!(account.id, "ready");
+    }
+
+    #[test]
+    fn codex_official_selector_uses_priority_before_weight() {
+        let low = official_codex_account("low", 0, 100);
+        let high = official_codex_account("high", 10, 1);
+        let store = official_store(vec![low, high], "low");
+
+        let (account, _) =
+            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+
+        assert_eq!(account.id, "high");
+    }
+
+    #[test]
+    fn codex_official_selector_falls_back_to_active_when_none_ready() {
+        let mut active = official_codex_account("active", 0, 1);
+        active.runtime_state.next_retry_after = Some(2_000);
+        let mut other = official_codex_account("other", 0, 1);
+        other.runtime_state.model_states.insert(
+            "official-other".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::QuotaExceeded,
+                status_message: "HTTP 429".into(),
+                next_retry_after: Some(2_000),
+                quota: crate::accounts::AccountQuotaState {
+                    exceeded: true,
+                    reason: "quota".into(),
+                    next_recover_at: Some(2_000),
+                    backoff_level: 1,
+                },
+                updated_at: 1_000,
+            },
+        );
+        let store = official_store(vec![active, other], "active");
+
+        let (account, _) =
+            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+
+        assert_eq!(account.id, "active");
+    }
+
+    #[test]
+    fn codex_usage_retry_after_reads_official_reset_body() {
+        let retry = codex_usage_retry_after_secs(
+            StatusCode::TOO_MANY_REQUESTS,
+            br#"{"error":{"type":"usage_limit_reached","resets_in_seconds":77}}"#,
+            None,
+        );
+
+        assert_eq!(retry, Some(77));
+    }
+
+    #[test]
+    fn codex_usage_retry_after_prefers_header() {
+        let retry = codex_usage_retry_after_secs(
+            StatusCode::TOO_MANY_REQUESTS,
+            br#"{"error":{"type":"usage_limit_reached","resets_in_seconds":77}}"#,
+            Some(30),
+        );
+
+        assert_eq!(retry, Some(30));
     }
 
     #[test]

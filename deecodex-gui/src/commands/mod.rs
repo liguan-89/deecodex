@@ -7,7 +7,7 @@ pub mod logs;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -156,6 +156,552 @@ fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> 
         }
     }
     serde_json::from_value(value).map_err(|e| format!("解析账号 JSON 失败: {e}"))
+}
+
+fn secret_is_redacted(value: &str) -> bool {
+    value.contains("****")
+}
+
+fn mask_secret(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return String::new();
+    }
+    if value.len() <= 8 {
+        return "****".into();
+    }
+    format!("{}****{}", &value[..4], &value[value.len() - 4..])
+}
+
+fn redact_client_options(mut options: HashMap<String, Value>) -> HashMap<String, Value> {
+    for key in ["proxy_token"] {
+        if let Some(Value::String(value)) = options.get_mut(key) {
+            *value = mask_secret(value);
+        }
+    }
+    if let Some(Value::Object(oauth)) = options.get_mut("oauth") {
+        for key in ["access_token", "refresh_token", "id_token"] {
+            if let Some(Value::String(value)) = oauth.get_mut(key) {
+                *value = mask_secret(value);
+            }
+        }
+        for key in ["access_token", "refresh_token", "id_token"] {
+            let present_key = format!("{key}_present");
+            let present = oauth
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty());
+            oauth.insert(present_key, Value::Bool(present));
+        }
+    }
+    options
+}
+
+fn redact_endpoints(
+    endpoints: &[deecodex::accounts::EndpointConfig],
+) -> Vec<deecodex::accounts::EndpointConfig> {
+    endpoints
+        .iter()
+        .cloned()
+        .map(|mut endpoint| {
+            endpoint.vision.api_key = mask_secret(&endpoint.vision.api_key);
+            endpoint
+        })
+        .collect()
+}
+
+fn restore_redacted_client_options(
+    incoming: &mut HashMap<String, Value>,
+    existing: &HashMap<String, Value>,
+) {
+    if incoming
+        .get("proxy_token")
+        .and_then(Value::as_str)
+        .is_some_and(secret_is_redacted)
+    {
+        if let Some(value) = existing.get("proxy_token").cloned() {
+            incoming.insert("proxy_token".into(), value);
+        }
+    }
+    if let Some(incoming_oauth) = incoming.get_mut("oauth").and_then(Value::as_object_mut) {
+        let existing_oauth = existing.get("oauth").and_then(Value::as_object);
+        for key in ["access_token", "refresh_token", "id_token"] {
+            let redacted = incoming_oauth
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(secret_is_redacted);
+            if redacted {
+                if let Some(value) = existing_oauth.and_then(|oauth| oauth.get(key)).cloned() {
+                    incoming_oauth.insert(key.into(), value);
+                }
+            }
+        }
+        for key in [
+            "access_token_present",
+            "refresh_token_present",
+            "id_token_present",
+        ] {
+            incoming_oauth.remove(key);
+        }
+    }
+}
+
+fn restore_redacted_account_secrets(
+    incoming: &mut deecodex::accounts::Account,
+    existing: &deecodex::accounts::Account,
+) {
+    if secret_is_redacted(&incoming.api_key) {
+        incoming.api_key = existing.api_key.clone();
+    }
+    if secret_is_redacted(&incoming.vision_api_key) {
+        incoming.vision_api_key = existing.vision_api_key.clone();
+    }
+    for (idx, endpoint) in incoming.endpoints.iter_mut().enumerate() {
+        if secret_is_redacted(&endpoint.vision.api_key) {
+            if let Some(existing_endpoint) = existing.endpoints.get(idx) {
+                endpoint.vision.api_key = existing_endpoint.vision.api_key.clone();
+            }
+        }
+    }
+    restore_redacted_client_options(&mut incoming.client_options, &existing.client_options);
+}
+
+#[derive(Debug, Clone)]
+struct OAuthLoginSession {
+    provider: deecodex::oauth_accounts::OAuthProvider,
+    client_kind: AccountClientKind,
+    mode: String,
+    pkce: Option<deecodex::oauth_accounts::PkceCodes>,
+    auth_url: String,
+    verification_url: Option<String>,
+    user_code: Option<String>,
+    device_auth_id: Option<String>,
+    poll_interval_secs: u64,
+    last_device_poll_at: u64,
+    expires_at: u64,
+    callback_code: Option<String>,
+    callback_error: Option<String>,
+    account_id: Option<String>,
+    completed_account: Option<Value>,
+}
+
+type OAuthSessionMap = dashmap::DashMap<String, Arc<tokio::sync::Mutex<OAuthLoginSession>>>;
+
+static OAUTH_SESSIONS: OnceLock<OAuthSessionMap> = OnceLock::new();
+static OAUTH_CODEX_CALLBACK_STARTED: OnceLock<()> = OnceLock::new();
+static OAUTH_CLAUDE_CALLBACK_STARTED: OnceLock<()> = OnceLock::new();
+
+fn oauth_sessions() -> &'static OAuthSessionMap {
+    OAUTH_SESSIONS.get_or_init(dashmap::DashMap::new)
+}
+
+fn oauth_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("创建 OAuth HTTP 客户端失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn start_oauth_account_login(
+    provider: String,
+    client_kind: Option<String>,
+    mode: Option<String>,
+) -> Result<Value, String> {
+    let provider =
+        deecodex::oauth_accounts::OAuthProvider::parse(&provider).map_err(|e| e.to_string())?;
+    let mode = mode.unwrap_or_else(|| "browser".into());
+    let client_kind = client_kind
+        .as_deref()
+        .map(parse_account_client_kind)
+        .unwrap_or_else(|| {
+            if provider == deecodex::oauth_accounts::OAuthProvider::Claude {
+                AccountClientKind::ClaudeCode
+            } else {
+                AccountClientKind::Codex
+            }
+        });
+    let state = deecodex::oauth_accounts::generate_state().map_err(|e| e.to_string())?;
+    let client = oauth_http_client()?;
+
+    let session = if mode == "device" {
+        if provider != deecodex::oauth_accounts::OAuthProvider::Codex {
+            return Err("设备码登录仅支持 Codex".into());
+        }
+        let device = deecodex::oauth_accounts::request_codex_device_user_code(&client)
+            .await
+            .map_err(|e| format!("获取 Codex 设备码失败: {e}"))?;
+        OAuthLoginSession {
+            provider,
+            client_kind,
+            mode: mode.clone(),
+            pkce: None,
+            auth_url: device.verification_url.clone(),
+            verification_url: Some(device.verification_url),
+            user_code: Some(device.user_code),
+            device_auth_id: Some(device.device_auth_id),
+            poll_interval_secs: device.interval_secs,
+            last_device_poll_at: 0,
+            expires_at: device.expires_at,
+            callback_code: None,
+            callback_error: None,
+            account_id: None,
+            completed_account: None,
+        }
+    } else {
+        let pkce = deecodex::oauth_accounts::generate_pkce_codes().map_err(|e| e.to_string())?;
+        let auth_url = deecodex::oauth_accounts::auth_url(&provider, &state, &pkce);
+        ensure_oauth_callback_server(&provider);
+        OAuthLoginSession {
+            provider,
+            client_kind,
+            mode: "browser".into(),
+            pkce: Some(pkce),
+            auth_url,
+            verification_url: None,
+            user_code: None,
+            device_auth_id: None,
+            poll_interval_secs: 5,
+            last_device_poll_at: 0,
+            expires_at: deecodex::oauth_accounts::now_secs().saturating_add(10 * 60),
+            callback_code: None,
+            callback_error: None,
+            account_id: None,
+            completed_account: None,
+        }
+    };
+
+    let response = json!({
+        "state": state,
+        "provider": session.provider.as_str(),
+        "mode": session.mode,
+        "url": session.auth_url,
+        "verification_url": session.verification_url,
+        "user_code": session.user_code,
+        "expires_at": session.expires_at,
+        "poll_interval_secs": session.poll_interval_secs,
+    });
+    oauth_sessions().insert(state, Arc::new(tokio::sync::Mutex::new(session)));
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn poll_oauth_account_login(
+    manager: State<'_, ServerManager>,
+    state: String,
+) -> Result<Value, String> {
+    let Some(entry) = oauth_sessions().get(&state).map(|entry| entry.clone()) else {
+        return Ok(json!({"status": "expired", "message": "OAuth 登录会话不存在或已过期"}));
+    };
+    let now = deecodex::oauth_accounts::now_secs();
+    let mut session = entry.lock().await;
+    if let Some(account) = session.completed_account.clone() {
+        return Ok(json!({"status": "success", "account": account}));
+    }
+    if now > session.expires_at {
+        oauth_sessions().remove(&state);
+        return Ok(json!({"status": "expired", "message": "OAuth 登录已超时"}));
+    }
+    if let Some(error) = session.callback_error.clone() {
+        oauth_sessions().remove(&state);
+        return Ok(json!({"status": "error", "message": error}));
+    }
+
+    let token = if session.mode == "device" {
+        if now
+            < session
+                .last_device_poll_at
+                .saturating_add(session.poll_interval_secs.max(1))
+        {
+            return Ok(json!({"status": "pending"}));
+        }
+        session.last_device_poll_at = now;
+        let client = oauth_http_client()?;
+        let device_auth_id = session.device_auth_id.clone().unwrap_or_default();
+        let user_code = session.user_code.clone().unwrap_or_default();
+        match deecodex::oauth_accounts::poll_codex_device_token(
+            &client,
+            &device_auth_id,
+            &user_code,
+        )
+        .await
+        .map_err(|e| format!("轮询 Codex 设备码失败: {e}"))?
+        {
+            Some((code, verifier, challenge)) => {
+                deecodex::oauth_accounts::exchange_codex_device_code(
+                    &client, &code, &verifier, &challenge,
+                )
+                .await
+                .map_err(|e| format!("Codex 设备码换 token 失败: {e}"))?
+            }
+            None => return Ok(json!({"status": "pending"})),
+        }
+    } else {
+        let Some(code) = session.callback_code.clone() else {
+            return Ok(json!({"status": "pending"}));
+        };
+        let pkce = session
+            .pkce
+            .clone()
+            .ok_or_else(|| "OAuth 登录会话缺少 PKCE 信息".to_string())?;
+        let client = oauth_http_client()?;
+        deecodex::oauth_accounts::exchange_code(&client, &session.provider, &code, &state, &pkce)
+            .await
+            .map_err(|e| format!("OAuth code 换 token 失败: {e}"))?
+    };
+
+    let account = create_oauth_account(&manager, &session, token).await?;
+    session.account_id = account
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    session.completed_account = Some(account.clone());
+    oauth_sessions().remove(&state);
+    Ok(json!({"status": "success", "account": account}))
+}
+
+#[tauri::command]
+pub async fn cancel_oauth_account_login(state: String) -> Result<Value, String> {
+    oauth_sessions().remove(&state);
+    Ok(json!({"ok": true}))
+}
+
+fn parse_account_client_kind(value: &str) -> AccountClientKind {
+    match value {
+        "claude_code" | "ClaudeCode" => AccountClientKind::ClaudeCode,
+        "openclaw" | "Openclaw" => AccountClientKind::Openclaw,
+        "hermes" | "Hermes" => AccountClientKind::Hermes,
+        "generic_client" | "GenericClient" => AccountClientKind::GenericClient,
+        _ => AccountClientKind::Codex,
+    }
+}
+
+fn ensure_oauth_callback_server(provider: &deecodex::oauth_accounts::OAuthProvider) {
+    match provider {
+        deecodex::oauth_accounts::OAuthProvider::Codex => {
+            let _ = OAUTH_CODEX_CALLBACK_STARTED.get_or_init(|| {
+                tokio::spawn(oauth_callback_server(1455));
+            });
+        }
+        deecodex::oauth_accounts::OAuthProvider::Claude => {
+            let _ = OAUTH_CLAUDE_CALLBACK_STARTED.get_or_init(|| {
+                tokio::spawn(oauth_callback_server(54545));
+            });
+        }
+    };
+}
+
+async fn oauth_callback_server(port: u16) {
+    use axum::{extract::Query, response::Html, routing::get, Router};
+    use std::collections::HashMap;
+
+    async fn callback(Query(query): Query<HashMap<String, String>>) -> Html<&'static str> {
+        let state = query.get("state").cloned().unwrap_or_default();
+        let code = query.get("code").cloned();
+        let error = query
+            .get("error_description")
+            .or_else(|| query.get("error"))
+            .cloned();
+        if !state.is_empty() {
+            if let Some(entry) = oauth_sessions().get(&state).map(|entry| entry.clone()) {
+                let mut session = entry.lock().await;
+                if let Some(error) = error {
+                    session.callback_error = Some(error);
+                } else if let Some(code) = code {
+                    session.callback_code = Some(code);
+                } else {
+                    session.callback_error = Some("OAuth 回调缺少 code".into());
+                }
+            }
+        }
+        Html("OAuth 登录完成，可以回到 deecodex。")
+    }
+
+    let app = Router::new()
+        .route("/auth/callback", get(callback))
+        .route("/callback", get(callback));
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => {
+            if let Err(err) = axum::serve(listener, app).await {
+                tracing::warn!("OAuth callback server stopped: {err}");
+            }
+        }
+        Err(err) => {
+            tracing::warn!("OAuth callback server bind failed on {addr}: {err}");
+        }
+    }
+}
+
+async fn create_oauth_account(
+    manager: &ServerManager,
+    session: &OAuthLoginSession,
+    token: deecodex::oauth_accounts::OAuthToken,
+) -> Result<Value, String> {
+    use deecodex::accounts::{
+        generate_id, now_secs, Account, AccountAuthMode, EndpointConfig, EndpointKind, VisionMode,
+    };
+
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (host, port) = service_endpoint_for_manager(manager).await;
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let now = now_secs();
+    let account_id = generate_id();
+    let oauth_value = deecodex::oauth_accounts::oauth_token_to_value(&token, &session.mode);
+    let mut client_options = HashMap::new();
+    client_options.insert("oauth".into(), oauth_value);
+    client_options.insert("auth_mode".into(), json!("oauth"));
+
+    let (name, provider, client_kind, upstream, default_model, endpoint) = match session.provider {
+        deecodex::oauth_accounts::OAuthProvider::Codex => {
+            let endpoint = EndpointConfig {
+                id: format!("endpoint_{account_id}"),
+                name: "Codex 官方".into(),
+                kind: EndpointKind::CodexOfficial,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                path: "responses".into(),
+                template_id: "codex_official".into(),
+                template_version: 1,
+                model_map: HashMap::new(),
+                model_profiles: HashMap::new(),
+                vision: {
+                    let mut vision = deecodex::accounts::VisionConfig::default();
+                    vision.mode = VisionMode::Native;
+                    vision
+                },
+                custom_headers: HashMap::new(),
+                request_timeout_secs: None,
+                max_retries: None,
+                context_window_override: None,
+                reasoning_effort_override: None,
+                thinking_tokens: None,
+                fast_mode_enabled: false,
+                fast_service_tier: "priority".into(),
+                balance_url: String::new(),
+            };
+            (
+                oauth_account_name("Codex", &token.email),
+                "codex".into(),
+                AccountClientKind::Codex,
+                "https://chatgpt.com/backend-api/codex".into(),
+                String::new(),
+                Some(endpoint),
+            )
+        }
+        deecodex::oauth_accounts::OAuthProvider::Claude => {
+            client_options.insert(
+                "api_key_env".into(),
+                Value::String("ANTHROPIC_AUTH_TOKEN".into()),
+            );
+            client_options.insert(
+                "auth_env".into(),
+                Value::String("ANTHROPIC_AUTH_TOKEN".into()),
+            );
+            client_options.insert("proxy_recording_enabled".into(), Value::Bool(true));
+            client_options.insert(
+                "proxy_base_url".into(),
+                Value::String(client_proxy_base_url(
+                    &host,
+                    port,
+                    &AccountClientKind::ClaudeCode,
+                )),
+            );
+            client_options.insert(
+                "proxy_token".into(),
+                Value::String(format!("dee_{account_id}_{}", generate_id())),
+            );
+            (
+                oauth_account_name("Claude", &token.email),
+                "anthropic".into(),
+                session.client_kind.clone(),
+                "https://api.anthropic.com".into(),
+                "claude-sonnet-4-5".into(),
+                None,
+            )
+        }
+    };
+
+    let mut account = Account {
+        id: account_id,
+        name,
+        provider,
+        client_kind,
+        wire_protocol: Default::default(),
+        upstream,
+        api_key: token.access_token.clone(),
+        auth_mode: AccountAuthMode::OAuth,
+        default_model,
+        client_options,
+        runtime_state: Default::default(),
+        last_applied_at: None,
+        last_check: None,
+        model_map: HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: now,
+        updated_at: now,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: HashMap::new(),
+        provider_options: HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: true,
+        capability_enabled: false,
+        capability_account_id: None,
+        dev_pipeline_enabled: false,
+        dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+        dev_pipeline_command: "/dev-pipeline".into(),
+        dev_pipeline_architect_account_id: None,
+        dev_pipeline_implementer_account_id: None,
+        dev_pipeline_reviewer_account_id: None,
+        dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+        dev_pipeline_max_iterations: 3,
+        dev_pipeline_show_trace: false,
+        dev_pipeline_architect_instruction: String::new(),
+        dev_pipeline_implementer_instruction: String::new(),
+        dev_pipeline_reviewer_instruction: String::new(),
+        endpoints: endpoint.into_iter().collect(),
+    };
+    account.provider_options = deecodex::providers::provider_options_for_slug(&account.provider);
+    if !account.client_kind.is_codex() {
+        account.translate_enabled = false;
+    }
+    account.normalize_v2();
+
+    let became_active = store.active_account_id.is_none() && account.client_kind.is_codex();
+    if became_active {
+        store.active_id = Some(account.id.clone());
+        store.active_account_id = Some(account.id.clone());
+        store.active_endpoint_id = account
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.id.clone());
+    }
+    store.accounts.push(account.clone());
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存 OAuth 账号失败: {e}"))?;
+    if became_active {
+        sync_active_account_to_running_state(manager, &store, &account).await?;
+    } else {
+        sync_account_store_to_running_state(manager, &store).await;
+    }
+    Ok(account_to_value(&account))
+}
+
+fn oauth_account_name(prefix: &str, email: &str) -> String {
+    let email = email.trim();
+    if email.is_empty() {
+        format!("{prefix} 官方账号")
+    } else {
+        format!("{prefix} · {email}")
+    }
 }
 
 // ── 前端返回类型 ──────────────────────────────────────────────────────────
@@ -434,8 +980,10 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 wire_protocol: Default::default(),
                 upstream: file_args.upstream.clone(),
                 api_key: file_args.api_key.clone(),
+                auth_mode: Default::default(),
                 default_model: String::new(),
                 client_options: HashMap::new(),
+                runtime_state: Default::default(),
                 last_applied_at: None,
                 last_check: None,
                 model_map,
@@ -501,8 +1049,10 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             wire_protocol: openrouter.wire_protocol.clone(),
             upstream: openrouter.default_upstream.clone(),
             api_key: String::new(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::new(),
@@ -737,6 +1287,19 @@ async fn running_app_state(manager: &ServerManager) -> Option<handlers::AppState
 async fn sync_account_store_to_running_state(manager: &ServerManager, store: &AccountStore) {
     if let Some(app_state) = running_app_state(manager).await {
         *app_state.account_store.write().await = store.clone();
+    }
+}
+
+async fn sync_account_mutation_to_running_state(
+    manager: &ServerManager,
+    store: &AccountStore,
+    account: &deecodex::accounts::Account,
+) {
+    if let Some(app_state) = running_app_state(manager).await {
+        *app_state.account_store.write().await = store.clone();
+        if app_state.active_account.read().await.id == account.id {
+            *app_state.active_account.write().await = account.clone();
+        }
     }
 }
 
@@ -1605,8 +2168,10 @@ pub async fn add_account(
             wire_protocol: preset.wire_protocol.clone(),
             upstream: preset.default_upstream.clone(),
             api_key: String::new(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: Default::default(),
@@ -1701,6 +2266,7 @@ pub async fn update_account(
         .ok_or_else(|| format!("账号不存在: {}", updated.id))?;
 
     let mut account = updated.clone();
+    restore_redacted_account_secrets(&mut account, &store.accounts[pos]);
     // 仅当 provider 为空时自动检测，避免覆盖用户选择
     if account.provider.is_empty() {
         account.provider = guess_provider(&account.upstream).to_string();
@@ -1869,6 +2435,107 @@ pub async fn switch_account(
     id: String,
 ) -> Result<Value, String> {
     switch_account_inner(&manager, id).await
+}
+
+/// 清除账号当前冷却/配额等待，但保留成功失败统计和最近请求桶。
+#[tauri::command]
+pub async fn clear_account_cooldown(
+    manager: State<'_, ServerManager>,
+    id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let account = {
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .ok_or_else(|| format!("账号不存在: {id}"))?;
+        let now = deecodex::accounts::now_secs();
+        account.clear_runtime_cooldown(now);
+        account.updated_at = now;
+        account.clone()
+    };
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+    sync_account_mutation_to_running_state(&manager, &store, &account).await;
+
+    Ok(account_to_value_for_store(&account, &store))
+}
+
+/// 重置账号运行态，清空配额、冷却、模型状态和最近成功/失败统计。
+#[tauri::command]
+pub async fn reset_account_runtime_state(
+    manager: State<'_, ServerManager>,
+    id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let account = {
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .ok_or_else(|| format!("账号不存在: {id}"))?;
+        account.reset_runtime_state();
+        account.updated_at = deecodex::accounts::now_secs();
+        account.clone()
+    };
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+    sync_account_mutation_to_running_state(&manager, &store, &account).await;
+
+    Ok(account_to_value_for_store(&account, &store))
+}
+
+/// 更新官方账号池路由参数。默认用于 Codex 官方账号池，也可预留给后续分池。
+#[tauri::command]
+pub async fn set_account_routing(
+    manager: State<'_, ServerManager>,
+    id: String,
+    enabled: Option<bool>,
+    pool: Option<String>,
+    priority: Option<i64>,
+    weight: Option<u32>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let account = {
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .ok_or_else(|| format!("账号不存在: {id}"))?;
+        let mut routing = deecodex::accounts::account_routing_options(account);
+        if let Some(enabled) = enabled {
+            routing.enabled = enabled;
+            routing.disabled = !enabled;
+        }
+        if let Some(pool) = pool {
+            let pool = pool.trim();
+            if !pool.is_empty() {
+                routing.pool = pool.to_string();
+            }
+        }
+        if let Some(priority) = priority {
+            routing.priority = priority;
+        }
+        if let Some(weight) = weight {
+            routing.weight = weight.clamp(1, 100);
+        }
+        let routing = routing.normalized();
+        deecodex::accounts::set_account_routing_options(account, routing);
+        account.updated_at = deecodex::accounts::now_secs();
+        account.clone()
+    };
+
+    deecodex::accounts::save_accounts(&data_dir, &store)
+        .map_err(|e| format!("保存账号失败: {e}"))?;
+    sync_account_mutation_to_running_state(&manager, &store, &account).await;
+
+    Ok(account_to_value_for_store(&account, &store))
 }
 
 /// 从 Codex 的 config.toml 导入账号
@@ -2740,8 +3407,10 @@ pub async fn import_client_accounts(manager: State<'_, ServerManager>) -> Result
             wire_protocol: Default::default(),
             upstream: candidate.upstream.clone(),
             api_key: candidate.api_key.clone(),
+            auth_mode: Default::default(),
             default_model: candidate.default_model.clone(),
             client_options: candidate.client_options.clone(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::new(),
@@ -3006,6 +3675,8 @@ pub struct BalanceInfo {
     pub hours_5_remaining: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_remains: Option<Vec<ModelRemain>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -3017,18 +3688,611 @@ pub struct ModelRemain {
     pub weekly_used: f64,
 }
 
+const CODEX_WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.4";
+
+#[derive(Debug, Clone)]
+struct CodexUsageError {
+    status: u16,
+    code: String,
+    message: String,
+    body: String,
+}
+
+impl CodexUsageError {
+    fn local(message: impl Into<String>) -> Self {
+        Self {
+            status: 0,
+            code: "local_error".into(),
+            message: message.into(),
+            body: String::new(),
+        }
+    }
+
+    fn from_response(status: u16, body: String) -> Self {
+        let parsed = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+        let code = parsed
+            .pointer("/error/code")
+            .or_else(|| parsed.pointer("/code"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let message = parsed
+            .pointer("/error/message")
+            .or_else(|| parsed.pointer("/message"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Self {
+            status,
+            code,
+            message,
+            body,
+        }
+    }
+
+    fn is_auth_unavailable(&self) -> bool {
+        let code = self.code.to_ascii_lowercase();
+        let message = self.message.to_ascii_lowercase();
+        self.status == 401
+            || code == "auth_unavailable"
+            || code == "invalid_api_key"
+            || message.contains("authentication token has been invalidated")
+            || message.contains("signing in again")
+    }
+
+    fn user_message(&self) -> String {
+        if !self.message.trim().is_empty() {
+            return format!("额度接口 HTTP {}: {}", self.status, self.message);
+        }
+        if !self.code.trim().is_empty() {
+            return format!("额度接口 HTTP {}: {}", self.status, self.code);
+        }
+        if !self.body.trim().is_empty() {
+            return format!("额度接口 HTTP {}: {}", self.status, self.body);
+        }
+        format!("额度接口 HTTP {}", self.status)
+    }
+}
+
+fn is_codex_official_oauth_account(account: &deecodex::accounts::Account) -> bool {
+    account.client_kind.is_codex()
+        && matches!(
+            &account.auth_mode,
+            deecodex::accounts::AccountAuthMode::OAuth
+        )
+        && account.endpoints.iter().any(|endpoint| {
+            matches!(
+                &endpoint.kind,
+                deecodex::accounts::EndpointKind::CodexOfficial
+            )
+        })
+}
+
+async fn request_stats_since_for_account(
+    manager: &ServerManager,
+    since_secs: u64,
+    account_id: &str,
+) -> deecodex::request_history::RequestStats {
+    let filter = deecodex::request_history::HistoryFilter {
+        client_kind: Some("codex".into()),
+        account_id: Some(account_id.to_string()),
+    };
+    let rh = manager.request_history.lock().await;
+    if let Some(store) = rh.as_ref() {
+        return store.stats_since(since_secs, &filter).await;
+    }
+    drop(rh);
+    let guard = manager.app_state.lock().await;
+    if let Some(state) = guard.as_ref() {
+        return state.request_history.stats_since(since_secs, &filter).await;
+    }
+    deecodex::request_history::RequestStats::default()
+}
+
+async fn refresh_oauth_token_if_needed(
+    account: &mut deecodex::accounts::Account,
+    client: &reqwest::Client,
+) -> Option<String> {
+    let oauth_value = account.client_options.get("oauth").cloned()?;
+    let token = deecodex::oauth_accounts::oauth_token_from_value(&oauth_value)?;
+    let now = deecodex::oauth_accounts::now_secs();
+    if token.expired_at == 0 || token.expired_at > now.saturating_add(60) {
+        return None;
+    }
+    refresh_oauth_token_for_account(account, client).await.err()
+}
+
+async fn refresh_oauth_token_for_account(
+    account: &mut deecodex::accounts::Account,
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let oauth_value = account
+        .client_options
+        .get("oauth")
+        .cloned()
+        .ok_or_else(|| "账号缺少 OAuth token".to_string())?;
+    let token = deecodex::oauth_accounts::oauth_token_from_value(&oauth_value)
+        .ok_or_else(|| "OAuth token 格式无效".to_string())?;
+    if token.refresh_token.trim().is_empty() {
+        return Err("OAuth refresh_token 为空，无法主动刷新".into());
+    }
+    let provider = match deecodex::oauth_accounts::OAuthProvider::parse(&token.provider) {
+        Ok(provider) => provider,
+        Err(err) => return Err(err.to_string()),
+    };
+    match deecodex::oauth_accounts::refresh_token(client, &provider, &token.refresh_token).await {
+        Ok(mut refreshed) => {
+            if refreshed.refresh_token.trim().is_empty() {
+                refreshed.refresh_token = token.refresh_token.clone();
+            }
+            if refreshed.id_token.trim().is_empty() {
+                refreshed.id_token = token.id_token.clone();
+            }
+            if refreshed.email.trim().is_empty() {
+                refreshed.email = token.email.clone();
+            }
+            if refreshed.account_id.trim().is_empty() {
+                refreshed.account_id = token.account_id.clone();
+            }
+            let login_mode = oauth_value
+                .get("login_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("browser");
+            account.api_key = refreshed.access_token.clone();
+            account.client_options.insert(
+                "oauth".into(),
+                deecodex::oauth_accounts::oauth_token_to_value(&refreshed, login_mode),
+            );
+            Ok(())
+        }
+        Err(err) => Err(format!("OAuth token 刷新失败: {err}")),
+    }
+}
+
+async fn fetch_codex_wham_usage_once(
+    client: &reqwest::Client,
+    account: &deecodex::accounts::Account,
+) -> Result<Value, CodexUsageError> {
+    let oauth_value = account
+        .client_options
+        .get("oauth")
+        .ok_or_else(|| CodexUsageError::local("账号缺少 OAuth token"))?;
+    let oauth = deecodex::oauth_accounts::oauth_token_from_value(oauth_value)
+        .ok_or_else(|| CodexUsageError::local("OAuth token 格式无效"))?;
+    let access_token = if oauth.access_token.trim().is_empty() {
+        account.api_key.trim()
+    } else {
+        oauth.access_token.trim()
+    };
+    if access_token.is_empty() {
+        return Err(CodexUsageError::local("OAuth access token 为空"));
+    }
+
+    let mut request = client
+        .get(CODEX_WHAM_USAGE_URL)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        .header("Originator", "codex_cli_rs")
+        .header("User-Agent", CODEX_QUOTA_USER_AGENT)
+        .header("Connection", "Keep-Alive");
+    if !oauth.account_id.trim().is_empty() {
+        request = request.header("Chatgpt-Account-Id", oauth.account_id.trim());
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|err| CodexUsageError::local(format!("额度接口请求失败: {err}")))?;
+    let status = response.status();
+    let status_code = status.as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| CodexUsageError::local(format!("额度接口响应读取失败: {err}")))?;
+    if !status.is_success() {
+        return Err(CodexUsageError::from_response(status_code, body));
+    }
+    serde_json::from_str::<Value>(&body)
+        .map_err(|err| CodexUsageError::local(format!("额度接口 JSON 解析失败: {err}")))
+}
+
+async fn fetch_codex_wham_usage(
+    client: &reqwest::Client,
+    account: &mut deecodex::accounts::Account,
+) -> (Option<Value>, Option<String>) {
+    match fetch_codex_wham_usage_once(client, account).await {
+        Ok(payload) => (Some(payload), None),
+        Err(err) if err.is_auth_unavailable() => {
+            tracing::warn!(
+                account_id = %account.id,
+                status = err.status,
+                code = %err.code,
+                "Codex 额度接口 token 失效，尝试刷新 OAuth token 后重试"
+            );
+            match refresh_oauth_token_for_account(account, client).await {
+                Ok(()) => match fetch_codex_wham_usage_once(client, account).await {
+                    Ok(payload) => (Some(payload), None),
+                    Err(retry_err) => (None, Some(retry_err.user_message())),
+                },
+                Err(refresh_err) => (
+                    None,
+                    Some(format!(
+                        "{}；自动刷新失败: {}",
+                        err.user_message(),
+                        refresh_err
+                    )),
+                ),
+            }
+        }
+        Err(err) => (None, Some(err.user_message())),
+    }
+}
+
+fn number_to_u64(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_f64().map(|v| v.round().max(0.0) as u64)),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn used_to_remaining_percent(used_percent: Option<u64>) -> Option<u64> {
+    used_percent.map(|used| 100u64.saturating_sub(used.min(100)))
+}
+
+fn codex_rate_limit_window(rate_limit: &Value, key: &str) -> Value {
+    let window = rate_limit.get(key).unwrap_or(&Value::Null);
+    let used_percent = number_to_u64(window.get("used_percent"));
+    let remaining_percent = used_to_remaining_percent(used_percent);
+    json!({
+        "used_percent": used_percent,
+        "remaining_percent": remaining_percent,
+        "reset_at": number_to_u64(window.get("reset_at")),
+        "reset_after_seconds": number_to_u64(window.get("reset_after_seconds")),
+        "limit_window_seconds": number_to_u64(window.get("limit_window_seconds")),
+    })
+}
+
+fn codex_window_u64(window: &Value, key: &str) -> Option<u64> {
+    window.get(key).and_then(Value::as_u64)
+}
+
+fn codex_next_usage_reset(payload: &Value, now: u64) -> Option<u64> {
+    let rate_limit = payload.get("rate_limit").unwrap_or(&Value::Null);
+    ["primary_window", "secondary_window"]
+        .iter()
+        .filter_map(|key| {
+            number_to_u64(
+                rate_limit
+                    .get(*key)
+                    .and_then(|window| window.get("reset_at")),
+            )
+        })
+        .filter(|reset_at| *reset_at > now)
+        .min()
+}
+
+async fn official_oauth_balance(
+    manager: &ServerManager,
+    account: &mut deecodex::accounts::Account,
+) -> BalanceInfo {
+    let client = reqwest::Client::new();
+    let refresh_error = refresh_oauth_token_if_needed(account, &client).await;
+    let now = deecodex::accounts::now_secs();
+    let (usage_payload, usage_error) = fetch_codex_wham_usage(&client, account).await;
+    let mut primary_window = json!(null);
+    let mut secondary_window = json!(null);
+    let mut usage_allowed = None;
+    let mut usage_limit_reached = None;
+    let mut usage_next_recover_at = None;
+
+    if let Some(payload) = usage_payload.as_ref() {
+        let rate_limit = payload.get("rate_limit").unwrap_or(&Value::Null);
+        primary_window = codex_rate_limit_window(rate_limit, "primary_window");
+        secondary_window = codex_rate_limit_window(rate_limit, "secondary_window");
+        let allowed = rate_limit
+            .get("allowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let limit_reached = rate_limit
+            .get("limit_reached")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        usage_allowed = Some(allowed);
+        usage_limit_reached = Some(limit_reached);
+        if !allowed || limit_reached {
+            usage_next_recover_at = codex_next_usage_reset(payload, now);
+            account.runtime_state.status = deecodex::accounts::AccountRuntimeStatus::QuotaExceeded;
+            account.runtime_state.status_message =
+                "ChatGPT WHAM usage 显示 Codex 额度已触顶".into();
+            account.runtime_state.next_retry_after = usage_next_recover_at;
+            account.runtime_state.quota = deecodex::accounts::AccountQuotaState {
+                exceeded: true,
+                reason: "quota".into(),
+                next_recover_at: usage_next_recover_at,
+                backoff_level: account.runtime_state.quota.backoff_level,
+            };
+        } else if matches!(
+            account.runtime_state.status,
+            deecodex::accounts::AccountRuntimeStatus::CoolingDown
+                | deecodex::accounts::AccountRuntimeStatus::QuotaExceeded
+        ) {
+            account.clear_runtime_cooldown(now);
+        }
+    }
+
+    let stats_5h =
+        request_stats_since_for_account(manager, now.saturating_sub(5 * 60 * 60), &account.id)
+            .await;
+    let stats_7d =
+        request_stats_since_for_account(manager, now.saturating_sub(7 * 24 * 60 * 60), &account.id)
+            .await;
+    let routing = deecodex::accounts::account_routing_options(account);
+    let oauth = account
+        .client_options
+        .get("oauth")
+        .and_then(deecodex::oauth_accounts::oauth_token_from_value);
+    let token_info = oauth
+        .as_ref()
+        .map(|token| deecodex::oauth_accounts::codex_id_token_info(&token.id_token))
+        .unwrap_or_else(|| json!({}));
+    let plan_type = token_info
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            usage_payload
+                .as_ref()
+                .and_then(|payload| payload.get("plan_type"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .to_string();
+    let usage_plan_type = usage_payload
+        .as_ref()
+        .and_then(|payload| payload.get("plan_type"))
+        .and_then(Value::as_str)
+        .unwrap_or(&plan_type)
+        .to_string();
+    let runtime = &account.runtime_state;
+    let next_recover_at = usage_next_recover_at
+        .or(runtime.quota.next_recover_at)
+        .or(runtime.next_retry_after);
+    let blocked = next_recover_at.is_some_and(|ts| ts > now)
+        || matches!(
+            &runtime.status,
+            deecodex::accounts::AccountRuntimeStatus::CoolingDown
+                | deecodex::accounts::AccountRuntimeStatus::QuotaExceeded
+        );
+    let quota_exceeded = usage_limit_reached.unwrap_or(runtime.quota.exceeded)
+        || usage_allowed.is_some_and(|allowed| !allowed);
+    let status_label = if usage_error.is_some() {
+        "刷新失败"
+    } else if !routing.effective_enabled() {
+        "未参与账号池"
+    } else if quota_exceeded {
+        "额度耗尽"
+    } else if blocked
+        && matches!(
+            &runtime.status,
+            deecodex::accounts::AccountRuntimeStatus::QuotaExceeded
+        )
+    {
+        "额度冷却"
+    } else if blocked {
+        "冷却中"
+    } else if matches!(
+        &runtime.status,
+        deecodex::accounts::AccountRuntimeStatus::Error
+    ) {
+        "最近错误"
+    } else {
+        "可用"
+    };
+    let message = usage_error
+        .clone()
+        .or(refresh_error.clone())
+        .unwrap_or_else(|| {
+            if usage_payload.is_some() {
+                "已从 ChatGPT WHAM usage 获取真实 Codex 5h/7d 剩余额度。".into()
+            } else {
+                "暂无真实额度数据；请稍后重试刷新额度。".into()
+            }
+        });
+    let fallback_message = || {
+        if matches!(
+            &runtime.status,
+            deecodex::accounts::AccountRuntimeStatus::QuotaExceeded
+        ) {
+            "官方返回额度限制，已按恢复时间暂停该账号。".into()
+        } else if stats_7d.total == 0 {
+            "暂无真实额度数据；先显示计划与本地窗口用量。".into()
+        } else {
+            "未触发官方额度限制；额度窗口按本机请求历史统计。".into()
+        }
+    };
+    let message = if usage_payload.is_some() || usage_error.is_some() || refresh_error.is_some() {
+        message
+    } else {
+        fallback_message()
+    };
+    let primary_remaining_percent = codex_window_u64(&primary_window, "remaining_percent");
+    let secondary_remaining_percent = codex_window_u64(&secondary_window, "remaining_percent");
+    let primary_used_percent = codex_window_u64(&primary_window, "used_percent");
+    let secondary_used_percent = codex_window_u64(&secondary_window, "used_percent");
+    let primary_reset_at = codex_window_u64(&primary_window, "reset_at");
+    let secondary_reset_at = codex_window_u64(&secondary_window, "reset_at");
+    let status = serde_json::to_value(&runtime.status)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "active".into());
+    let effective_plan_type = if usage_plan_type.trim().is_empty() {
+        plan_type
+    } else {
+        usage_plan_type
+    };
+    let source = if usage_payload.is_some() {
+        "chatgpt_wham_usage"
+    } else {
+        "local_runtime"
+    };
+    let confidence_level = if usage_payload.is_some() {
+        "精确"
+    } else {
+        "本地状态"
+    };
+    let is_estimated = usage_payload.is_none();
+    let rate_limit_reached_type = usage_payload
+        .as_ref()
+        .and_then(|payload| payload.get("rate_limit_reached_type"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let usage_account_id = usage_payload
+        .as_ref()
+        .and_then(|payload| payload.get("account_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let usage_user_id = usage_payload
+        .as_ref()
+        .and_then(|payload| payload.get("user_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let usage_email = usage_payload
+        .as_ref()
+        .and_then(|payload| payload.get("email"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut official_map = serde_json::Map::new();
+    official_map.insert("checked_at".into(), json!(now));
+    official_map.insert("provider".into(), json!("codex"));
+    official_map.insert("title".into(), json!("Codex 额度"));
+    official_map.insert("status".into(), json!(status));
+    official_map.insert("status_label".into(), json!(status_label));
+    official_map.insert(
+        "status_message".into(),
+        json!(runtime.status_message.clone()),
+    );
+    official_map.insert("quota_exceeded".into(), json!(quota_exceeded));
+    official_map.insert("quota_reason".into(), json!(runtime.quota.reason.clone()));
+    official_map.insert("next_recover_at".into(), json!(next_recover_at));
+    official_map.insert("routing_enabled".into(), json!(routing.effective_enabled()));
+    official_map.insert("pool".into(), json!(routing.pool));
+    official_map.insert("priority".into(), json!(routing.priority));
+    official_map.insert("weight".into(), json!(routing.weight));
+    official_map.insert("plan_type".into(), json!(effective_plan_type));
+    official_map.insert(
+        "account_id".into(),
+        json!(oauth
+            .as_ref()
+            .map(|token| token.account_id.clone())
+            .unwrap_or_default()),
+    );
+    official_map.insert("usage_account_id".into(), json!(usage_account_id));
+    official_map.insert("usage_user_id".into(), json!(usage_user_id));
+    official_map.insert(
+        "email".into(),
+        json!(oauth
+            .as_ref()
+            .map(|token| token.email.clone())
+            .unwrap_or_default()),
+    );
+    official_map.insert("usage_email".into(), json!(usage_email));
+    official_map.insert(
+        "token_expired_at".into(),
+        json!(oauth
+            .as_ref()
+            .map(|token| token.expired_at)
+            .unwrap_or_default()),
+    );
+    official_map.insert(
+        "last_refresh".into(),
+        json!(oauth
+            .as_ref()
+            .map(|token| token.last_refresh.clone())
+            .unwrap_or_default()),
+    );
+    official_map.insert("allowed".into(), json!(usage_allowed));
+    official_map.insert("limit_reached".into(), json!(usage_limit_reached));
+    official_map.insert("rate_limit_reached_type".into(), rate_limit_reached_type);
+    official_map.insert("primary_window".into(), primary_window);
+    official_map.insert("secondary_window".into(), secondary_window);
+    official_map.insert(
+        "hours_5_remaining_percent".into(),
+        json!(primary_remaining_percent),
+    );
+    official_map.insert("hours_5_used_percent".into(), json!(primary_used_percent));
+    official_map.insert("hours_5_reset_at".into(), json!(primary_reset_at));
+    official_map.insert(
+        "weekly_remaining_percent".into(),
+        json!(secondary_remaining_percent),
+    );
+    official_map.insert("weekly_used_percent".into(), json!(secondary_used_percent));
+    official_map.insert("weekly_reset_at".into(), json!(secondary_reset_at));
+    official_map.insert("requests_5h".into(), json!(stats_5h.total));
+    official_map.insert("success_5h".into(), json!(stats_5h.success_count));
+    official_map.insert(
+        "failed_5h".into(),
+        json!(stats_5h.total.saturating_sub(stats_5h.success_count)),
+    );
+    official_map.insert("tokens_5h".into(), json!(stats_5h.total_tokens));
+    official_map.insert("requests_7d".into(), json!(stats_7d.total));
+    official_map.insert("success_7d".into(), json!(stats_7d.success_count));
+    official_map.insert(
+        "failed_7d".into(),
+        json!(stats_7d.total.saturating_sub(stats_7d.success_count)),
+    );
+    official_map.insert("tokens_7d".into(), json!(stats_7d.total_tokens));
+    official_map.insert("message".into(), json!(message));
+    official_map.insert("refresh_error".into(), json!(refresh_error));
+    official_map.insert("usage_error".into(), json!(usage_error));
+    official_map.insert("source".into(), json!(source));
+    official_map.insert("confidence_level".into(), json!(confidence_level));
+    official_map.insert("is_estimated".into(), json!(is_estimated));
+    let official = Value::Object(official_map);
+    account
+        .client_options
+        .insert("oauth_quota".into(), official.clone());
+    account.updated_at = now;
+    BalanceInfo {
+        mode: "official_oauth".into(),
+        credit_remaining: None,
+        credit_limit: None,
+        credit_label: None,
+        weekly_remaining: secondary_remaining_percent.map(|percent| format!("{percent}%")),
+        weekly_limit: None,
+        hours_5_remaining: primary_remaining_percent.map(|percent| format!("{percent}%")),
+        model_remains: None,
+        official: Some(official),
+    }
+}
+
 #[tauri::command]
 pub async fn fetch_balance(
     manager: State<'_, ServerManager>,
     account_id: String,
 ) -> Result<BalanceInfo, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let store = deecodex::accounts::load_accounts(&data_dir);
-    let account = store
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let account_index = store
         .accounts
         .iter()
-        .find(|a| a.id == account_id)
+        .position(|a| a.id == account_id)
         .ok_or_else(|| "账号不存在".to_string())?;
+    if is_codex_official_oauth_account(&store.accounts[account_index]) {
+        let mut account = store.accounts[account_index].clone();
+        let info = official_oauth_balance(&manager, &mut account).await;
+        store.accounts[account_index] = account.clone();
+        deecodex::accounts::save_accounts(&data_dir, &store)
+            .map_err(|e| format!("保存账号额度状态失败: {e}"))?;
+        sync_account_mutation_to_running_state(&manager, &store, &account).await;
+        return Ok(info);
+    }
+    let account = &store.accounts[account_index];
     let profile = deecodex::providers::profile_for_account(account);
     let endpoint = endpoint_for_account_in_store(account, &store);
     let upstream = endpoint
@@ -3048,6 +4312,7 @@ pub async fn fetch_balance(
             weekly_limit: None,
             hours_5_remaining: None,
             model_remains: None,
+            official: None,
         });
     }
 
@@ -3094,6 +4359,7 @@ pub async fn fetch_balance(
             weekly_limit: None,
             hours_5_remaining: None,
             model_remains: None,
+            official: None,
         });
     }
 
@@ -3153,6 +4419,7 @@ pub async fn fetch_balance(
                     weekly_limit: None,
                     hours_5_remaining: None,
                     model_remains: Some(models),
+                    official: None,
                 });
             }
         }
@@ -3171,6 +4438,7 @@ pub async fn fetch_balance(
                 weekly_limit: None,
                 hours_5_remaining: None,
                 model_remains: None,
+                official: None,
             });
         }
 
@@ -3188,6 +4456,7 @@ pub async fn fetch_balance(
                         weekly_limit: None,
                         hours_5_remaining: None,
                         model_remains: None,
+                        official: None,
                     });
                 }
             }
@@ -3212,6 +4481,7 @@ pub async fn fetch_balance(
                         weekly_limit: None,
                         hours_5_remaining: None,
                         model_remains: None,
+                        official: None,
                     });
                 }
             }
@@ -3238,6 +4508,7 @@ pub async fn fetch_balance(
                     weekly_limit: None,
                     hours_5_remaining: None,
                     model_remains: None,
+                    official: None,
                 });
             }
         }
@@ -3263,6 +4534,7 @@ pub async fn fetch_balance(
                     .and_then(|v| v.as_str().or_else(|| v.as_number().map(|_| "")))
                     .map(|s| s.to_string()),
                 model_remains: None,
+                official: None,
             });
         }
 
@@ -3313,6 +4585,7 @@ pub async fn fetch_balance(
         weekly_limit: None,
         hours_5_remaining: None,
         model_remains: None,
+        official: None,
     })
 }
 
@@ -3481,6 +4754,9 @@ fn account_to_value_with_endpoint(
     let balance_url = endpoint
         .map(|endpoint| endpoint.balance_url.as_str())
         .unwrap_or(&a.balance_url);
+    let raw_vision_api_key = vision
+        .map(|v| v.api_key.clone())
+        .unwrap_or_else(|| a.vision_api_key.clone());
     let mut value = json!({
         "id": a.id,
         "name": a.name,
@@ -3489,14 +4765,19 @@ fn account_to_value_with_endpoint(
         "target": a.client_kind,
         "wire_protocol": a.wire_protocol,
         "upstream": upstream,
-        "api_key": a.api_key.clone(),
+        "api_key": mask_secret(&a.api_key),
+        "api_key_present": !a.api_key.is_empty(),
+        "auth_mode": a.auth_mode.clone(),
         "default_model": a.default_model,
-        "client_options": a.client_options,
+        "client_options": redact_client_options(a.client_options.clone()),
+        "routing": deecodex::accounts::account_routing_options(a),
+        "runtime_state": a.runtime_state.clone(),
         "last_applied_at": a.last_applied_at,
         "last_check": a.last_check,
         "model_map": model_map,
         "vision_upstream": vision.map(|v| v.base_url.clone()).unwrap_or_else(|| a.vision_upstream.clone()),
-        "vision_api_key": vision.map(|v| v.api_key.clone()).unwrap_or_else(|| a.vision_api_key.clone()),
+        "vision_api_key": mask_secret(&raw_vision_api_key),
+        "vision_api_key_present": !raw_vision_api_key.is_empty(),
         "vision_model": vision.map(|v| v.model.clone()).unwrap_or_else(|| a.vision_model.clone()),
         "vision_endpoint": vision.map(|v| v.path.clone()).unwrap_or_else(|| a.vision_endpoint.clone()),
         "vision_enabled": vision.map(|v| v.mode == deecodex::accounts::VisionMode::Glue).unwrap_or(a.vision_enabled),
@@ -3510,7 +4791,7 @@ fn account_to_value_with_endpoint(
         "provider_options": a.provider_options,
         "capability_enabled": a.capability_enabled,
         "capability_account_id": a.capability_account_id,
-        "endpoints": a.endpoints,
+        "endpoints": redact_endpoints(&a.endpoints),
         "active_endpoint_name": endpoint.map(|e| e.name.clone()).unwrap_or_default(),
         "active_endpoint_kind": endpoint.map(|e| format!("{:?}", e.kind)).unwrap_or_default(),
         "active_vision_mode": endpoint.map(|e| format!("{:?}", e.vision.mode)).unwrap_or_default(),
@@ -4233,8 +5514,10 @@ mod tests {
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: Default::default(),
@@ -4419,8 +5702,10 @@ mod tests {
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::new(),
@@ -4743,5 +6028,33 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn codex_usage_window_converts_used_to_remaining_percent() {
+        let rate_limit = json!({
+            "primary_window": {
+                "used_percent": 1,
+                "reset_at": 1_779_454_627u64,
+                "reset_after_seconds": 18_000,
+                "limit_window_seconds": 18_000
+            }
+        });
+
+        let window = codex_rate_limit_window(&rate_limit, "primary_window");
+
+        assert_eq!(window["used_percent"], 1);
+        assert_eq!(window["remaining_percent"], 99);
+        assert_eq!(window["reset_at"], 1_779_454_627u64);
+    }
+
+    #[test]
+    fn codex_usage_auth_unavailable_detects_invalidated_token() {
+        let err = CodexUsageError::from_response(
+            401,
+            r#"{"error":{"message":"Your authentication token has been invalidated. Please try signing in again.","type":"authentication_error","code":"auth_unavailable"}}"#.into(),
+        );
+
+        assert!(err.is_auth_unavailable());
     }
 }

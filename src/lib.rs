@@ -16,6 +16,7 @@ pub mod handlers;
 pub mod inject;
 pub mod metrics;
 pub mod native_protocols;
+pub mod oauth_accounts;
 pub mod prompts;
 pub mod providers;
 pub mod ratelimit;

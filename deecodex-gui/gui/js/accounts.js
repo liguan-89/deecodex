@@ -6,6 +6,8 @@ const CLIENT_KIND_LABELS = {
   hermes: 'Hermes',
   generic_client: '通用客户端',
 };
+var oauthLoginState = null;
+var oauthLoginPollTimer = null;
 
 function providerBadgeClass(p) {
   return 'badge-provider badge-' + (p || 'custom');
@@ -77,6 +79,299 @@ function accountDisplayTitle(a) {
     if (base === providerLabel || base.toLowerCase() === String(a?.provider || '').toLowerCase()) return providerLabel;
   }
   return name.replace(suffix, '').trim() || providerLabel || name;
+}
+
+function officialAccountEmail(a) {
+  const options = a?.client_options || {};
+  return options?.oauth?.email
+    || options?.oauth_quota?.usage_email
+    || options?.oauth_quota?.email
+    || a?.email
+    || '';
+}
+
+function accountRuntimeBadge(a) {
+  const status = a?.runtime_state?.status || 'active';
+  const labels = {
+    active: '',
+    error: '错误',
+    cooling_down: '冷却',
+    quota_exceeded: '配额',
+  };
+  const label = labels[status] || '';
+  if (!label) return '';
+  const retry = a?.runtime_state?.next_retry_after;
+  const title = retry ? `下一次重试：${new Date(Number(retry) * 1000).toLocaleString()}` : label;
+  return `<span class="runtime-badge runtime-${escAttr(status)}" title="${escAttr(title)}">${esc(label)}</span>`;
+}
+
+function endpointIsCodexOfficial(endpoint) {
+  const kind = endpoint?.kind || '';
+  return kind === 'codex_official' || kind === 'CodexOfficial';
+}
+
+function isCodexOfficialAccount(a) {
+  if (!isCodexAccount(a)) return false;
+  return Array.isArray(a?.endpoints) && a.endpoints.some(endpointIsCodexOfficial);
+}
+
+function accountRouting(a) {
+  const raw = a?.routing || a?.client_options?.routing || {};
+  const enabled = raw.enabled !== false && raw.disabled !== true;
+  const weight = Math.max(1, Math.min(100, Number(raw.weight || 1)));
+  return {
+    enabled,
+    pool: String(raw.pool || 'codex-official'),
+    priority: Number(raw.priority || 0),
+    weight,
+  };
+}
+
+function renderCodexOfficialRouteLine(a) {
+  if (!isCodexOfficialAccount(a)) return '';
+  const routing = accountRouting(a);
+  const quota = officialQuotaSnapshot(a) || {};
+  const plan = planDisplayName(quota.plan_type || quota.plan || '');
+  const accountId = escAttr(a.id || '');
+  const toggle = `<label class="account-pool-switch toggle-label" title="${routing.enabled ? '账号池已启用' : '账号池已停用'}">
+    <input type="checkbox" aria-label="参与账号池" ${routing.enabled ? 'checked' : ''}${accountId ? ` onchange="toggleAccountRouting('${accountId}')"` : ' disabled'}>
+  </label>`;
+  return `${toggle}${plan !== '未知' ? `<span class="account-plan-pill">${esc(plan)}</span>` : ''}`;
+}
+
+function runtimeStatusLabel(status) {
+  const labels = {
+    active: '正常',
+    error: '错误',
+    cooling_down: '冷却',
+    quota_exceeded: '配额耗尽',
+    Active: '正常',
+    Error: '错误',
+    CoolingDown: '冷却',
+    QuotaExceeded: '配额耗尽',
+  };
+  return labels[status] || status || '正常';
+}
+
+function formatRuntimeDate(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '—';
+  return new Date(n * 1000).toLocaleString();
+}
+
+function renderCodexOfficialRuntimePanel(a) {
+  if (!endpointIsCodexOfficial(currentEndpoint(a)) && !isCodexOfficialAccount(a)) return '';
+  const routing = accountRouting(a);
+  const runtime = a?.runtime_state || {};
+  const modelStates = runtime.model_states && typeof runtime.model_states === 'object' ? runtime.model_states : {};
+  const rows = Object.entries(modelStates);
+  const accountId = escAttr(a.id || '');
+  return `<section class="account-edit-section official-runtime-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">官方账号池</div>
+    </div>
+    <div class="official-runtime-summary">
+      <div>${esc(officialAccountEligibility(a))}</div>
+      <span>${esc(officialRuntimeSummaryText(a))}</span>
+    </div>
+    <div class="config-fields">
+      <div class="config-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="edit_routing_enabled" ${routing.enabled ? 'checked' : ''}>
+          参与账号池
+        </label>
+      </div>
+      <div class="config-field">
+        <label>Pool</label>
+        <input type="text" id="edit_routing_pool" value="${escAttr(routing.pool)}" placeholder="codex-official">
+      </div>
+      <div class="config-field">
+        <label>优先级</label>
+        <input type="number" id="edit_routing_priority" value="${Number(routing.priority || 0)}" min="-1000" max="1000" step="1">
+      </div>
+      <div class="config-field">
+        <label>权重</label>
+        <input type="number" id="edit_routing_weight" value="${Number(routing.weight || 1)}" min="1" max="100" step="1">
+      </div>
+    </div>
+    <div class="official-runtime-actions">
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="refreshOfficialQuotaFromDetail('${accountId}')">刷新额度</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用账号池</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除冷却</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="resetAccountRuntime('${accountId}')">重置运行态</button>` : ''}
+    </div>
+    <div class="official-quota-panel" id="official-quota-${accountId}">
+      ${renderOfficialQuotaSnapshot(a)}
+    </div>
+    <div class="runtime-state-grid">
+      <div><span>状态</span><strong>${esc(runtimeStatusLabel(runtime.status || 'active'))}</strong></div>
+      <div><span>下一恢复</span><strong>${esc(formatRuntimeDate(runtime.next_retry_after))}</strong></div>
+      <div><span>成功</span><strong>${Number(runtime.success || 0)}</strong></div>
+      <div><span>失败</span><strong>${Number(runtime.failed || 0)}</strong></div>
+    </div>
+    <div class="runtime-model-table">
+      <div class="runtime-model-head">
+        <span>模型</span>
+        <span>状态</span>
+        <span>下一恢复</span>
+        <span>说明</span>
+      </div>
+      ${rows.length ? rows.map(([model, state]) => `<div class="runtime-model-row">
+        <span title="${escAttr(model)}">${esc(model)}</span>
+        <span>${esc(runtimeStatusLabel(state?.status || 'active'))}</span>
+        <span>${esc(formatRuntimeDate(state?.next_retry_after))}</span>
+        <span title="${escAttr(state?.status_message || '')}">${esc(state?.status_message || '—')}</span>
+      </div>`).join('') : '<div class="runtime-model-empty">暂无模型级冷却；该账号还没有失败或配额记录，当前按可用处理。</div>'}
+    </div>
+  </section>`;
+}
+
+function officialAccountEligibility(a) {
+  const routing = accountRouting(a);
+  const runtime = a?.runtime_state || {};
+  const retry = Number(runtime.next_retry_after || 0);
+  const now = Math.floor(Date.now() / 1000);
+  if (!routing.enabled) return '已停用';
+  if (retry && retry > now) return `${runtimeStatusLabel(runtime.status)}中`;
+  if ((runtime.status || 'active') === 'error') return '最近错误';
+  return '可参与';
+}
+
+function officialRuntimeSummaryText(a) {
+  const runtime = a?.runtime_state || {};
+  const success = Number(runtime.success || 0);
+  const failed = Number(runtime.failed || 0);
+  const retry = runtime.next_retry_after ? `，恢复 ${formatRuntimeDate(runtime.next_retry_after)}` : '';
+  if (!success && !failed) return `尚无请求记录${retry}`;
+  return `成功 ${success} / 失败 ${failed}${retry}`;
+}
+
+function officialQuotaSnapshot(a) {
+  const quota = a?.client_options?.oauth_quota;
+  return quota && typeof quota === 'object' && !Array.isArray(quota) ? quota : null;
+}
+
+function compactNumber(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '0';
+  return n.toLocaleString();
+}
+
+function quotaPercent(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function quotaResetText(value) {
+  const ts = Number(value || 0);
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function planDisplayName(plan) {
+  const raw = String(plan || '').trim();
+  if (!raw) return '未知';
+  if (raw.length <= 3) return raw.toUpperCase();
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function renderOfficialQuotaLine(label, remaining, used, resetAt) {
+  const pct = quotaPercent(remaining);
+  const usedPct = quotaPercent(used);
+  const pctText = pct === null ? '—' : `${pct}%`;
+  const usedText = usedPct === null ? '' : `已用 ${usedPct}%`;
+  const resetText = quotaResetText(resetAt);
+  return `<div class="official-quota-line">
+    <div class="official-quota-line-head">
+      <span>${esc(label)}</span>
+      <strong>${esc(pctText)} <em>${esc(resetText)}</em></strong>
+    </div>
+    <div class="official-quota-track" title="${escAttr(`${label} ${pctText}${usedText ? `，${usedText}` : ''}`)}">
+      <div class="official-quota-fill" style="width:${pct === null ? 0 : pct}%"></div>
+    </div>
+  </div>`;
+}
+
+function renderOfficialQuotaInfo(info) {
+  const official = info?.official || info || {};
+  const status = official.status_label || '可用';
+  const plan = planDisplayName(official.plan_type || official.plan || '');
+  const recover = Number(official.next_recover_at || 0);
+  const note = official.message || '显示 ChatGPT WHAM usage 返回的 Codex 额度窗口。';
+  const recoverText = recover ? `恢复 ${formatRuntimeDate(recover)}` : '未触发限制';
+  const hasRealQuota = official.hours_5_remaining_percent != null || official.weekly_remaining_percent != null;
+  if (hasRealQuota) {
+    const statusHead = status && status !== '可用'
+      ? `<div class="balance-official-head"><span>${esc(status)}</span></div>`
+      : '';
+    return `<div class="balance-pill balance-official ${official.quota_exceeded ? 'quota-hit' : ''}" title="${escAttr(note)}">
+      ${statusHead}
+      <div class="official-quota-bars">
+        ${renderOfficialQuotaLine('5h', official.hours_5_remaining_percent, official.hours_5_used_percent, official.hours_5_reset_at)}
+        ${renderOfficialQuotaLine('7d', official.weekly_remaining_percent, official.weekly_used_percent, official.weekly_reset_at)}
+      </div>
+    </div>`;
+  }
+  return `<div class="balance-pill balance-official ${official.quota_exceeded ? 'quota-hit' : ''}" title="${escAttr(note)}">
+    <div class="balance-official-head">
+      <span>${esc(status)}</span>
+      <strong>${esc(recoverText)}</strong>
+    </div>
+    <div class="balance-official-metrics">
+      <span class="balance-quota"><em>计划</em><strong>${esc(plan)}</strong></span>
+      <span class="balance-quota"><em>5h</em><strong>${compactNumber(official.requests_5h)} 次</strong></span>
+      <span class="balance-quota"><em>7d</em><strong>${compactNumber(official.requests_7d)} 次</strong></span>
+    </div>
+  </div>`;
+}
+
+function renderOfficialQuotaSnapshot(a) {
+  const snapshot = officialQuotaSnapshot(a);
+  if (snapshot) return renderOfficialQuotaInfo(snapshot);
+  return `<div class="official-quota-empty">尚未刷新额度状态；刷新后会显示 Codex 5 小时/周剩余额度、套餐和恢复时间。</div>`;
+}
+
+function renderOfficialCardStatus(a) {
+  const snapshot = officialQuotaSnapshot(a);
+  if (snapshot) return renderOfficialQuotaInfo(snapshot);
+  const runtime = a?.runtime_state || {};
+  const status = runtime.status || 'active';
+  return `<div class="official-card-status runtime-${escAttr(status)}" title="${escAttr(officialRuntimeSummaryText(a))}">
+    <span>${esc(officialAccountEligibility(a))}</span>
+    <strong>${esc(officialRuntimeSummaryText(a))}</strong>
+  </div>`;
+}
+
+function renderOfficialPoolOverview(list) {
+  const official = list.filter(isCodexOfficialAccount);
+  if (!official.length) return '';
+  const enabled = official.filter(account => accountRouting(account).enabled).length;
+  const unavailable = official.filter(account => officialAccountEligibility(account) !== '可参与').length;
+  const totalSuccess = official.reduce((sum, account) => sum + Number(account?.runtime_state?.success || 0), 0);
+  const totalFailed = official.reduce((sum, account) => sum + Number(account?.runtime_state?.failed || 0), 0);
+  const pools = Array.from(new Set(official.map(account => accountRouting(account).pool))).join(', ');
+  return `<div class="official-pool-overview">
+    <div>
+      <span>官方账号池</span>
+      <strong>${enabled}/${official.length} 已启用</strong>
+    </div>
+    <div>
+      <span>Pool</span>
+      <strong title="${escAttr(pools)}">${esc(pools || 'codex-official')}</strong>
+    </div>
+    <div>
+      <span>冷却/停用</span>
+      <strong>${unavailable}</strong>
+    </div>
+    <div>
+      <span>请求</span>
+      <strong>${totalSuccess}/${totalFailed}</strong>
+    </div>
+  </div>`;
 }
 
 function clientAccountHasIssue(a) {
@@ -458,11 +753,13 @@ function endpointKindLabel(kind) {
     open_ai_chat: 'Chat 兼容',
     open_ai_responses: 'OpenAI Responses 直连',
     anthropic_messages: 'Anthropic Messages',
+    codex_official: 'Codex 官方',
     custom_chat: 'Chat 兼容',
     custom_responses: 'Responses 直连',
     OpenAiChat: 'Chat 兼容',
     OpenAiResponses: 'OpenAI Responses 直连',
     AnthropicMessages: 'Anthropic Messages',
+    CodexOfficial: 'Codex 官方',
     CustomChat: 'Chat 兼容',
     CustomResponses: 'Responses 直连',
   };
@@ -579,7 +876,11 @@ function ensureAccountEndpoints(a) {
 
 function navigateAccounts(view) {
   accountsView = view;
-  if (view === 'list') editingAccount = null;
+  if (view === 'list') {
+    editingAccount = null;
+    stopOAuthLoginPolling();
+    oauthLoginState = null;
+  }
   renderMainContent();
 }
 
@@ -624,6 +925,8 @@ function renderAccountList() {
     cards = '<div class="accounts-grid">' + filtered.map(a => {
       const active = a.id === (accountsData.active_account_id || accountsData.active_id);
       if (!isCodexAccount(a)) return renderClientAccountCard(a);
+      const official = isCodexOfficialAccount(a);
+      const displayName = official ? (officialAccountEmail(a) || accountDisplayTitle(a)) : accountDisplayTitle(a);
       return `<div class="account-card${active ? ' active' : ''}">
         <div class="account-card-mainline">
           <div class="account-card-primary">
@@ -631,26 +934,28 @@ function renderAccountList() {
               <div class="account-card-header">
                 <div class="account-card-titlebar">
                   ${renderProviderBadge(a.provider)}
+                  ${renderCodexOfficialRouteLine(a)}
                   ${active ? '<span class="active-badge">活跃</span>' : ''}
+                  ${accountRuntimeBadge(a)}
                 </div>
               </div>
-              <div class="account-card-body">
-                <div class="account-card-main">
-                  <div class="card-name">${esc(a.name)}</div>
-                </div>
+            <div class="account-card-body">
+              <div class="account-card-main">
+                <div class="card-name ${official ? 'official-email-name' : ''}" title="${escAttr(displayName)}">${esc(displayName)}</div>
               </div>
             </div>
           </div>
+          </div>
           <div class="account-card-side">
             <div class="card-balance" id="balance-${escAttr(a.id)}">
-              <span class="balance-loading">—</span>
+              ${official ? renderOfficialCardStatus(a) : '<span class="balance-loading">—</span>'}
             </div>
             <div class="card-actions-row">
               ${active
                 ? renderAccountIconAction('已应用', 'check', '', 'account-applied', true)
                 : renderAccountIconAction('应用', 'check', `applyAccount('${escAttr(a.id)}')`, 'account-apply')}
-              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
               ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
+              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
               ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
             </div>
           </div>
@@ -672,6 +977,7 @@ function renderAccountList() {
       ${renderClientSwitcher(list)}
     </div>
     <div class="accounts-scroll-region">
+      ${selectedClientKind === 'codex' ? renderOfficialPoolOverview(filtered) : ''}
       ${cards}
     </div>
   </div>`;
@@ -689,6 +995,7 @@ function renderClientAccountCard(a) {
             <div class="account-card-titlebar">
               <span class="client-kind-badge">${clientIcon(kind)}${esc(CLIENT_KIND_LABELS[kind] || kind)}</span>
               ${renderProviderBadge(a.provider)}
+              ${accountRuntimeBadge(a)}
             </div>
           </div>
           <div class="account-card-body">
@@ -703,7 +1010,6 @@ function renderClientAccountCard(a) {
         <div class="card-actions-row">
           ${renderAccountIconAction('写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, 'account-apply')}
           ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
-          ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`)}
           ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
         </div>
       </div>
@@ -714,28 +1020,97 @@ function renderClientAccountCard(a) {
 // ── Level 2: 添加账号 ──
 
 function renderAddAccount() {
+  if (oauthLoginState) return renderOAuthLoginPanel();
   let cards = '';
   if (providerPresets.length === 0) {
     cards = '<div class="empty-state">加载供应商列表...</div>';
   } else {
     const providers = providersForClientKind(selectedClientKind);
-    cards = '<div class="provider-grid">' + providers.map(p => {
-      const upstream = p.default_upstream || '(自定义)';
-      return `<div class="provider-card" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')">
+    const officialCards = renderOfficialOAuthCards(selectedClientKind);
+    cards = officialCards + '<div class="provider-grid">' + providers.map(p => {
+      return `<div class="provider-card" role="button" tabindex="0" aria-label="添加 ${escAttr(p.label)} 账号" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}')}">
         <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
-        <div class="provider-name">${esc(p.label)}</div>
-        <div class="provider-desc">${esc(p.description)}</div>
-        <div class="provider-default-upstream" title="${escAttr(upstream)}">${esc(trunc(upstream, 42))}</div>
+        <div class="provider-copy">
+          <div class="provider-name">${esc(p.label)}</div>
+          <div class="provider-desc">${esc(p.description)}</div>
+        </div>
+        <div class="provider-card-arrow" aria-hidden="true"></div>
       </div>`;
     }).join('') + '</div>';
   }
 
-  return `<div class="breadcrumb">
-    <span class="back-link" onclick="navigateAccounts('list')">← 账号列表</span>
-    <span> / 添加账号</span>
+  return `<div class="breadcrumb add-account-breadcrumb">
+    <button type="button" class="add-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span aria-hidden="true">←</span>
+      <span>账号列表</span>
+    </button>
   </div>
-  <div class="page-header"><h2>选择供应商</h2><p>为 ${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')} 创建新账号配置</p></div>
-  ${cards}`;
+  <div class="page-header add-provider-header">
+    <div class="add-provider-title-line">
+      <h2>选择供应商</h2>
+      <span class="add-provider-client">${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}</span>
+    </div>
+  </div>
+  <div class="provider-picker-shell">${cards}</div>`;
+}
+
+function renderOfficialOAuthCards(kind) {
+  const normalized = normalizeClientKind(kind);
+  if (normalized === 'codex') {
+    return `<div class="official-login-grid">
+      ${renderOfficialOAuthCard('codex', 'browser', '官方 Codex 登录', '使用 OpenAI 官方 OAuth 登录 Codex 账号', 'https://chatgpt.com/backend-api/codex')}
+      ${renderOfficialOAuthCard('codex', 'device', 'Codex 设备码登录', '无法完成本机回调时使用设备码登录', 'auth.openai.com/codex/device')}
+    </div>`;
+  }
+  if (normalized === 'claude_code') {
+    return `<div class="official-login-grid">
+      ${renderOfficialOAuthCard('claude', 'browser', '官方 Claude 登录', '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com')}
+    </div>`;
+  }
+  return '';
+}
+
+function renderOfficialOAuthCard(provider, mode, title, desc, upstream) {
+  const logo = provider === 'claude' ? 'anthropic' : 'codex';
+  return `<div class="provider-card official-login-card" role="button" tabindex="0" aria-label="${escAttr(title)}" onclick="startOAuthAccountLogin('${escAttr(provider)}', '${escAttr(mode)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();startOAuthAccountLogin('${escAttr(provider)}', '${escAttr(mode)}')}">
+    <div class="provider-icon">${providerIcon(logo, title)}</div>
+    <div class="provider-copy">
+      <div class="provider-name">${esc(title)}</div>
+      <div class="provider-desc">${esc(desc)}</div>
+    </div>
+    <div class="provider-card-arrow" aria-hidden="true"></div>
+  </div>`;
+}
+
+function renderOAuthLoginPanel() {
+  const state = oauthLoginState || {};
+  const status = state.status || 'pending';
+  const title = state.provider === 'claude' ? 'Claude 官方登录' : 'Codex 官方登录';
+  const url = state.verification_url || state.url || '';
+  const userCode = state.user_code ? `<div class="oauth-device-code">${esc(state.user_code)}</div>` : '';
+  const statusText = status === 'success' ? '登录完成' : (status === 'error' ? '登录失败' : (status === 'expired' ? '登录已过期' : '等待授权'));
+  return `<div class="breadcrumb add-account-breadcrumb">
+    <button type="button" class="add-back-link" onclick="cancelOAuthAccountLogin()" aria-label="返回添加账号">
+      <span aria-hidden="true">←</span>
+      <span>选择供应商</span>
+    </button>
+  </div>
+  <div class="page-header add-provider-header oauth-login-header">
+    <h2>${esc(title)}</h2>
+    <p>${esc(statusText)}</p>
+  </div>
+  <div class="oauth-login-panel">
+    <div class="oauth-login-status ${escAttr(status)}">${esc(statusText)}</div>
+    ${userCode}
+    <div class="oauth-login-url" title="${escAttr(url)}">${esc(url)}</div>
+    <div class="oauth-login-actions">
+      ${url ? `<button class="btn btn-primary" onclick="openOAuthLoginUrl()">打开登录页</button>` : ''}
+      ${url ? `<button class="btn btn-ghost" onclick="copyOAuthLoginUrl()">复制链接</button>` : ''}
+      <button class="btn btn-ghost" onclick="pollOAuthAccountLogin()">刷新状态</button>
+      <button class="btn btn-danger" onclick="cancelOAuthAccountLogin()">取消</button>
+    </div>
+    <div class="oauth-login-message">${esc(state.message || '')}</div>
+  </div>`;
 }
 
 function providersForClientKind(kind) {
@@ -917,6 +1292,7 @@ function renderAccountDetail() {
             <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
             <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
             <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
+            <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>
           </select>
           <span class="hint">DeepSeek、OpenRouter 这类一般选 OpenAI Chat 兼容；只有上游原生支持 Responses API 时才选直连。</span>
         </div>
@@ -926,6 +1302,8 @@ function renderAccountDetail() {
         </div>
       </div>
     </section>
+
+    ${renderCodexOfficialRuntimePanel(a)}
 
     <section class="account-edit-section">
       <div class="account-section-head">
@@ -1360,21 +1738,70 @@ function renderModelVisionSegments(model, value) {
 
 // ── 数据加载 ──
 
+let accountsListRenderSignature = '';
+
+function accountListRenderSignature(data) {
+  const activeId = data?.active_account_id || data?.active_id || '';
+  const activeEndpointId = data?.active_endpoint_id || '';
+  const accounts = (data?.accounts || [])
+    .filter(a => accountClientKind(a) === selectedClientKind)
+    .map(a => {
+      const routing = accountRouting(a);
+      const runtime = a?.runtime_state || {};
+      return {
+        id: a.id,
+        name: a.name,
+        provider: a.provider,
+        client_kind: accountClientKind(a),
+        auth_mode: a.auth_mode || 'api_key',
+        active: a.id === activeId,
+        active_endpoint: a.id === activeId ? activeEndpointId : '',
+        upstream: cardUpstream(a),
+        endpoint_kind: cardEndpointKind(a),
+        routing_enabled: routing.enabled,
+        routing_pool: routing.pool,
+        routing_priority: routing.priority,
+        routing_weight: routing.weight,
+        runtime_status: runtime.status || 'active',
+        runtime_next_retry_after: runtime.next_retry_after || null,
+        runtime_success: runtime.success || 0,
+        runtime_failed: runtime.failed || 0,
+      };
+    });
+  return JSON.stringify({
+    selectedClientKind,
+    activeId,
+    activeEndpointId,
+    accounts,
+  });
+}
+
 async function loadAccountsData() {
   try {
+    const prevSignature = accountsListRenderSignature;
     const result = await invoke('list_accounts');
     accountsData = result;
     if (!clientProfiles.length) await loadClientProfiles();
     if (!providerPresets.length) await loadProviderPresets();
     if (!endpointTemplates.length) await loadEndpointTemplates();
-    if (accountsView === 'list' && currentPanel === 'accounts') renderMainContent();
+    if (accountsView === 'list' && currentPanel === 'accounts') {
+      const nextSignature = accountListRenderSignature(accountsData);
+      const main = document.getElementById('mainContent');
+      if (nextSignature !== prevSignature || !main || !main.querySelector('.accounts-grid')) {
+        accountsListRenderSignature = nextSignature;
+        renderMainContent();
+      }
+    }
     // 异步加载余额（不阻塞渲染）
     if (accountsView === 'list') {
       (accountsData.accounts || [])
         .filter(a => accountClientKind(a) === selectedClientKind)
         .forEach(a => {
-          if (isCodexAccount(a)) fetchBalanceForCard(a);
-          else fetchClientStatusForCard(a);
+          if (isCodexAccount(a)) {
+            fetchBalanceForCard(a);
+          } else {
+            fetchClientStatusForCard(a);
+          }
         });
     }
   } catch (e) {
@@ -1557,6 +1984,26 @@ function syncEditingDraftFromForm() {
   if (balanceUrl) {
     ep.balance_url = balanceUrl.value.trim();
     a.balance_url = ep.balance_url;
+  }
+  const routingEnabled = document.getElementById('edit_routing_enabled');
+  const routingPool = document.getElementById('edit_routing_pool');
+  const routingPriority = document.getElementById('edit_routing_priority');
+  const routingWeight = document.getElementById('edit_routing_weight');
+  if (routingEnabled || routingPool || routingPriority || routingWeight) {
+    if (!a.client_options) a.client_options = {};
+    const routing = accountRouting(a);
+    routing.enabled = routingEnabled ? routingEnabled.checked : routing.enabled;
+    routing.pool = routingPool ? (routingPool.value.trim() || 'codex-official') : routing.pool;
+    routing.priority = routingPriority ? Number(routingPriority.value || 0) : routing.priority;
+    routing.weight = routingWeight ? Math.max(1, Math.min(100, Number(routingWeight.value || 1))) : routing.weight;
+    a.routing = routing;
+    a.client_options.routing = {
+      enabled: routing.enabled,
+      disabled: !routing.enabled,
+      pool: routing.pool,
+      priority: routing.priority,
+      weight: routing.weight,
+    };
   }
 
   if (!ep.vision) ep.vision = {};
@@ -1763,6 +2210,93 @@ function collectModelProfiles() {
 
 // ── CRUD 操作 ──
 
+async function startOAuthAccountLogin(provider, mode = 'browser') {
+  try {
+    const result = await invoke('start_oauth_account_login', {
+      provider,
+      clientKind: selectedClientKind,
+      client_kind: selectedClientKind,
+      mode,
+    });
+    oauthLoginState = { ...result, status: 'pending' };
+    accountsView = 'add';
+    renderMainContent();
+    startOAuthLoginPolling();
+  } catch (e) {
+    showToast('启动官方登录失败: ' + e, 'error');
+  }
+}
+
+function startOAuthLoginPolling() {
+  stopOAuthLoginPolling();
+  oauthLoginPollTimer = setInterval(() => {
+    pollOAuthAccountLogin();
+  }, Math.max(2000, Number(oauthLoginState?.poll_interval_secs || 3) * 1000));
+}
+
+function stopOAuthLoginPolling() {
+  if (oauthLoginPollTimer) {
+    clearInterval(oauthLoginPollTimer);
+    oauthLoginPollTimer = null;
+  }
+}
+
+async function pollOAuthAccountLogin() {
+  if (!oauthLoginState?.state) return;
+  try {
+    const result = await invoke('poll_oauth_account_login', { state: oauthLoginState.state });
+    oauthLoginState = { ...oauthLoginState, ...result };
+    if (result.status === 'success') {
+      stopOAuthLoginPolling();
+      showToast('官方账号登录成功', 'success');
+      await loadAccountsData();
+      if (result.account) selectedClientKind = accountClientKind(result.account);
+      accountsView = 'list';
+      oauthLoginState = null;
+      renderMainContent();
+      return;
+    }
+    if (result.status === 'error' || result.status === 'expired') {
+      stopOAuthLoginPolling();
+    }
+    renderMainContent();
+  } catch (e) {
+    oauthLoginState = { ...(oauthLoginState || {}), status: 'error', message: String(e) };
+    stopOAuthLoginPolling();
+    renderMainContent();
+  }
+}
+
+async function cancelOAuthAccountLogin() {
+  const state = oauthLoginState?.state;
+  stopOAuthLoginPolling();
+  oauthLoginState = null;
+  if (state) {
+    try {
+      await invoke('cancel_oauth_account_login', { state });
+    } catch (_) {}
+  }
+  accountsView = 'add';
+  renderMainContent();
+}
+
+function openOAuthLoginUrl() {
+  const url = oauthLoginState?.verification_url || oauthLoginState?.url;
+  if (!url) return;
+  window.open(url, '_blank');
+}
+
+async function copyOAuthLoginUrl() {
+  const url = oauthLoginState?.verification_url || oauthLoginState?.url;
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('登录链接已复制', 'success');
+  } catch (e) {
+    showToast('复制失败: ' + e, 'error');
+  }
+}
+
 async function switchAccount(id) {
   try {
     await invoke('switch_account', { id });
@@ -1771,6 +2305,72 @@ async function switchAccount(id) {
     await loadAccountsData();
   } catch (e) {
     showToast('切换账号失败: ' + e, 'error');
+  }
+}
+
+async function clearAccountCooldown(id) {
+  try {
+    await invoke('clear_account_cooldown', { id });
+    showToast('已清除账号冷却', 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('清除冷却失败: ' + e, 'error');
+  }
+}
+
+async function resetAccountRuntime(id) {
+  if (!await showConfirm('确定要重置此账号的运行态统计吗？')) return;
+  try {
+    await invoke('reset_account_runtime_state', { id });
+    showToast('运行态已重置', 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('重置运行态失败: ' + e, 'error');
+  }
+}
+
+async function toggleAccountRouting(id) {
+  const account = (accountsData.accounts || []).find(item => item.id === id);
+  const routing = accountRouting(account);
+  try {
+    await invoke('set_account_routing', { id, enabled: !routing.enabled });
+    showToast(routing.enabled ? '账号池已停用' : '账号池已启用', 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('更新账号池失败: ' + e, 'error');
+  }
+}
+
+function refreshEditingAccountAfterManagement(id) {
+  if (accountsView !== 'edit' || !editingAccount || editingAccount.id !== id) return;
+  const updated = (accountsData.accounts || []).find(account => account.id === id);
+  if (!updated) return;
+  editingAccount = JSON.parse(JSON.stringify(updated));
+  renderMainContent();
+}
+
+async function applyAccountRoutingFromDetail(id) {
+  if (!editingAccount || !id) return;
+  syncEditingDraftFromForm();
+  const routing = accountRouting(editingAccount);
+  try {
+    const result = await invoke('set_account_routing', {
+      id,
+      enabled: routing.enabled,
+      pool: routing.pool,
+      priority: routing.priority,
+      weight: routing.weight,
+    });
+    showToast('账号池设置已应用', 'success');
+    await loadAccountsData();
+    editingAccount = accountsData.accounts.find(account => account.id === result.id) || result;
+    if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));
+    renderMainContent();
+  } catch (e) {
+    showToast('应用账号池失败: ' + e, 'error');
   }
 }
 
@@ -2517,6 +3117,23 @@ async function refreshBalanceForCard(id) {
   await fetchBalanceForCard(a);
 }
 
+async function refreshOfficialQuotaFromDetail(id) {
+  const box = document.getElementById('official-quota-' + id);
+  if (box) box.innerHTML = '<span class="balance-loading">刷新中...</span>';
+  delete balanceCache[id];
+  try {
+    const info = await invoke('fetch_balance', { accountId: id });
+    balanceCache[id] = { info, ts: Date.now() };
+    if (box) box.innerHTML = renderBalanceInfo(info);
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+    showToast('额度状态已刷新', 'success');
+  } catch (e) {
+    if (box) box.innerHTML = `<span class="balance-na">${esc(String(e))}</span>`;
+    showToast('刷新额度失败: ' + e, 'error');
+  }
+}
+
 async function testAccountUpstreamForCard(id) {
   const a = (accountsData.accounts || []).find(acc => acc.id === id);
   if (!a) return;
@@ -2558,6 +3175,9 @@ function balanceQuotaText(current, total = null) {
 }
 
 function renderBalanceInfo(info) {
+  if (info.mode === 'official_oauth') {
+    return renderOfficialQuotaInfo(info);
+  }
   if (info.mode === 'token_credit') {
     const remaining = info.credit_remaining;
     const limit = info.credit_limit;

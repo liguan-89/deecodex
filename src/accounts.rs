@@ -16,6 +16,15 @@ pub const ACCOUNT_STORE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum AccountAuthMode {
+    #[default]
+    ApiKey,
+    #[serde(rename = "oauth", alias = "o_auth")]
+    OAuth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum AccountClientKind {
     #[default]
     Codex,
@@ -43,6 +52,126 @@ pub struct ClientCheckRecord {
     pub details: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountRuntimeStatus {
+    #[default]
+    Active,
+    Error,
+    CoolingDown,
+    QuotaExceeded,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountQuotaState {
+    #[serde(default)]
+    pub exceeded: bool,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub next_recover_at: Option<u64>,
+    #[serde(default)]
+    pub backoff_level: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountModelRuntimeState {
+    #[serde(default)]
+    pub status: AccountRuntimeStatus,
+    #[serde(default)]
+    pub status_message: String,
+    #[serde(default)]
+    pub next_retry_after: Option<u64>,
+    #[serde(default)]
+    pub quota: AccountQuotaState,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountRecentRequestBucket {
+    #[serde(default)]
+    pub bucket_start: u64,
+    #[serde(default)]
+    pub success: u64,
+    #[serde(default)]
+    pub failed: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountRuntimeState {
+    #[serde(default)]
+    pub status: AccountRuntimeStatus,
+    #[serde(default)]
+    pub status_message: String,
+    #[serde(default)]
+    pub next_retry_after: Option<u64>,
+    #[serde(default)]
+    pub quota: AccountQuotaState,
+    #[serde(default)]
+    pub model_states: HashMap<String, AccountModelRuntimeState>,
+    #[serde(default)]
+    pub success: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub recent_requests: Vec<AccountRecentRequestBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountRoutingOptions {
+    #[serde(default = "default_routing_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_routing_pool")]
+    pub pool: String,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default = "default_routing_weight")]
+    pub weight: u32,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+fn default_routing_enabled() -> bool {
+    true
+}
+
+fn default_routing_pool() -> String {
+    "codex-official".into()
+}
+
+fn default_routing_weight() -> u32 {
+    1
+}
+
+impl Default for AccountRoutingOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pool: default_routing_pool(),
+            priority: 0,
+            weight: 1,
+            disabled: false,
+        }
+    }
+}
+
+impl AccountRoutingOptions {
+    pub fn effective_enabled(&self) -> bool {
+        self.enabled && !self.disabled && self.weight > 0
+    }
+
+    pub fn normalized(mut self) -> Self {
+        if self.pool.trim().is_empty() {
+            self.pool = default_routing_pool();
+        } else {
+            self.pool = self.pool.trim().to_string();
+        }
+        self.weight = self.weight.clamp(1, 100);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointKind {
@@ -50,6 +179,7 @@ pub enum EndpointKind {
     OpenAiChat,
     OpenAiResponses,
     AnthropicMessages,
+    CodexOfficial,
     CustomChat,
     CustomResponses,
 }
@@ -66,7 +196,7 @@ impl EndpointKind {
     pub fn default_path(&self) -> &'static str {
         match self {
             Self::OpenAiChat | Self::CustomChat => "chat/completions",
-            Self::OpenAiResponses | Self::CustomResponses => "responses",
+            Self::OpenAiResponses | Self::CustomResponses | Self::CodexOfficial => "responses",
             Self::AnthropicMessages => "messages",
         }
     }
@@ -76,6 +206,7 @@ impl EndpointKind {
             Self::OpenAiChat => "OpenAI Chat",
             Self::OpenAiResponses => "OpenAI Responses",
             Self::AnthropicMessages => "Anthropic Messages",
+            Self::CodexOfficial => "Codex 官方",
             Self::CustomChat => "自定义 Chat",
             Self::CustomResponses => "自定义 Responses",
         }
@@ -254,12 +385,17 @@ pub struct Account {
     pub wire_protocol: WireProtocol,
     pub upstream: String,
     pub api_key: String,
+    #[serde(default)]
+    pub auth_mode: AccountAuthMode,
     /// 非 Codex 客户端直接使用的默认模型名。Codex 账号继续使用 model_map。
     #[serde(default)]
     pub default_model: String,
     /// 客户端侧扩展配置，例如 env 覆盖、profile 名称、配置路径等。
     #[serde(default)]
     pub client_options: HashMap<String, Value>,
+    /// 账号运行态：最近错误、配额冷却、单模型可用性等。
+    #[serde(default)]
+    pub runtime_state: AccountRuntimeState,
     /// 外部客户端配置最近一次成功写入时间。
     #[serde(default)]
     pub last_applied_at: Option<u64>,
@@ -440,6 +576,218 @@ impl Account {
         self.vision_api_key = endpoint.vision.api_key.clone();
         self.vision_model = endpoint.vision.model.clone();
         self.vision_endpoint = endpoint.vision.path.clone();
+    }
+
+    pub fn record_runtime_success(&mut self, model: &str, now: u64) {
+        self.runtime_state.record_request(now, true);
+        self.runtime_state.success = self.runtime_state.success.saturating_add(1);
+        self.runtime_state.status = AccountRuntimeStatus::Active;
+        self.runtime_state.status_message.clear();
+        self.runtime_state.next_retry_after = None;
+        self.runtime_state.quota = AccountQuotaState::default();
+        if !model.trim().is_empty() {
+            self.runtime_state.model_states.remove(model.trim());
+        }
+    }
+
+    pub fn record_runtime_failure(
+        &mut self,
+        model: &str,
+        status_code: u16,
+        message: String,
+        retry_after_secs: Option<u64>,
+        now: u64,
+    ) {
+        self.runtime_state.record_request(now, false);
+        self.runtime_state.failed = self.runtime_state.failed.saturating_add(1);
+
+        let model_key = model.trim().to_string();
+        let previous_backoff = if model_key.is_empty() {
+            self.runtime_state.quota.backoff_level
+        } else {
+            self.runtime_state
+                .model_states
+                .get(&model_key)
+                .map(|state| state.quota.backoff_level)
+                .unwrap_or(0)
+        };
+        let cooldown = runtime_cooldown_for_status(status_code, retry_after_secs, previous_backoff);
+
+        self.runtime_state.status_message = message.clone();
+        self.runtime_state.next_retry_after = cooldown.next_retry_after;
+        self.runtime_state.status = cooldown.status.clone();
+        self.runtime_state.quota = cooldown.quota.clone();
+
+        if !model_key.is_empty() {
+            self.runtime_state.model_states.insert(
+                model_key,
+                AccountModelRuntimeState {
+                    status: cooldown.status,
+                    status_message: message,
+                    next_retry_after: cooldown.next_retry_after,
+                    quota: cooldown.quota,
+                    updated_at: now,
+                },
+            );
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_runtime_cooldown(&mut self, now: u64) {
+        self.runtime_state.status = AccountRuntimeStatus::Active;
+        self.runtime_state.status_message.clear();
+        self.runtime_state.next_retry_after = None;
+        self.runtime_state.quota = AccountQuotaState::default();
+        self.runtime_state.model_states.retain(|_, state| {
+            if state.next_retry_after.is_some_and(|retry| retry > now) {
+                return false;
+            }
+            if matches!(
+                state.status,
+                AccountRuntimeStatus::CoolingDown | AccountRuntimeStatus::QuotaExceeded
+            ) {
+                return false;
+            }
+            true
+        });
+    }
+
+    #[allow(dead_code)]
+    pub fn reset_runtime_state(&mut self) {
+        self.runtime_state = AccountRuntimeState::default();
+    }
+}
+
+pub fn account_routing_options(account: &Account) -> AccountRoutingOptions {
+    let mut options = AccountRoutingOptions::default();
+    if let Some(Value::Object(routing)) = account.client_options.get("routing") {
+        if let Some(enabled) = routing.get("enabled").and_then(Value::as_bool) {
+            options.enabled = enabled;
+        }
+        if let Some(pool) = routing.get("pool").and_then(Value::as_str) {
+            options.pool = pool.to_string();
+        }
+        if let Some(priority) = routing.get("priority").and_then(Value::as_i64) {
+            options.priority = priority;
+        }
+        if let Some(weight) = routing.get("weight").and_then(Value::as_u64) {
+            options.weight = weight.min(u32::MAX as u64) as u32;
+        }
+        if let Some(disabled) = routing.get("disabled").and_then(Value::as_bool) {
+            options.disabled = disabled;
+        }
+    }
+    options.normalized()
+}
+
+#[allow(dead_code)]
+pub fn set_account_routing_options(account: &mut Account, options: AccountRoutingOptions) {
+    let options = options.normalized();
+    account.client_options.insert(
+        "routing".into(),
+        serde_json::json!({
+            "enabled": options.enabled,
+            "pool": options.pool,
+            "priority": options.priority,
+            "weight": options.weight,
+            "disabled": options.disabled,
+        }),
+    );
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeCooldown {
+    pub status: AccountRuntimeStatus,
+    pub next_retry_after: Option<u64>,
+    pub quota: AccountQuotaState,
+}
+
+pub fn runtime_cooldown_for_status(
+    status_code: u16,
+    retry_after_secs: Option<u64>,
+    previous_backoff_level: u32,
+) -> RuntimeCooldown {
+    let now = now_secs();
+    let mut quota = AccountQuotaState::default();
+    let (status, wait_secs, backoff_level) = match status_code {
+        401..=403 => (
+            AccountRuntimeStatus::CoolingDown,
+            Some(30 * 60),
+            previous_backoff_level,
+        ),
+        404 => (
+            AccountRuntimeStatus::CoolingDown,
+            Some(12 * 60 * 60),
+            previous_backoff_level,
+        ),
+        429 => {
+            let (wait, next_level) = match retry_after_secs.filter(|v| *v > 0) {
+                Some(wait) => (wait, previous_backoff_level),
+                None => next_quota_backoff(previous_backoff_level),
+            };
+            quota.exceeded = true;
+            quota.reason = "quota".into();
+            quota.backoff_level = next_level;
+            (AccountRuntimeStatus::QuotaExceeded, Some(wait), next_level)
+        }
+        408 | 500 | 502 | 503 | 504 => (
+            AccountRuntimeStatus::CoolingDown,
+            Some(60),
+            previous_backoff_level,
+        ),
+        _ => (AccountRuntimeStatus::Error, None, previous_backoff_level),
+    };
+    if status_code == 429 {
+        quota.backoff_level = backoff_level;
+    }
+    let next_retry_after = wait_secs.map(|wait| now.saturating_add(wait));
+    if quota.exceeded {
+        quota.next_recover_at = next_retry_after;
+    }
+    RuntimeCooldown {
+        status,
+        next_retry_after,
+        quota,
+    }
+}
+
+fn next_quota_backoff(previous_level: u32) -> (u64, u32) {
+    let level = previous_level.min(31);
+    let wait = 1u64.checked_shl(level).unwrap_or(30 * 60).clamp(1, 30 * 60);
+    let next_level = if wait >= 30 * 60 {
+        previous_level
+    } else {
+        previous_level.saturating_add(1)
+    };
+    (wait, next_level)
+}
+
+impl AccountRuntimeState {
+    pub fn record_request(&mut self, now: u64, success: bool) {
+        let bucket_start = now / 600 * 600;
+        if let Some(bucket) = self
+            .recent_requests
+            .iter_mut()
+            .find(|bucket| bucket.bucket_start == bucket_start)
+        {
+            if success {
+                bucket.success = bucket.success.saturating_add(1);
+            } else {
+                bucket.failed = bucket.failed.saturating_add(1);
+            }
+        } else {
+            self.recent_requests.push(AccountRecentRequestBucket {
+                bucket_start,
+                success: u64::from(success),
+                failed: u64::from(!success),
+            });
+        }
+        self.recent_requests
+            .sort_by_key(|bucket| bucket.bucket_start);
+        if self.recent_requests.len() > 20 {
+            let keep_from = self.recent_requests.len() - 20;
+            self.recent_requests.drain(0..keep_from);
+        }
     }
 }
 
@@ -721,6 +1069,16 @@ pub fn get_endpoint_templates() -> Vec<EndpointTemplate> {
             default_path: "messages".into(),
             default_vision_mode: VisionMode::Native,
             description: "Claude Messages API，支持非流式请求，流式与后台模式预留".into(),
+        },
+        EndpointTemplate {
+            id: "codex_official".into(),
+            label: "Codex 官方".into(),
+            provider: "codex".into(),
+            kind: EndpointKind::CodexOfficial,
+            default_base_url: "https://chatgpt.com/backend-api/codex".into(),
+            default_path: "responses".into(),
+            default_vision_mode: VisionMode::Native,
+            description: "ChatGPT Codex 官方 OAuth 后端，使用 Codex CLI 风格鉴权和请求头".into(),
         },
         EndpointTemplate {
             id: "custom_chat".into(),
@@ -1030,8 +1388,10 @@ mod capability_tests {
             wire_protocol: Default::default(),
             upstream: "https://example.com/v1".into(),
             api_key: String::new(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::new(),
@@ -1191,8 +1551,10 @@ mod tests {
             wire_protocol: Default::default(),
             upstream: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: HashMap::from([("gpt-5".into(), "deepseek-chat".into())]),
@@ -1279,6 +1641,59 @@ mod tests {
         assert_eq!(vision.adapter_id, "minimax_coding_plan_vlm");
         assert_eq!(vision.base_url, "https://api.minimax.chat");
         assert_eq!(vision.model, "MiniMax-M1");
+    }
+
+    #[test]
+    fn routing_options_default_and_update_roundtrip() {
+        let mut account = legacy_account(true);
+        let defaults = account_routing_options(&account);
+        assert!(defaults.effective_enabled());
+        assert_eq!(defaults.pool, "codex-official");
+        assert_eq!(defaults.weight, 1);
+
+        set_account_routing_options(
+            &mut account,
+            AccountRoutingOptions {
+                enabled: false,
+                pool: " official-main ".into(),
+                priority: 30,
+                weight: 4,
+                disabled: true,
+            },
+        );
+        let routing = account_routing_options(&account);
+        assert!(!routing.effective_enabled());
+        assert_eq!(routing.pool, "official-main");
+        assert_eq!(routing.priority, 30);
+        assert_eq!(routing.weight, 4);
+    }
+
+    #[test]
+    fn clear_runtime_cooldown_keeps_request_counters() {
+        let mut account = legacy_account(true);
+        account.runtime_state.success = 3;
+        account.runtime_state.failed = 2;
+        account.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
+        account.runtime_state.next_retry_after = Some(2_000);
+        account.runtime_state.quota.exceeded = true;
+        account.runtime_state.model_states.insert(
+            "deepseek-chat".into(),
+            AccountModelRuntimeState {
+                status: AccountRuntimeStatus::CoolingDown,
+                status_message: "HTTP 429".into(),
+                next_retry_after: Some(2_000),
+                quota: AccountQuotaState::default(),
+                updated_at: 1_000,
+            },
+        );
+
+        account.clear_runtime_cooldown(1_000);
+
+        assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Active);
+        assert_eq!(account.runtime_state.success, 3);
+        assert_eq!(account.runtime_state.failed, 2);
+        assert!(account.runtime_state.next_retry_after.is_none());
+        assert!(account.runtime_state.model_states.is_empty());
     }
 
     #[test]

@@ -176,7 +176,7 @@ pub struct MonthlyStats {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct RequestStats {
     pub total: u64,
     pub success_count: u64,

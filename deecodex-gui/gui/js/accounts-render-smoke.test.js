@@ -27,6 +27,63 @@ const context = {
         ],
       },
       {
+        id: 'c2',
+        name: 'Codex 官方',
+        provider: 'codex',
+        client_kind: 'codex',
+        auth_mode: 'oauth',
+        upstream: 'https://chatgpt.com/backend-api/codex',
+        api_key: 'sk-oauth',
+        routing: { enabled: true, pool: 'codex-official', priority: 20, weight: 2 },
+        client_options: {
+          oauth: {
+            email: '522d6@edu.kg.182796.xyz',
+          },
+          oauth_quota: {
+            status_label: '额度冷却',
+            plan_type: 'plus',
+            next_recover_at: 1893456000,
+            title: 'Codex 额度',
+            hours_5_remaining_percent: 94,
+            hours_5_used_percent: 6,
+            hours_5_reset_at: 1893456000,
+            weekly_remaining_percent: 82,
+            weekly_used_percent: 18,
+            weekly_reset_at: 1893888000,
+            requests_5h: 6,
+            requests_7d: 18,
+            tokens_5h: 1200,
+            tokens_7d: 4800,
+            quota_exceeded: true,
+            source: 'chatgpt_wham_usage',
+            confidence_level: '精确',
+            message: '官方返回额度限制，已按恢复时间暂停该账号。',
+          },
+        },
+        runtime_state: {
+          status: 'quota_exceeded',
+          next_retry_after: 1893456000,
+          success: 8,
+          failed: 3,
+          model_states: {
+            'gpt-5': {
+              status: 'cooling_down',
+              next_retry_after: 1893456000,
+              status_message: 'HTTP 429',
+            },
+          },
+        },
+        endpoints: [
+          {
+            id: 'ep2',
+            kind: 'codex_official',
+            base_url: 'https://chatgpt.com/backend-api/codex',
+            model_map: { 'gpt-5': 'gpt-5' },
+            vision: { mode: 'native' },
+          },
+        ],
+      },
+      {
         id: 'h1',
         name: 'Hermes MiniMax',
         provider: 'minimax',
@@ -221,9 +278,62 @@ assert(codexList.includes("editAccount('c1')"));
 assert(codexList.includes("testAccountUpstreamForCard('c1')"));
 assert(codexList.includes('aria-label="测试上游连接"'));
 assert(codexList.includes("deleteAccount('c1')"));
+assert(codexList.includes('池已启用'));
+assert(codexList.includes('official-pool-overview'));
+assert(codexList.includes('1/1 已启用'));
+assert(codexList.includes('balance-official'));
+assert(codexList.includes('额度冷却'));
+assert(codexList.includes('plus'));
+assert(codexList.includes('522d6@edu.kg.182796.xyz'));
+assert(!codexList.includes('Codex · 522d6'));
+assert(codexList.includes('account-plan-pill'));
+assert(codexList.includes('account-pool-switch toggle-label'));
+assert(codexList.includes("toggleAccountRouting('c2')"));
+assert(codexList.includes('5h'));
+assert(codexList.includes('7d'));
+assert(!codexList.includes('codex-official</span>'));
+assert(!codexList.includes('池已启用</span>'));
+assert(!codexList.includes('P20'));
+assert(!codexList.includes('W2'));
+assert(!codexList.includes("clearAccountCooldown('c2')"));
+assert(!codexList.includes("resetAccountRuntime('c2')"));
+assert(!codexList.includes("refreshBalanceForCard('c2')"));
+assert(codexList.includes('runtime-quota_exceeded'));
 assert(!codexList.includes('account-meta-tags mid-tags'));
 assert(!codexList.includes('<span class="card-context">Chat 兼容</span>'));
 assert(!codexList.includes('https://api.deepseek.com/v1'));
+
+context.accountsView = 'add';
+const addPanel = context.renderAccountsPanel();
+assert(addPanel.includes('accounts-add-shell'));
+assert(addPanel.includes('add-account-breadcrumb'));
+assert(addPanel.includes('add-back-link'));
+assert(addPanel.includes('provider-picker-shell'));
+assert(addPanel.includes('provider-copy'));
+assert(addPanel.includes('provider-card-arrow'));
+assert(addPanel.includes('role="button"'));
+assert(addPanel.includes('官方 Codex 登录'));
+assert(addPanel.includes('Codex 设备码登录'));
+assert(addPanel.includes("startOAuthAccountLogin('codex', 'browser')"));
+
+context.selectedClientKind = 'claude_code';
+const claudeAddPanel = context.renderAccountsPanel();
+assert(claudeAddPanel.includes('官方 Claude 登录'));
+assert(claudeAddPanel.includes("startOAuthAccountLogin('claude', 'browser')"));
+
+context.oauthLoginState = {
+  state: 'oauth-state',
+  provider: 'codex',
+  status: 'pending',
+  url: 'https://auth.openai.com/oauth/authorize',
+  user_code: 'ABCD-EFGH',
+};
+const oauthPanel = context.renderAccountsPanel();
+assert(oauthPanel.includes('Codex 官方登录'));
+assert(oauthPanel.includes('ABCD-EFGH'));
+assert(oauthPanel.includes('cancelOAuthAccountLogin()'));
+context.oauthLoginState = null;
+context.selectedClientKind = 'codex';
 
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c1');
 context.editingAccount.name = 'DeepSeek 账号';
@@ -240,13 +350,45 @@ assert(codexDetail.includes('model-upstream-cell'));
 assert(codexDetail.includes('model-vision-cell'));
 assert(!codexDetail.includes('model-remove-placeholder'));
 
+context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c2');
+context.accountsView = 'edit';
+const officialDetail = context.renderAccountsPanel();
+assert(officialDetail.includes('官方账号池'));
+assert(officialDetail.includes('id="edit_routing_pool"'));
+assert(officialDetail.includes('value="codex-official"'));
+assert(officialDetail.includes('id="edit_routing_priority" value="20"'));
+assert(officialDetail.includes('id="edit_routing_weight" value="2"'));
+assert(officialDetail.includes("applyAccountRoutingFromDetail('c2')"));
+assert(officialDetail.includes("refreshOfficialQuotaFromDetail('c2')"));
+assert(officialDetail.includes('official-runtime-summary'));
+assert(officialDetail.includes('official-quota-panel'));
+assert(officialDetail.includes('5h'));
+assert(officialDetail.includes('94%'));
+assert(officialDetail.includes('配额耗尽中'));
+assert(officialDetail.includes('runtime-state-grid'));
+assert(officialDetail.includes('runtime-model-row'));
+assert(officialDetail.includes('HTTP 429'));
+
 context.selectedClientKind = 'hermes';
 const hermesList = context.renderAccountList();
 assert(hermesList.includes("applyClientAccount('h1')"));
-assert(hermesList.includes("testAccountUpstreamForCard('h1')"));
+assert(!hermesList.includes("testAccountUpstreamForCard('h1')"));
 assert(!hermesList.includes('account-meta-tags mid-tags'));
 assert(!hermesList.includes('https://api.minimaxi.com/v1'));
 
+assert(context.renderBalanceInfo({
+  mode: 'official_oauth',
+  official: {
+    status_label: '可用',
+    plan_type: 'team',
+    hours_5_remaining_percent: 99,
+    hours_5_used_percent: 1,
+    hours_5_reset_at: 1893456000,
+    weekly_remaining_percent: 47,
+    weekly_used_percent: 53,
+    weekly_reset_at: 1893888000,
+  },
+}).includes('balance-pill balance-official'));
 assert(context.renderBalanceInfo({
   mode: 'coding_plan',
   model_remains: [{ model_name: 'MiniMax-M*', interval_total: 1500, interval_used: 20, weekly_total: 15000, weekly_used: 243 }],

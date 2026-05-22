@@ -73,8 +73,10 @@ fn test_state() -> AppState {
                 wire_protocol: Default::default(),
                 upstream: "https://example.com".into(),
                 api_key: "test".into(),
+                auth_mode: Default::default(),
                 default_model: String::new(),
                 client_options: std::collections::HashMap::new(),
+                runtime_state: Default::default(),
                 last_applied_at: None,
                 last_check: None,
                 model_map: std::collections::HashMap::new(),
@@ -123,8 +125,10 @@ fn test_state() -> AppState {
             wire_protocol: Default::default(),
             upstream: "https://example.com".into(),
             api_key: "test".into(),
+            auth_mode: Default::default(),
             default_model: String::new(),
             client_options: std::collections::HashMap::new(),
+            runtime_state: Default::default(),
             last_applied_at: None,
             last_check: None,
             model_map: std::collections::HashMap::new(),
@@ -201,6 +205,9 @@ struct ProxyCapturedRequest {
     path: String,
     authorization: Option<String>,
     x_api_key: Option<String>,
+    anthropic_beta: Option<String>,
+    anthropic_version: Option<String>,
+    user_agent: Option<String>,
     body: String,
 }
 
@@ -219,6 +226,18 @@ async fn proxy_mock_handler(
             .map(str::to_string),
         x_api_key: headers
             .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        anthropic_beta: headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        anthropic_version: headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        user_agent: headers
+            .get(header::USER_AGENT)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string),
         body: String::from_utf8_lossy(&bytes).to_string(),
@@ -270,6 +289,34 @@ fn proxy_account(kind: AccountClientKind, upstream: String, token: &str) -> Acco
         "client_options": {
             "proxy_recording_enabled": true,
             "proxy_token": token
+        }
+    }))
+    .unwrap()
+}
+
+fn claude_oauth_proxy_account(upstream: String, token: &str) -> Account {
+    let expires_at = deecodex::oauth_accounts::now_secs() + 3600;
+    serde_json::from_value(json!({
+        "id": "claude-oauth-account",
+        "name": "Claude 官方账号",
+        "provider": "anthropic",
+        "client_kind": "claude_code",
+        "auth_mode": "oauth",
+        "upstream": upstream,
+        "api_key": "sk-ant-oat-upstream",
+        "default_model": "claude-sonnet-4-5",
+        "client_options": {
+            "proxy_recording_enabled": true,
+            "proxy_token": token,
+            "oauth": {
+                "provider": "claude",
+                "login_mode": "browser",
+                "access_token": "sk-ant-oat-upstream",
+                "refresh_token": "refresh-token",
+                "email": "user@example.com",
+                "account_id": "acct_1",
+                "expired_at": expires_at
+            }
         }
     }))
     .unwrap()
@@ -341,6 +388,71 @@ async fn client_proxy_chat_records_usage_and_account_context() {
     assert_eq!(entries[0].account_name, "代理账号");
     assert_eq!(entries[0].endpoint_kind, "openai_chat");
     assert_eq!(entries[0].request_path, "/v1/chat/completions");
+}
+
+#[tokio::test]
+async fn client_proxy_claude_oauth_uses_bearer_token_without_x_api_key() {
+    let (upstream_root, captured) = start_proxy_mock(
+        StatusCode::OK,
+        r#"{"id":"msg_1","usage":{"input_tokens":8,"output_tokens":4}}"#,
+    )
+    .await;
+    let state = test_state();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![claude_oauth_proxy_account(
+            upstream_root,
+            "dee-claude-oauth",
+        )];
+    }
+    let app = build_router(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/messages")
+                .method(Method::POST)
+                .header(header::AUTHORIZATION, "Bearer dee-claude-oauth")
+                .header("anthropic-beta", "fine-grained-tool-streaming-2025-05-14")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].authorization.as_deref(),
+        Some("Bearer sk-ant-oat-upstream")
+    );
+    assert!(captured[0].x_api_key.is_none());
+    assert_eq!(captured[0].anthropic_version.as_deref(), Some("2023-06-01"));
+    assert!(captured[0]
+        .anthropic_beta
+        .as_deref()
+        .is_some_and(|value| value.contains("oauth-2025-04-20")));
+    assert!(captured[0]
+        .anthropic_beta
+        .as_deref()
+        .is_some_and(|value| value.contains("fine-grained-tool-streaming-2025-05-14")));
+    assert_eq!(
+        captured[0].user_agent.as_deref(),
+        Some("claude-cli/2.1.63 (external, cli)")
+    );
+    drop(captured);
+
+    let store = state.account_store.read().await;
+    let account = store
+        .accounts
+        .iter()
+        .find(|account| account.id == "claude-oauth-account")
+        .unwrap();
+    assert_eq!(account.runtime_state.success, 1);
 }
 
 #[tokio::test]

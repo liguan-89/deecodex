@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex"
-version = "2.1.0"
+version = "2.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1004,6 +1004,7 @@ dependencies = [
  "dashmap",
  "eventsource-stream",
  "futures-util",
+ "getrandom 0.2.17",
  "http-body-util",
  "pin-project-lite",
  "prometheus",
@@ -1012,7 +1013,9 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tiktoken-rs",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
@@ -1026,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "deecodex-gui"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "anyhow",
  "axum",

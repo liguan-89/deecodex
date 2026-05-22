@@ -380,6 +380,28 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
         .with_auth_scheme(AuthScheme::GeminiApiKeyQuery)
         .with_model_discovery("models", ModelsResponseShape::GeminiModelsName),
         ProviderProfile::chat(
+            "codex",
+            "Codex 官方",
+            "ChatGPT Codex 官方 OAuth 后端，使用账号登录而不是 API Key",
+            "https://chatgpt.com/backend-api/codex",
+            vec![
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5",
+                "codex-auto-review",
+            ],
+            "OPENAI_CODEX_OAUTH",
+            ProviderCapabilities {
+                parallel_tool_calls: true,
+                reasoning: ReasoningMode::OpenAi,
+                vision_input: true,
+                ..Default::default()
+            },
+        )
+        .with_wire_protocol(WireProtocol::Responses),
+        ProviderProfile::chat(
             "custom",
             "自定义",
             "手动配置 OpenAI Chat Completions 兼容上游",

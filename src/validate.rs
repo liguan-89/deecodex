@@ -441,6 +441,7 @@ fn endpoint_channel_label(kind: &accounts::EndpointKind) -> &'static str {
             "Responses 直连"
         }
         accounts::EndpointKind::AnthropicMessages => "Anthropic Messages 适配",
+        accounts::EndpointKind::CodexOfficial => "Codex 官方",
     }
 }
 
