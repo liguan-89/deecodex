@@ -136,7 +136,7 @@ impl PluginManager {
             manifest.id.clone(),
             InstanceState {
                 handle: None,
-                state: PluginState::Installed,
+                state: PluginState::Stopped,
                 restart_count: 0,
                 accounts: Vec::new(),
             },

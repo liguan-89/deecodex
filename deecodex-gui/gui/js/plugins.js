@@ -6,7 +6,7 @@ let _pluginsAutoRefresh = true;
 let _pluginQrPollTimer = null;
 
 var PLUGIN_STATE_LABEL = {
-  installed: '已安装', starting: '启动中', running: '运行中',
+  installed: '已停止', starting: '启动中', running: '运行中',
   stopped: '已停止', error: '异常'
 };
 var ACCOUNT_STATUS_LABEL = {
@@ -22,6 +22,15 @@ var ACCOUNT_STATUS_COLOR = {
 };
 
 var _pluginDetailId = null;
+
+function normalizePluginState(state) {
+  if (state === 'starting' || state === 'running' || state === 'error') return state;
+  return 'stopped';
+}
+
+function pluginIsRunning(p) {
+  return normalizePluginState(p && p.state) === 'running';
+}
 
 function syncPluginAutoRefreshUi() {
   const toggle = document.getElementById('pluginAutoToggle');
@@ -97,8 +106,9 @@ function renderPluginList() {
 
 // 列表视图卡片 — 状态灯 + 名称版本/简介 + 启停按钮
 function renderPluginCard(p) {
-  var running = p.state === 'running';
-  var stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
+  var state = normalizePluginState(p.state);
+  var running = pluginIsRunning(p);
+  var stateLabel = PLUGIN_STATE_LABEL[state] || PLUGIN_STATE_LABEL.stopped;
   var sc = running ? 'var(--green)' : 'var(--text-muted)';
   var dexTools = p.dex_tools || [];
 
@@ -141,8 +151,9 @@ function renderPluginDetail() {
     _pluginDetailId = null;
     return renderPluginsPanel();
   }
-  var running = p.state === 'running';
-  var stateLabel = PLUGIN_STATE_LABEL[p.state] || p.state;
+  var state = normalizePluginState(p.state);
+  var running = pluginIsRunning(p);
+  var stateLabel = PLUGIN_STATE_LABEL[state] || PLUGIN_STATE_LABEL.stopped;
   var sc = running ? 'var(--green)' : 'var(--text-muted)';
   var perms = p.permissions || [];
   var accounts = p.accounts || [];

@@ -4746,10 +4746,11 @@ body {
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius);
-  background: var(--bg-card);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .plugin-install-bar {
   display: flex; align-items: center; gap: 8px;
@@ -14228,4 +14229,16 @@ body {
 
 .primary-page-shell-threads .threads-table {
   margin-bottom: 18px;
+}
+
+/* 插件安装工具条只负责排列控件，避免外层边框形成重复容器。 */
+.plugin-console,
+[data-theme="light"] .plugin-console {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
