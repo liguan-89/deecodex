@@ -42,6 +42,7 @@ const rows = context.renderThreadRows([
   {
     client_kind: 'codex',
     native_id: 'codex-thread-1',
+    thread_key: 'codex:codex-thread-1',
     title: 'Codex 线程',
     provider: 'deecodex',
     updated_at_ms: 1800000000000,
@@ -52,6 +53,7 @@ const rows = context.renderThreadRows([
   {
     client_kind: 'hermes',
     native_id: 'hermes-thread-1',
+    thread_key: 'hermes:hermes-thread-1:path-a',
     title: 'Hermes 线程',
     model: 'MiniMax',
     updated_at_ms: 1800000000000,
@@ -59,9 +61,22 @@ const rows = context.renderThreadRows([
     delete_available: false,
     detail_available: true,
   },
+  {
+    client_kind: 'hermes',
+    native_id: 'hermes-thread-1',
+    thread_key: 'hermes:hermes-thread-1:path-b',
+    title: 'Hermes 重名线程',
+    model: 'MiniMax',
+    updated_at_ms: 1800000000001,
+    message_count: 1,
+    delete_available: false,
+    detail_available: true,
+  },
 ]);
 assert(rows.includes("deleteThreadRow('codex','codex-thread-1')"));
 assert(!rows.includes("deleteThreadRow('hermes','hermes-thread-1')"));
+assert(rows.includes("openThread('hermes','hermes-thread-1','hermes:hermes-thread-1:path-a')"));
+assert(rows.includes("openThread('hermes','hermes-thread-1','hermes:hermes-thread-1:path-b')"));
 assert(rows.includes('5 条消息'));
 assert(rows.includes('thread-actions-cell'));
 assert(rows.includes('line-action-icon-trash'));
@@ -81,5 +96,23 @@ const diagnostics = context.renderThreadSourceDiagnostics(sources);
 assert(diagnostics.includes('OpenClaw'));
 assert(diagnostics.includes('暂未发现可读线程源'));
 assert(diagnostics.includes('source-muted'));
+
+let invokedDetail = null;
+const nodes = {
+  mainContent: { innerHTML: '' },
+  detailTitle: { textContent: '' },
+  detailDeleteBtn: { style: {} },
+  detailMessages: { innerHTML: '' },
+};
+context.document = {
+  getElementById: id => nodes[id] || null,
+};
+context.invoke = async (cmd, args) => {
+  invokedDetail = { cmd, args };
+  return { thread: { title: 'Hermes 重名线程', delete_available: false }, messages: [] };
+};
+context.openThread('hermes', 'hermes-thread-1', 'hermes:hermes-thread-1:path-b');
+assert.strictEqual(invokedDetail.cmd, 'get_client_thread_content');
+assert.strictEqual(invokedDetail.args.threadKey, 'hermes:hermes-thread-1:path-b');
 
 console.log('threads render smoke ok');

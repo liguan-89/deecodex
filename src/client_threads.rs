@@ -72,6 +72,74 @@ struct ThreadScanResult {
     threads: Vec<UnifiedThreadInfo>,
 }
 
+#[derive(Debug, Clone)]
+struct ClaudeThreadRecord {
+    info: UnifiedThreadInfo,
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct ClaudeFileSummary {
+    thread: UnifiedThreadInfo,
+    first_user_title: Option<String>,
+}
+
+struct ClaudeThreadAggregate {
+    info: UnifiedThreadInfo,
+    paths: Vec<PathBuf>,
+    first_user_title: Option<String>,
+}
+
+impl ClaudeThreadAggregate {
+    fn new(summary: ClaudeFileSummary, path: PathBuf) -> Self {
+        let mut info = summary.thread;
+        if let Some(title) = &summary.first_user_title {
+            info.title = title.clone();
+        }
+        Self {
+            info,
+            paths: vec![path],
+            first_user_title: summary.first_user_title,
+        }
+    }
+
+    fn push(&mut self, summary: ClaudeFileSummary, path: PathBuf) {
+        let thread = summary.thread;
+        self.info.message_count += thread.message_count;
+        if self.first_user_title.is_none() {
+            if let Some(title) = summary.first_user_title {
+                self.info.title = title.clone();
+                self.first_user_title = Some(title);
+            }
+        }
+        if self.info.preview.trim().is_empty() && !thread.preview.trim().is_empty() {
+            self.info.preview = thread.preview.clone();
+        }
+        if self.info.model.trim().is_empty() && !thread.model.trim().is_empty() {
+            self.info.model = thread.model.clone();
+        }
+        if self.info.cwd.trim().is_empty() && !thread.cwd.trim().is_empty() {
+            self.info.cwd = thread.cwd.clone();
+        }
+        self.info.created_at_ms = min_time(self.info.created_at_ms, thread.created_at_ms);
+        if max_time(self.info.updated_at_ms, thread.updated_at_ms) == thread.updated_at_ms {
+            self.info.source_path = thread.source_path.clone();
+        }
+        self.info.updated_at_ms = max_time(self.info.updated_at_ms, thread.updated_at_ms);
+        self.paths.push(path);
+    }
+
+    fn finish(mut self) -> ClaudeThreadRecord {
+        sort_paths_by_time(&mut self.paths);
+        self.info.thread_key =
+            grouped_thread_key(&self.info.client_kind, &self.info.native_id, &self.paths);
+        ClaudeThreadRecord {
+            info: self.info,
+            paths: self.paths,
+        }
+    }
+}
+
 pub fn parse_client_kind(raw: &str) -> Option<AccountClientKind> {
     match raw.trim() {
         "codex" | "Codex" => Some(AccountClientKind::Codex),
@@ -114,24 +182,19 @@ pub fn list_client_threads(data_dir: &Path) -> UnifiedThreadList {
 pub fn get_client_thread_content(
     client_kind: AccountClientKind,
     native_id: &str,
+    thread_key: Option<&str>,
 ) -> Result<UnifiedThreadContent> {
     match client_kind {
         AccountClientKind::Codex => get_codex_content(native_id),
         AccountClientKind::ClaudeCode => {
             let root = home_path(&[".claude", "projects"])?;
-            let info = scan_claude_threads(&root)
-                .threads
-                .into_iter()
-                .find(|thread| thread.native_id == native_id)
-                .ok_or_else(|| anyhow!("未找到 Claude Code 线程 {native_id}"))?;
-            read_claude_content(&info)
+            let record = resolve_claude_thread(&root, native_id, thread_key)?;
+            read_claude_content_from_paths(&record.info, &record.paths)
         }
         AccountClientKind::Hermes => {
             let root = home_path(&[".hermes", "sessions"])?;
-            let info = scan_hermes_threads(&root)
-                .threads
-                .into_iter()
-                .find(|thread| thread.native_id == native_id)
+            let threads = scan_hermes_threads(&root).threads;
+            let info = resolve_thread_info(threads, native_id, thread_key)
                 .ok_or_else(|| anyhow!("未找到 Hermes 线程 {native_id}"))?;
             read_hermes_content(&info)
         }
@@ -176,8 +239,12 @@ fn scan_codex_threads(data_dir: &Path) -> ThreadScanResult {
         tracing::warn!("读取 Codex 线程状态失败: {err}");
     }
 
+    let mut list_readable = false;
     let threads = match crate::codex_threads::list_all() {
-        Ok(items) => items.into_iter().map(codex_thread_to_unified).collect(),
+        Ok(items) => {
+            list_readable = true;
+            items.into_iter().map(codex_thread_to_unified).collect()
+        }
         Err(err) => {
             diagnostics.push(format!("Codex 线程读取失败: {err}"));
             tracing::warn!("读取 Codex 线程失败: {err}");
@@ -194,13 +261,13 @@ fn scan_codex_threads(data_dir: &Path) -> ThreadScanResult {
         status: ThreadSourceStatus {
             client_kind,
             client_label,
-            available: diagnostics.is_empty(),
+            available: list_readable,
             scan_paths,
             count: threads.len(),
             diagnostics,
             detail_available: true,
             delete_available: true,
-            migrate_available: !migrated || status_result.is_ok(),
+            migrate_available: status_result.is_ok() && !migrated,
         },
         threads,
     }
@@ -209,7 +276,6 @@ fn scan_codex_threads(data_dir: &Path) -> ThreadScanResult {
 fn scan_claude_threads(root: &Path) -> ThreadScanResult {
     let client_kind = AccountClientKind::ClaudeCode;
     let mut diagnostics = Vec::new();
-    let mut threads_by_id: HashMap<String, UnifiedThreadInfo> = HashMap::new();
 
     if !root.exists() {
         diagnostics.push("Claude Code 项目历史目录不存在".into());
@@ -224,31 +290,11 @@ fn scan_claude_threads(root: &Path) -> ThreadScanResult {
         );
     }
 
-    let files = find_files_with_extensions(root, &["jsonl"], &mut diagnostics);
-    for path in files {
-        match summarize_claude_file(&path) {
-            Ok(Some(thread)) => {
-                let replace = threads_by_id
-                    .get(&thread.native_id)
-                    .map(|existing| {
-                        thread.updated_at_ms.or(thread.created_at_ms)
-                            > existing.updated_at_ms.or(existing.created_at_ms)
-                    })
-                    .unwrap_or(true);
-                if replace {
-                    threads_by_id.insert(thread.native_id.clone(), thread);
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                diagnostics.push(format!("{}: {err}", path.display()));
-                tracing::warn!(path = %path.display(), "解析 Claude Code 线程失败: {err}");
-            }
-        }
-    }
-
-    let mut threads = threads_by_id.into_values().collect::<Vec<_>>();
-    threads.sort_by_key(|thread| Reverse(thread.updated_at_ms));
+    let records = collect_claude_thread_records(root, &mut diagnostics);
+    let threads = records
+        .into_iter()
+        .map(|record| record.info)
+        .collect::<Vec<_>>();
     let available = diagnostics.is_empty() || !threads.is_empty();
     source_result(
         client_kind,
@@ -259,6 +305,60 @@ fn scan_claude_threads(root: &Path) -> ThreadScanResult {
         true,
         false,
     )
+}
+
+fn collect_claude_thread_records(
+    root: &Path,
+    diagnostics: &mut Vec<String>,
+) -> Vec<ClaudeThreadRecord> {
+    let mut threads_by_id: HashMap<String, ClaudeThreadAggregate> = HashMap::new();
+    let mut files = find_files_with_extensions(root, &["jsonl"], diagnostics);
+    sort_paths_by_time(&mut files);
+
+    for path in files {
+        match summarize_claude_file(&path) {
+            Ok(Some(summary)) => {
+                threads_by_id
+                    .entry(summary.thread.native_id.clone())
+                    .and_modify(|aggregate| aggregate.push(summary.clone(), path.clone()))
+                    .or_insert_with(|| ClaudeThreadAggregate::new(summary, path));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                diagnostics.push(format!("{}: {err}", path.display()));
+                tracing::warn!(path = %path.display(), "解析 Claude Code 线程失败: {err}");
+            }
+        }
+    }
+
+    let mut records = threads_by_id
+        .into_values()
+        .map(ClaudeThreadAggregate::finish)
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| Reverse(record.info.updated_at_ms));
+    records
+}
+
+fn resolve_claude_thread(
+    root: &Path,
+    native_id: &str,
+    thread_key: Option<&str>,
+) -> Result<ClaudeThreadRecord> {
+    let mut diagnostics = Vec::new();
+    let records = collect_claude_thread_records(root, &mut diagnostics);
+    records
+        .iter()
+        .find(|record| thread_key_matches(&record.info, thread_key))
+        .or_else(|| record_by_native_id(&records, native_id))
+        .cloned()
+        .ok_or_else(|| {
+            let suffix = if diagnostics.is_empty() {
+                String::new()
+            } else {
+                format!("；诊断: {}", diagnostics.join("；"))
+            };
+            anyhow!("未找到 Claude Code 线程 {native_id}{suffix}")
+        })
 }
 
 fn scan_hermes_threads(root: &Path) -> ThreadScanResult {
@@ -309,7 +409,7 @@ fn scan_hermes_threads(root: &Path) -> ThreadScanResult {
     )
 }
 
-fn summarize_claude_file(path: &Path) -> Result<Option<UnifiedThreadInfo>> {
+fn summarize_claude_file(path: &Path) -> Result<Option<ClaudeFileSummary>> {
     let file = fs::File::open(path).with_context(|| format!("打开文件失败: {}", path.display()))?;
     let reader = BufReader::new(file);
     let mut native_id = path
@@ -319,6 +419,7 @@ fn summarize_claude_file(path: &Path) -> Result<Option<UnifiedThreadInfo>> {
         .to_string();
     let mut title = String::new();
     let mut preview = String::new();
+    let mut first_user_title = None;
     let mut model = String::new();
     let mut cwd = String::new();
     let mut message_count = 0usize;
@@ -368,6 +469,7 @@ fn summarize_claude_file(path: &Path) -> Result<Option<UnifiedThreadInfo>> {
         }
         if title.is_empty() && role.as_deref() == Some("user") {
             title = truncate_text(text.trim(), 80);
+            first_user_title = Some(title.clone());
         }
     }
 
@@ -398,7 +500,10 @@ fn summarize_claude_file(path: &Path) -> Result<Option<UnifiedThreadInfo>> {
     if bad_lines > 0 {
         thread.preview = format!("{}（跳过 {bad_lines} 行损坏记录）", thread.preview);
     }
-    Ok(Some(thread))
+    Ok(Some(ClaudeFileSummary {
+        thread,
+        first_user_title,
+    }))
 }
 
 fn summarize_hermes_json_file(path: &Path) -> Result<Option<UnifiedThreadInfo>> {
@@ -529,36 +634,43 @@ fn summarize_hermes_jsonl_file(path: &Path) -> Result<Option<UnifiedThreadInfo>>
     Ok(Some(thread))
 }
 
-fn read_claude_content(info: &UnifiedThreadInfo) -> Result<UnifiedThreadContent> {
-    let path = PathBuf::from(&info.source_path);
-    let file =
-        fs::File::open(&path).with_context(|| format!("打开文件失败: {}", path.display()))?;
-    let reader = BufReader::new(file);
+fn read_claude_content_from_paths(
+    info: &UnifiedThreadInfo,
+    paths: &[PathBuf],
+) -> Result<UnifiedThreadContent> {
     let mut messages = Vec::new();
     let mut total_chars = 0usize;
 
-    for line in reader.lines() {
-        let line = line.context("读取 JSONL 行失败")?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::warn!(path = %path.display(), "跳过无法解析的 Claude Code 行: {err}");
+    for path in paths {
+        let file =
+            fs::File::open(path).with_context(|| format!("打开文件失败: {}", path.display()))?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = line.context("读取 JSONL 行失败")?;
+            if line.trim().is_empty() {
                 continue;
             }
-        };
-        let role = match claude_role(&value) {
-            Some(role) if matches!(role.as_str(), "user" | "assistant" | "system") => role,
-            _ => continue,
-        };
-        let text = claude_text(&value);
-        if text.trim().is_empty() {
-            continue;
-        }
-        if push_limited_message(&mut messages, &mut total_chars, &role, &text) {
-            break;
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), "跳过无法解析的 Claude Code 行: {err}");
+                    continue;
+                }
+            };
+            let role = match claude_role(&value) {
+                Some(role) if matches!(role.as_str(), "user" | "assistant" | "system") => role,
+                _ => continue,
+            };
+            let text = claude_text(&value);
+            if text.trim().is_empty() {
+                continue;
+            }
+            if push_limited_message(&mut messages, &mut total_chars, &role, &text) {
+                return Ok(UnifiedThreadContent {
+                    thread: info.clone(),
+                    messages,
+                });
+            }
         }
     }
 
@@ -768,7 +880,7 @@ fn file_thread(input: FileThreadInput, path: &Path) -> UnifiedThreadInfo {
     let slug = client_slug(&input.client_kind);
     let client_label = client_label(&input.client_kind);
     UnifiedThreadInfo {
-        thread_key: format!("{slug}:{}", input.native_id),
+        thread_key: format!("{slug}:{}:{}", input.native_id, stable_path_hash(path)),
         client_kind: input.client_kind,
         client_label,
         native_id: input.native_id,
@@ -784,6 +896,103 @@ fn file_thread(input: FileThreadInput, path: &Path) -> UnifiedThreadInfo {
         detail_available: true,
         delete_available: false,
     }
+}
+
+fn resolve_thread_info(
+    threads: Vec<UnifiedThreadInfo>,
+    native_id: &str,
+    thread_key: Option<&str>,
+) -> Option<UnifiedThreadInfo> {
+    if let Some(key) = normalized_thread_key(thread_key) {
+        if let Some(thread) = threads.iter().find(|thread| thread.thread_key == key) {
+            return Some(thread.clone());
+        }
+    }
+    threads
+        .into_iter()
+        .find(|thread| thread.native_id == native_id)
+}
+
+fn thread_key_matches(thread: &UnifiedThreadInfo, thread_key: Option<&str>) -> bool {
+    normalized_thread_key(thread_key)
+        .map(|key| thread.thread_key == key)
+        .unwrap_or(false)
+}
+
+fn normalized_thread_key(thread_key: Option<&str>) -> Option<&str> {
+    thread_key.map(str::trim).filter(|key| !key.is_empty())
+}
+
+fn record_by_native_id<'a>(
+    records: &'a [ClaudeThreadRecord],
+    native_id: &str,
+) -> Option<&'a ClaudeThreadRecord> {
+    records
+        .iter()
+        .find(|record| record.info.native_id == native_id)
+}
+
+fn grouped_thread_key(
+    client_kind: &AccountClientKind,
+    native_id: &str,
+    paths: &[PathBuf],
+) -> String {
+    format!(
+        "{}:{}:{}",
+        client_slug(client_kind),
+        native_id,
+        stable_paths_hash(paths)
+    )
+}
+
+fn sort_paths_by_time(paths: &mut [PathBuf]) {
+    paths.sort_by_cached_key(|path| {
+        let (created_at_ms, updated_at_ms) = file_times(path);
+        (
+            created_at_ms.or(updated_at_ms).unwrap_or(0),
+            path.to_string_lossy().to_string(),
+        )
+    });
+}
+
+fn min_time(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn max_time(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn stable_path_hash(path: &Path) -> String {
+    stable_hash_hex(path.to_string_lossy().as_bytes())
+}
+
+fn stable_paths_hash(paths: &[PathBuf]) -> String {
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.extend_from_slice(path.to_string_lossy().as_bytes());
+        bytes.push(0);
+    }
+    stable_hash_hex(&bytes)
+}
+
+fn stable_hash_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn client_label(client_kind: &AccountClientKind) -> String {
@@ -1056,9 +1265,70 @@ mod tests {
         assert_eq!(result.threads[0].title, "第一问");
         assert_eq!(result.threads[0].message_count, 2);
 
-        let content = read_claude_content(&result.threads[0]).unwrap();
+        let content =
+            read_claude_content_from_paths(&result.threads[0], std::slice::from_ref(&path))
+                .unwrap();
         assert_eq!(content.messages.len(), 2);
         assert_eq!(content.messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn claude_jsonl_same_session_merges_files_and_detail() {
+        let dir = temp_dir("claude-merge");
+        let project = dir.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let first = project.join("first.jsonl");
+        let second = project.join("second.jsonl");
+        fs::write(
+            &first,
+            "{\"type\":\"user\",\"sessionId\":\"same\",\"message\":{\"role\":\"user\",\"content\":\"第一问\"}}\n",
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "{\"type\":\"assistant\",\"sessionId\":\"same\",\"message\":{\"role\":\"assistant\",\"content\":\"第二答\"}}\n",
+        )
+        .unwrap();
+
+        let mut diagnostics = Vec::new();
+        let records = collect_claude_thread_records(&dir, &mut diagnostics);
+        assert!(diagnostics.is_empty());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].info.message_count, 2);
+        assert_eq!(records[0].info.title, "第一问");
+        assert!(records[0].info.thread_key.starts_with("claude_code:same:"));
+
+        let content = read_claude_content_from_paths(&records[0].info, &records[0].paths).unwrap();
+        assert_eq!(content.messages.len(), 2);
+        assert_eq!(
+            content.messages[0]["payload"]["content"][0]["text"],
+            "第一问"
+        );
+        assert_eq!(
+            content.messages[1]["payload"]["content"][0]["text"],
+            "第二答"
+        );
+    }
+
+    #[test]
+    fn claude_merged_title_uses_first_user_text() {
+        let dir = temp_dir("claude-title");
+        let first = dir.join("a.jsonl");
+        let second = dir.join("b.jsonl");
+        fs::write(
+            &first,
+            "{\"type\":\"assistant\",\"sessionId\":\"title\",\"message\":{\"role\":\"assistant\",\"content\":\"不是标题\"}}\n",
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "{\"type\":\"user\",\"sessionId\":\"title\",\"message\":{\"role\":\"user\",\"content\":\"真正标题\"}}\n",
+        )
+        .unwrap();
+
+        let result = scan_claude_threads(&dir);
+        assert_eq!(result.status.count, 1);
+        assert_eq!(result.threads[0].title, "真正标题");
     }
 
     #[test]
@@ -1109,6 +1379,41 @@ mod tests {
         assert_eq!(result.status.count, 1);
         assert_eq!(result.threads[0].native_id, "h2");
         assert_eq!(result.threads[0].message_count, 2);
+    }
+
+    #[test]
+    fn hermes_duplicate_native_id_uses_thread_key_first() {
+        let dir = temp_dir("hermes-dup");
+        let first = dir.join("first.json");
+        let second = dir.join("second.json");
+        fs::write(
+            &first,
+            r#"{"session_id":"dup","messages":[{"role":"user","content":"第一条"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            r#"{"session_id":"dup","messages":[{"role":"user","content":"第二条"}]}"#,
+        )
+        .unwrap();
+
+        let result = scan_hermes_threads(&dir);
+        assert_eq!(result.status.count, 2);
+        let second_info = result
+            .threads
+            .iter()
+            .find(|thread| thread.source_path == second.to_string_lossy())
+            .unwrap();
+        let resolved =
+            resolve_thread_info(result.threads.clone(), "dup", Some(&second_info.thread_key))
+                .unwrap();
+        assert_eq!(resolved.source_path, second.to_string_lossy());
+
+        let content = read_hermes_content(&resolved).unwrap();
+        assert_eq!(
+            content.messages[0]["payload"]["content"][0]["text"],
+            "第二条"
+        );
     }
 
     #[test]

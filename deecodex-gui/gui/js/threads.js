@@ -213,11 +213,12 @@ function renderThreadRows(list) {
     if (messageCount) metaParts.push(`${messageCount} 条消息`);
     if (preview) metaParts.push(trunc(preview, 72));
     const meta = metaParts.length ? `<span class="thread-meta-line">${esc(metaParts.join(' · '))}</span>` : '';
+    const threadKey = String(t.thread_key || '');
     const deleteAction = t.delete_available
       ? `<button type="button" class="thread-row-action danger" onclick="event.stopPropagation();deleteThreadRow('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>`
       : '';
     const rowClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
-    const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')"` : '';
+    const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}','${escAttr(threadJsArg(threadKey))}')"` : '';
     return `<tr class="${rowClass}"${rowClick}>
       <td title="${escAttr(t.title)}"><span class="td-title-text">${esc(t.title || '(无标题)')}</span>${meta}</td>
       <td><span class="tag tag-current">${esc(threadClientLabel(kind))}</span></td>
@@ -305,9 +306,9 @@ async function doCalibrate() {
 
 // ── 线程详情面板 ──
 
-function openThread(clientKind, nativeId) {
+function openThread(clientKind, nativeId, threadKey) {
   const kind = normalizeThreadClientKind(clientKind);
-  _currentThread = { clientKind: kind, nativeId };
+  _currentThread = { clientKind: kind, nativeId, threadKey: String(threadKey || '') };
   const container = document.getElementById('mainContent');
   if (!container) return;
   container.innerHTML = `<div class="detail-panel">
@@ -321,7 +322,9 @@ function openThread(clientKind, nativeId) {
     </div>
   </div>`;
 
-  invoke('get_client_thread_content', { clientKind: kind, nativeId })
+  const args = { clientKind: kind, nativeId };
+  if (_currentThread.threadKey) args.threadKey = _currentThread.threadKey;
+  invoke('get_client_thread_content', args)
     .then(content => {
       const thread = content.thread || {};
       const titleEl = document.getElementById('detailTitle');

@@ -600,7 +600,7 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             description: "获取多客户端聚合线程详情",
             capability: "deecodex.ops",
             parameters: params(
-                json!({"client_kind":{"type":"string","description":"客户端类型"},"native_id":{"type":"string","description":"客户端原生线程 ID"}}),
+                json!({"client_kind":{"type":"string","description":"客户端类型"},"native_id":{"type":"string","description":"客户端原生线程 ID"},"thread_key":{"type":"string","description":"跨客户端唯一线程键，可选"}}),
                 &["client_kind", "native_id"],
             ),
         },

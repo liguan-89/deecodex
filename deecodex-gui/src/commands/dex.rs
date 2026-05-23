@@ -832,9 +832,12 @@ pub async fn dex_execute_tool(
             "get_thread_sources" => crate::commands::get_thread_sources(manager).await?,
             "list_client_threads" => crate::commands::list_client_threads(manager).await?,
             "get_client_thread_content" => {
+                let thread_key =
+                    opt_string(&args, "thread_key").or_else(|| opt_string(&args, "threadKey"));
                 crate::commands::get_client_thread_content(
                     req_string(&args, "client_kind")?,
                     req_string(&args, "native_id")?,
+                    thread_key,
                 )
                 .await?
             }
@@ -1804,12 +1807,14 @@ fn status_command_is_codex_desktop(command: &str) -> bool {
         || command.contains("com.openai.codex")
         || command.contains("Codex Helper")
         || command.contains("Application Support/Codex")
+        || command.trim() == "Codex"
 }
 
 fn status_command_is_claude_desktop(command: &str) -> bool {
     command.contains("/Claude.app/")
         || command.contains("Claude Helper")
         || command.contains("Application Support/Claude")
+        || command.trim() == "Claude"
 }
 
 fn install_command_for_current_os(spec: &ClientAppSpec) -> Option<&'static str> {
@@ -4505,6 +4510,14 @@ mod tests {
             .any(|cmd| cmd.contains("@anthropic-ai/claude-code")));
         assert!(commands.iter().any(|cmd| cmd.contains("openclaw.ai")));
         assert!(commands.iter().any(|cmd| cmd.contains("hermes")));
+    }
+
+    #[test]
+    fn desktop_process_names_do_not_count_as_cli() {
+        assert!(status_command_is_codex_desktop("Codex"));
+        assert!(status_command_is_claude_desktop("Claude"));
+        assert!(!status_command_is_codex_desktop("/usr/local/bin/codex"));
+        assert!(!status_command_is_claude_desktop("/usr/local/bin/claude"));
     }
 
     #[test]

@@ -2090,6 +2090,8 @@ async fn handle_unified_thread_sources_api(State(state): State<AppState>) -> Res
 struct UnifiedThreadContentQuery {
     client_kind: String,
     native_id: String,
+    #[serde(default, alias = "threadKey")]
+    thread_key: Option<String>,
 }
 
 async fn handle_unified_thread_content_api(
@@ -2102,7 +2104,11 @@ async fn handle_unified_thread_content_api(
         )
             .into_response();
     };
-    match crate::client_threads::get_client_thread_content(kind, &query.native_id) {
+    match crate::client_threads::get_client_thread_content(
+        kind,
+        &query.native_id,
+        query.thread_key.as_deref(),
+    ) {
         Ok(content) => Json(serde_json::json!({ "ok": true, "content": content })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

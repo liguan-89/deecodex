@@ -5088,11 +5088,16 @@ pub async fn get_thread_content(thread_id: String) -> Result<Value, String> {
 pub async fn get_client_thread_content(
     client_kind: String,
     native_id: String,
+    thread_key: Option<String>,
 ) -> Result<Value, String> {
     let kind = deecodex::client_threads::parse_client_kind(&client_kind)
         .ok_or_else(|| format!("未知客户端类型: {client_kind}"))?;
-    let content = deecodex::client_threads::get_client_thread_content(kind, &native_id)
-        .map_err(|e| format!("获取线程内容失败: {e}"))?;
+    let content = deecodex::client_threads::get_client_thread_content(
+        kind,
+        &native_id,
+        thread_key.as_deref(),
+    )
+    .map_err(|e| format!("获取线程内容失败: {e}"))?;
     serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
 }
 
