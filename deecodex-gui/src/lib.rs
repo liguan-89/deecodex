@@ -152,6 +152,44 @@ fn build_account_submenu(
     Ok(Some(submenu.build()?))
 }
 
+fn make_tray_icon() -> tauri::image::Image<'static> {
+    let w = 48u32;
+    let h = 48u32;
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+
+    let mut fill_rect = |x0: u32, y0: u32, rw: u32, rh: u32| {
+        for y in y0.min(h)..(y0 + rh).min(h) {
+            for x in x0.min(w)..(x0 + rw).min(w) {
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+    };
+
+    // 菜单栏白色 DEX 字标，透明背景。
+    let y = 15u32;
+    let s = 4u32;
+
+    fill_rect(4, y, s, 18);
+    fill_rect(8, y, 7, s);
+    fill_rect(8, y + 14, 7, s);
+    fill_rect(14, y + 4, s, 10);
+
+    fill_rect(21, y, s, 18);
+    fill_rect(25, y, 10, s);
+    fill_rect(25, y + 7, 8, s);
+    fill_rect(25, y + 14, 10, s);
+
+    fill_rect(37, y, s, s);
+    fill_rect(41, y + 4, s, s);
+    fill_rect(45, y, 3, s);
+    fill_rect(41, y + 7, s, s);
+    fill_rect(37, y + 14, s, s);
+    fill_rect(45, y + 14, 3, s);
+
+    tauri::image::Image::new_owned(rgba, w, h)
+}
+
 fn find_env_file() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if std::path::Path::new(".env").exists() {
@@ -276,39 +314,11 @@ pub fn run() {
             let args = crate::commands::load_args();
             let menu = build_tray_menu(app.handle(), false, &args.data_dir)?;
 
-            let icon = {
-                // macOS 模板图标：纯黑菱形 + 透明度 → 系统自动适配亮暗模式
-                let w = 48u32;
-                let h = 48u32;
-                let center = 24.0;
-                let outer_r = 22.0;
-                let inner_r = 7.0;
-                let feather = 1.2;
-                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                for y in 0..h {
-                    for x in 0..w {
-                        let dx = (x as f32 - center + 0.5).abs();
-                        let dy = (y as f32 - center + 0.5).abs();
-                        let d = dx + dy;
-                        if d <= inner_r || d >= outer_r + feather {
-                            rgba.extend_from_slice(&[0, 0, 0, 0]);
-                        } else if d >= outer_r {
-                            let a = (255.0 * (1.0 - (d - outer_r) / feather)) as u8;
-                            rgba.extend_from_slice(&[0, 0, 0, a]);
-                        } else if d <= inner_r + feather {
-                            let a = (255.0 * ((d - inner_r) / feather)) as u8;
-                            rgba.extend_from_slice(&[0, 0, 0, a]);
-                        } else {
-                            rgba.extend_from_slice(&[0, 0, 0, 255]);
-                        }
-                    }
-                }
-                tauri::image::Image::new_owned(rgba, w, h)
-            };
+            let icon = make_tray_icon();
 
             let tray = TrayIconBuilder::new()
                 .icon(icon)
-                .icon_as_template(true)
+                .icon_as_template(false)
                 .menu(&menu)
                 .tooltip("deecodex · 已停止")
                 .on_tray_icon_event(|tray, event| {
