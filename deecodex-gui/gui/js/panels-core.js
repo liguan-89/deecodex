@@ -208,6 +208,36 @@ function statusCommandIsClaudeDesktop(command) {
     || command.trim() === 'Claude';
 }
 
+function statusCommandExecutableName(command) {
+  const first = String(command || '').trim().split(/\s+/)[0] || '';
+  return first.split(/[\\/]/).pop() || '';
+}
+
+function statusCommandHasArgs(command) {
+  return String(command || '').trim().split(/\s+/).length > 1;
+}
+
+function statusCommandUsesExecutable(command, name) {
+  const text = String(command || '').trim();
+  if (!text) return false;
+  const first = text.split(/\s+/)[0] || '';
+  const exe = statusCommandExecutableName(text);
+  if (exe === name && (first.includes('/') || statusCommandHasArgs(text))) return true;
+  if ((exe === 'node' || exe === 'nodejs') && new RegExp(`(^|/)${name}(\\s|$)`).test(text)) return true;
+  return false;
+}
+
+function statusCommandIsCodexCli(command) {
+  return !statusCommandIsCodexDesktop(command)
+    && !/deecodex/i.test(command)
+    && statusCommandUsesExecutable(command, 'codex');
+}
+
+function statusCommandIsClaudeCli(command) {
+  return !statusCommandIsClaudeDesktop(command)
+    && statusCommandUsesExecutable(command, 'claude');
+}
+
 function statusClientProcessRunning(kind) {
   if (kind === 'codex_desktop') {
     return statusProcessCommands('codex', 'Codex').some(statusCommandIsCodexDesktop);
@@ -215,7 +245,7 @@ function statusClientProcessRunning(kind) {
   if (kind === 'codex_cli') {
     const commands = statusProcessCommands('codex', 'Codex');
     if (!commands.length) return false;
-    return commands.some(command => !statusCommandIsCodexDesktop(command) && /(^|\/|\s)codex(\s|$)/.test(command));
+    return commands.some(statusCommandIsCodexCli);
   }
   if (kind === 'claude_desktop') {
     return statusProcessCommands('claude', 'Claude').some(statusCommandIsClaudeDesktop);
@@ -223,7 +253,7 @@ function statusClientProcessRunning(kind) {
   if (kind === 'claude_cli') {
     const commands = statusProcessCommands('claude', 'Claude');
     if (!commands.length) return false;
-    return commands.some(command => !statusCommandIsClaudeDesktop(command) && /(^|\/|\s)claude(\s|$)/.test(command));
+    return commands.some(statusCommandIsClaudeCli);
   }
   const entry = (window._clientProcessMap || {})[kind];
   if (entry && typeof entry === 'object') return Boolean(entry.running);
@@ -1029,16 +1059,14 @@ function renderDiagnostics() {
         <span class="health-badge ${s.health}">${hlabels[s.health] || s.health}</span>
       </div>
       ${report.groups.map(g => {
-        const gicons = { healthy: '&#x2705;', degraded: '&#x26A0;', broken: '&#x274C;' };
-        const sitems = { pass: '&#x2705;', warn: '&#x26A0;', fail: '&#x274C;', info: '&#x2139;' };
         return `
         <div class="diag-group">
           <div class="diag-group-header ${g.health}">
-            <span class="group-icon">${gicons[g.health] || ''}</span> ${esc(g.name)}
+            <span class="group-icon" aria-hidden="true"></span> ${esc(g.name)}
           </div>
           ${g.items.map(it => `
             <div class="diag-item">
-              <span class="item-icon ${it.status}">${sitems[it.status] || ''}</span>
+              <span class="item-icon ${it.status}" aria-hidden="true"></span>
               <div class="item-body">
                 <div class="item-name">${esc(it.check_name)}</div>
                 <div class="item-msg">${esc(it.message)}</div>

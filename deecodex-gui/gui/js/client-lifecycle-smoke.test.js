@@ -108,6 +108,18 @@ assert.strictEqual(context.statusClientProcessRunning('codex_desktop'), true);
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), false);
 
 context.window._clientProcessMap = {
+  codex: {
+    running: true,
+    instances: [
+      { pid: '201', command: '/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://' },
+      { pid: '202', command: '/Users/me/.codex/plugins/example/index.js' },
+      { pid: '203', command: '/Users/me/project/target/debug/deecodex-gui' },
+    ],
+  },
+};
+assert.strictEqual(context.statusClientProcessRunning('codex_cli'), false);
+
+context.window._clientProcessMap = {
   codex: { running: true, instances: [{ pid: '102', command: '/usr/local/bin/codex' }] },
 };
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);

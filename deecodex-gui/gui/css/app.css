@@ -1736,6 +1736,119 @@ body {
   font-size: 12px; text-align: center; padding: 32px; letter-spacing: 0.04em;
 }
 
+.primary-page-shell-diagnostics .diag-header {
+  margin-bottom: 22px;
+}
+
+.primary-page-shell-diagnostics .diag-summary,
+.primary-page-shell-diagnostics .diag-group {
+  border-radius: 22px;
+}
+
+.primary-page-shell-diagnostics .diag-summary {
+  min-height: 58px;
+  padding: 14px 22px;
+}
+
+.primary-page-shell-diagnostics .diag-summary-bar {
+  gap: 30px;
+}
+
+.primary-page-shell-diagnostics .diag-group {
+  overflow: hidden;
+}
+
+.primary-page-shell-diagnostics .diag-group-header {
+  min-height: 54px;
+  padding: 15px 22px 12px;
+  border-bottom: 0;
+}
+
+.primary-page-shell-diagnostics .diag-group-header .group-icon,
+.primary-page-shell-diagnostics .diag-item .item-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 0;
+  line-height: 1;
+}
+
+.primary-page-shell-diagnostics .diag-group-header .group-icon::before,
+.primary-page-shell-diagnostics .diag-item .item-icon::before {
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+}
+
+.primary-page-shell-diagnostics .diag-group-header.healthy .group-icon,
+.primary-page-shell-diagnostics .diag-item .item-icon.pass {
+  background: rgba(45, 138, 92, 0.12);
+  color: #2d8a5c;
+}
+
+.primary-page-shell-diagnostics .diag-group-header.degraded .group-icon,
+.primary-page-shell-diagnostics .diag-item .item-icon.warn {
+  background: rgba(178, 111, 36, 0.13);
+  color: #a46122;
+}
+
+.primary-page-shell-diagnostics .diag-group-header.broken .group-icon,
+.primary-page-shell-diagnostics .diag-item .item-icon.fail {
+  background: rgba(214, 54, 48, 0.12);
+  color: #c8312d;
+}
+
+.primary-page-shell-diagnostics .diag-item .item-icon.info {
+  background: rgba(84, 91, 103, 0.12);
+  color: #6f747c;
+}
+
+.primary-page-shell-diagnostics .diag-group-header.healthy .group-icon::before,
+.primary-page-shell-diagnostics .diag-item .item-icon.pass::before {
+  content: "✓";
+}
+
+.primary-page-shell-diagnostics .diag-group-header.degraded .group-icon::before,
+.primary-page-shell-diagnostics .diag-item .item-icon.warn::before {
+  content: "!";
+}
+
+.primary-page-shell-diagnostics .diag-group-header.broken .group-icon::before,
+.primary-page-shell-diagnostics .diag-item .item-icon.fail::before {
+  content: "×";
+}
+
+.primary-page-shell-diagnostics .diag-item .item-icon.info::before {
+  content: "i";
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+
+.primary-page-shell-diagnostics .diag-item {
+  gap: 14px;
+  padding: 13px 22px 15px;
+  border-bottom: 0;
+}
+
+.primary-page-shell-diagnostics .diag-item + .diag-item {
+  border-top: 0;
+}
+
+.primary-page-shell-diagnostics .diag-item .item-name {
+  margin-bottom: 3px;
+}
+
+.primary-page-shell-diagnostics .diag-item .item-detail {
+  margin-top: 10px;
+  padding: 10px 13px;
+  border-radius: 12px;
+}
+
 /* ── Help Panel ── */
 .help-toc {
   display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px;
@@ -12643,6 +12756,62 @@ body {
   border-color: rgba(29,29,31,0.085);
   background: #fff;
   font-size: 11.5px;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-summary {
+  border: 1px solid rgba(29,29,31,0.105);
+  background: #fff;
+  box-shadow: none;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-group {
+  border: 1px solid rgba(29,29,31,0.095);
+  background: #fff;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-group-header {
+  border-bottom: 0;
+  background: #fff;
+  box-shadow: none;
+  color: #2f3a45;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-group-header.healthy {
+  color: #2d7554;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-group-header.degraded {
+  color: #9b682d;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-group-header.broken {
+  color: #b93834;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-item {
+  background: #fff;
+  border-bottom: 0;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-item + .diag-item {
+  border-top: 0;
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-item .item-detail {
+  border-color: rgba(29,29,31,0.105);
+  background: #f7f8fa;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.72);
+}
+
+[data-theme="light"] .primary-page-shell-diagnostics .diag-empty {
+  border: 1px solid rgba(29,29,31,0.095);
+  border-radius: 22px;
+  background: #fff;
+  font-family: var(--font-sans);
+  letter-spacing: 0;
 }
 
 @media (max-width: 760px) {

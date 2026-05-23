@@ -1787,13 +1787,13 @@ fn client_process_instances_for_spec(spec: &ClientAppSpec) -> Vec<Value> {
             if spec.kind == "codex_desktop" && !status_command_is_codex_desktop(&command) {
                 continue;
             }
-            if spec.kind == "codex_cli" && status_command_is_codex_desktop(&command) {
+            if spec.kind == "codex_cli" && !status_command_is_codex_cli(&command) {
                 continue;
             }
             if spec.kind == "claude_desktop" && !status_command_is_claude_desktop(&command) {
                 continue;
             }
-            if spec.kind == "claude_cli" && status_command_is_claude_desktop(&command) {
+            if spec.kind == "claude_cli" && !status_command_is_claude_cli(&command) {
                 continue;
             }
             out.push(instance);
@@ -1815,6 +1815,45 @@ fn status_command_is_claude_desktop(command: &str) -> bool {
         || command.contains("Claude Helper")
         || command.contains("Application Support/Claude")
         || command.trim() == "Claude"
+}
+
+fn status_command_executable_name(command: &str) -> Option<&str> {
+    let first = command.split_whitespace().next()?;
+    Path::new(first).file_name()?.to_str()
+}
+
+fn status_command_has_args(command: &str) -> bool {
+    command.split_whitespace().nth(1).is_some()
+}
+
+fn status_command_uses_executable(command: &str, name: &str) -> bool {
+    let Some(exe) = status_command_executable_name(command) else {
+        return false;
+    };
+    let first = command.split_whitespace().next().unwrap_or("");
+    if exe == name
+        && (first.contains(std::path::MAIN_SEPARATOR) || status_command_has_args(command))
+    {
+        return true;
+    }
+    if (exe == "node" || exe == "nodejs")
+        && command
+            .split_whitespace()
+            .any(|part| Path::new(part).file_name().and_then(|v| v.to_str()) == Some(name))
+    {
+        return true;
+    }
+    false
+}
+
+fn status_command_is_codex_cli(command: &str) -> bool {
+    !status_command_is_codex_desktop(command)
+        && !command.to_ascii_lowercase().contains("deecodex")
+        && status_command_uses_executable(command, "codex")
+}
+
+fn status_command_is_claude_cli(command: &str) -> bool {
+    !status_command_is_claude_desktop(command) && status_command_uses_executable(command, "claude")
 }
 
 fn install_command_for_current_os(spec: &ClientAppSpec) -> Option<&'static str> {
@@ -4516,8 +4555,23 @@ mod tests {
     fn desktop_process_names_do_not_count_as_cli() {
         assert!(status_command_is_codex_desktop("Codex"));
         assert!(status_command_is_claude_desktop("Claude"));
-        assert!(!status_command_is_codex_desktop("/usr/local/bin/codex"));
-        assert!(!status_command_is_claude_desktop("/usr/local/bin/claude"));
+        assert!(status_command_is_codex_desktop(
+            "/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://"
+        ));
+        assert!(!status_command_is_codex_cli(
+            "/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://"
+        ));
+        assert!(!status_command_is_codex_cli(
+            "/Users/me/project/target/debug/deecodex-gui"
+        ));
+        assert!(!status_command_is_codex_cli(
+            "/Users/me/.codex/plugins/example/index.js"
+        ));
+        assert!(!status_command_is_codex_cli("codex"));
+        assert!(status_command_is_codex_cli("/usr/local/bin/codex"));
+        assert!(status_command_is_codex_cli("codex --model gpt-5"));
+        assert!(!status_command_is_claude_cli("Claude"));
+        assert!(status_command_is_claude_cli("/usr/local/bin/claude"));
     }
 
     #[test]
