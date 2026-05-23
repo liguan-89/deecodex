@@ -66,8 +66,9 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    const kind = profile.slug;
 		    const count = kind === 'all' ? entries.length : entries.filter(e => (e.client_kind || 'codex') === kind).length;
 		    const active = kind === _historyClientKindFilter ? ' active' : '';
-		    return `<button type="button" class="client-tab${active}" onclick="setHistoryClientKind('${escAttr(kind)}')">
-		      <span>${esc(profile.label || historyClientLabel(kind))}</span><em>${count}</em>
+		    const label = kind === 'generic_client' ? '通用' : (profile.label || historyClientLabel(kind));
+		    return `<button type="button" class="history-client-tab${active}" onclick="setHistoryClientKind('${escAttr(kind)}')">
+		      <span>${esc(label)}</span><em>${count}</em>
 		    </button>`;
 		  }).join('');
 		}
@@ -114,7 +115,7 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  return `<div class="page-header">
 		    <h2>请求历史</h2>
 		  </div>
-		  <div id="historyClientSwitcher" class="client-switcher history-client-switcher">${renderHistoryClientSwitcher()}</div>
+		  <div id="historyClientSwitcher" class="history-client-switcher">${renderHistoryClientSwitcher()}</div>
 		  <div id="historyStats" class="history-stats">
 		    <div class="history-stat"><div class="stat-value">—</div><div class="stat-label">今日请求数</div></div>
 		    <div class="history-stat green"><div class="stat-value">—</div><div class="stat-label">成功率</div></div>
@@ -134,26 +135,29 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		    <div id="historyChartBars" class="history-chart-bars"></div>
 		  </div>
 		  <div class="history-controls">
-		    <select class="history-select" id="historyAccountFilter" onchange="setHistoryAccountFilter(this.value)">
-		      ${renderHistoryAccountOptions()}
-		    </select>
-		    <select class="history-select" onchange="setStatusFilter(this.value)">
-		      <option value="all">全部状态</option>
-		      <option value="completed">仅成功</option>
-		      <option value="failed">仅失败</option>
-		    </select>
-		    <label class="history-toggle${_historyRefreshTimer ? ' on' : ''}" id="historyAutoToggle" onclick="toggleAutoRefresh()">
-		      <div class="toggle-dot"></div> 自动刷新
-		    </label>
-		    <select class="history-select" id="historyIntervalSel" onchange="setRefreshInterval(this.value)" style="${_historyRefreshTimer ? '' : 'display:none;'}">
-		      <option value="5000" ${_historyRefreshMs === 5000 ? 'selected' : ''}>5s</option>
-		      <option value="10000" ${_historyRefreshMs === 10000 || !_historyRefreshMs ? 'selected' : ''}>10s</option>
-		      <option value="30000" ${_historyRefreshMs === 30000 ? 'selected' : ''}>30s</option>
-		      <option value="60000" ${_historyRefreshMs === 60000 ? 'selected' : ''}>60s</option>
-		    </select>
-		    <span style="flex:1"></span>
-		    <button class="btn btn-primary" onclick="refreshHistory()">⟳ 刷新</button>
-		    <button class="btn btn-ghost" onclick="clearHistory()">✕ 清空历史</button>
+		    <div class="history-control-group">
+		      <select class="history-select" id="historyAccountFilter" onchange="setHistoryAccountFilter(this.value)">
+		        ${renderHistoryAccountOptions()}
+		      </select>
+		      <select class="history-select" id="historyStatusFilter" onchange="setStatusFilter(this.value)">
+		        <option value="all" ${_historyStatusFilter === 'all' ? 'selected' : ''}>全部状态</option>
+		        <option value="completed" ${_historyStatusFilter === 'completed' ? 'selected' : ''}>仅成功</option>
+		        <option value="failed" ${_historyStatusFilter === 'failed' ? 'selected' : ''}>仅失败</option>
+		      </select>
+		      <label class="history-toggle${_historyRefreshTimer ? ' on' : ''}" id="historyAutoToggle" onclick="toggleAutoRefresh()">
+		        <div class="toggle-dot"></div><span>自动刷新</span>
+		      </label>
+		      <select class="history-select history-interval-select" id="historyIntervalSel" onchange="setRefreshInterval(this.value)" style="${_historyRefreshTimer ? '' : 'display:none;'}">
+		        <option value="5000" ${_historyRefreshMs === 5000 ? 'selected' : ''}>5s</option>
+		        <option value="10000" ${_historyRefreshMs === 10000 || !_historyRefreshMs ? 'selected' : ''}>10s</option>
+		        <option value="30000" ${_historyRefreshMs === 30000 ? 'selected' : ''}>30s</option>
+		        <option value="60000" ${_historyRefreshMs === 60000 ? 'selected' : ''}>60s</option>
+		      </select>
+		    </div>
+		    <div class="history-action-group">
+		      <button class="btn btn-primary" onclick="refreshHistory()">刷新</button>
+		      <button class="btn btn-ghost history-clear-btn" onclick="clearHistory()">清空历史</button>
+		    </div>
 		  </div>
 		  <div id="historyCardsContainer">
 		    <div class="history-loading">加载中...</div>
@@ -303,12 +307,19 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  }
 		  const maxTokens = Math.max(...buckets.map(b => b.tokens), 1);
 		  let html = '';
-		  for (const b of buckets) {
+		  for (let i = 0; i < buckets.length; i++) {
+		    const b = buckets[i];
 		    const pct = Math.round(b.tokens / maxTokens * 100);
-		    html += '<div class="history-chart-col">';
-		    html += '<span class="history-chart-val">' + fmtTokens(b.tokens) + '</span>';
+		    const value = fmtTokens(b.tokens);
+		    const showValue = b.tokens > 0 && _historyChartPeriod !== 'hourly';
+		    const label = _historyChartPeriod === 'hourly'
+		      ? (i % 2 === 1 ? '' : String(b.label).replace('时', '').padStart(2, '0'))
+		      : b.label;
+		    const hoverLabel = (_historyChartPeriod === 'hourly' ? String(b.label).padStart(3, '0') : b.label) + ' · ' + value;
+		    html += '<div class="history-chart-col' + (b.tokens > 0 ? '' : ' empty') + '" aria-label="' + escAttr(hoverLabel) + '" data-value="' + escAttr(value) + '">';
+		    html += '<span class="history-chart-val" title="' + escAttr(value) + '">' + (showValue ? esc(value) : '') + '</span>';
 		    html += '<div class="history-chart-bar-wrap"><div class="history-chart-bar" style="height:' + pct + '%"></div></div>';
-		    html += '<span class="history-chart-label">' + b.label + '</span>';
+		    html += '<span class="history-chart-label">' + esc(label) + '</span>';
 		    html += '</div>';
 		  }
 		  return html;
@@ -469,8 +480,8 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  if (!statsEl) return;
 		  const div = document.createElement('div');
 		  div.id = 'historyOfflineBanner';
-		  div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;margin-bottom:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--yellow,#b45309);';
-		  div.innerHTML = '<span>⚠ 服务未启动，当前显示的是本地缓存数据</span><button class="btn btn-sm btn-primary" onclick="refreshHistory()" style="font-size:11px;padding:4px 10px;">⟳ 尝试重连</button>';
+		  div.className = 'history-offline-banner';
+		  div.innerHTML = '<span>服务未启动，当前显示的是本地缓存数据</span><button class="btn btn-sm btn-primary" onclick="refreshHistory()">尝试重连</button>';
 		  statsEl.parentNode.insertBefore(div, statsEl);
 		}
 
