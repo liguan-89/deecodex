@@ -184,51 +184,7 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
 pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    let bp = backup_path(data_dir);
-
-    let before = get_provider_summary(&db_path)?;
-
-    if !bp.exists() {
-        return Ok(MigrationDiff {
-            before: before.clone(),
-            after: before,
-            changed_count: 0,
-        });
-    }
-
-    // 读取当前备份
-    let backup_json = std::fs::read_to_string(&bp).context("读取迁移备份文件失败")?;
-    let mut originals: Vec<(String, String)> =
-        serde_json::from_str(&backup_json).context("解析迁移备份文件失败")?;
-
-    // 获取当前所有线程 ID
-    let conn = Connection::open(&db_path)?;
-    conn.pragma_update(None, "busy_timeout", "5000")?;
-    let mut stmt = conn.prepare("SELECT id FROM threads")?;
-    let current_ids: std::collections::HashSet<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<_, _>>()?;
-    drop(stmt);
-
-    let old_len = originals.len();
-    // 移除已删除的线程
-    originals.retain(|(id, _)| current_ids.contains(id));
-
-    let removed = old_len - originals.len();
-    if removed > 0 {
-        tracing::info!("校准: 从备份中移除 {removed} 条已删除线程");
-    }
-
-    let new_backup = serde_json::to_string_pretty(&originals).context("序列化校准备份失败")?;
-    std::fs::write(&bp, new_backup).context("写入校准备份文件失败")?;
-
-    let after = get_provider_summary(&db_path)?;
-
-    Ok(MigrationDiff {
-        before,
-        after,
-        changed_count: removed,
-    })
+    do_calibrate(&db_path, &backup_path(data_dir))
 }
 
 /// 获取指定线程的完整内容（含元数据、摘要、工具）。
@@ -762,6 +718,86 @@ fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
     })
 }
 
+fn do_calibrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
+    let before = get_provider_summary(db_path)?;
+
+    if !backup_path.exists() {
+        return Ok(MigrationDiff {
+            before: before.clone(),
+            after: before,
+            changed_count: 0,
+        });
+    }
+
+    let backup_json = std::fs::read_to_string(backup_path).context("读取迁移备份文件失败")?;
+    let mut originals: Vec<(String, String)> =
+        serde_json::from_str(&backup_json).context("解析迁移备份文件失败")?;
+
+    let conn = Connection::open(db_path)?;
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    let current_threads: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, model_provider FROM threads")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let current_ids: std::collections::HashSet<String> =
+        current_threads.iter().map(|(id, _)| id.clone()).collect();
+
+    let old_len = originals.len();
+    originals.retain(|(id, _)| current_ids.contains(id));
+    let removed = old_len - originals.len();
+    if removed > 0 {
+        tracing::info!("校准: 从备份中移除 {removed} 条已删除线程");
+    }
+
+    let backed_up_ids: std::collections::HashSet<String> =
+        originals.iter().map(|(id, _)| id.clone()).collect();
+    let new_originals: Vec<(String, String)> = current_threads
+        .into_iter()
+        .filter(|(id, provider)| provider != "deecodex" && !backed_up_ids.contains(id))
+        .collect();
+    let added = new_originals.len();
+    if added > 0 {
+        tracing::info!("校准: 追加 {added} 条新增线程到迁移备份");
+        originals.extend(new_originals);
+    }
+
+    let backup_json = serde_json::to_string_pretty(&originals).context("序列化校准备份失败")?;
+    std::fs::write(backup_path, backup_json).context("写入校准备份文件失败")?;
+
+    let mut migrated = 0usize;
+    for (id, _) in &originals {
+        match conn.execute(
+            "UPDATE threads SET model_provider = 'deecodex' WHERE id = ?1 AND model_provider != 'deecodex'",
+            rusqlite::params![id],
+        ) {
+            Ok(n) => migrated += n,
+            Err(e) => {
+                tracing::warn!("校准线程 {id} 失败: {e}");
+            }
+        }
+    }
+
+    let after = get_provider_summary(db_path)?;
+    let skipped = originals.len().saturating_sub(migrated);
+    if migrated > 0 || removed > 0 {
+        tracing::info!("已校准 {migrated} 条线程到 deecodex，清理 {removed} 条备份记录");
+    }
+    if skipped > 0 && after.iter().any(|s| s.provider != "deecodex") {
+        tracing::warn!("校准: {migrated} 条成功，仍有线程未统一，下次校准会自动重试");
+    }
+
+    Ok(MigrationDiff {
+        before,
+        after,
+        changed_count: migrated + removed,
+    })
+}
+
 fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
     let before = get_provider_summary(db_path)?;
 
@@ -814,7 +850,30 @@ fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
     use std::io::Write;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deecodex-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn create_test_threads_db(path: &Path, threads: &[(&str, &str)]) {
+        let conn = Connection::open(path).expect("open test db");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads table");
+        for (id, provider) in threads {
+            conn.execute(
+                "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
+                params![id, provider],
+            )
+            .expect("insert thread");
+        }
+    }
 
     #[test]
     fn read_rollout_messages_collects_full_thread_items() {
@@ -886,5 +945,52 @@ mod tests {
         assert!(text.contains("工具文本"));
         assert!(text.contains("图片内容"));
         assert!(!text.contains("AAAAAAAAAAAAAAAA"));
+    }
+
+    #[test]
+    fn calibrate_appends_new_threads_and_unifies_provider() {
+        let dir = temp_test_dir("thread-calibrate");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        create_test_threads_db(
+            &db_path,
+            &[
+                ("kept", "deecodex"),
+                ("new-claude", "claude"),
+                ("new-codex", "codex"),
+            ],
+        );
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string(&vec![
+                ("kept".to_string(), "codex".to_string()),
+                ("deleted".to_string(), "codex".to_string()),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let diff = do_calibrate(&db_path, &backup_path).expect("calibrate threads");
+        assert_eq!(diff.changed_count, 3);
+
+        let after = get_provider_summary(&db_path).expect("provider summary");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].provider, "deecodex");
+        assert_eq!(after[0].count, 3);
+
+        let backup_json = std::fs::read_to_string(&backup_path).expect("read backup");
+        let mut backup: Vec<(String, String)> =
+            serde_json::from_str(&backup_json).expect("parse backup");
+        backup.sort();
+        assert_eq!(
+            backup,
+            vec![
+                ("kept".to_string(), "codex".to_string()),
+                ("new-claude".to_string(), "claude".to_string()),
+                ("new-codex".to_string(), "codex".to_string()),
+            ]
+        );
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }
