@@ -40,15 +40,7 @@ fn codex_is_installed() -> bool {
             return true;
         }
     }
-    if let Ok(paths) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let exe = dir.join("codex");
-            if exe.exists() {
-                return true;
-            }
-        }
-    }
-    false
+    command_exists("codex")
 }
 
 /// 获取活跃账号及 provider profile 信息
@@ -237,7 +229,7 @@ pub async fn dex_update_capability_state(
 }
 
 fn command_first_line(cmd: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(cmd)
+    std::process::Command::new(command_path_for_spawn(cmd))
         .args(args)
         .output()
         .ok()
@@ -358,28 +350,89 @@ fn parse_json_output(stdout: &str) -> Option<Value> {
     None
 }
 
-fn command_exists(cmd: &str) -> bool {
-    if cmd.contains(std::path::MAIN_SEPARATOR) {
-        return Path::new(cmd).exists();
+fn command_candidate_is_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
     }
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    for dir in std::env::split_paths(&paths) {
+}
+
+fn command_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            push_unique_path(&mut dirs, dir);
+        }
+    }
+
+    if let Some(home) = deecodex::config::home_dir() {
+        for rel in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".n/bin",
+            ".cargo/bin",
+            ".volta/bin",
+            ".bun/bin",
+            "homebrew/bin",
+            "homebrew/sbin",
+        ] {
+            push_unique_path(&mut dirs, home.join(rel));
+        }
+
+        let nvm_versions = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(nvm_versions) {
+            for entry in entries.flatten() {
+                push_unique_path(&mut dirs, entry.path().join("bin"));
+            }
+        }
+    }
+
+    for dir in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/opt/local/bin",
+        "/Applications/Codex.app/Contents/Resources",
+    ] {
+        push_unique_path(&mut dirs, PathBuf::from(dir));
+    }
+
+    dirs
+}
+
+fn find_command_path(cmd: &str) -> Option<PathBuf> {
+    if cmd.contains(std::path::MAIN_SEPARATOR) {
+        let path = PathBuf::from(cmd);
+        return command_candidate_is_file(&path).then_some(path);
+    }
+    for dir in command_search_dirs() {
         let candidate = dir.join(cmd);
-        if candidate.is_file() {
-            return true;
+        if command_candidate_is_file(&candidate) {
+            return Some(candidate);
         }
         #[cfg(windows)]
         {
             for ext in ["exe", "cmd", "bat"] {
-                if dir.join(format!("{cmd}.{ext}")).is_file() {
-                    return true;
+                let candidate = dir.join(format!("{cmd}.{ext}"));
+                if command_candidate_is_file(&candidate) {
+                    return Some(candidate);
                 }
             }
         }
     }
-    false
+    None
+}
+
+fn command_path_for_spawn(cmd: &str) -> PathBuf {
+    find_command_path(cmd).unwrap_or_else(|| PathBuf::from(cmd))
+}
+
+fn command_exists(cmd: &str) -> bool {
+    find_command_path(cmd).is_some()
 }
 
 fn get_cli_version_flexible(cmd: &str) -> Option<String> {
@@ -389,7 +442,7 @@ fn get_cli_version_flexible(cmd: &str) -> Option<String> {
 }
 
 async fn run_readonly_cli_command(binary: &str, args: &[&str]) -> ReadonlyCliResult {
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = tokio::process::Command::new(command_path_for_spawn(binary));
     command.args(args);
     let command_future = command.output();
     match tokio::time::timeout(Duration::from_secs(DEX_CLI_TIMEOUT_SECS), command_future).await {
@@ -1656,10 +1709,15 @@ fn client_cli_status(spec: &ClientAppSpec) -> Value {
     let Some(command) = spec.command else {
         return json!({"installed": false, "command": null, "version": null, "error": "该客户端不是 CLI"});
     };
-    let installed = command_exists(command);
+    let path = find_command_path(command);
+    let installed = path.is_some();
+    let command_for_version = path
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| command.to_string());
     let version = if installed {
-        get_cli_version_flexible(command)
-            .or_else(|| command_first_line(command, &["--version"]))
+        get_cli_version_flexible(&command_for_version)
+            .or_else(|| command_first_line(&command_for_version, &["--version"]))
             .or_else(|| Some("已安装".into()))
     } else {
         None
@@ -1667,8 +1725,9 @@ fn client_cli_status(spec: &ClientAppSpec) -> Value {
     json!({
         "installed": installed,
         "command": command,
+        "path": path.map(|p| p.to_string_lossy().to_string()),
         "version": version,
-        "error": if installed { Value::Null } else { json!("未在 PATH 中检测到命令") },
+        "error": if installed { Value::Null } else { json!("未检测到命令") },
     })
 }
 
@@ -2511,7 +2570,7 @@ fn get_os_version() -> String {
 }
 
 fn get_cli_version(cmd: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(cmd)
+    std::process::Command::new(command_path_for_spawn(cmd))
         .args(args)
         .output()
         .ok()
@@ -4549,6 +4608,20 @@ mod tests {
             .any(|cmd| cmd.contains("@anthropic-ai/claude-code")));
         assert!(commands.iter().any(|cmd| cmd.contains("openclaw.ai")));
         assert!(commands.iter().any(|cmd| cmd.contains("hermes")));
+    }
+
+    #[test]
+    fn command_search_dirs_cover_gui_launch_cli_locations() {
+        let dirs = command_search_dirs();
+        assert!(dirs.iter().any(|path| path.ends_with(".npm-global/bin")));
+        assert!(dirs.iter().any(|path| path.ends_with(".local/bin")));
+        assert!(dirs.iter().any(|path| path.ends_with("homebrew/bin")));
+        assert!(dirs
+            .iter()
+            .any(|path| path == Path::new("/opt/homebrew/bin")));
+        assert!(dirs
+            .iter()
+            .any(|path| path == Path::new("/Applications/Codex.app/Contents/Resources")));
     }
 
     #[test]
