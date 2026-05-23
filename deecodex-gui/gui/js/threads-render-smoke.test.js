@@ -36,7 +36,7 @@ assert(switcher.includes('Claude'));
 assert(!switcher.includes('Claude Code'));
 assert(switcher.includes('has-issues'));
 assert(switcher.includes('thread-client-tabs'));
-assert(switcher.includes('client-logo-codex'));
+assert(!switcher.includes('client-logo-codex'));
 
 const rows = context.renderThreadRows([
   {
@@ -87,15 +87,15 @@ const codexActions = context.renderCodexThreadActions({
   calibration_needed: false,
   active_provider: 'deecodex',
 });
-assert(codexActions.includes('<details'));
+assert(codexActions.includes('codex-thread-strip'));
 assert(codexActions.includes('Codex 专属操作'));
 assert(codexActions.includes('聚合 Codex 线程'));
 assert(codexActions.includes('还原 Codex 隔离'));
 
 const diagnostics = context.renderThreadSourceDiagnostics(sources);
-assert(diagnostics.includes('OpenClaw'));
-assert(diagnostics.includes('暂未发现可读线程源'));
-assert(diagnostics.includes('source-muted'));
+assert(!diagnostics.includes('OpenClaw'));
+assert(!diagnostics.includes('暂未发现可读线程源'));
+assert(!diagnostics.includes('source-muted'));
 
 let invokedDetail = null;
 const nodes = {

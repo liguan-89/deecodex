@@ -13338,3 +13338,894 @@ body {
   .threads-table th:nth-child(4) { width: 10%; }
   .threads-table th:nth-child(6) { width: 6%; }
 }
+
+/* 线程聚合收口：压住早期控制台样式，改成与请求历史一致的轻量白底节奏。 */
+.primary-page-shell-threads {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.primary-page-shell-threads .threads-page-header {
+  flex: 0 0 auto;
+  margin-bottom: 16px;
+}
+
+.primary-page-shell-threads .threads-console,
+.primary-page-shell-threads .thread-source-switcher,
+.primary-page-shell-threads .codex-thread-actions,
+.primary-page-shell-threads #threadSourceDiagnostics,
+.primary-page-shell-threads .threads-list-head {
+  flex: 0 0 auto;
+}
+
+.primary-page-shell-threads .threads-console {
+  display: block;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.primary-page-shell-threads .threads-summary {
+  gap: 7px;
+}
+
+.primary-page-shell-threads .threads-stat {
+  min-height: 29px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(29,29,31,0.095);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.025);
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-label,
+.primary-page-shell-threads .threads-summary .thread-summary-value {
+  font-size: 12.5px !important;
+  line-height: 1.1 !important;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-value {
+  font-weight: 430 !important;
+  color: #2f353d !important;
+}
+
+.primary-page-shell-threads .thread-source-switcher {
+  margin: 0 0 6px;
+  overflow: hidden;
+}
+
+.primary-page-shell-threads .thread-client-tabs {
+  width: 100% !important;
+  max-width: 100%;
+  display: flex !important;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px !important;
+  padding: 5px !important;
+  overflow-x: auto;
+  border: 1px solid rgba(29,29,31,0.095) !important;
+  border-radius: 18px !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.025) !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab {
+  min-width: 72px !important;
+  min-height: 42px !important;
+  height: 42px;
+  flex: 0 0 auto !important;
+  gap: 8px;
+  padding: 5px 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 13px !important;
+  background: transparent !important;
+  color: #6f7783 !important;
+  box-shadow: none !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab:hover {
+  background: #f6f7f9 !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.active {
+  border-color: rgba(29,29,31,0.105) !important;
+  background: #f9fafb !important;
+  color: #0a6fd8 !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.72), 0 1px 2px rgba(20,24,30,0.035) !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab::after {
+  right: 7px !important;
+  top: 7px !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab em {
+  min-width: 22px;
+  padding: 0;
+  color: #7d8590;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px !important;
+  font-style: normal;
+  line-height: 1;
+}
+
+.primary-page-shell-threads .thread-client-glyph,
+.primary-page-shell-threads .thread-client-tabs .client-logo-box {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: 10px;
+}
+
+.primary-page-shell-threads .thread-client-glyph {
+  border: 1px solid rgba(29,29,31,0.10);
+  background: #fff;
+  color: #0a6fd8;
+  font-size: 10.5px;
+  font-weight: 460;
+}
+
+.primary-page-shell-threads .codex-thread-actions {
+  margin: 0 0 8px;
+}
+
+.primary-page-shell-threads .codex-thread-strip {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 7px 5px 14px;
+  border: 1px solid rgba(29,29,31,0.095);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.025);
+}
+
+.primary-page-shell-threads .codex-thread-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primary-page-shell-threads .codex-thread-label {
+  color: #8b929d;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.primary-page-shell-threads .codex-thread-tool-row {
+  padding: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.primary-page-shell-threads .codex-thread-tool-row .btn {
+  min-height: 32px;
+  padding: 5px 11px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.primary-page-shell-threads .thread-source-diagnostics {
+  margin: 0 0 10px;
+}
+
+.primary-page-shell-threads .thread-source-note-list {
+  gap: 6px;
+  margin-top: 0;
+}
+
+.primary-page-shell-threads .thread-source-note {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: #fff;
+  border-color: rgba(29,29,31,0.095);
+  color: #6f7783;
+}
+
+.primary-page-shell-threads .threads-list-head {
+  margin: 4px 0 8px;
+  color: #202124;
+  font-size: 14.4px;
+  font-weight: 460;
+}
+
+.primary-page-shell-threads .threads-list-head::before {
+  display: none;
+}
+
+.primary-page-shell-threads .threads-table-wrap {
+  flex: 1 1 auto;
+  min-height: 260px;
+  max-height: none;
+  overflow: auto;
+  border: 1px solid rgba(29,29,31,0.095);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.025);
+}
+
+.primary-page-shell-threads .threads-table {
+  table-layout: fixed;
+}
+
+.primary-page-shell-threads .threads-table th:nth-child(1) { width: 42%; }
+.primary-page-shell-threads .threads-table th:nth-child(2) { width: 13%; }
+.primary-page-shell-threads .threads-table th:nth-child(3) { width: 20%; }
+.primary-page-shell-threads .threads-table th:nth-child(4) { width: 18%; }
+.primary-page-shell-threads .threads-table th:nth-child(5) { width: 7%; }
+
+.primary-page-shell-threads .threads-table th,
+.primary-page-shell-threads .threads-table td {
+  border-bottom-color: rgba(29,29,31,0.075);
+}
+
+.primary-page-shell-threads .threads-table th {
+  height: 38px;
+  padding: 9px 14px;
+  background: #fff;
+  color: #8b929d;
+  font-size: 12px !important;
+  font-weight: 390 !important;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.primary-page-shell-threads .threads-table td {
+  height: 52px;
+  padding: 9px 14px;
+  color: #6f747c;
+  font-size: 12.5px !important;
+  font-weight: 390 !important;
+}
+
+.primary-page-shell-threads .threads-table td:first-child {
+  padding-right: 14px;
+  color: #202124;
+  font-size: 13px !important;
+  font-weight: 410 !important;
+}
+
+.primary-page-shell-threads .td-title-text,
+.primary-page-shell-threads .thread-meta-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primary-page-shell-threads .thread-meta-line {
+  display: block;
+  max-width: 100%;
+  margin: 3px 0 0;
+  color: #9aa1ab;
+  font-size: 11.5px !important;
+  line-height: 1.2;
+}
+
+.primary-page-shell-threads .threads-table .tag {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 8px;
+  border-color: rgba(29,29,31,0.09);
+  background: #fff;
+  color: #3b8064;
+  font-size: 12px !important;
+}
+
+.primary-page-shell-threads .thread-row:hover {
+  background: #f8f9fb !important;
+}
+
+.primary-page-shell-threads .thread-actions-cell {
+  text-align: right;
+  overflow: visible;
+}
+
+.primary-page-shell-threads .thread-row-action {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 9px;
+}
+
+.primary-page-shell-threads .thread-row-action:hover,
+.primary-page-shell-threads .thread-row-action.danger:hover {
+  color: var(--red);
+  background: rgba(217,45,32,0.06);
+}
+
+@media (max-width: 900px) {
+  .primary-page-shell-threads .codex-thread-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .primary-page-shell-threads .codex-thread-tool-row {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 46%; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 15%; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 21%; }
+  .primary-page-shell-threads .threads-table th:nth-child(4) { width: 12%; }
+  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 6%; }
+}
+
+@media (max-width: 760px) {
+  .primary-page-shell-threads .threads-table th:nth-child(4),
+  .primary-page-shell-threads .threads-table td:nth-child(4) {
+    display: none;
+  }
+
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 54%; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 18%; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 21%; }
+  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 7%; }
+}
+
+/* 线程聚合二次收口：与请求历史页统一统计、分段筛选和轻列表。 */
+.primary-page-shell-threads .threads-page-header {
+  margin-bottom: 18px;
+}
+
+.primary-page-shell-threads .thread-toolbar-icon,
+[data-theme="light"] .primary-page-shell-threads .thread-toolbar-icon {
+  width: 38px !important;
+  min-width: 38px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(29,29,31,0.115) !important;
+  background: #fff !important;
+  color: #5f6772 !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.035) !important;
+}
+
+.primary-page-shell-threads .thread-toolbar-icon:hover,
+[data-theme="light"] .primary-page-shell-threads .thread-toolbar-icon:hover {
+  border-color: rgba(29,29,31,0.18) !important;
+  background: #f5f7fa !important;
+  color: #202124 !important;
+  box-shadow: none !important;
+}
+
+.primary-page-shell-threads .thread-strip-refresh,
+[data-theme="light"] .primary-page-shell-threads .thread-strip-refresh {
+  width: 34px;
+  min-width: 34px;
+  min-height: 32px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  border: 1px solid rgba(29,29,31,0.105);
+  background: #fff;
+  color: #626a75;
+  box-shadow: none;
+}
+
+.primary-page-shell-threads .thread-strip-refresh:hover,
+[data-theme="light"] .primary-page-shell-threads .thread-strip-refresh:hover {
+  border-color: rgba(29,29,31,0.18);
+  background: #f5f7fa;
+  color: #202124;
+}
+
+.primary-page-shell-threads .thread-strip-refresh .line-action-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.primary-page-shell-threads .threads-console {
+  margin-bottom: 14px;
+}
+
+.primary-page-shell-threads .threads-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: min(100%, 560px);
+}
+
+.primary-page-shell-threads .threads-stat,
+[data-theme="light"] .primary-page-shell-threads .threads-stat {
+  min-height: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(29,29,31,0.095);
+  background: #fff;
+  box-shadow: none;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-value,
+[data-theme="light"] .primary-page-shell-threads .threads-summary .thread-summary-value {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #202124 !important;
+  font-family: var(--font-sans) !important;
+  font-size: 21px !important;
+  font-weight: 520 !important;
+  font-variation-settings: "wght" 520 !important;
+  line-height: 1.08 !important;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-label,
+[data-theme="light"] .primary-page-shell-threads .threads-summary .thread-summary-label {
+  color: #8b929d !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  font-weight: 390 !important;
+  font-variation-settings: "wght" 390 !important;
+  line-height: 1.1 !important;
+}
+
+.primary-page-shell-threads .thread-source-switcher {
+  margin-bottom: 12px;
+}
+
+.primary-page-shell-threads .thread-client-tabs,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center;
+  gap: 4px !important;
+  padding: 3px !important;
+  overflow-x: auto;
+  border: 1px solid rgba(29,29,31,0.095) !important;
+  border-radius: 15px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab {
+  min-width: 0 !important;
+  min-height: 32px !important;
+  height: 32px !important;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto !important;
+  gap: 6px;
+  padding: 0 11px !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  color: #6f7783 !important;
+  box-shadow: none !important;
+  font-size: 12.5px !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab:hover,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab:hover {
+  background: #f6f7f9 !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.active,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab.active {
+  background: #fff !important;
+  color: #202124 !important;
+  box-shadow: 0 5px 18px rgba(20,24,30,0.07) !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab em,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab em {
+  min-width: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: transparent;
+  color: #8b929d;
+  font-family: var(--font-sans);
+  font-size: 11.5px !important;
+  font-style: normal;
+  line-height: 1.2;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.active em,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab.active em {
+  background: #eef1f4;
+  color: #7b828c;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.source-warn::after,
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.source-muted::after {
+  position: static;
+  flex: 0 0 auto;
+  order: 3;
+  width: 5px;
+  height: 5px;
+  margin-left: 1px;
+}
+
+.primary-page-shell-threads .codex-thread-strip {
+  border-radius: 15px;
+}
+
+.primary-page-shell-threads .threads-list-head {
+  margin: 14px 0 10px;
+  font-size: 14.4px;
+}
+
+.primary-page-shell-threads .threads-table-wrap,
+[data-theme="light"] .primary-page-shell-threads .threads-table-wrap {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding-bottom: 18px;
+  scroll-padding-bottom: 18px;
+  box-sizing: border-box;
+}
+
+.primary-page-shell-threads .threads-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 6px;
+  margin-bottom: 12px;
+}
+
+.primary-page-shell-threads .threads-table th {
+  height: 30px;
+  padding: 0 14px 4px;
+  border: 0;
+  background: transparent;
+  color: #8b929d;
+  font-size: 12px !important;
+}
+
+.primary-page-shell-threads .threads-table td,
+[data-theme="light"] .primary-page-shell-threads .threads-table td {
+  height: 54px;
+  padding: 9px 14px;
+  border-top: 1px solid rgba(29,29,31,0.085);
+  border-bottom: 1px solid rgba(29,29,31,0.085);
+  background: #fff;
+  color: #626a75;
+}
+
+.primary-page-shell-threads .threads-table td:first-child {
+  border-left: 1px solid rgba(29,29,31,0.085);
+  border-radius: 15px 0 0 15px;
+}
+
+.primary-page-shell-threads .threads-table td:last-child {
+  border-right: 1px solid rgba(29,29,31,0.085);
+  border-radius: 0 15px 15px 0;
+}
+
+.primary-page-shell-threads .thread-row:hover td {
+  background: #f8f9fb !important;
+}
+
+.primary-page-shell-threads .threads-table .tag,
+[data-theme="light"] .primary-page-shell-threads .threads-table .tag {
+  min-height: 24px;
+  border-radius: 8px;
+  border-color: rgba(29,29,31,0.09);
+  background: #fff;
+}
+
+.primary-page-shell-threads .thread-row:hover .tag {
+  background: #fff;
+}
+
+@media (max-width: 760px) {
+  .primary-page-shell-threads .threads-summary {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .primary-page-shell-threads .threads-stat {
+    min-height: 60px;
+    padding: 9px 10px;
+  }
+
+  .primary-page-shell-threads .threads-summary .thread-summary-value {
+    font-size: 17px !important;
+  }
+}
+
+/* 线程聚合可见问题修正：表头不再悬浮遮挡，弱诊断不在分段条上冒点。 */
+.primary-page-shell-threads .threads-summary {
+  width: min(100%, 760px);
+}
+
+.primary-page-shell-threads .threads-stat,
+[data-theme="light"] .primary-page-shell-threads .threads-stat {
+  min-height: 58px;
+  padding: 10px 13px;
+  border-radius: 16px;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-value,
+[data-theme="light"] .primary-page-shell-threads .threads-summary .thread-summary-value {
+  font-size: 18px !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs {
+  overflow-x: hidden;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab,
+[data-theme="light"] .primary-page-shell-threads .thread-client-tabs .thread-source-tab {
+  flex: 1 1 0 !important;
+  justify-content: center;
+  max-width: none;
+  padding: 0 9px !important;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.source-muted::after {
+  display: none;
+}
+
+.primary-page-shell-threads .thread-client-tabs .thread-source-tab.source-warn::after {
+  position: static;
+  flex: 0 0 auto;
+  order: 3;
+}
+
+.primary-page-shell-threads .threads-table thead,
+.primary-page-shell-threads .threads-table tr,
+.primary-page-shell-threads .threads-table th {
+  position: static !important;
+  top: auto !important;
+  z-index: auto !important;
+}
+
+.primary-page-shell-threads .threads-table th {
+  background: transparent !important;
+  line-height: 1.2;
+  vertical-align: bottom;
+}
+
+.primary-page-shell-threads .threads-table tbody tr:first-child td {
+  margin-top: 0;
+}
+
+.primary-page-shell-threads .threads-table td {
+  vertical-align: middle;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(4) {
+  white-space: nowrap;
+}
+
+@media (max-width: 1080px) {
+  .primary-page-shell-threads .thread-client-tabs .thread-source-tab {
+    flex: 0 0 auto !important;
+  }
+
+  .primary-page-shell-threads .thread-client-tabs,
+  [data-theme="light"] .primary-page-shell-threads .thread-client-tabs {
+    overflow-x: auto;
+  }
+}
+
+.primary-page-shell-threads .threads-table .threads-empty-cell,
+.primary-page-shell-threads .threads-table .threads-error-cell,
+[data-theme="light"] .primary-page-shell-threads .threads-table .threads-empty-cell,
+[data-theme="light"] .primary-page-shell-threads .threads-table .threads-error-cell {
+  height: 92px;
+  padding: 0 16px !important;
+  border: 1px solid rgba(29,29,31,0.085) !important;
+  border-radius: 15px !important;
+  background: #fff !important;
+  color: #6f7783;
+  text-align: center;
+  vertical-align: middle;
+  box-shadow: none;
+}
+
+.primary-page-shell-threads .threads-table .threads-error-cell,
+[data-theme="light"] .primary-page-shell-threads .threads-table .threads-error-cell {
+  color: var(--red);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.primary-page-shell-threads .threads-table-spacer td,
+[data-theme="light"] .primary-page-shell-threads .threads-table-spacer td {
+  height: 26px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 线程聚合顶部区域：避免统计卡和刷新按钮像两个系统拼在一起。 */
+.primary-page-shell-threads {
+  --threads-head-width: min(100%, 720px);
+}
+
+.primary-page-shell-threads .threads-page-header,
+[data-theme="light"] .primary-page-shell-threads .threads-page-header {
+  width: var(--threads-head-width);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.primary-page-shell-threads .threads-page-header .page-header-actions {
+  justify-content: flex-end;
+}
+
+.primary-page-shell-threads .threads-console {
+  margin-bottom: 12px;
+}
+
+.primary-page-shell-threads .threads-summary,
+[data-theme="light"] .primary-page-shell-threads .threads-summary {
+  width: var(--threads-head-width);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.primary-page-shell-threads .threads-stat,
+[data-theme="light"] .primary-page-shell-threads .threads-stat {
+  min-height: 52px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  justify-content: center;
+  gap: 5px;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-value,
+[data-theme="light"] .primary-page-shell-threads .threads-summary .thread-summary-value {
+  font-size: 16px !important;
+  font-weight: 480 !important;
+  font-variation-settings: "wght" 480 !important;
+}
+
+.primary-page-shell-threads .threads-summary .thread-summary-label,
+[data-theme="light"] .primary-page-shell-threads .threads-summary .thread-summary-label {
+  font-size: 11.5px !important;
+}
+
+@media (max-width: 760px) {
+  .primary-page-shell-threads {
+    --threads-head-width: 100%;
+  }
+
+  .primary-page-shell-threads .threads-summary {
+    gap: 7px;
+  }
+
+  .primary-page-shell-threads .threads-stat {
+    min-height: 50px;
+    padding: 8px 10px;
+  }
+}
+
+/* 线程聚合细节：刷新图标换成干净单环，列表列宽避免过早截断。 */
+.line-action-icon-thread-refresh {
+  --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.28' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19.2 9.2A7.4 7.4 0 1 0 20 12'/%3E%3Cpath d='M19.2 4.8v4.4h-4.4'/%3E%3C/svg%3E");
+}
+
+.primary-page-shell-threads .threads-table th:nth-child(1) { width: 50%; }
+.primary-page-shell-threads .threads-table th:nth-child(2) { width: 11%; }
+.primary-page-shell-threads .threads-table th:nth-child(3) { width: 18%; }
+.primary-page-shell-threads .threads-table th:nth-child(4) { width: 17%; }
+.primary-page-shell-threads .threads-table th:nth-child(5) { width: 4%; }
+
+.primary-page-shell-threads .threads-table th,
+.primary-page-shell-threads .threads-table td,
+[data-theme="light"] .primary-page-shell-threads .threads-table td {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(2),
+.primary-page-shell-threads .threads-table th:nth-child(2) {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(3),
+.primary-page-shell-threads .threads-table th:nth-child(3) {
+  padding-left: 14px;
+  padding-right: 0;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(4),
+.primary-page-shell-threads .threads-table th:nth-child(4) {
+  padding-left: 0;
+  padding-right: 6px;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(5),
+.primary-page-shell-threads .threads-table th:nth-child(5) {
+  width: 42px;
+  padding-left: 0;
+  padding-right: 18px;
+}
+
+.primary-page-shell-threads .thread-actions-cell {
+  text-align: left;
+}
+
+.primary-page-shell-threads .td-title-text {
+  width: 100%;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(3) {
+  max-width: none;
+}
+
+@media (max-width: 900px) {
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 50%; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 13%; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 19%; }
+  .primary-page-shell-threads .threads-table th:nth-child(4) { width: 14%; }
+  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 4%; }
+}
+
+/* 线程列表不再作为内滚动视口，避免底部露出半行卡片。 */
+.primary-page-shell-threads,
+[data-theme="light"] .primary-page-shell-threads {
+  display: block;
+}
+
+.primary-page-shell-threads .threads-console,
+.primary-page-shell-threads .thread-source-switcher,
+.primary-page-shell-threads .codex-thread-actions,
+.primary-page-shell-threads #threadSourceDiagnostics,
+.primary-page-shell-threads .threads-list-head,
+.primary-page-shell-threads .threads-table-wrap {
+  flex: none;
+}
+
+.primary-page-shell-threads .threads-table-wrap,
+[data-theme="light"] .primary-page-shell-threads .threads-table-wrap {
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  padding-bottom: 0;
+  scroll-padding-bottom: 0;
+}
+
+.primary-page-shell-threads .threads-table {
+  margin-bottom: 18px;
+}
