@@ -197,13 +197,15 @@ function statusCommandIsCodexDesktop(command) {
   return /\/Codex\.app\//.test(command)
     || /com\.openai\.codex/.test(command)
     || /Codex Helper/.test(command)
-    || /Application Support\/Codex/.test(command);
+    || /Application Support\/Codex/.test(command)
+    || command.trim() === 'Codex';
 }
 
 function statusCommandIsClaudeDesktop(command) {
   return /\/Claude\.app\//.test(command)
     || /Claude Helper/.test(command)
-    || /Application Support\/Claude/.test(command);
+    || /Application Support\/Claude/.test(command)
+    || command.trim() === 'Claude';
 }
 
 function statusClientProcessRunning(kind) {
@@ -212,16 +214,16 @@ function statusClientProcessRunning(kind) {
   }
   if (kind === 'codex_cli') {
     const commands = statusProcessCommands('codex', 'Codex');
-    if (!commands.length) return Boolean((window._clientProcessMap || {}).codex?.running);
-    return commands.some(command => !statusCommandIsCodexDesktop(command) && /(^|\/|\s)codex(\s|$)/i.test(command));
+    if (!commands.length) return false;
+    return commands.some(command => !statusCommandIsCodexDesktop(command) && /(^|\/|\s)codex(\s|$)/.test(command));
   }
   if (kind === 'claude_desktop') {
     return statusProcessCommands('claude', 'Claude').some(statusCommandIsClaudeDesktop);
   }
   if (kind === 'claude_cli') {
     const commands = statusProcessCommands('claude', 'Claude');
-    if (!commands.length) return Boolean((window._clientProcessMap || {}).claude?.running);
-    return commands.some(command => !statusCommandIsClaudeDesktop(command) && /(^|\/|\s)claude(\s|$)/i.test(command));
+    if (!commands.length) return false;
+    return commands.some(command => !statusCommandIsClaudeDesktop(command) && /(^|\/|\s)claude(\s|$)/.test(command));
   }
   const entry = (window._clientProcessMap || {})[kind];
   if (entry && typeof entry === 'object') return Boolean(entry.running);

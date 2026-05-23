@@ -100,6 +100,18 @@ assert(css.includes('visibility: hidden'));
 assert(css.includes('.client-dock-item:hover .client-dock-state-row'));
 assert(css.includes('visibility: visible'));
 
+context.window._clientProcessMap = {
+  codex: { running: true, instances: [{ pid: '101', command: 'Codex' }] },
+  Codex: { running: true, instances: [{ pid: '101', command: 'Codex' }] },
+};
+assert.strictEqual(context.statusClientProcessRunning('codex_desktop'), true);
+assert.strictEqual(context.statusClientProcessRunning('codex_cli'), false);
+
+context.window._clientProcessMap = {
+  codex: { running: true, instances: [{ pid: '102', command: '/usr/local/bin/codex' }] },
+};
+assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);
+
 (async () => {
   await context.window.refreshClientLifecycleDock();
   assert(calls.some(call => call.name === 'dex_client_lifecycle_status'));
