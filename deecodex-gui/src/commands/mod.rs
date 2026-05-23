@@ -3870,7 +3870,7 @@ pub struct ModelRemain {
 }
 
 const CODEX_WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.5";
+const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/3.0beta";
 
 #[derive(Debug, Clone)]
 struct CodexUsageError {
