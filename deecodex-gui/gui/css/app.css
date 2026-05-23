@@ -1899,6 +1899,16 @@ body {
 .faq-q:hover { color: var(--accent); }
 .faq-q .faq-arrow { font-size: 10px; color: var(--text-muted); transition: transform var(--transition); flex-shrink: 0; }
 .faq-item.open .faq-q .faq-arrow { transform: rotate(90deg); color: var(--accent); }
+.faq-q .faq-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--transition), border-color var(--transition);
+  flex-shrink: 0;
+}
+.faq-item.open .faq-q .faq-chevron { transform: rotate(45deg); border-color: var(--accent); }
 .faq-a { display: none; padding: 0 16px 14px 34px; font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
 .faq-item.open .faq-a { display: block; }
 .faq-a code { font-family: var(--font-mono); font-size: 11px; background: var(--bg-root); padding: 1px 5px; border-radius: 2px; color: var(--accent); }
@@ -14241,4 +14251,220 @@ body {
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+/* 使用帮助页独立压住旧格式，保持白底轻量阅读风格。 */
+[data-theme="light"] .primary-page-shell-help .page-header {
+  margin-bottom: 14px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 22px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--sink-border);
+  border-radius: 999px;
+  background: #fff;
+  color: #4b5563;
+  box-shadow: var(--sink-shadow);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc a:hover {
+  border-color: rgba(10,132,255,0.24);
+  background: #f6faff;
+  color: #0a6fd8;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section {
+  margin-bottom: 26px;
+  scroll-margin-top: 18px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section h3 {
+  margin-bottom: 10px;
+  color: #202124;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section h3::before {
+  content: '';
+  width: 9px;
+  height: 2px;
+  border-radius: 999px;
+  background: #0a84ff;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section p,
+[data-theme="light"] .primary-page-shell-help .help-section li {
+  color: #5f6672;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul {
+  margin: 8px 0 12px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul li {
+  padding: 3px 0 3px 15px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul li::before {
+  content: '';
+  top: 13px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #a0a7b2;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-note {
+  margin: 8px 0 12px;
+  color: #7a8089;
+  font-size: 12.5px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-note-after {
+  margin-top: 8px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-subsection {
+  margin-top: 16px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section code,
+[data-theme="light"] .primary-page-shell-help .faq-a code {
+  padding: 1px 4px;
+  border: 1px solid rgba(29,29,31,0.06);
+  border-radius: 4px;
+  background: #f7f8fa;
+  color: #3f4652;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-theme="light"] .primary-page-shell-help .code-block {
+  margin: 10px 0 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--sink-border);
+  border-radius: var(--sink-radius);
+  background: #fbfcfe;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .code-block pre {
+  color: #202124;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table {
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--sink-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table th,
+[data-theme="light"] .primary-page-shell-help .cmd-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(29,29,31,0.07);
+  color: #5f6672;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table code {
+  padding: 1px 5px;
+  border-color: rgba(10,132,255,0.10);
+  background: #f8fbff;
+  color: #2563eb;
+  font-size: 11.5px;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table th {
+  background: #f8f9fb;
+  color: #7a8089;
+  font-weight: 600;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table td:first-child {
+  color: #202124;
+  font-weight: 600;
+}
+
+[data-theme="light"] .primary-page-shell-help .cmd-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-list {
+  gap: 7px;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-item {
+  border: 1px solid var(--sink-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--sink-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-q {
+  min-height: 42px;
+  padding: 0 14px;
+  color: #202124;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #9aa2ad;
+  border-bottom: 1.5px solid #9aa2ad;
+  transform: rotate(-45deg);
+  transition: transform var(--transition), border-color var(--transition);
+  flex: 0 0 auto;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-item.open .faq-chevron {
+  transform: rotate(45deg);
+  border-color: #0a84ff;
+}
+
+[data-theme="light"] .primary-page-shell-help .faq-a {
+  padding: 0 14px 13px 34px;
+  color: #6f747c;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.7;
 }

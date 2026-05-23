@@ -1098,7 +1098,6 @@ function renderHelp() {
   return `
     <div class="page-header">
       <h2>使用帮助</h2>
-      <p>安装后的配置指南、常见问题与故障排查</p>
     </div>
 
     <div class="help-toc">
@@ -1134,9 +1133,9 @@ function renderHelp() {
 <span class="key">name</span> = <span class="str">"custom"</span>
 <span class="key">requires_openai_auth</span> = <span class="val">false</span>
 <span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
-      <p style="font-size:11px; color:var(--text-muted);">⚠ base_url 末尾不要加 /，端口须与 deecodex 监听端口一致。</p>
+      <p class="help-note">注意：base_url 末尾不要加 /，端口须与 deecodex 监听端口一致。</p>
 
-      <p style="margin-top:16px;"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
+      <p class="help-subsection"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
       <ul>
         <li>API 请求地址：<strong>http://127.0.0.1:4446/v1</strong></li>
         <li>API Key：任意值（若 deecodex 未开启客户端认证）。如需使用 CC Switch，请关闭高级设置中的「自动注入」和「持久注入」，避免两个工具同时修改配置文件路由导致冲突。</li>
@@ -1159,7 +1158,7 @@ function renderHelp() {
 
     <div class="help-section" id="h-commands">
       <h3>管理命令</h3>
-      <p style="font-size:12px; color:var(--text-muted);">先进入数据目录：<code>cd ~/.deecodex</code>（Windows 为 <code>cd %LOCALAPPDATA%\\Programs\\deecodex</code>）</p>
+      <p class="help-note">先进入数据目录：<code>cd ~/.deecodex</code>（Windows 为 <code>cd %LOCALAPPDATA%\\Programs\\deecodex</code>）</p>
       <table class="cmd-table">
         <thead><tr><th>操作</th><th>macOS / Linux</th><th>Windows</th></tr></thead>
         <tbody>
@@ -1172,34 +1171,34 @@ function renderHelp() {
           <tr><td>诊断</td><td><code>./deecodex.sh diagnose</code></td><td><code>deecodex.bat diagnose</code></td></tr>
         </tbody>
       </table>
-      <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>
+      <p class="help-note help-note-after">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>
     </div>
 
     <div class="help-section" id="h-faq">
       <h3>常见问题</h3>
       <div class="faq-list">
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> Codex 连接不上 deecodex (connection refused)</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> Codex 连接不上 deecodex (connection refused)</button>
           <div class="faq-a">deecodex 可能未启动。在此 GUI 中点击「启动服务」，或终端执行<code>./deecodex.sh start</code>（Windows 用<code>deecodex.bat start</code>）确认服务是否运行。</div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 提示 model not found</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 提示 model not found</button>
           <div class="faq-a">Codex 请求的模型名未在 deecodex 模型映射中找到。在配置面板的「配置 → 模型映射」中添加对应条目，或检查 Codex 中填写的模型名大小写是否与映射键名一致。</div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 对话一直转圈不响应</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 对话一直转圈不响应</button>
           <div class="faq-a">通常是 DeepSeek 上游不可达或 API Key 无效。查看日志观察是否有 <code>→ upstream</code> 输出以及对应的 HTTP 状态码。401/403 说明 API Key 问题。</div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 思维链 (reasoning_content) 输出异常</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 思维链 (reasoning_content) 输出异常</button>
           <div class="faq-a">DeepSeek 流式响应中思维链可能跨 chunk 分片。deecodex 内置三级恢复策略（call_id 匹配 / turn 指纹 / 历史扫描）并自动重试最多 3 次。若仍出现错误，尝试缩短对话上下文。</div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 413 Payload Too Large</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 413 Payload Too Large</button>
           <div class="faq-a">请求体超过大小限制。在配置面板中将「最大请求体 (MB)」调大。</div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-arrow">▸</span> 保存配置后什么时候生效？</button>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 保存配置后什么时候生效？</button>
           <div class="faq-a">多数配置保存后即时生效（如模型映射、Token 检测参数）。端口、数据目录等核心配置需要重启 deecodex 才会生效。</div>
         </div>
       </div>
