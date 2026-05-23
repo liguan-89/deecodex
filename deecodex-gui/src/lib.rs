@@ -525,6 +525,7 @@ pub fn run() {
             commands::get_client_thread_content,
             commands::delete_thread,
             commands::browse_file,
+            commands::browse_attachment_file,
             commands::list_plugins,
             commands::install_plugin,
             commands::uninstall_plugin,

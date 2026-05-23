@@ -38,9 +38,6 @@ async function init() {
   // 每日自动检查更新
   autoCheckUpgrade();
 
-  // 首次安装 / 更新后配置引导（异步，不阻塞）
-  checkSetupWizard();
-
   // 监听托盘账号切换事件，自动刷新
   if (typeof window.DeeCodexTauri?.listen === 'function') {
     (async () => {

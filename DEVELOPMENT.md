@@ -13,6 +13,17 @@
 - 正在做：P3 Codex CLI 兼容性回归已收口
 - 下一步：根据 Codex CLI 后续版本变更跟踪协议漂移
 
+## GUI 经验记录
+
+- 2026-05-23：DEX 助手内容框重构踩坑记录：
+  - DEX 页面只能向现有一级页内容框体系靠拢，不能让服务概览、账号管理、线程聚合等页面反向参考 DEX；不要改全局 `.primary-page-shell` / `.main:not(.dex-main)` 去迁就 DEX。
+  - DEX 需要自己的 `section.primary-page-shell.primary-page-shell-dex-assistant`，内部再放 `.dex-chat-panel`。`.dex-chat-panel`、header、messages、input-area 只是透明结构层，不再各自制造白底、边框、阴影或整宽分割线。
+  - 浅色主题内容框外侧背景必须跟导航栏同源，使用 `--shell-chrome-bg`，不要写死 `#fff` 或 `#f7f8fa`。否则圆角边缘会出现导航栏、主区外层、内容框三种颜色的色差。
+  - DEX 内容框内部保持单层白底，边框只放在 `.primary-page-shell-dex-assistant` 上；底部输入区不要再加 `border-top`，只保留输入框自身边框。
+  - 不要保留“看似隐藏”的旧 DEX 结构：旧状态栏、模式栏、能力栏、工具清单如果不参与布局，就不要在 `renderDexAssistant()` 里渲染，也不要靠 `display:none !important` 当主方案。
+  - 写样式前必须确认选择器真的能命中当前 DOM。此前 `.main.dex-main.primary-shell-main`、`.primary-page-shell-dex-assistant` 在未渲染对应结构时属于死规则，导致表面改了 CSS、实际界面仍是旧层级。
+  - GUI 修改必须启动开发版多实例实测：`pgrep -x cargo || true` 后用 `DEECODEX_GUI_ALLOW_MULTI_INSTANCE=1 cargo tauri dev`，不要碰安装版；编译通过不等于视觉通过。
+
 ## 已完成
 
 - 修复流式中断被伪装成成功完成的问题：上游 SSE 解析错误或提前中断会走失败事件，不再保存残缺成功响应。

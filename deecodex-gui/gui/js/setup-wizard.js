@@ -12,42 +12,19 @@ let wizardIdx = 0;
 let wizardVer = '';
 
 async function checkSetupWizard() {
-  // 从服务状态获取版本，失败则从 get_config 侧面获取，再失败用已知版本
-  let ver = (window._statusData && window._statusData.version) || '';
-  if (ver === '—' || ver === '0.0.0' || !ver) {
-    try { const st = await invoke('get_service_status'); ver = st.version; } catch (_) {}
-  }
-  if (!ver || ver === '—' || ver === '0.0.0') return;
-  const completedVer = deeStorage.getItem('setupCompletedVersion');
-  if (!completedVer || completedVer !== ver) {
-    wizardVer = ver;
-    wizardIdx = 0;
-    showWizardBar();
-  }
+  hideWizardBar();
 }
 
 function showWizardBar() {
+  hideWizardBar();
+  return;
+}
+
+function hideWizardBar() {
   const existing = document.getElementById('setupWizard');
   if (existing) existing.remove();
-
-  const bar = document.createElement('div');
-  bar.id = 'setupWizard';
-  bar.className = 'setup-wizard';
-  document.body.appendChild(bar);
-  renderWizardBar(bar);
-  updateWizardMainOffset(bar);
-
-  // 第一步强提醒：弹出一个醒目的 toast
-  if (wizardIdx === 0) {
-    showToast('欢迎，跟随顶部引导完成首次配置', 'info');
-  }
-
-  // 监听面板切换
-  const origSwitch = switchPanel;
-  switchPanel = function(panelId) {
-    origSwitch(panelId);
-    autoWizardStep(panelId);
-  };
+  const main = document.getElementById('mainContent');
+  if (main) main.style.paddingTop = '';
 }
 
 function autoWizardStep(panelId) {

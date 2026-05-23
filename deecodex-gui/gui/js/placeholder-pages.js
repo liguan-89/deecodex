@@ -26,27 +26,6 @@
       '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
       '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
       '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
-      '.dex-cap-chips{padding:5px 16px;border-bottom:1px solid rgba(148,163,184,0.12)}',
-      '.dex-cap-panel{font-size:11px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-cap-panel summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;min-height:22px}',
-      '.dex-cap-panel summary::-webkit-details-marker{display:none}',
-      '.dex-cap-panel summary:before{content:"工具包";border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;color:var(--text-primary,#c4d0e4)}',
-      '.dex-cap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));gap:6px;margin-top:6px}',
-      '.dex-cap-chip{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.12);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:5px 8px;font-size:11px;line-height:1.35;cursor:pointer;text-align:left;min-width:0}',
-      '.dex-cap-chip.on{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.32);background:rgba(0,200,232,0.08)}',
-      '.dex-cap-chip.off{opacity:0.55}',
-      '.dex-cap-chip-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dex-cap-chip-meta{display:block;margin-top:1px;color:var(--text-secondary,#6b7fa8);font-size:10px}',
-      '.dex-mode-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 6px;border-bottom:1px solid rgba(148,163,184,0.10)}',
-      '.dex-mode-tab{border:1px solid var(--border-default,#26364d);background:rgba(0,0,0,0.10);color:var(--text-secondary,#6b7fa8);border-radius:5px;padding:5px 10px;font-size:11px;line-height:1.35;cursor:pointer}',
-      '.dex-mode-tab.active{color:var(--text-primary,#c4d0e4);border-color:rgba(0,200,232,0.4);background:rgba(0,200,232,0.1)}',
-      '.dex-tool-catalog{padding:5px 16px;border-bottom:1px solid rgba(148,163,184,0.10);font-size:11px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-catalog summary{cursor:pointer;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-catalog-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:5px;margin-top:5px;max-height:180px;overflow:auto}',
-      '.dex-tool-catalog-item{border:1px solid rgba(148,163,184,0.16);border-radius:4px;padding:4px 6px;background:rgba(0,0,0,0.12);min-width:0}',
-      '.dex-tool-catalog-name{display:block;color:var(--text-primary,#c4d0e4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dex-tool-catalog-meta{display:block;margin-top:2px;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-preview{font-size:11px;color:var(--accent-color,#00c8e8);padding:0 0 6px;font-style:italic}',
       '.dex-tool-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;font-size:10px;color:var(--text-secondary,#6b7fa8);white-space:nowrap}',
       '.dex-tool-actions{flex:1 0 100%;display:flex;gap:6px;margin-top:6px}',
       '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
@@ -61,6 +40,7 @@ var DEX_TOOLS = [];
 var DEX_CAPABILITIES = [];
 var DEX_WORKSPACE_CONTEXT = null;
 var DEX_MODE = (window.deeStorage && window.deeStorage.getItem('dex_mode')) || 'diag';
+var DEX_LAST_ATTACHMENT_KEY = 'dex_last_attachment_path';
 
 var DEX_MODES = {
   diag: { label: '诊断', prompt: '优先使用只读诊断工具定位问题，先给风险概览，再建议修复路径。' },
@@ -87,6 +67,7 @@ var DEX_SYSTEM_PROMPT = [
   '## 安全边界',
   '- 文件读取限制在 ~/.deecodex、~/.codex、/tmp 和当前工作区。',
   '- Shell 属于 L3；用户明确要求执行时，直接发起 execute_shell 工具调用，由前端内联确认，不要用普通文本确认代替。',
+  '- 用户消息包含“附件:”路径时，优先使用 read_file 工具读取附件内容，再基于真实文件内容回答。',
   '- 不泄露 api_key、authorization、token、secret、password 等敏感信息。',
   '- 插件工具通过统一代理执行，遵循同一安全分级。'
 ].join('\n');
@@ -521,9 +502,6 @@ async function dexLoadDynamicContext() {
     }
     DEX_WORKSPACE_CONTEXT = result[2] || null;
     window.dexAgent.messages[0] = { role: 'system', content: dexBuildSystemPrompt() };
-    dexRenderCapabilityChips();
-    dexRenderModeTabs();
-    dexRenderToolCatalog();
   } catch (e) {
     DEX_TOOLS = [];
     console.warn('[dexAgent] 动态工具加载失败，当前不暴露工具清单:', e);
@@ -534,7 +512,7 @@ function dexRenderCapabilityChips() {
   var el = document.getElementById('dexCapabilityChips');
   if (!el) return;
   if (!DEX_CAPABILITIES || !DEX_CAPABILITIES.length) {
-    el.innerHTML = '<details class="dex-cap-panel"><summary>默认能力</summary></details>';
+    el.innerHTML = '<div class="dex-cap-summary"><span class="dex-cap-label">工具包</span><span>默认能力</span></div>';
     return;
   }
   var enabledCount = DEX_CAPABILITIES.filter(function(c) { return c.enabled; }).length;
@@ -547,7 +525,8 @@ function dexRenderCapabilityChips() {
       + '<span class="dex-cap-chip-meta">' + state + ' · ' + (c.tool_count || 0) + ' 工具</span>'
       + '</button>';
   }).join('');
-  el.innerHTML = '<details class="dex-cap-panel"><summary>' + enabledCount + '/' + DEX_CAPABILITIES.length + ' 已启用 · ' + toolCount + ' 个工具</summary><div class="dex-cap-grid">' + chips + '</div></details>';
+  el.innerHTML = '<div class="dex-cap-summary"><span class="dex-cap-label">工具包</span><span>' + enabledCount + '/' + DEX_CAPABILITIES.length + ' 已启用 · ' + toolCount + ' 个工具</span></div>'
+    + '<details class="dex-cap-panel"><summary>管理</summary><div class="dex-cap-grid">' + chips + '</div></details>';
 }
 
 function dexRenderModeTabs() {
@@ -613,8 +592,6 @@ function renderDexAssistant() {
     dexLoadDynamicContext().then(function () {
       dexUpdateTokenCount();
     });
-    dexRenderModeTabs();
-
     dexLoadModels();
 
     var history = window.dexAgent.loadHistory();
@@ -660,20 +637,6 @@ function renderDexAssistant() {
       }
     });
 
-    // 输入时显示工具预览
-    if (input) input.addEventListener('input', function () {
-      var val = input.value.trim();
-      var preview = dexPreviewTools(val);
-      var existing = document.getElementById('dexToolPreview');
-      if (!existing) return;
-      if (preview) {
-        existing.textContent = preview;
-        existing.style.display = '';
-      } else {
-        existing.style.display = 'none';
-      }
-    });
-
     // 搜索输入事件
     var searchInput = document.getElementById('dexSearchInput');
     if (searchInput) {
@@ -684,61 +647,49 @@ function renderDexAssistant() {
       });
     }
 
-    // 状态栏初始刷新
-    dexRefreshStatus();
-    if (!window._dexStatusTimer) {
-      window._dexStatusTimer = setInterval(dexRefreshStatus, 30000);
-    }
-
     // Token 计数初始
+    dexSyncAttachmentButton();
     dexUpdateTokenCount();
 
     // 快捷键
     dexBindShortcuts();
   }, 0);
 
-  return '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title">'
-    + '<div class="dex-title-row"><span class="dex-title-mark"></span><h3 title="DEX助手 3.0">DEX助手 3.0</h3><span class="dex-title-sub">AI 工具链工作台</span></div>'
-    + '<div class="dex-status-bar" id="dexStatusBar"><span class="dex-status-dot" id="dexStatusDot"></span><span id="dexStatusText">加载中...</span></div></div><div class="dex-header-actions">'
-    + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型 ▾</button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
-    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexExportChat()" title="导出对话" aria-label="导出对话">⇩<span class="dex-sr-only">导出对话</span></button>'
-    + '<button class="btn btn-ghost btn-sm dex-icon-btn" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话" aria-label="搜索对话">⌕<span class="dex-sr-only">搜索对话</span></button>'
-    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexNewChat()" title="新对话" aria-label="新对话">＋<span class="dex-sr-only">新对话</span></button>'
-    + '<button class="btn btn-ghost btn-sm dex-icon-btn" onclick="dexClearChat()" title="清空对话" aria-label="清空对话">⌫<span class="dex-sr-only">清空对话</span></button></div></div>'
+  return '<section class="primary-page-shell primary-page-shell-dex-assistant" data-primary-panel="dex-assistant">'
+    + '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title">'
+    + '<div class="dex-title-row"><h3 title="DEX助手">DEX助手</h3></div>'
+    + '</div><div class="dex-header-actions">'
+    + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型<span class="dex-model-caret"></span></button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn dex-icon-search" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话" aria-label="搜索对话"><span class="dex-sr-only">搜索对话</span></button>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn dex-icon-new" onclick="dexNewChat()" title="新对话" aria-label="新对话"><span class="dex-sr-only">新对话</span></button>'
+    + '<button class="btn btn-ghost btn-sm dex-icon-btn dex-icon-clear" onclick="dexClearChat()" title="清空对话" aria-label="清空对话"><span class="dex-sr-only">清空对话</span></button></div></div>'
     + '<div class="dex-search-bar" id="dexSearchBar" style="display:none"><input id="dexSearchInput" placeholder="搜索对话..." /><span class="dex-search-count" id="dexSearchCount"></span><button class="btn btn-ghost btn-sm" onclick="dexCloseSearch()">关闭</button></div>'
-    + '<div class="dex-mode-tabs" id="dexModeTabs"></div>'
-    + '<div class="dex-cap-chips" id="dexCapabilityChips"></div>'
-    + '<div id="dexToolCatalog"></div>'
     + '<div class="dex-chat-messages" id="dexMessages">' + dexWelcomeHTML() + '</div>'
     + '<div class="dex-input-area" id="dexInputAreaWrap">'
-    + '<div id="dexToolPreview" class="dex-tool-preview" style="display:none"></div>'
     + '<div class="dex-input-row">'
-    + '<textarea id="dexInput" placeholder="输入消息…（Enter 发送，Shift+Enter 换行 / /diag /fix 快捷指令）" rows="2"></textarea>'
-    + '<button class="btn btn-primary dex-send-btn" id="dexSendBtn" onclick="dexSendMessage()">发送</button>'
-    + '<button class="btn btn-danger" id="dexStopBtn" onclick="dexStopAgent()" style="display:none">停止</button>'
+    + '<textarea id="dexInput" placeholder="向 DEX 助手提问" rows="2"></textarea>'
+    + '<div class="dex-input-toolbar">'
+    + '<div class="dex-input-hints"><button type="button" class="dex-input-plus" onclick="dexAttachLastFile(event)" title="添加附件；有上次附件时直接加入，按住 Shift 重新选择" aria-label="添加附件">＋</button><span>/diag</span><span>/fix</span><span>Shift+Enter 换行</span></div>'
+    + '<div class="dex-input-actions"><span class="dex-token-count" id="dexTokenCount">~0 tokens</span>'
+    + '<button class="btn btn-primary dex-send-btn" id="dexSendBtn" onclick="dexSendMessage()" aria-label="发送">发送</button>'
+    + '<button class="btn btn-danger dex-stop-btn" id="dexStopBtn" onclick="dexStopAgent()" style="display:none" aria-label="停止生成">停止</button></div>'
     + '</div>'
-    + '<div class="dex-input-foot"><span class="dex-token-count" id="dexTokenCount">~0 tokens</span></div>'
-    + '</div></div>';
+    + '</div>'
+    + '</div></div></section>';
 }
 
 function dexWelcomeHTML() {
-  return '<div class="dex-msg dex-msg-assistant dex-welcome"><div class="dex-bubble dex-bubble-assistant dex-welcome-bubble"><div class="dex-bubble-text">'
-    + '<p>DEX助手 3.0 就绪。描述 AI 工具链问题，或选择快速操作：</p></div>'
+  return '<div class="dex-msg dex-msg-assistant dex-welcome"><div class="dex-workspace-empty">'
+    + '<div class="dex-workspace-head"><div><h4>你想排查什么？</h4></div><p>直接输入问题，或从下面选择一个起点。</p></div>'
     + '<div class="dex-quick-actions">'
-    + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'汇总 Codex、Claude、OpenClaw、Hermes、MCP、模型账号和插件状态\')">AI链总览</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Claude Code 安装、配置目录和 MCP 集成状态\')">Claude</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 OpenClaw CLI、Gateway、Agents、Models、MCP 和 Approvals 状态\')">OpenClaw</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查 Hermes CLI、doctor、skills、config 和 gateway 状态\')">Hermes</button>'
-    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'跨工具对比 Claude、OpenClaw、Hermes 的 MCP 配置\')">MCP对比</button>'
+    + '<button class="btn btn-sm btn-primary" onclick="dexQuickAction(\'汇总 Codex、Claude、OpenClaw、Hermes、MCP、模型账号和插件状态\')">AI 链总览</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'检查服务状态、端口、配置和最近错误，并给出修复建议\')">服务诊断</button>'
+    + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'跨工具对比 Claude、OpenClaw、Hermes 的 MCP 配置\')">MCP 对比</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'查看插件状态和可用插件能力\')">插件状态</button>'
     + '<button class="btn btn-sm btn-ghost" onclick="dexQuickAction(\'读日志，检查异常\')">日志异常</button></div></div></div>';
 }
 
 function dexDisposePanel() {
-  if (window._dexStatusTimer) {
-    clearInterval(window._dexStatusTimer);
-    window._dexStatusTimer = null;
-  }
 }
 
 function dexToolMetaHtml(meta) {
@@ -797,7 +748,7 @@ function dexAppendMessage(type, content, meta) {
     case 'tool-start':
       var toolMeta = dexToolMetaHtml(meta);
       el.innerHTML = '<div class="dex-tool-msg dex-tool-start">'
-        + (isHistory ? '<span class="dex-tool-icon">🔧</span>' : '<span class="dex-spinner"></span>')
+        + (isHistory ? '<span class="dex-tool-icon dex-tool-icon-history" aria-hidden="true"></span>' : '<span class="dex-spinner"></span>')
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
         + toolMeta
         + (meta && meta.args && Object.keys(meta.args).length > 0 ? ' <span class="dex-tool-args">' + esc(JSON.stringify(meta.args)) + '</span>' : '')
@@ -809,7 +760,7 @@ function dexAppendMessage(type, content, meta) {
       var detailText = rawData ? dexFormatResultText(content, rawData) : '';
       var actionHtml = dexToolActionHtml(content, rawData);
       el.innerHTML = '<div class="dex-tool-msg dex-tool-result">'
-        + '<span class="dex-tool-icon">✅</span>'
+        + '<span class="dex-tool-icon dex-tool-icon-result" aria-hidden="true"></span>'
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
         + dexToolMetaHtml(meta)
         + '<span class="dex-tool-summary">' + esc(summary) + '</span>'
@@ -821,7 +772,7 @@ function dexAppendMessage(type, content, meta) {
       var errMsg = content || '未知错误';
       var errDetail = (meta && meta.error) ? String(meta.error) : '';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-error">'
-        + '<span class="dex-tool-icon">❌</span>'
+        + '<span class="dex-tool-icon dex-tool-icon-error" aria-hidden="true"></span>'
         + '<span class="dex-tool-name">' + esc(errMsg) + '</span>'
         + (errDetail ? '<details class="dex-tool-details dex-tool-error-details"><summary>错误详情</summary><pre>' + esc(errDetail) + '</pre></details>' : '')
         + '</div>';
@@ -844,7 +795,7 @@ function dexUpdateMessage(el, type, content, meta) {
       var actionHtml = dexToolActionHtml(content, rawData);
       el.className = 'dex-msg dex-msg-tool-result';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-result">'
-        + '<span class="dex-tool-icon">✅</span>'
+        + '<span class="dex-tool-icon dex-tool-icon-result" aria-hidden="true"></span>'
         + '<span class="dex-tool-name">' + esc(content) + '</span>'
         + dexToolMetaHtml(meta)
         + '<span class="dex-tool-summary">' + esc(summary) + '</span>'
@@ -857,7 +808,7 @@ function dexUpdateMessage(el, type, content, meta) {
       var errDetail = (meta && meta.error) ? String(meta.error) : '';
       el.className = 'dex-msg dex-msg-tool-error';
       el.innerHTML = '<div class="dex-tool-msg dex-tool-error">'
-        + '<span class="dex-tool-icon">❌</span>'
+        + '<span class="dex-tool-icon dex-tool-icon-error" aria-hidden="true"></span>'
         + '<span class="dex-tool-name">' + esc(errMsg) + '</span>'
         + dexToolMetaHtml(meta)
         + (errDetail ? '<details class="dex-tool-details dex-tool-error-details"><summary>错误详情</summary><pre>' + esc(errDetail) + '</pre></details>' : '')
@@ -902,7 +853,7 @@ function dexToolSummary(fnName, result) {
       if (data && data.summary) return (data.summary.pass||0)+'通过 '+(data.summary.warn||0)+'警告 '+(data.summary.fail||0)+'失败'; break;
     case 'list_accounts': if (Array.isArray(data)) return data.length + ' 个账号'; break;
     case 'get_active_account': if (data && data.provider) return data.provider; break;
-    case 'get_service_status': if (data && data.running) return '✅运行中 :'+data.port; return '⏸已停止';
+    case 'get_service_status': if (data && data.running) return '运行中 :' + data.port; return '已停止';
     case 'fetch_balance': if (data) { var b = data.balance || data.total_balance || data.remaining; if (b) return b; } return '已查询';
     case 'get_config': return '已获取';
     case 'get_logs': if (Array.isArray(data)) return data.length + ' 行'; if (typeof data === 'string') return data.split('\n').length + ' 行'; break;
@@ -911,11 +862,11 @@ function dexToolSummary(fnName, result) {
     case 'list_threads': if (Array.isArray(data)) return data.length + ' 个线程'; break;
     case 'list_plugins': if (Array.isArray(data)) return data.length + ' 个插件'; break;
     case 'list_request_history': if (Array.isArray(data)) return data.length + ' 条'; break;
-    case 'test_upstream_connectivity': if (data && data.ok !== undefined) return data.ok ? '✅连通'+(data.latency_ms||'')+'ms' : '❌失败'; break;
+    case 'test_upstream_connectivity': if (data && data.ok !== undefined) return data.ok ? '连通 ' + (data.latency_ms || '') + 'ms' : '失败'; break;
     case 'check_upgrade': if (data && data.latest) return data.latest; break;
     case 'get_threads_status': if (data && data.total !== undefined) return data.total + ' 个线程'; break;
     case 'get_env_info': if (data && data.os) return data.os + ' · deecodex ' + data.deecodex_version; break;
-    case 'health_summary': if (data) return (data.service.running?'🟢':'🔴') + ' svc ' + (data.account.ok?'🟢':'🔴') + ' acct · ' + data.recent_errors + ' err'; break;
+    case 'health_summary': if (data) return (data.service.running ? 'svc 运行' : 'svc 停止') + ' · ' + (data.account.ok ? 'acct 正常' : 'acct 异常') + ' · ' + data.recent_errors + ' err'; break;
     case 'dex_self_check': if (data) return (data.ok ? '正常' : '需关注') + ' · ' + (data.tool_count || 0) + ' 工具 · ' + ((data.plugin_tools || []).length) + ' 插件工具'; break;
     case 'analyze_requests': if (data && data.total) return data.total + '请求 · ' + data.success_rate + '%成功 · ' + data.avg_latency_ms + 'ms均值'; return '无数据';
     case 'detect_processes': if (data && Array.isArray(data.processes)) { var r = data.processes.filter(function(p){return p.running;}).length; return r + ' 个进程运行中'; } break;
@@ -1106,7 +1057,7 @@ function dexShowThinking() {
   var el = document.createElement('div');
   el.className = 'dex-msg dex-msg-thinking';
   el.id = 'dexThinking';
-  el.innerHTML = '<div class="dex-bubble dex-bubble-assistant"><div class="dex-thinking-dots"><span></span><span></span><span></span></div></div>';
+  el.innerHTML = '<div class="dex-thinking-inline"><div class="dex-thinking-dots" aria-label="DEX 正在思考"><span></span><span></span><span></span></div></div>';
   c.appendChild(el);
   dexScrollToBottom();
 }
@@ -1141,6 +1092,83 @@ function dexScrollToBottom() { var c = document.getElementById('dexMessages'); i
 
 function dexQuickAction(prompt) { var i = document.getElementById('dexInput'); if (i) i.value = prompt; dexSendMessage(); }
 
+function dexAttachmentBasename(path) {
+  if (!path) return '';
+  var parts = String(path).split(/[\\/]/);
+  return parts[parts.length - 1] || String(path);
+}
+
+function dexGetLastAttachment() {
+  try {
+    return (window.deeStorage && window.deeStorage.getItem(DEX_LAST_ATTACHMENT_KEY)) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function dexSetLastAttachment(path) {
+  try {
+    if (window.deeStorage && path) window.deeStorage.setItem(DEX_LAST_ATTACHMENT_KEY, path);
+  } catch (e) {
+    console.warn('[dexAssistant] 保存最近附件失败:', e);
+  }
+  dexSyncAttachmentButton();
+}
+
+function dexSyncAttachmentButton() {
+  var btn = document.querySelector('.dex-input-plus');
+  if (!btn) return;
+  var last = dexGetLastAttachment();
+  if (last) {
+    btn.classList.add('has-attachment');
+    btn.title = '加入上次附件：' + dexAttachmentBasename(last) + '；按住 Shift 重新选择';
+  } else {
+    btn.classList.remove('has-attachment');
+    btn.title = '添加附件';
+  }
+}
+
+async function dexPickAttachmentFile() {
+  return await DeeCodexTauri.invoke('browse_attachment_file');
+}
+
+function dexInsertAttachmentReference(path) {
+  var input = document.getElementById('dexInput');
+  if (!input || !path) return;
+  var marker = '附件: ' + path;
+  if (input.value.indexOf(marker) === -1) {
+    var prefix = input.value.trim() ? input.value.replace(/\s+$/, '') + '\n\n' : '';
+    input.value = prefix + marker + '\n请先读取这个附件，再结合我的问题回答。';
+  }
+  input.focus();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  dexUpdateTokenCount();
+}
+
+async function dexAttachLastFile(event) {
+  if (event) event.preventDefault();
+  if (window.dexAgent && window.dexAgent.isProcessing) {
+    showToast('DEX 正在处理中，稍后再添加附件', 'warn');
+    return;
+  }
+  var forcePick = event && (event.shiftKey || event.altKey || event.metaKey);
+  var last = dexGetLastAttachment();
+  if (last && !forcePick) {
+    dexInsertAttachmentReference(last);
+    showToast('已加入上次附件: ' + dexAttachmentBasename(last), 'success');
+    return;
+  }
+  try {
+    var path = await dexPickAttachmentFile();
+    if (!path) return;
+    dexSetLastAttachment(path);
+    dexInsertAttachmentReference(path);
+    showToast('已添加附件: ' + dexAttachmentBasename(path), 'success');
+  } catch (e) {
+    showToast('附件选择失败: ' + (e.message || e), 'error');
+  }
+}
+
 function dexNewChat() {
   if (window.dexAgent.isProcessing) { showToast('Agent 正在处理中，请等待', 'warn'); return; }
   window.dexAgent.init();
@@ -1173,7 +1201,7 @@ function dexToggleModelMenu(e) { e.stopPropagation();
 }
 function dexSelectModel(v, label) {
   var btn = document.getElementById('dexModelBtn');
-  if (btn) btn.innerHTML = label + ' ▾';
+  if (btn) btn.innerHTML = esc(label) + '<span class="dex-model-caret"></span>';
   window.dexAgent.selectedModel = v;
   document.getElementById('dexModelMenu').style.display = 'none';
 }
@@ -1397,45 +1425,6 @@ function dexUpdateTokenCount() {
     var estimated = Math.max(1, Math.round(totalLen / 4));
     el.textContent = '~' + estimated + ' tokens';
   } catch (e) { el.textContent = '~? tokens'; }
-}
-
-// ── 工具建议预览 ──
-var DEX_TOOL_KEYWORDS = [
-  { keywords: ['自检', 'self', 'dex状态', '工具注册表'], tools: 'dex_self_check, get_env_info' },
-  { keywords: ['诊断', 'diag', '问题', '修复', 'fix', '错误', '失败', '异常'], tools: 'get_service_status, run_diagnostics, run_full_diagnostics' },
-  { keywords: ['账号', '账户', 'account', '余额', '切换', '供应商', '导入'], tools: 'list_accounts, get_active_account, fetch_balance' },
-  { keywords: ['配置', 'config', 'conf', '备份', 'backup', '恢复'], tools: 'get_config, save_config, config_backup' },
-  { keywords: ['日志', 'log', '错误日志', '搜索日志'], tools: 'get_logs, search_logs' },
-  { keywords: ['插件', 'plugin', '安装', '卸载', '扫码'], tools: 'list_plugins, query_plugin_status' },
-  { keywords: ['线程', 'thread', '会话', 'session', '清理', '迁移'], tools: 'list_threads, get_threads_status, thread_cleanup' },
-  { keywords: ['服务', 'service', '启动', '停止', '状态', '端口', '重启'], tools: 'get_service_status, start_service, stop_service' },
-  { keywords: ['速度', 'speed', '延迟', 'latency', '测速', '连通'], tools: 'speed_test, test_upstream_connectivity' },
-  { keywords: ['成本', 'cost', 'token', '花费', '消耗'], tools: 'token_cost, analyze_requests' },
-  { keywords: ['安全', 'ssl', '证书', 'tls', '网络'], tools: 'ssl_check, network_topology' },
-  { keywords: ['工具链', 'ai链', '总览', 'overview'], tools: 'ai_toolchain_overview' },
-  { keywords: ['claude', 'mcp', '集成'], tools: 'claude_env_overview, claude_mcp_check' },
-  { keywords: ['openclaw', 'gateway', 'approvals', 'agents'], tools: 'openclaw_env_overview, openclaw_health_check, openclaw_mcp_check' },
-  { keywords: ['hermes', 'doctor', 'skills'], tools: 'hermes_env_overview, hermes_doctor_check, hermes_skills_overview' },
-  { keywords: ['升级', 'upgrade', '更新', '版本'], tools: 'check_upgrade, run_upgrade' }
-];
-
-function dexPreviewTools(userMessage) {
-  if (!userMessage) return null;
-  var lower = userMessage.toLowerCase();
-  var matched = {};
-  for (var i = 0; i < DEX_TOOL_KEYWORDS.length; i++) {
-    var entry = DEX_TOOL_KEYWORDS[i];
-    for (var j = 0; j < entry.keywords.length; j++) {
-      if (lower.indexOf(entry.keywords[j]) !== -1) {
-        var tools = entry.tools.split(', ');
-        for (var k = 0; k < tools.length; k++) matched[tools[k]] = true;
-        break;
-      }
-    }
-  }
-  var names = Object.keys(matched);
-  if (names.length === 0) return null;
-  return names.slice(0, 5).join(', ');
 }
 
 // ── 搜索功能 ──

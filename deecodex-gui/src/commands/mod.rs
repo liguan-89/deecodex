@@ -3870,7 +3870,7 @@ pub struct ModelRemain {
 }
 
 const CODEX_WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.4";
+const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.5";
 
 #[derive(Debug, Clone)]
 struct CodexUsageError {
@@ -5573,6 +5573,15 @@ pub async fn get_request_stats_since(
 pub async fn browse_file() -> Result<Option<String>, String> {
     let path = rfd::AsyncFileDialog::new()
         .add_filter("插件包", &["zip"])
+        .pick_file()
+        .await
+        .map(|f| f.path().to_string_lossy().to_string());
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn browse_attachment_file() -> Result<Option<String>, String> {
+    let path = rfd::AsyncFileDialog::new()
         .pick_file()
         .await
         .map(|f| f.path().to_string_lossy().to_string());
