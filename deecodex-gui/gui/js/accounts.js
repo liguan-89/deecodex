@@ -57,17 +57,36 @@ function renderProviderBadge(p) {
 }
 
 function normalizeClientKind(kind) {
-  const value = String(kind || 'codex');
-  if (value === 'ClaudeCode') return 'claude_code';
-  if (value === 'Openclaw') return 'openclaw';
-  if (value === 'GenericClient') return 'generic_client';
-  if (value === 'Codex') return 'codex';
-  if (value === 'Hermes') return 'hermes';
+  const raw = String(kind || 'codex').trim();
+  const value = raw.replace(/[-\s]+/g, '_').toLowerCase();
+  if (value === 'claudecode' || value === 'claude_cli' || value === 'claude_desktop') return 'claude_code';
+  if (value === 'open_claw') return 'openclaw';
+  if (value === 'genericclient') return 'generic_client';
   return ['codex', 'claude_code', 'openclaw', 'hermes', 'generic_client'].includes(value) ? value : 'codex';
 }
 
 function accountClientKind(a) {
-  return normalizeClientKind(a?.client_kind || a?.target || 'codex');
+  const candidates = [
+    a?.client_kind,
+    a?.clientKind,
+    a?.client_type,
+    a?.kind,
+    a?.client_options?.client_kind,
+    a?.client_options?.kind,
+    a?.target,
+  ].filter(value => value && value !== 'client_config' && value !== 'codex_proxy');
+  for (const candidate of candidates) {
+    const normalized = normalizeClientKind(candidate);
+    if (normalized !== 'codex' || String(candidate || '').toLowerCase() === 'codex') return normalized;
+  }
+  const provider = String(a?.provider || '').toLowerCase();
+  if (provider === 'openclaw') return 'openclaw';
+  if (provider === 'hermes') return 'hermes';
+  const name = String(a?.name || '').toLowerCase();
+  if (name.includes('openclaw')) return 'openclaw';
+  if (name.includes('hermes')) return 'hermes';
+  if (name.includes('claude')) return 'claude_code';
+  return 'codex';
 }
 
 function isCodexAccount(a) {
@@ -656,12 +675,14 @@ function renderClientAccountDetail() {
         <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
         <span id="clientModelFetchStatus"></span>
       </div>
-      <div class="model-map-head client-model-map-head client-model-template${kind === 'claude_code' ? ' claude-one-m-head' : ''}">
-        <span>客户端槽位</span>
-        <span>上游模型</span>
-        <span>${kind === 'claude_code' ? '1M 上下文' : ''}</span>
+      <div class="model-map-table client-model-map-table${kind === 'claude_code' ? ' claude-one-m-table' : ''}">
+        <div class="model-map-head client-model-map-head client-model-template${kind === 'claude_code' ? ' claude-one-m-head' : ''}">
+          <span>客户端槽位</span>
+          <span>上游模型</span>
+          <span>${kind === 'claude_code' ? '1M 上下文' : ''}</span>
+        </div>
+        <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
       </div>
-      <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
       <div class="model-add-row"><button onclick="addClientModelRow()">+ 添加自定义槽位</button></div>
     </section>
 
@@ -1045,7 +1066,7 @@ function renderAccountList() {
                 ? renderAccountIconAction('已应用', 'check', '', 'account-applied', true)
                 : renderAccountIconAction('应用', 'check', `applyAccount('${escAttr(a.id)}')`, 'account-apply')}
               ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
-              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
+              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', 'codex')`)}
               ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
             </div>
           </div>
@@ -1101,7 +1122,7 @@ function renderClientAccountCard(a) {
         <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
         <div class="card-actions-row">
           ${renderAccountIconAction('写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, 'account-apply')}
-          ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}')`)}
+          ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', '${escAttr(kind)}')`)}
           ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
         </div>
       </div>
@@ -2563,10 +2584,20 @@ function addAccount(provider, clientKind, clientSurface) {
   renderMainContent();
 }
 
-function editAccount(id) {
-  editingAccount = accountsData.accounts.find(a => a.id === id);
+function editAccount(id, expectedKind) {
+  const normalizedExpected = expectedKind ? normalizeClientKind(expectedKind) : '';
+  editingAccount = accountsData.accounts.find(a =>
+    a.id === id && (!normalizedExpected || accountClientKind(a) === normalizedExpected)
+  );
+  if (!editingAccount && normalizedExpected) {
+    const visibleAccounts = (accountsData.accounts || []).filter(a =>
+      accountClientKind(a) === normalizedExpected
+      && accountClientSurface(a) === selectedSurfaceForKind(normalizedExpected)
+    );
+    if (visibleAccounts.length === 1) editingAccount = visibleAccounts[0];
+  }
   if (!editingAccount) {
-    showToast('账号不存在', 'error');
+    showToast(normalizedExpected ? `未找到 ${CLIENT_KIND_LABELS[normalizedExpected] || normalizedExpected} 账号` : '账号不存在', 'error');
     return;
   }
   // 深拷贝避免直接修改原数据
@@ -2706,12 +2737,25 @@ async function importFromCodex() {
 
 async function scanClientAccounts() {
   try {
+    const previousKind = selectedClientKind;
+    const previousSurface = selectedSurfaceForKind(previousKind);
     const result = await invoke('import_client_accounts');
     showToast(result.message || '客户端扫描完成', 'success');
     await loadAccountsData();
     if (Number(result.imported || 0) > 0) {
-      const imported = Array.isArray(result.accounts) ? result.accounts[0] : null;
-      if (imported) selectedClientKind = accountClientKind(imported);
+      const importedAccounts = Array.isArray(result.accounts) ? result.accounts : [];
+      const hasPreviousKind = (accountsData.accounts || []).some(account =>
+        accountClientKind(account) === previousKind
+        && accountClientSurface(account) === previousSurface
+      );
+      const preferred = importedAccounts.find(account =>
+        accountClientKind(account) === previousKind
+        && accountClientSurface(account) === previousSurface
+      ) || (hasPreviousKind ? { client_kind: previousKind, client_surface: previousSurface } : importedAccounts[0]);
+      if (preferred) {
+        selectedClientKind = accountClientKind(preferred);
+        selectedClientSurface = accountClientSurface(preferred);
+      }
       accountsView = 'list';
       if (currentPanel === 'accounts') renderMainContent();
       else if (currentPanel === 'config') renderPanel('config');

@@ -278,7 +278,7 @@ assert(codexList.includes('line-action-icon-scan'));
 assert(codexList.includes('aria-label="添加账号"'));
 assert(codexList.includes('line-action-icon-check'));
 assert(codexList.includes("applyAccount('c1')"));
-assert(codexList.includes("editAccount('c1')"));
+assert(codexList.includes("editAccount('c1', 'codex')"));
 assert(codexList.includes("testAccountUpstreamForCard('c1')"));
 assert(codexList.includes('aria-label="测试上游连接"'));
 assert(codexList.includes("deleteAccount('c1')"));
@@ -433,6 +433,36 @@ const savePayload = JSON.parse(context.serializeAccountForBackend({
 assert.strictEqual(savePayload.client_kind, 'hermes');
 assert(!Object.prototype.hasOwnProperty.call(savePayload, 'target'));
 assert(!Object.prototype.hasOwnProperty.call(savePayload, '_editing_endpoint_id'));
+assert.strictEqual(context.accountClientKind({ name: 'OpenClaw OpenRouter', provider: 'openrouter', target: 'client_config' }), 'openclaw');
+assert.strictEqual(context.accountClientKind({ name: 'Hermes MiniMax', provider: 'minimax', target: 'client_config' }), 'hermes');
+assert.strictEqual(context.accountClientKind({ clientKind: 'OpenClaw', target: 'client_config' }), 'openclaw');
+assert.strictEqual(context.accountClientKind({ client_type: 'Hermes', target: 'client_config' }), 'hermes');
+context.editingAccount = {
+  id: 'oc-legacy',
+  name: 'OpenClaw OpenRouter',
+  provider: 'openrouter',
+  target: 'client_config',
+  upstream: 'https://openrouter.ai/api/v1',
+  default_model: 'anthropic/claude-sonnet-4.5',
+  client_options: { model_map: { default: 'anthropic/claude-sonnet-4.5' } },
+};
+const openclawLegacyDetail = context.renderClientAccountDetail();
+assert(openclawLegacyDetail.includes('OpenClaw'));
+assert(openclawLegacyDetail.includes('agents.defaults.model'));
+assert(!openclawLegacyDetail.includes('ANTHROPIC_MODEL'));
+context.editingAccount = {
+  id: 'hm-legacy',
+  name: 'Hermes MiniMax',
+  provider: 'minimax',
+  target: 'client_config',
+  upstream: 'https://api.minimaxi.com/v1',
+  default_model: 'MiniMax-M2.7',
+  client_options: { model_map: { default: 'MiniMax-M2.7' } },
+};
+const hermesLegacyDetail = context.renderClientAccountDetail();
+assert(hermesLegacyDetail.includes('Hermes'));
+assert(hermesLegacyDetail.includes('model.default'));
+assert(!hermesLegacyDetail.includes('ANTHROPIC_MODEL'));
 
 const claudeProviders = context.providersForClientKind('claude_code').map(provider => provider.slug);
 assert(claudeProviders.includes('deepseek'));

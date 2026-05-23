@@ -10834,6 +10834,124 @@ body {
   justify-self: center;
 }
 
+.client-model-map-table {
+  --codex-model-label-width: 164px;
+  --model-map-control-height: 34px;
+}
+
+.client-model-map-table .client-model-map-head,
+.client-model-map-table .client-model-row,
+.client-model-map-table .client-model-row.claude-one-m-row {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) 24px;
+  column-gap: 20px;
+}
+
+.client-model-map-table.claude-one-m-table .client-model-map-head,
+.client-model-map-table.claude-one-m-table .client-model-row {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) 70px;
+}
+
+.client-model-map-table .client-model-map-head {
+  margin-top: 0;
+  padding: 0 0 8px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.client-model-map-table .client-model-row,
+[data-theme="light"] .client-model-map-table .client-model-row {
+  margin-top: 0;
+  padding: 5px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot {
+  width: var(--codex-model-label-width);
+  max-width: 100%;
+  min-height: var(--model-map-control-height);
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  padding: 0 10px;
+  border: 1px solid rgba(29,29,31,0.08);
+  border-radius: 9px;
+  background: rgba(245,247,250,0.78);
+  color: var(--text-primary);
+  white-space: normal;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot.custom {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-model-map-table .client-model-value .model-autocomplete,
+.client-model-map-table .client-model-value input {
+  min-width: 0;
+  width: 100%;
+}
+
+.client-model-map-table .client-model-value input {
+  box-sizing: border-box;
+  min-height: var(--model-map-control-height);
+  padding: 0 14px !important;
+  border-radius: 9px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.client-model-map-table .model-remove,
+.client-model-map-table .model-remove-placeholder {
+  width: 24px;
+  min-width: 24px;
+  justify-self: center;
+}
+
+.client-model-map-table .claude-one-m-toggle,
+[data-theme="light"] .client-model-map-table .claude-one-m-toggle {
+  justify-self: center;
+}
+
+@media (max-width: 1000px) {
+  .client-model-map-table {
+    --codex-model-label-width: 130px;
+  }
+
+  .client-model-map-table .client-model-map-head,
+  .client-model-map-table .client-model-row,
+  .client-model-map-table .client-model-row.claude-one-m-row {
+    grid-template-columns: minmax(130px, 0.62fr) minmax(0, 1.38fr) 22px;
+    column-gap: 12px;
+  }
+
+  .client-model-map-table.claude-one-m-table .client-model-map-head,
+  .client-model-map-table.claude-one-m-table .client-model-row {
+    grid-template-columns: minmax(130px, 0.62fr) minmax(0, 1.38fr) 58px;
+  }
+
+  .client-model-map-table .claude-one-m-toggle,
+  [data-theme="light"] .client-model-map-table .claude-one-m-toggle {
+    width: 58px;
+    min-width: 58px;
+  }
+}
+
 /* 账号表单里的折叠标题跟分区标题保持同一文字等级。 */
 .account-form .collapsible-toggle,
 [data-theme="light"] .account-form .collapsible-toggle {
