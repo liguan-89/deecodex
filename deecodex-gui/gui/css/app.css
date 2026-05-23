@@ -4788,6 +4788,9 @@ body {
   display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px;
   flex-wrap: wrap;
 }
+.plugin-controls > .btn { order: 1; }
+.plugin-controls > #pluginAutoToggle { order: 2; }
+.plugin-controls > #pluginIntervalSel { order: 3; }
 .plugin-list {
   display: flex;
   flex-direction: column;
@@ -14238,6 +14241,38 @@ body {
 
 .primary-page-shell-threads .threads-table {
   margin-bottom: 18px;
+}
+
+/* 线程列表表头轻量胶囊，只调整显示样式。 */
+.primary-page-shell-threads .threads-table thead tr {
+  height: 34px;
+}
+
+.primary-page-shell-threads .threads-table thead th {
+  height: 34px;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-top: 1px solid rgba(29,29,31,0.048) !important;
+  border-bottom: 1px solid rgba(29,29,31,0.048) !important;
+  background: #fbfcfd !important;
+  color: #838b96 !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 410 !important;
+  font-variation-settings: "wght" 410 !important;
+  line-height: 34px !important;
+  vertical-align: middle !important;
+}
+
+.primary-page-shell-threads .threads-table thead th:first-child {
+  padding-left: 15px !important;
+  border-left: 1px solid rgba(29,29,31,0.048) !important;
+  border-radius: 11px 0 0 11px;
+}
+
+.primary-page-shell-threads .threads-table thead th:last-child {
+  border-right: 1px solid rgba(29,29,31,0.048) !important;
+  border-radius: 0 11px 11px 0;
 }
 
 /* 插件安装工具条只负责排列控件，避免外层边框形成重复容器。 */

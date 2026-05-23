@@ -432,15 +432,6 @@ pub fn run() {
                     }
                 }
 
-                // 自启动已安装的插件
-                let plugins = pm.list().await;
-                for p in &plugins {
-                    tracing::info!(plugin_id = %p.id, "自启动插件");
-                    if let Err(e) = pm.start(&p.id).await {
-                        tracing::warn!(plugin_id = %p.id, error = %e, "插件自启动失败");
-                    }
-                }
-
                 *manager.plugin_manager.lock().await = Some(pm);
                 *manager.tray.lock().await = Some(tray);
                 *manager.app_handle.lock().await = Some(app_handle);
