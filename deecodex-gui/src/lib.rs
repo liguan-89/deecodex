@@ -153,41 +153,7 @@ fn build_account_submenu(
 }
 
 fn make_tray_icon() -> tauri::image::Image<'static> {
-    let w = 48u32;
-    let h = 48u32;
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-
-    let mut fill_rect = |x0: u32, y0: u32, rw: u32, rh: u32| {
-        for y in y0.min(h)..(y0 + rh).min(h) {
-            for x in x0.min(w)..(x0 + rw).min(w) {
-                let i = ((y * w + x) * 4) as usize;
-                rgba[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
-            }
-        }
-    };
-
-    // 菜单栏白色 DEX 字标，透明背景。
-    let y = 15u32;
-    let s = 4u32;
-
-    fill_rect(4, y, s, 18);
-    fill_rect(8, y, 7, s);
-    fill_rect(8, y + 14, 7, s);
-    fill_rect(14, y + 4, s, 10);
-
-    fill_rect(21, y, s, 18);
-    fill_rect(25, y, 10, s);
-    fill_rect(25, y + 7, 8, s);
-    fill_rect(25, y + 14, 10, s);
-
-    fill_rect(37, y, s, s);
-    fill_rect(41, y + 4, s, s);
-    fill_rect(45, y, 3, s);
-    fill_rect(41, y + 7, s, s);
-    fill_rect(37, y + 14, s, s);
-    fill_rect(45, y + 14, 3, s);
-
-    tauri::image::Image::new_owned(rgba, w, h)
+    tauri::image::Image::new(include_bytes!("../icons/tray-dex.rgba"), 48, 48)
 }
 
 fn find_env_file() -> Option<std::path::PathBuf> {
