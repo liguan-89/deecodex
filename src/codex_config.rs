@@ -120,8 +120,12 @@ pub(crate) fn codex_is_installed() -> bool {
 }
 
 /// 将 deecodex 代理配置注入 codex 的 config.toml。
-/// `context_window_override`: Some(size) 时生成 models_deecodex.json 并设置 model_catalog_json，
-/// 同时按 90% 设置 model_auto_compact_token_limit。None 时清除相关配置。
+/// 始终尝试生成 models_deecodex.json 并设置 model_catalog_json，让 Codex 自定义 provider
+/// 也能显示模型上下文窗口信息。
+/// `context_window_override`: Some(size) 时覆盖目录里的上下文窗口，并按 90% 设置
+/// model_auto_compact_token_limit；None 时保留 Codex 缓存中的原始上下文窗口，不设置压缩阈值。
+/// 同时写入原始 model_context_window，Codex 会再按 effective_context_window_percent
+/// 计算最终可用窗口。
 #[allow(dead_code)]
 pub fn inject(port: u16, context_window_override: Option<u32>) {
     inject_with_host(crate::config::DEFAULT_HOST, port, context_window_override);
@@ -146,16 +150,28 @@ pub fn inject_with_host(host: &str, port: u16, context_window_override: Option<u
         }
     }
 
-    if let Some(cw) = context_window_override {
-        if let Err(e) = generate_context_catalog(cw) {
+    let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
+    let catalog = match generate_context_catalog(context_window_override, &active_model) {
+        Ok(catalog) => Some(catalog),
+        Err(e) => {
             warn!("生成上下文模型目录失败: {e}");
+            None
         }
-    } else {
-        clear_context_catalog();
-    }
+    };
 
     let url_host = crate::config::client_url_host(host);
-    match do_inject(&path, &url_host, port, context_window_override) {
+    let catalog_path = catalog.as_ref().map(|catalog| catalog.path.as_path());
+    let model_context_window = catalog
+        .as_ref()
+        .and_then(|catalog| catalog.model_context_window);
+    match do_inject(
+        &path,
+        &url_host,
+        port,
+        context_window_override,
+        catalog_path,
+        model_context_window,
+    ) {
         Ok(true) => info!("已将 deecodex 配置注入 codex config.toml ({url_host}:{port})"),
         Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新服务地址"),
         Err(e) => warn!("注入 codex 配置失败: {e}"),
@@ -183,6 +199,8 @@ fn do_inject(
     url_host: &str,
     port: u16,
     context_window_override: Option<u32>,
+    catalog_path: Option<&std::path::Path>,
+    model_context_window: Option<i64>,
 ) -> Result<bool> {
     let content = read_config_file(path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
@@ -208,21 +226,24 @@ fn do_inject(
     doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value("");
     doc["model_providers"]["deecodex"]["wire_api"] = toml_edit::value("responses");
 
-    // 大上下文窗口覆盖
+    if let Some(catalog_path) = catalog_path {
+        doc["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().to_string());
+    } else {
+        doc.remove("model_catalog_json");
+    }
+
+    if let Some(model_context_window) = model_context_window {
+        doc["model_context_window"] = toml_edit::value(model_context_window);
+    } else {
+        doc.remove("model_context_window");
+    }
+
+    // 只有显式覆盖上下文窗口时才调整自动压缩阈值。
     if let Some(cw) = context_window_override {
-        if let Some(codex_home) = codex_home_dir() {
-            doc["model_catalog_json"] = toml_edit::value(
-                codex_home
-                    .join(CATALOG_FILENAME)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
         let compact_limit = (cw as u64 * 9 / 10).min(i64::MAX as u64) as i64;
         doc["model_auto_compact_token_limit"] = toml_edit::value(compact_limit);
         info!("已启用大上下文: context_window={cw}, auto_compact_token_limit={compact_limit}");
     } else {
-        doc.remove("model_catalog_json");
         doc.remove("model_auto_compact_token_limit");
     }
 
@@ -243,6 +264,9 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
 
     // 清理大上下文相关配置
     if doc.remove("model_catalog_json").is_some() {
+        removed = true;
+    }
+    if doc.remove("model_context_window").is_some() {
         removed = true;
     }
     if doc.remove("model_auto_compact_token_limit").is_some() {
@@ -280,9 +304,16 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
     Ok(removed)
 }
 
-/// 从 models_cache.json 生成带有覆盖上下文窗口的模型目录，
-/// 写入 ~/.codex/models_deecodex.json。
-fn generate_context_catalog(context_window: u32) -> Result<()> {
+struct GeneratedCatalog {
+    path: std::path::PathBuf,
+    model_context_window: Option<i64>,
+}
+
+/// 从 models_cache.json 生成 deecodex 模型目录，写入 ~/.codex/models_deecodex.json。
+fn generate_context_catalog(
+    context_window_override: Option<u32>,
+    active_model: &str,
+) -> Result<GeneratedCatalog> {
     let Some(codex_home) = codex_home_dir() else {
         return Err(anyhow!("无法确定 HOME 目录"));
     };
@@ -290,7 +321,7 @@ fn generate_context_catalog(context_window: u32) -> Result<()> {
     let cache_path = codex_home.join("models_cache.json");
     let catalog_path = codex_home.join(CATALOG_FILENAME);
 
-    let mut catalog: Value = if cache_path.exists() {
+    let catalog: Value = if cache_path.exists() {
         let content = std::fs::read_to_string(&cache_path)
             .map_err(|e| anyhow!("读取 models_cache.json 失败: {e}"))?;
         serde_json::from_str(&content).map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))?
@@ -298,28 +329,30 @@ fn generate_context_catalog(context_window: u32) -> Result<()> {
         return Err(anyhow!("models_cache.json 不存在，请先运行一次 Codex"));
     };
 
-    let models = catalog
-        .get_mut("models")
-        .and_then(|m| m.as_array_mut())
-        .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
-
-    for model in models.iter_mut() {
-        model["context_window"] = serde_json::Value::from(context_window);
-        model["max_context_window"] = serde_json::Value::from(context_window);
-    }
-
-    // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段
-    let catalog_out = serde_json::json!({ "models": models });
+    let catalog_out = build_context_catalog(catalog, context_window_override)?;
+    let model_context_window = context_window_override
+        .map(|window| (window as u64).min(i64::MAX as u64) as i64)
+        .or_else(|| resolve_model_context_window(&catalog_out, active_model));
     let json = serde_json::to_string_pretty(&catalog_out)
         .map_err(|e| anyhow!("序列化模型目录失败: {e}"))?;
     std::fs::write(&catalog_path, json)
         .map_err(|e| anyhow!("写入 models_deecodex.json 失败: {e}"))?;
-    info!(
-        "已生成大上下文模型目录: {} (context_window={})",
-        catalog_path.display(),
-        context_window
-    );
-    Ok(())
+    if let Some(context_window) = context_window_override {
+        info!(
+            "已生成大上下文模型目录: {} (context_window={})",
+            catalog_path.display(),
+            context_window
+        );
+    } else {
+        info!(
+            "已生成 Codex 模型目录: {} (保留原始上下文窗口)",
+            catalog_path.display()
+        );
+    }
+    Ok(GeneratedCatalog {
+        path: catalog_path,
+        model_context_window,
+    })
 }
 
 /// 清理 deecodex 管理的模型目录文件。
@@ -332,6 +365,62 @@ fn clear_context_catalog() {
             }
         }
     }
+}
+
+fn build_context_catalog(
+    mut catalog: Value,
+    context_window_override: Option<u32>,
+) -> Result<Value> {
+    let models = catalog
+        .get_mut("models")
+        .and_then(|m| m.as_array_mut())
+        .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
+
+    for model in models.iter_mut() {
+        if let Some(context_window) = context_window_override {
+            model["context_window"] = serde_json::Value::from(context_window);
+            model["max_context_window"] = serde_json::Value::from(context_window);
+        } else if model.get("context_window").is_none() {
+            if let Some(max_context_window) = model.get("max_context_window").cloned() {
+                model["context_window"] = max_context_window;
+            }
+        } else if model.get("max_context_window").is_none() {
+            if let Some(context_window) = model.get("context_window").cloned() {
+                model["max_context_window"] = context_window;
+            }
+        }
+    }
+
+    // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
+    let models = catalog
+        .get("models")
+        .cloned()
+        .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
+    Ok(serde_json::json!({ "models": models }))
+}
+
+fn resolve_model_context_window(catalog: &Value, active_model: &str) -> Option<i64> {
+    let models = catalog.get("models")?.as_array()?;
+    let active_model_tail = active_model.rsplit('/').next().unwrap_or(active_model);
+    let model = models.iter().find(|model| {
+        model
+            .get("slug")
+            .and_then(|slug| slug.as_str())
+            .is_some_and(|slug| slug == active_model || slug == active_model_tail)
+    })?;
+    let context_window = model
+        .get("context_window")
+        .or_else(|| model.get("max_context_window"))
+        .and_then(|window| window.as_u64())?;
+    Some(context_window.min(i64::MAX as u64) as i64)
+}
+
+fn read_active_codex_model(path: &std::path::Path) -> Option<String> {
+    let content = read_config_file(path).ok()?;
+    let doc: toml_edit::DocumentMut = content.parse().ok()?;
+    doc.get("model")
+        .and_then(|model| model.as_str())
+        .map(ToString::to_string)
 }
 
 /// 从 Codex 的 config.toml 中提取非 deecodex 的 provider 配置，
@@ -588,6 +677,100 @@ mod tests {
         if let Some(parent) = path.parent() {
             let _ = std::fs::remove_dir_all(parent);
         }
+    }
+
+    #[test]
+    fn inject_without_override_still_writes_model_catalog() {
+        let path = write_temp_config("");
+        let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
+        let changed = do_inject(
+            &path,
+            "127.0.0.1",
+            4446,
+            None,
+            Some(&catalog_path),
+            Some(272_000),
+        )
+        .unwrap();
+        assert!(changed);
+
+        let fixed = std::fs::read_to_string(&path).unwrap();
+        assert!(fixed.contains("model_provider = \"deecodex\""));
+        assert!(fixed.contains("model_catalog_json"));
+        assert!(fixed.contains(&catalog_path.to_string_lossy().to_string()));
+        assert!(fixed.contains("model_context_window = 272000"));
+        assert!(!fixed.contains("model_auto_compact_token_limit"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn inject_with_override_writes_catalog_and_compact_limit() {
+        let path = write_temp_config("");
+        let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
+        do_inject(
+            &path,
+            "127.0.0.1",
+            4446,
+            Some(1_000_000),
+            Some(&catalog_path),
+            Some(1_000_000),
+        )
+        .unwrap();
+
+        let fixed = std::fs::read_to_string(&path).unwrap();
+        assert!(fixed.contains("model_catalog_json"));
+        assert!(fixed.contains("model_context_window = 1000000"));
+        assert!(fixed.contains("model_auto_compact_token_limit = 900000"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn context_catalog_preserves_cached_window_without_override() {
+        let input = serde_json::json!({
+            "fetched_at": "ignored",
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 1000000,
+                    "effective_context_window_percent": 95
+                },
+                {
+                    "slug": "gpt-5.4-mini",
+                    "max_context_window": 128000
+                }
+            ]
+        });
+
+        let output = build_context_catalog(input, None).unwrap();
+        assert!(output.get("fetched_at").is_none());
+        let models = output["models"].as_array().unwrap();
+        assert_eq!(models[0]["context_window"], 272000);
+        assert_eq!(models[0]["max_context_window"], 1000000);
+        assert_eq!(models[1]["context_window"], 128000);
+        assert_eq!(models[1]["max_context_window"], 128000);
+        assert_eq!(
+            resolve_model_context_window(&output, "gpt-5.5"),
+            Some(272_000)
+        );
+    }
+
+    #[test]
+    fn context_catalog_overrides_cached_window_when_requested() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 1000000
+                }
+            ]
+        });
+
+        let output = build_context_catalog(input, Some(2_000_000)).unwrap();
+        let model = &output["models"][0];
+        assert_eq!(model["context_window"], 2_000_000);
+        assert_eq!(model["max_context_window"], 2_000_000);
     }
 
     #[test]
