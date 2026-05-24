@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::accounts::{
-    account_routing_options, Account, AccountAuthMode, AccountClientKind, AccountRuntimeStatus,
-    AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy, UnsupportedImagePolicy,
-    VisionMode,
+    account_routing_options, Account, AccountAuthMode, AccountClientKind, AccountClientSurface,
+    AccountRuntimeStatus, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
+    UnsupportedImagePolicy, VisionMode,
 };
 use crate::anthropic;
 use crate::cache::RequestCache;
@@ -49,6 +49,7 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_items";
+pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
@@ -370,6 +371,13 @@ fn account_runtime_ready(account: &Account, mapped_model: &str, now: u64) -> boo
 
 fn runtime_retry_ready(next_retry_after: Option<u64>, now: u64) -> bool {
     next_retry_after.is_none_or(|retry_at| retry_at <= now)
+}
+
+fn codex_official_originator(account: &Account) -> &'static str {
+    match account.client_surface {
+        AccountClientSurface::Desktop => "codex_desktop",
+        AccountClientSurface::Cli => "codex_cli_rs",
+    }
 }
 
 fn account_client_kind_slug(kind: &AccountClientKind) -> &'static str {
@@ -3046,6 +3054,92 @@ async fn handle_responses_bypass(
     result
 }
 
+fn normalize_codex_official_body(
+    body: &[u8],
+    mapped_model: &str,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("model".into(), json!(mapped_model));
+        if !matches!(obj.get("instructions"), Some(Value::String(_))) {
+            obj.insert("instructions".into(), Value::String(String::new()));
+        }
+        match obj.get_mut("input") {
+            Some(input) => normalize_codex_official_input(input),
+            None => {
+                obj.insert("input".into(), Value::Array(Vec::new()));
+            }
+        }
+        obj.insert("store".into(), Value::Bool(false));
+        obj.entry("parallel_tool_calls")
+            .or_insert_with(|| Value::Bool(true));
+        obj.entry("include")
+            .or_insert_with(|| json!(["reasoning.encrypted_content"]));
+
+        for key in [
+            "max_output_tokens",
+            "max_completion_tokens",
+            "temperature",
+            "top_p",
+            "truncation",
+            "context_management",
+            "previous_response_id",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "stream_options",
+            "user",
+        ] {
+            obj.remove(key);
+        }
+        let remove_service_tier = obj
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .is_some_and(|tier| tier != "priority");
+        if remove_service_tier {
+            obj.remove("service_tier");
+        }
+    }
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn normalize_codex_official_input(input: &mut Value) {
+    if let Some(text) = input.as_str() {
+        *input = json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}]
+        }]);
+        return;
+    }
+    let Some(items) = input.as_array_mut() else {
+        return;
+    };
+    for item in items {
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        let mut role = obj
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if role == "system" {
+            obj.insert("role".into(), Value::String("developer".into()));
+            role = "developer".into();
+        }
+        if let Some(content) = obj.get_mut("content") {
+            if let Some(text) = content.as_str() {
+                let part_type = if role == "assistant" {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                *content = json!([{"type": part_type, "text": text}]);
+            }
+        }
+    }
+}
+
 async fn handle_codex_official(
     state: AppState,
     mut req: ResponsesRequest,
@@ -3057,11 +3151,17 @@ async fn handle_codex_official(
     let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
     req.model = mapped_model.clone();
-    if mapped_model != original_model {
-        match serde_json::to_vec(&req) {
-            Ok(updated) => body = axum::body::Bytes::from(updated),
-            Err(err) => {
-                warn!("Codex 官方请求模型映射序列化失败，继续使用原始请求体: {err}");
+    match normalize_codex_official_body(&body, &mapped_model) {
+        Ok(updated) => body = updated,
+        Err(err) => {
+            warn!("Codex 官方请求体规范化失败，继续使用原始请求体: {err}");
+            if mapped_model != original_model {
+                match serde_json::to_vec(&req) {
+                    Ok(updated) => body = axum::body::Bytes::from(updated),
+                    Err(err) => {
+                        warn!("Codex 官方请求模型映射序列化失败，继续使用原始请求体: {err}");
+                    }
+                }
             }
         }
     }
@@ -3108,7 +3208,7 @@ async fn handle_codex_official(
     }
 
     let upstream = Url::parse(&endpoint.base_url)
-        .unwrap_or_else(|_| Url::parse("https://chatgpt.com/backend-api/codex").unwrap());
+        .unwrap_or_else(|_| Url::parse(CODEX_OFFICIAL_BASE_URL).unwrap());
     let path = if endpoint.path.trim().is_empty() {
         "responses"
     } else {
@@ -3122,7 +3222,7 @@ async fn handle_codex_official(
         .post(&url)
         .header("Content-Type", "application/json")
         .bearer_auth(token)
-        .header("Originator", "codex_cli_rs")
+        .header("Originator", codex_official_originator(&account))
         .header(
             "User-Agent",
             "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/2.3",
@@ -6200,6 +6300,54 @@ mod tests {
     }
 
     #[test]
+    fn codex_official_body_normalizes_required_fields() {
+        let body = br#"{
+            "model":"gpt-5",
+            "instructions":null,
+            "input":"hello",
+            "temperature":0.2,
+            "top_p":0.9,
+            "user":"u1",
+            "service_tier":"default"
+        }"#;
+
+        let normalized = normalize_codex_official_body(body, "gpt-5.4").unwrap();
+        let value: Value = serde_json::from_slice(&normalized).unwrap();
+
+        assert_eq!(value["model"], "gpt-5.4");
+        assert_eq!(value["instructions"], "");
+        assert_eq!(value["input"][0]["role"], "user");
+        assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(value["input"][0]["content"][0]["text"], "hello");
+        assert_eq!(value["store"], false);
+        assert_eq!(value["parallel_tool_calls"], true);
+        assert!(value.get("temperature").is_none());
+        assert!(value.get("top_p").is_none());
+        assert!(value.get("user").is_none());
+        assert!(value.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn codex_official_body_converts_system_role_to_developer() {
+        let body = br#"{
+            "model":"gpt-5",
+            "input":[
+                {"type":"message","role":"system","content":"rules"},
+                {"type":"message","role":"assistant","content":"ok"}
+            ],
+            "service_tier":"priority"
+        }"#;
+
+        let normalized = normalize_codex_official_body(body, "gpt-5").unwrap();
+        let value: Value = serde_json::from_slice(&normalized).unwrap();
+
+        assert_eq!(value["input"][0]["role"], "developer");
+        assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(value["input"][1]["content"][0]["type"], "output_text");
+        assert_eq!(value["service_tier"], "priority");
+    }
+
+    #[test]
     fn codex_official_selector_skips_cooled_account() {
         let mut cooled = official_codex_account("cooled", 100, 1);
         cooled.runtime_state.next_retry_after = Some(2_000);
@@ -6250,6 +6398,16 @@ mod tests {
             select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
 
         assert_eq!(account.id, "active");
+    }
+
+    #[test]
+    fn codex_official_originator_matches_client_surface() {
+        let mut account = official_codex_account("surface", 0, 1);
+        account.client_surface = AccountClientSurface::Cli;
+        assert_eq!(codex_official_originator(&account), "codex_cli_rs");
+
+        account.client_surface = AccountClientSurface::Desktop;
+        assert_eq!(codex_official_originator(&account), "codex_desktop");
     }
 
     #[test]

@@ -591,7 +591,7 @@ async fn create_oauth_account(
                 id: format!("endpoint_{account_id}"),
                 name: "Codex 官方".into(),
                 kind: EndpointKind::CodexOfficial,
-                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                base_url: deecodex::handlers::CODEX_OFFICIAL_BASE_URL.into(),
                 path: "responses".into(),
                 template_id: "codex_official".into(),
                 template_version: 1,
@@ -615,7 +615,7 @@ async fn create_oauth_account(
                 oauth_account_name("Codex", &token.email),
                 "codex".into(),
                 AccountClientKind::Codex,
-                "https://chatgpt.com/backend-api/codex".into(),
+                deecodex::handlers::CODEX_OFFICIAL_BASE_URL.into(),
                 String::new(),
                 Some(endpoint),
             )
@@ -708,7 +708,7 @@ async fn create_oauth_account(
     }
     account.normalize_v2();
 
-    let became_active = store.active_account_id.is_none() && account.client_kind.is_codex();
+    let became_active = account.client_kind.is_codex();
     if became_active {
         store.active_id = Some(account.id.clone());
         store.active_account_id = Some(account.id.clone());
@@ -1347,29 +1347,39 @@ async fn sync_active_account_to_running_state(
         return Ok(());
     };
 
-    let upstream_url = deecodex::handlers::validate_upstream(&target.upstream)
+    let mut target = target.clone();
+    target.normalize_v2();
+    let target_endpoint = target
+        .active_endpoint(store.active_endpoint_id.as_deref())
+        .cloned()
+        .or_else(|| target.endpoints.first().cloned())
+        .ok_or_else(|| "目标账号没有可用端点".to_string())?;
+    target.sync_legacy_from_endpoint(&target_endpoint);
+
+    let upstream_url = deecodex::handlers::validate_upstream(&target_endpoint.base_url)
         .map_err(|e| format!("目标账号上游 URL 无效: {e}"))?;
-    let vision_upstream = if target.vision_upstream.is_empty() {
+    let vision_upstream = if target_endpoint.vision.base_url.is_empty() {
         None
     } else {
         Some(
-            deecodex::handlers::validate_upstream(&target.vision_upstream)
+            deecodex::handlers::validate_upstream(&target_endpoint.vision.base_url)
                 .map_err(|e| format!("视觉上游 URL 无效: {e}"))?,
         )
     };
 
     *app_state.upstream.write().await = upstream_url;
     *app_state.api_key.write().await = target.api_key.clone();
-    *app_state.model_map.write().await = target.model_map.clone();
+    *app_state.model_map.write().await = target_endpoint.model_map.clone();
     *app_state.vision_upstream.write().await = vision_upstream;
-    *app_state.vision_api_key.write().await = target.vision_api_key.clone();
-    *app_state.vision_model.write().await = target.vision_model.clone();
-    *app_state.vision_endpoint.write().await = target.vision_endpoint.clone();
+    *app_state.vision_api_key.write().await = target_endpoint.vision.api_key.clone();
+    *app_state.vision_model.write().await = target_endpoint.vision.model.clone();
+    *app_state.vision_endpoint.write().await = target_endpoint.vision.path.clone();
 
-    *app_state.reasoning_effort_override.write().await = target.reasoning_effort_override.clone();
-    *app_state.thinking_tokens.write().await = target.thinking_tokens;
-    *app_state.custom_headers.write().await = target.custom_headers.clone();
-    *app_state.request_timeout_secs.write().await = target.request_timeout_secs;
+    *app_state.reasoning_effort_override.write().await =
+        target_endpoint.reasoning_effort_override.clone();
+    *app_state.thinking_tokens.write().await = target_endpoint.thinking_tokens;
+    *app_state.custom_headers.write().await = target_endpoint.custom_headers.clone();
+    *app_state.request_timeout_secs.write().await = target_endpoint.request_timeout_secs;
 
     *app_state.active_account.write().await = target.clone();
     *app_state.account_store.write().await = store.clone();
