@@ -716,11 +716,38 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: empty_params(),
         },
         BuiltinToolSpec {
+            name: "list_plugin_events",
+            tauri_cmd: "list_plugin_events",
+            level: 0,
+            confirm: None,
+            description: "列出最近插件日志和状态事件",
+            capability: "plugins.dynamic",
+            parameters: params(
+                json!({
+                    "plugin_id":{"type":"string","description":"插件 ID，可省略"},
+                    "limit":{"type":"number","description":"返回数量，默认 80"}
+                }),
+                &[],
+            ),
+        },
+        BuiltinToolSpec {
             name: "install_plugin",
             tauri_cmd: "install_plugin",
             level: 2,
             confirm: None,
             description: "安装插件",
+            capability: "plugins.dynamic",
+            parameters: params(
+                json!({"path":{"type":"string","description":"插件文件或目录路径"}}),
+                &["path"],
+            ),
+        },
+        BuiltinToolSpec {
+            name: "update_plugin",
+            tauri_cmd: "update_plugin",
+            level: 3,
+            confirm: Some("确定要更新该插件包吗？配置会保留，但插件文件会被替换。"),
+            description: "更新已安装插件，保留配置、启用状态和连接资产",
             capability: "plugins.dynamic",
             parameters: params(
                 json!({"path":{"type":"string","description":"插件文件或目录路径"}}),
@@ -764,6 +791,21 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             ),
         },
         BuiltinToolSpec {
+            name: "set_plugin_enabled",
+            tauri_cmd: "set_plugin_enabled",
+            level: 2,
+            confirm: None,
+            description: "启用或停用指定插件。停用会停止运行中的插件，并阻止动态工具自动拉起。",
+            capability: "plugins.dynamic",
+            parameters: params(
+                json!({
+                    "plugin_id":{"type":"string","description":"插件 ID"},
+                    "enabled":{"type":"boolean","description":"true 启用，false 停用"}
+                }),
+                &["plugin_id", "enabled"],
+            ),
+        },
+        BuiltinToolSpec {
             name: "update_plugin_config",
             tauri_cmd: "update_plugin_config",
             level: 2,
@@ -773,6 +815,24 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: params(
                 json!({"plugin_id":{"type":"string","description":"插件 ID"},"config_json":{"type":"string","description":"JSON 格式的插件配置"}}),
                 &["plugin_id", "config_json"],
+            ),
+        },
+        BuiltinToolSpec {
+            name: "execute_plugin_feature",
+            tauri_cmd: "execute_plugin_feature",
+            level: 2,
+            confirm: None,
+            description: "执行插件 features.methods 中声明的通用动作",
+            capability: "plugins.dynamic",
+            parameters: params(
+                json!({
+                    "plugin_id":{"type":"string","description":"插件 ID"},
+                    "feature_id":{"type":"string","description":"插件能力 ID"},
+                    "action":{"type":"string","description":"能力动作名"},
+                    "params_json":{"type":"string","description":"传给插件方法的 JSON 参数，可省略"},
+                    "confirmed":{"type":"boolean","description":"高风险插件执行确认"}
+                }),
+                &["plugin_id", "feature_id", "action"],
             ),
         },
         BuiltinToolSpec {

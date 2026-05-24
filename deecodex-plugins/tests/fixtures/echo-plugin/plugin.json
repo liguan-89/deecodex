@@ -4,6 +4,38 @@
   "version": "1.0.0",
   "description": "测试用的 echo 插件，回显收到的消息并返回固定响应",
   "author": "deecodex",
+  "kind": "tool",
+  "tags": ["test", "dex-tool"],
+  "features": [
+    {
+      "id": "echo-dex-tools",
+      "kind": "dex_tool",
+      "label": "DEX 工具",
+      "description": "向 DEX 助手暴露 Echo 测试工具",
+      "methods": {
+        "status": "echo.status",
+        "message": "echo.message"
+      },
+      "params_schema": {
+        "status": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "title": "消息",
+              "description": "要回显的文本"
+            }
+          },
+          "required": ["message"]
+        }
+      }
+    }
+  ],
   "entry": {
     "runtime": "node",
     "script": "index.js",

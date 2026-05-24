@@ -1313,8 +1313,20 @@ pub async fn dex_execute_tool(
                 .await?
             }
             "list_plugins" => json!(crate::commands::list_plugins(manager).await?),
+            "list_plugin_events" => json!(
+                crate::commands::list_plugin_events(
+                    manager,
+                    opt_string(&args, "plugin_id"),
+                    opt_usize(&args, "limit"),
+                )
+                .await?
+            ),
             "install_plugin" => {
                 crate::commands::install_plugin(manager, opt_string(&args, "path"), None, None)
+                    .await?
+            }
+            "update_plugin" => {
+                crate::commands::update_plugin(manager, opt_string(&args, "path"), None, None)
                     .await?
             }
             "uninstall_plugin" => {
@@ -1326,6 +1338,14 @@ pub async fn dex_execute_tool(
             "stop_plugin" => {
                 crate::commands::stop_plugin(manager, req_string(&args, "plugin_id")?).await?
             }
+            "set_plugin_enabled" => {
+                crate::commands::set_plugin_enabled(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    opt_bool(&args, "enabled").ok_or_else(|| "缺少参数: enabled".to_string())?,
+                )
+                .await?
+            }
             "update_plugin_config" => {
                 let cfg = if let Some(raw) = opt_string(&args, "config_json") {
                     serde_json::from_str(&raw).map_err(|e| format!("解析 config_json 失败: {e}"))?
@@ -1334,6 +1354,25 @@ pub async fn dex_execute_tool(
                 };
                 crate::commands::update_plugin_config(manager, req_string(&args, "plugin_id")?, cfg)
                     .await?
+            }
+            "execute_plugin_feature" => {
+                let params = if let Some(raw) = opt_string(&args, "params_json") {
+                    Some(
+                        serde_json::from_str(&raw)
+                            .map_err(|e| format!("解析 params_json 失败: {e}"))?,
+                    )
+                } else {
+                    args.get("params").cloned()
+                };
+                crate::commands::execute_plugin_feature(
+                    manager,
+                    req_string(&args, "plugin_id")?,
+                    req_string(&args, "feature_id")?,
+                    req_string(&args, "action")?,
+                    params,
+                    opt_bool(&args, "confirmed"),
+                )
+                .await?
             }
             "get_plugin_qrcode" => {
                 crate::commands::get_plugin_qrcode(

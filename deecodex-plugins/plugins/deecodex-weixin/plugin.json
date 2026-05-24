@@ -4,10 +4,67 @@
   "version": "1.0.0",
   "description": "微信通道插件，通过 iLink Bot API 收发消息",
   "author": "deecodex",
+  "kind": "channel",
+  "tags": ["wechat", "message", "gateway"],
+  "features": [
+    {
+      "id": "wechat-channel",
+      "kind": "channel",
+      "label": "微信通道",
+      "description": "通过 iLink Bot API 接入微信消息通道",
+      "methods": {
+        "login": "account.login",
+        "status": "account.status",
+        "start": "account.start",
+        "stop": "account.stop"
+      },
+      "params_schema": {
+        "login": {
+          "type": "object",
+          "properties": {
+            "account_id": { "type": "string", "title": "连接 ID" }
+          },
+          "required": ["account_id"]
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "account_id": { "type": "string", "title": "连接 ID" }
+          },
+          "required": ["account_id"]
+        },
+        "start": {
+          "type": "object",
+          "properties": {
+            "account_id": { "type": "string", "title": "连接 ID" }
+          },
+          "required": ["account_id"]
+        },
+        "stop": {
+          "type": "object",
+          "properties": {
+            "account_id": { "type": "string", "title": "连接 ID" }
+          },
+          "required": ["account_id"]
+        }
+      }
+    }
+  ],
   "entry": {
     "runtime": "node",
     "script": "dist/index.js",
     "args": []
+  },
+  "account": {
+    "enabled": true,
+    "label": "微信连接",
+    "methods": {
+      "login": "account.login",
+      "cancel_login": "account.cancel_login",
+      "status": "account.status",
+      "start": "account.start",
+      "stop": "account.stop"
+    }
   },
   "permissions": [
     "http",

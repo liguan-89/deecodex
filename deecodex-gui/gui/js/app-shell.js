@@ -19,6 +19,7 @@ function cleanupPanelEffects(panelId) {
   if (panelId === 'sessions') window.stopHistoryAutoRefresh?.();
   if (panelId === 'sessions') window.stopHistoryReconnectPolling?.();
   if (panelId === 'plugins') window.stopPluginAutoRefresh?.();
+  if (panelId === 'plugins') window.stopPluginEventRefresh?.();
   if (panelId === 'plugins') window.clearPluginQrPolling?.();
   if (panelId === 'dex-assistant') window.dexDisposePanel?.();
 }

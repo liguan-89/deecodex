@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,15 +10,64 @@ pub struct PluginManifest {
     pub version: String,
     pub description: String,
     pub author: String,
+    #[serde(default = "default_plugin_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub features: Vec<PluginFeatureManifest>,
     pub entry: PluginEntry,
     #[serde(default)]
     pub permissions: Vec<String>,
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
     #[serde(default)]
+    pub account: Option<PluginAccountManifest>,
+    #[serde(default)]
     pub dex_tools: Vec<DexToolManifest>,
     #[serde(default)]
     pub min_deecodex_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginFeatureManifest {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub methods: BTreeMap<String, String>,
+    #[serde(default)]
+    pub params_schema: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAccountManifest {
+    #[serde(default = "default_account_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub methods: PluginAccountMethods,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginAccountMethods {
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub cancel_login: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub stop: Option<String>,
+}
+
+fn default_account_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +89,10 @@ fn default_parameters_schema() -> serde_json::Value {
 
 fn default_plugin_capability() -> String {
     "plugins.dynamic".to_string()
+}
+
+fn default_plugin_kind() -> String {
+    "tool".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +127,9 @@ impl PluginManifest {
         }
         if self.entry.script.is_empty() {
             anyhow::bail!("插件入口脚本不能为空");
+        }
+        if self.kind.trim().is_empty() {
+            anyhow::bail!("插件 kind 不能为空");
         }
         let valid_runtimes = ["node", "python", "binary"];
         if !valid_runtimes.contains(&self.entry.runtime.as_str()) {
@@ -111,6 +168,49 @@ impl PluginManifest {
                     allowed_plugin_capability,
                     tool.capability
                 );
+            }
+        }
+        for feature in &self.features {
+            if feature.id.trim().is_empty() {
+                anyhow::bail!("features.id 不能为空");
+            }
+            if feature.kind.trim().is_empty() {
+                anyhow::bail!("features.kind 不能为空");
+            }
+            if feature.label.trim().is_empty() {
+                anyhow::bail!("features.label 不能为空");
+            }
+            if !feature
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+            {
+                anyhow::bail!("features.id 只能包含 ASCII 字母、数字、下划线、短横线或点");
+            }
+            if !feature
+                .kind
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                anyhow::bail!("features.kind 只能包含 ASCII 字母、数字、下划线或短横线");
+            }
+            for (name, method) in &feature.methods {
+                if name.trim().is_empty() || method.trim().is_empty() {
+                    anyhow::bail!("features.methods 不能包含空方法名或空插件 RPC 方法");
+                }
+            }
+            for (name, schema) in &feature.params_schema {
+                if name.trim().is_empty() {
+                    anyhow::bail!("features.params_schema 不能包含空动作名");
+                }
+                let is_object_schema = schema
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value == "object")
+                    .unwrap_or(false);
+                if !is_object_schema {
+                    anyhow::bail!("features.params_schema.{name} 必须是 object schema");
+                }
             }
         }
         Ok(())

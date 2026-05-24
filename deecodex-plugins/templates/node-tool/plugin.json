@@ -1,0 +1,58 @@
+{
+  "id": "example-node-tool",
+  "name": "Example Node Tool",
+  "version": "1.0.0",
+  "description": "Node 工具插件模板",
+  "author": "DEX AI",
+  "kind": "tool",
+  "tags": ["template", "node", "dex-tool"],
+  "entry": {
+    "runtime": "node",
+    "script": "index.js",
+    "args": []
+  },
+  "features": [
+    {
+      "id": "example-node-tools",
+      "kind": "dex_tool",
+      "label": "Node 示例工具",
+      "description": "向 DEX 助手暴露一个示例工具",
+      "methods": {
+        "status": "example.status"
+      },
+      "params_schema": {
+        "status": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    }
+  ],
+  "dex_tools": [
+    {
+      "name": "example_status",
+      "description": "返回 Node 模板插件状态",
+      "level": 0,
+      "method": "example.status",
+      "capability": "plugin.example-node-tool",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ],
+  "permissions": ["fs.read", "fs.write"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "default": "ready",
+        "description": "状态消息"
+      }
+    }
+  },
+  "min_deecodex_version": "0.1.0"
+}

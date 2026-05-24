@@ -1,0 +1,74 @@
+{
+  "id": "example-python-datasource",
+  "name": "Example Python Datasource",
+  "version": "1.0.0",
+  "description": "Python 数据源插件模板",
+  "author": "DEX AI",
+  "kind": "datasource",
+  "tags": ["template", "python", "datasource"],
+  "entry": {
+    "runtime": "python",
+    "script": "main.py",
+    "args": []
+  },
+  "features": [
+    {
+      "id": "example-datasource",
+      "kind": "datasource",
+      "label": "示例数据源",
+      "description": "提供 search/read/status 三个通用动作",
+      "methods": {
+        "search": "datasource.search",
+        "read": "datasource.read",
+        "status": "datasource.status"
+      },
+      "params_schema": {
+        "search": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "title": "查询",
+              "description": "搜索关键词"
+            },
+            "limit": {
+              "type": "integer",
+              "title": "数量",
+              "default": 10,
+              "description": "最多返回条目数"
+            }
+          },
+          "required": ["query"]
+        },
+        "read": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "条目 ID",
+              "description": "要读取的数据条目 ID"
+            }
+          },
+          "required": ["id"]
+        },
+        "status": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    }
+  ],
+  "permissions": ["fs.read"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "root": {
+        "type": "string",
+        "default": ".",
+        "description": "数据源根目录"
+      }
+    }
+  },
+  "min_deecodex_version": "0.1.0"
+}

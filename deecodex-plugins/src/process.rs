@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use futures_util::StreamExt;
+use serde_json::json;
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::path::Path;
+use std::path::{Component, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -13,7 +16,11 @@ use tracing::{info, warn};
 static DEFAULT_MODEL_CACHE: OnceLock<String> = OnceLock::new();
 
 use crate::manifest::PluginManifest;
-use crate::protocol::PluginEvent;
+use crate::protocol::{
+    PluginAssetPaths, PluginEvent, METHOD_ASSETS_DELETE, METHOD_ASSETS_LIST, METHOD_ASSETS_READ,
+    METHOD_ASSETS_WRITE, METHOD_CACHE_CLEAR, METHOD_CACHE_READ, METHOD_CACHE_WRITE,
+    METHOD_SECRETS_DELETE, METHOD_SECRETS_GET, METHOD_SECRETS_SET,
+};
 use crate::rpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 /// 运行时插件实例的通信手柄
@@ -127,7 +134,7 @@ pub(crate) async fn resolve_default_model(llm_base_url: &str) -> String {
 pub async fn spawn_plugin(
     manifest: &PluginManifest,
     install_dir: &Path,
-    _data_dir: &Path,
+    asset_paths: &PluginAssetPaths,
     llm_base_url: &str,
     _config: &Value,
     events_tx: broadcast::Sender<PluginEvent>,
@@ -160,6 +167,11 @@ pub async fn spawn_plugin(
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .current_dir(install_dir)
+        .env("DEECODEX_PLUGIN_ID", &manifest.id)
+        .env("DEECODEX_PLUGIN_INSTALL_DIR", install_dir)
+        .env("DEECODEX_PLUGIN_DATA_DIR", &asset_paths.data_dir)
+        .env("DEECODEX_PLUGIN_CACHE_DIR", &asset_paths.cache_dir)
+        .env("DEECODEX_PLUGIN_SECRETS_DIR", &asset_paths.secrets_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -182,6 +194,8 @@ pub async fn spawn_plugin(
     let plugin_id = manifest.id.clone();
     let stdin_for_reader = stdin_arc.clone();
     let llm_url = llm_base_url.to_string();
+    let asset_paths_for_reader = asset_paths.clone();
+    let permissions_for_reader = manifest.permissions.clone();
     let (exit_tx, exit_rx) = oneshot::channel();
     let stdout_task = tokio::spawn(async move {
         read_stdout_loop(
@@ -191,6 +205,8 @@ pub async fn spawn_plugin(
             events_tx_clone,
             stdin_for_reader,
             llm_url,
+            asset_paths_for_reader,
+            permissions_for_reader,
         )
         .await;
         let _ = exit_tx.send(());
@@ -198,11 +214,17 @@ pub async fn spawn_plugin(
 
     // 读取 stderr 并记录
     let plugin_id_for_stderr = manifest.id.clone();
+    let events_tx_for_stderr = events_tx.clone();
     tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             warn!(plugin_id = %plugin_id_for_stderr, "[stderr] {line}");
+            let _ = events_tx_for_stderr.send(PluginEvent::Log {
+                plugin_id: plugin_id_for_stderr.clone(),
+                level: "warn".into(),
+                message: truncate_event_message(&format!("[stderr] {line}")),
+            });
         }
     });
 
@@ -224,6 +246,8 @@ async fn read_stdout_loop(
     events_tx: broadcast::Sender<PluginEvent>,
     stdin: Arc<Mutex<ChildStdin>>,
     llm_base_url: String,
+    asset_paths: PluginAssetPaths,
+    permissions: Vec<String>,
 ) {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -233,6 +257,11 @@ async fn read_stdout_loop(
             Some(m) => m,
             None => {
                 warn!(plugin_id = %plugin_id, "无法解析 JSON-RPC 消息: {line}");
+                let _ = events_tx.send(PluginEvent::Log {
+                    plugin_id: plugin_id.clone(),
+                    level: "warn".into(),
+                    message: truncate_event_message(&format!("无法解析 JSON-RPC 消息: {line}")),
+                });
                 continue;
             }
         };
@@ -247,8 +276,16 @@ async fn read_stdout_loop(
                 handle_notification(&plugin_id, &notif, &events_tx);
             }
             JsonRpcMessage::Request(req) => {
-                handle_request_from_plugin(&plugin_id, &req, &events_tx, &stdin, &llm_base_url)
-                    .await;
+                handle_request_from_plugin(
+                    &plugin_id,
+                    &req,
+                    &events_tx,
+                    &stdin,
+                    &llm_base_url,
+                    &asset_paths,
+                    &permissions,
+                )
+                .await;
             }
         }
     }
@@ -310,17 +347,34 @@ fn handle_notification(
         }
         _ => {
             info!(plugin_id = %plugin_id, method = %notif.method, "未处理的插件通知");
+            let _ = events_tx.send(PluginEvent::Log {
+                plugin_id: plugin_id.into(),
+                level: "warn".into(),
+                message: format!("未处理的插件通知: {}", notif.method),
+            });
         }
     }
+}
+
+fn truncate_event_message(message: &str) -> String {
+    const MAX_LEN: usize = 600;
+    if message.chars().count() <= MAX_LEN {
+        return message.to_string();
+    }
+    let mut text = message.chars().take(MAX_LEN).collect::<String>();
+    text.push('…');
+    text
 }
 
 /// 处理插件发来的请求（llm.call 等）
 async fn handle_request_from_plugin(
     plugin_id: &str,
     req: &JsonRpcRequest,
-    _events_tx: &broadcast::Sender<PluginEvent>,
+    events_tx: &broadcast::Sender<PluginEvent>,
     stdin: &Arc<Mutex<ChildStdin>>,
     llm_base_url: &str,
+    asset_paths: &PluginAssetPaths,
+    permissions: &[String],
 ) {
     match req.method.as_str() {
         "llm.call" => {
@@ -396,26 +450,431 @@ async fn handle_request_from_plugin(
             guard.write_all(line.as_bytes()).await.ok();
             guard.flush().await.ok();
         }
+        METHOD_ASSETS_READ
+        | METHOD_ASSETS_WRITE
+        | METHOD_ASSETS_LIST
+        | METHOD_ASSETS_DELETE
+        | METHOD_CACHE_READ
+        | METHOD_CACHE_WRITE
+        | METHOD_CACHE_CLEAR
+        | METHOD_SECRETS_SET
+        | METHOD_SECRETS_GET
+        | METHOD_SECRETS_DELETE => {
+            let result =
+                handle_storage_request(plugin_id, req, asset_paths, permissions, events_tx).await;
+            match result {
+                Ok(value) => send_rpc_success(stdin, req.id, value).await,
+                Err(error) => send_rpc_error(stdin, req.id, -32603, error.to_string()).await,
+            }
+        }
         _ => {
             warn!(plugin_id = %plugin_id, method = %req.method, "不支持的插件请求方法");
-            // 返回错误响应
-            let response = JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: req.id,
-                result: None,
-                error: Some(crate::rpc::JsonRpcError {
-                    code: -32601,
-                    message: format!("方法未找到: {}", req.method),
-                    data: None,
-                }),
-            };
-            let msg = JsonRpcMessage::Response(response);
-            let line = msg.to_line() + "\n";
-            let mut guard = stdin.lock().await;
-            guard.write_all(line.as_bytes()).await.ok();
-            guard.flush().await.ok();
+            send_rpc_error(stdin, req.id, -32601, format!("方法未找到: {}", req.method)).await;
         }
     }
+}
+
+async fn send_rpc_success(stdin: &Arc<Mutex<ChildStdin>>, id: u64, result: Value) {
+    let response = JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: Some(result),
+        error: None,
+    };
+    let msg = JsonRpcMessage::Response(response);
+    let line = msg.to_line() + "\n";
+    let mut guard = stdin.lock().await;
+    guard.write_all(line.as_bytes()).await.ok();
+    guard.flush().await.ok();
+}
+
+async fn send_rpc_error(stdin: &Arc<Mutex<ChildStdin>>, id: u64, code: i64, message: String) {
+    let response = JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: None,
+        error: Some(crate::rpc::JsonRpcError {
+            code,
+            message,
+            data: None,
+        }),
+    };
+    let msg = JsonRpcMessage::Response(response);
+    let line = msg.to_line() + "\n";
+    let mut guard = stdin.lock().await;
+    guard.write_all(line.as_bytes()).await.ok();
+    guard.flush().await.ok();
+}
+
+async fn handle_storage_request(
+    plugin_id: &str,
+    req: &JsonRpcRequest,
+    asset_paths: &PluginAssetPaths,
+    permissions: &[String],
+    events_tx: &broadcast::Sender<PluginEvent>,
+) -> anyhow::Result<Value> {
+    let result = match req.method.as_str() {
+        METHOD_ASSETS_READ => {
+            require_permission(permissions, &["fs.read", "file.read"])?;
+            read_text_file(
+                &PathBuf::from(&asset_paths.data_dir),
+                request_path(req.params.as_ref())?,
+            )
+            .map(|content| json!({ "content": content, "encoding": "utf8" }))
+        }
+        METHOD_ASSETS_WRITE => {
+            require_permission(permissions, &["fs.write", "file.write"])?;
+            write_text_file(
+                &PathBuf::from(&asset_paths.data_dir),
+                request_path(req.params.as_ref())?,
+                request_content(req.params.as_ref())?,
+                request_append(req.params.as_ref()),
+            )
+            .map(|bytes| json!({ "ok": true, "bytes": bytes }))
+        }
+        METHOD_ASSETS_LIST => {
+            require_permission(permissions, &["fs.read", "file.read"])?;
+            list_files(
+                &PathBuf::from(&asset_paths.data_dir),
+                request_path_or_empty(req.params.as_ref()),
+            )
+            .map(|items| json!({ "items": items }))
+        }
+        METHOD_ASSETS_DELETE => {
+            require_permission(permissions, &["fs.write", "file.write"])?;
+            delete_path(
+                &PathBuf::from(&asset_paths.data_dir),
+                request_path(req.params.as_ref())?,
+            )
+            .map(|deleted| json!({ "ok": true, "deleted": deleted }))
+        }
+        METHOD_CACHE_READ => {
+            require_permission(permissions, &["fs.read", "file.read"])?;
+            read_text_file(
+                &PathBuf::from(&asset_paths.cache_dir),
+                request_path(req.params.as_ref())?,
+            )
+            .map(|content| json!({ "content": content, "encoding": "utf8" }))
+        }
+        METHOD_CACHE_WRITE => {
+            require_permission(permissions, &["fs.write", "file.write"])?;
+            write_text_file(
+                &PathBuf::from(&asset_paths.cache_dir),
+                request_path(req.params.as_ref())?,
+                request_content(req.params.as_ref())?,
+                request_append(req.params.as_ref()),
+            )
+            .map(|bytes| json!({ "ok": true, "bytes": bytes }))
+        }
+        METHOD_CACHE_CLEAR => {
+            require_permission(permissions, &["fs.write", "file.write"])?;
+            clear_dir(&PathBuf::from(&asset_paths.cache_dir))
+                .map(|deleted| json!({ "ok": true, "deleted": deleted }))
+        }
+        METHOD_SECRETS_SET => {
+            require_permission(permissions, &["secrets.write", "secrets", "secret"])?;
+            write_text_file(
+                &PathBuf::from(&asset_paths.secrets_dir),
+                request_key(req.params.as_ref())?,
+                request_content(req.params.as_ref())?,
+                false,
+            )
+            .map(|bytes| json!({ "ok": true, "bytes": bytes }))
+        }
+        METHOD_SECRETS_GET => {
+            require_permission(permissions, &["secrets.read", "secrets", "secret"])?;
+            let key = request_key(req.params.as_ref())?;
+            read_text_file(&PathBuf::from(&asset_paths.secrets_dir), key.clone())
+                .map(|content| json!({ "key": key, "value": content }))
+        }
+        METHOD_SECRETS_DELETE => {
+            require_permission(permissions, &["secrets.write", "secrets", "secret"])?;
+            delete_path(
+                &PathBuf::from(&asset_paths.secrets_dir),
+                request_key(req.params.as_ref())?,
+            )
+            .map(|deleted| json!({ "ok": true, "deleted": deleted }))
+        }
+        _ => anyhow::bail!("方法未找到: {}", req.method),
+    };
+
+    emit_asset_event(plugin_id, req, &result, events_tx);
+    result
+}
+
+fn emit_asset_event(
+    plugin_id: &str,
+    req: &JsonRpcRequest,
+    result: &anyhow::Result<Value>,
+    events_tx: &broadcast::Sender<PluginEvent>,
+) {
+    let (scope, action) = method_scope_action(&req.method);
+    let path = req
+        .params
+        .as_ref()
+        .and_then(|params| {
+            params
+                .get("path")
+                .or_else(|| params.get("key"))
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let _ = events_tx.send(PluginEvent::AssetOperation {
+        plugin_id: plugin_id.to_string(),
+        scope: scope.to_string(),
+        action: action.to_string(),
+        path,
+        ok: result.is_ok(),
+    });
+}
+
+fn method_scope_action(method: &str) -> (&'static str, &'static str) {
+    match method {
+        METHOD_ASSETS_READ => ("data", "read"),
+        METHOD_ASSETS_WRITE => ("data", "write"),
+        METHOD_ASSETS_LIST => ("data", "list"),
+        METHOD_ASSETS_DELETE => ("data", "delete"),
+        METHOD_CACHE_READ => ("cache", "read"),
+        METHOD_CACHE_WRITE => ("cache", "write"),
+        METHOD_CACHE_CLEAR => ("cache", "clear"),
+        METHOD_SECRETS_SET => ("secrets", "set"),
+        METHOD_SECRETS_GET => ("secrets", "get"),
+        METHOD_SECRETS_DELETE => ("secrets", "delete"),
+        _ => ("unknown", "unknown"),
+    }
+}
+
+fn request_path(params: Option<&Value>) -> anyhow::Result<String> {
+    let path = request_path_or_empty(params);
+    if path.trim().is_empty() {
+        anyhow::bail!("缺少 path");
+    }
+    Ok(path)
+}
+
+fn request_path_or_empty(params: Option<&Value>) -> String {
+    params
+        .and_then(|value| value.get("path"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn request_key(params: Option<&Value>) -> anyhow::Result<String> {
+    let key = params
+        .and_then(|value| value.get("key").or_else(|| value.get("path")))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    if key.trim().is_empty() {
+        anyhow::bail!("缺少 key");
+    }
+    Ok(key)
+}
+
+fn request_content(params: Option<&Value>) -> anyhow::Result<String> {
+    if let Some(content) = params
+        .and_then(|value| value.get("content").or_else(|| value.get("value")))
+        .and_then(|value| value.as_str())
+    {
+        return Ok(content.to_string());
+    }
+    anyhow::bail!("缺少 content")
+}
+
+fn request_append(params: Option<&Value>) -> bool {
+    params
+        .and_then(|value| value.get("append"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn require_permission(permissions: &[String], accepted: &[&str]) -> anyhow::Result<()> {
+    if accepted
+        .iter()
+        .any(|required| has_permission(permissions, required))
+    {
+        return Ok(());
+    }
+    anyhow::bail!("缺少插件权限: {}", accepted[0])
+}
+
+fn has_permission(permissions: &[String], required: &str) -> bool {
+    let required_root = required.split('.').next().unwrap_or(required);
+    permissions.iter().any(|permission| {
+        let permission = permission.trim().to_ascii_lowercase();
+        if permission == "*" || permission == required {
+            return true;
+        }
+        if permission == format!("{required_root}.*") || permission == required_root {
+            return true;
+        }
+        permission.strip_suffix(".*").is_some_and(|prefix| {
+            required
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+    })
+}
+
+fn read_text_file(root: &Path, relative: String) -> anyhow::Result<String> {
+    let path = resolve_plugin_path(root, &relative)?;
+    ensure_no_symlink_under(root, &path)?;
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("无法读取文件: {}", path.display()))?;
+    String::from_utf8(bytes).with_context(|| format!("文件不是 UTF-8 文本: {}", path.display()))
+}
+
+fn write_text_file(
+    root: &Path,
+    relative: String,
+    content: String,
+    append: bool,
+) -> anyhow::Result<usize> {
+    let path = resolve_plugin_path(root, &relative)?;
+    if let Some(parent) = path.parent() {
+        ensure_no_symlink_under(root, parent)?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("无法创建目录: {}", parent.display()))?;
+        ensure_no_symlink_under(root, parent)?;
+    }
+    if path.exists() {
+        ensure_no_symlink_under(root, &path)?;
+    }
+    if append {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("无法打开文件: {}", path.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("无法写入文件: {}", path.display()))?;
+    } else {
+        std::fs::write(&path, content.as_bytes())
+            .with_context(|| format!("无法写入文件: {}", path.display()))?;
+    }
+    Ok(content.len())
+}
+
+fn list_files(root: &Path, relative: String) -> anyhow::Result<Vec<Value>> {
+    let dir = resolve_plugin_path(root, &relative)?;
+    ensure_no_symlink_under(root, &dir)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !dir.is_dir() {
+        anyhow::bail!("路径不是目录: {}", relative);
+    }
+    let mut items = Vec::new();
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("无法读取目录: {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        ensure_no_symlink_under(root, &path)?;
+        let metadata = entry.metadata()?;
+        let item_path = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        items.push(json!({
+            "path": item_path,
+            "kind": if metadata.is_dir() { "dir" } else { "file" },
+            "bytes": if metadata.is_file() { metadata.len() } else { 0 },
+        }));
+    }
+    items.sort_by(|a, b| {
+        a.get("path")
+            .and_then(|value| value.as_str())
+            .cmp(&b.get("path").and_then(|value| value.as_str()))
+    });
+    Ok(items)
+}
+
+fn delete_path(root: &Path, relative: String) -> anyhow::Result<bool> {
+    let path = resolve_plugin_path(root, &relative)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    ensure_no_symlink_under(root, &path)?;
+    if path.is_dir() {
+        std::fs::remove_dir_all(&path)
+            .with_context(|| format!("无法删除目录: {}", path.display()))?;
+    } else {
+        std::fs::remove_file(&path).with_context(|| format!("无法删除文件: {}", path.display()))?;
+    }
+    Ok(true)
+}
+
+fn clear_dir(root: &Path) -> anyhow::Result<usize> {
+    std::fs::create_dir_all(root).with_context(|| format!("无法创建目录: {}", root.display()))?;
+    let mut deleted = 0_usize;
+    for entry in
+        std::fs::read_dir(root).with_context(|| format!("无法读取目录: {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        ensure_no_symlink_under(root, &path)?;
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("无法删除目录: {}", path.display()))?;
+        } else {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("无法删除文件: {}", path.display()))?;
+        }
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+fn resolve_plugin_path(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
+    if relative.trim().is_empty() {
+        return Ok(root.to_path_buf());
+    }
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute() {
+        anyhow::bail!("路径必须是相对路径");
+    }
+    let mut clean = PathBuf::new();
+    for component in relative_path.components() {
+        match component {
+            Component::Normal(part) if valid_path_component(part) => clean.push(part),
+            Component::CurDir => {}
+            _ => anyhow::bail!("路径不允许包含上级目录、根路径或特殊组件"),
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Ok(root.to_path_buf());
+    }
+    Ok(root.join(clean))
+}
+
+fn valid_path_component(part: &OsStr) -> bool {
+    let text = part.to_string_lossy();
+    !text.is_empty() && !text.contains('\0')
+}
+
+fn ensure_no_symlink_under(root: &Path, path: &Path) -> anyhow::Result<()> {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    if relative.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let mut cursor = root.to_path_buf();
+    for component in relative.components() {
+        cursor.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!("路径不允许包含符号链接: {}", cursor.display());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 /// 代理 LLM 调用到 deecodex HTTP API

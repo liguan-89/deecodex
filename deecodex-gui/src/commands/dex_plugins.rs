@@ -26,7 +26,15 @@ pub(crate) async fn plugin_tool_defs(manager: &ServerManager) -> Vec<DexToolDef>
     let plugins = pm.list().await;
     let mut defs = Vec::new();
     for plugin in plugins {
+        if !plugin.enabled {
+            continue;
+        }
         for tool in plugin.dex_tools {
+            let level = if plugin.permission_risk == "high" {
+                tool.level.max(3)
+            } else {
+                tool.level
+            };
             let capability = if tool.capability.is_empty() {
                 "plugins.dynamic".to_string()
             } else {
@@ -35,8 +43,8 @@ pub(crate) async fn plugin_tool_defs(manager: &ServerManager) -> Vec<DexToolDef>
             defs.push(DexToolDef {
                 name: plugin_function_name(&plugin.id, &tool.name),
                 tauri_cmd: "dex_plugin_tool".to_string(),
-                level: tool.level,
-                confirm: if tool.level >= 3 {
+                level,
+                confirm: if level >= 3 {
                     Some(format!(
                         "确定要执行插件工具 {} / {} 吗？",
                         plugin.name, tool.name
@@ -70,6 +78,12 @@ pub(crate) async fn execute_plugin_tool(
         .as_deref()
         .ok_or_else(|| "插件工具缺少 method".to_string())?;
     let pm = plugin_manager(manager).await?;
+    if !pm.is_enabled(plugin_id).await {
+        return Err(format!(
+            "插件 '{}' 已停用，请先启用后再执行工具。",
+            plugin_id
+        ));
+    }
     if !pm.is_running(plugin_id) {
         if tool.level <= 1 {
             pm.start(plugin_id).await.map_err(|e| e.to_string())?;

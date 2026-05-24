@@ -6036,6 +6036,15 @@ pub async fn browse_file() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+pub async fn browse_plugin_directory() -> Result<Option<String>, String> {
+    let path = rfd::AsyncFileDialog::new()
+        .pick_folder()
+        .await
+        .map(|f| f.path().to_string_lossy().to_string());
+    Ok(path)
+}
+
+#[tauri::command]
 pub async fn browse_attachment_file() -> Result<Option<String>, String> {
     let path = rfd::AsyncFileDialog::new()
         .pick_file()
@@ -6054,6 +6063,74 @@ async fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {
         .ok_or_else(|| "插件管理器未初始化".into())
 }
 
+fn plugin_method_missing(error: &str) -> bool {
+    error.contains("方法未找到")
+        || error.contains("Method not found")
+        || error.contains("method not found")
+        || error.contains("-32601")
+}
+
+async fn send_plugin_account_request(
+    pm: &Arc<PluginManager>,
+    plugin_id: &str,
+    account_id: &str,
+    methods: Vec<String>,
+) -> Result<Value, String> {
+    let params = json!({ "account_id": account_id });
+    let mut last_missing = None;
+    for (index, method) in methods.iter().enumerate() {
+        match pm
+            .send_request(plugin_id, method.as_str(), Some(params.clone()))
+            .await
+        {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if index + 1 < methods.len() && plugin_method_missing(&error.to_string()) =>
+            {
+                last_missing = Some(error.to_string());
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err(last_missing.unwrap_or_else(|| "插件账号方法不可用".into()))
+}
+
+async fn plugin_account_methods(
+    pm: &Arc<PluginManager>,
+    plugin_id: &str,
+    action: &str,
+    defaults: &[&str],
+) -> Vec<String> {
+    let custom = pm
+        .list()
+        .await
+        .into_iter()
+        .find(|plugin| plugin.id == plugin_id)
+        .and_then(|plugin| plugin.account)
+        .and_then(|account| match action {
+            "login" => account.methods.login,
+            "cancel_login" => account.methods.cancel_login,
+            "status" => account.methods.status,
+            "start" => account.methods.start,
+            "stop" => account.methods.stop,
+            _ => None,
+        });
+
+    let mut methods = Vec::new();
+    if let Some(method) = custom {
+        let method = method.trim();
+        if !method.is_empty() {
+            methods.push(method.to_string());
+        }
+    }
+    for method in defaults {
+        if !methods.iter().any(|existing| existing == method) {
+            methods.push((*method).to_string());
+        }
+    }
+    methods
+}
+
 #[tauri::command]
 pub async fn list_plugins(manager: State<'_, ServerManager>) -> Result<Vec<Value>, String> {
     let pm = get_pm(&manager).await?;
@@ -6061,6 +6138,22 @@ pub async fn list_plugins(manager: State<'_, ServerManager>) -> Result<Vec<Value
     Ok(plugins
         .iter()
         .map(|p| serde_json::to_value(p).unwrap_or_default())
+        .collect())
+}
+
+#[tauri::command]
+pub async fn list_plugin_events(
+    manager: State<'_, ServerManager>,
+    plugin_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<Value>, String> {
+    let pm = get_pm(&manager).await?;
+    let events = pm
+        .recent_events(plugin_id.as_deref(), limit.unwrap_or(80))
+        .await;
+    Ok(events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap_or_default())
         .collect())
 }
 
@@ -6081,6 +6174,44 @@ pub async fn install_plugin(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(&manifest).unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn update_plugin(
+    manager: State<'_, ServerManager>,
+    path: Option<String>,
+    archive_path: Option<String>,
+    plugin_path: Option<String>,
+) -> Result<Value, String> {
+    let path = path
+        .or(archive_path)
+        .or(plugin_path)
+        .ok_or_else(|| "缺少插件路径".to_string())?;
+    let pm = get_pm(&manager).await?;
+    let manifest = pm
+        .update_package(std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(&manifest).unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn preview_plugin_install(
+    manager: State<'_, ServerManager>,
+    path: Option<String>,
+    archive_path: Option<String>,
+    plugin_path: Option<String>,
+) -> Result<Value, String> {
+    let path = path
+        .or(archive_path)
+        .or(plugin_path)
+        .ok_or_else(|| "缺少插件路径".to_string())?;
+    let pm = get_pm(&manager).await?;
+    let preview = pm
+        .preview_install(std::path::Path::new(&path))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(&preview).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -6114,6 +6245,19 @@ pub async fn stop_plugin(
 }
 
 #[tauri::command]
+pub async fn set_plugin_enabled(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager).await?;
+    pm.set_enabled(&plugin_id, enabled)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "plugin_id": plugin_id, "enabled": enabled }))
+}
+
+#[tauri::command]
 pub async fn update_plugin_config(
     manager: State<'_, ServerManager>,
     plugin_id: String,
@@ -6127,6 +6271,98 @@ pub async fn update_plugin_config(
 }
 
 #[tauri::command]
+pub async fn upsert_plugin_account_asset(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+    asset: Option<Value>,
+) -> Result<Value, String> {
+    let account_id = account_id.trim().to_string();
+    if account_id.is_empty() {
+        return Err("连接 ID 不能为空".into());
+    }
+    let value = asset.unwrap_or_else(|| json!({ "name": account_id, "enabled": true }));
+    let pm = get_pm(&manager).await?;
+    pm.upsert_account_asset(&plugin_id, &account_id, value)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "plugin_id": plugin_id, "account_id": account_id }))
+}
+
+#[tauri::command]
+pub async fn remove_plugin_account_asset(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    account_id: String,
+) -> Result<Value, String> {
+    let account_id = account_id.trim().to_string();
+    if account_id.is_empty() {
+        return Err("连接 ID 不能为空".into());
+    }
+    let pm = get_pm(&manager).await?;
+    pm.remove_account_asset(&plugin_id, &account_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "plugin_id": plugin_id, "account_id": account_id }))
+}
+
+#[tauri::command]
+pub async fn clear_plugin_cache(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager).await?;
+    let assets = pm
+        .clear_cache(&plugin_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "plugin_id": plugin_id, "assets": assets }))
+}
+
+#[tauri::command]
+pub async fn execute_plugin_feature(
+    manager: State<'_, ServerManager>,
+    plugin_id: String,
+    feature_id: String,
+    action: String,
+    params: Option<Value>,
+    confirmed: Option<bool>,
+) -> Result<Value, String> {
+    let pm = get_pm(&manager).await?;
+    if !pm.is_enabled(&plugin_id).await {
+        return Err(format!(
+            "插件 '{plugin_id}' 已停用，请先启用后再执行能力动作"
+        ));
+    }
+    let plugin = pm
+        .list()
+        .await
+        .into_iter()
+        .find(|plugin| plugin.id == plugin_id)
+        .ok_or_else(|| format!("插件 '{plugin_id}' 未安装"))?;
+    if plugin.permission_risk == "high" && confirmed != Some(true) {
+        return Err(format!(
+            "插件 '{}' 包含高风险权限，执行能力动作前需要确认",
+            plugin.name
+        ));
+    }
+    let method = plugin
+        .features
+        .into_iter()
+        .find(|feature| feature.id == feature_id)
+        .and_then(|feature| feature.methods.get(&action).cloned())
+        .ok_or_else(|| format!("插件能力未声明动作: {feature_id}/{action}"))?;
+
+    if !pm.is_running(&plugin_id) {
+        pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
+    }
+
+    pm.send_request(&plugin_id, &method, params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_plugin_qrcode(
     manager: State<'_, ServerManager>,
     plugin_id: String,
@@ -6136,13 +6372,13 @@ pub async fn get_plugin_qrcode(
     if !pm.is_running(&plugin_id) {
         pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
     }
-    pm.send_request(
+    send_plugin_account_request(
+        &pm,
         &plugin_id,
-        "weixin.login",
-        Some(json!({ "account_id": account_id })),
+        &account_id,
+        plugin_account_methods(&pm, &plugin_id, "login", &["account.login", "weixin.login"]).await,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6152,13 +6388,23 @@ pub async fn plugin_login_cancel(
     account_id: String,
 ) -> Result<Value, String> {
     let pm = get_pm(&manager).await?;
-    pm.send_request(
+    send_plugin_account_request(
+        &pm,
         &plugin_id,
-        "weixin.login_cancel",
-        Some(json!({ "account_id": account_id })),
+        &account_id,
+        plugin_account_methods(
+            &pm,
+            &plugin_id,
+            "cancel_login",
+            &[
+                "account.cancel_login",
+                "account.login_cancel",
+                "weixin.login_cancel",
+            ],
+        )
+        .await,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6168,13 +6414,19 @@ pub async fn query_plugin_status(
     account_id: String,
 ) -> Result<Value, String> {
     let pm = get_pm(&manager).await?;
-    pm.send_request(
+    send_plugin_account_request(
+        &pm,
         &plugin_id,
-        "weixin.status",
-        Some(json!({ "account_id": account_id })),
+        &account_id,
+        plugin_account_methods(
+            &pm,
+            &plugin_id,
+            "status",
+            &["account.status", "weixin.status"],
+        )
+        .await,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6184,13 +6436,16 @@ pub async fn start_plugin_account(
     account_id: String,
 ) -> Result<Value, String> {
     let pm = get_pm(&manager).await?;
-    pm.send_request(
+    if !pm.is_running(&plugin_id) {
+        pm.start(&plugin_id).await.map_err(|e| e.to_string())?;
+    }
+    send_plugin_account_request(
+        &pm,
         &plugin_id,
-        "weixin.start",
-        Some(json!({ "account_id": account_id })),
+        &account_id,
+        plugin_account_methods(&pm, &plugin_id, "start", &["account.start", "weixin.start"]).await,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6200,13 +6455,13 @@ pub async fn stop_plugin_account(
     account_id: String,
 ) -> Result<Value, String> {
     let pm = get_pm(&manager).await?;
-    pm.send_request(
+    send_plugin_account_request(
+        &pm,
         &plugin_id,
-        "weixin.stop",
-        Some(json!({ "account_id": account_id })),
+        &account_id,
+        plugin_account_methods(&pm, &plugin_id, "stop", &["account.stop", "weixin.stop"]).await,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
