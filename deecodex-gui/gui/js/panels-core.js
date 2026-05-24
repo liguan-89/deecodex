@@ -1159,7 +1159,12 @@ function renderHelp() {
       <p>模型映射定义了 <strong>Codex 使用的模型名 → DeepSeek 实际模型名</strong> 的对应关系。</p>
       <p>默认映射：</p>
       <div class="code-block"><pre><span class="key">"gpt-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-5.4"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"gpt-5.4-mini"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"gpt-5.3-codex"</span>: <span class="str">"deepseek-v4-pro"</span>
+<span class="key">"gpt-5.3-codex-spark"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"gpt-5.2"</span>: <span class="str">"deepseek-v4-flash"</span>
+<span class="key">"codex-auto-review"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"gpt-4o"</span>: <span class="str">"deepseek-v4-pro"</span>
 <span class="key">"gpt-4o-mini"</span>: <span class="str">"deepseek-v4-pro"</span>
 <span class="key">"gpt-4.1"</span>: <span class="str">"deepseek-v4-pro"</span>

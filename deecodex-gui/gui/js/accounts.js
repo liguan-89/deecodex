@@ -1,4 +1,4 @@
-const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5', 'codex-auto-review'];
+const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'codex-auto-review'];
 const CLIENT_KIND_LABELS = {
   codex: 'Codex',
   claude_code: 'Claude',

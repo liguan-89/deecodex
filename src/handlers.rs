@@ -50,6 +50,8 @@ use tracing::{debug, error, info, warn};
 
 const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_items";
 pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
+const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
@@ -1077,6 +1079,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/responses", post(handle_responses))
         .route("/v1/chat/completions", post(handle_client_chat_completions))
+        .route("/v1/images/generations", post(handle_images_generations))
+        .route("/v1/images/edits", post(handle_images_edits))
         .route("/v1/messages", post(handle_client_anthropic_messages_v1))
         .route("/messages", post(handle_client_anthropic_messages))
         .route("/v1/responses/compact", post(handle_compact_response))
@@ -1819,6 +1823,962 @@ async fn handle_get_prompt(
         Ok(prompt) => Json(prompt).into_response(),
         Err(err) => err.into_response(),
     }
+}
+
+async fn handle_images_generations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_images_api(state, headers, body, ImageAction::Generate).await
+}
+
+async fn handle_images_edits(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_images_api(state, headers, body, ImageAction::Edit).await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageAction {
+    Generate,
+    Edit,
+}
+
+impl ImageAction {
+    fn path(self) -> &'static str {
+        match self {
+            ImageAction::Generate => "images/generations",
+            ImageAction::Edit => "images/edits",
+        }
+    }
+
+    fn tool_action(self) -> &'static str {
+        match self {
+            ImageAction::Generate => "generate",
+            ImageAction::Edit => "edit",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ImageApiRequest {
+    model: String,
+    prompt: String,
+    images: Vec<String>,
+    response_format: String,
+    stream: bool,
+    raw: Value,
+}
+
+async fn handle_images_api(
+    state: AppState,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+    action: ImageAction,
+) -> Response {
+    let (account, endpoint) = active_account_endpoint(&state).await;
+    if endpoint.kind == EndpointKind::CodexOfficial
+        || upstream_is_codex_official_endpoint(&endpoint)
+    {
+        let (account, endpoint) =
+            codex_official_account_endpoint(&state, DEFAULT_IMAGE_TOOL_MODEL).await;
+        return handle_codex_official_images(state, account, endpoint, body, action).await;
+    }
+    if endpoint.kind.is_responses_like() {
+        return handle_responses_images(state, account, endpoint, body, action).await;
+    }
+    forward_images_api(state, headers, body, account, endpoint, action).await
+}
+
+fn upstream_is_codex_official_endpoint(endpoint: &EndpointConfig) -> bool {
+    endpoint
+        .base_url
+        .to_ascii_lowercase()
+        .contains("chatgpt.com/backend-api/codex")
+}
+
+async fn forward_images_api(
+    state: AppState,
+    headers: HeaderMap,
+    mut body: axum::body::Bytes,
+    account: Account,
+    endpoint: EndpointConfig,
+    action: ImageAction,
+) -> Response {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let mut model = image_request_model(&body).unwrap_or_else(|| DEFAULT_IMAGE_TOOL_MODEL.into());
+    let mapped_model = resolve_model(&model, &endpoint.model_map);
+    if mapped_model != model {
+        body = patch_body_model_field(&body, &mapped_model).unwrap_or(body);
+        model = mapped_model;
+    }
+
+    let upstream_url =
+        Url::parse(&endpoint.base_url).unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+    let url = format!("{}{}", join_base(&upstream_url), action.path());
+    let start = Instant::now();
+    let history_context =
+        history_context_for(&account, &endpoint, &format!("/v1/{}", action.path()));
+    let response_id = state.sessions.new_id();
+
+    let mut builder = state.client.post(&url).header("Content-Type", content_type);
+    if !account.api_key.trim().is_empty() {
+        builder = builder.bearer_auth(account.api_key.trim());
+    }
+    for (k, v) in &endpoint.custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if let Some(secs) = endpoint.request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let resp = match builder.body(body).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            record_image_history(
+                &state,
+                history_context,
+                response_id,
+                model,
+                "failed",
+                start,
+                url,
+                format!("connection error: {err}"),
+            )
+            .await;
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("图片上游连接失败: {err}"),
+                "upstream_error",
+            );
+        }
+    };
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("图片上游响应读取失败: {err}"),
+                "upstream_read_error",
+            )
+        }
+    };
+    record_image_history(
+        &state,
+        history_context,
+        response_id,
+        model,
+        if status.is_success() {
+            "completed"
+        } else {
+            "failed"
+        },
+        start,
+        url,
+        if status.is_success() {
+            String::new()
+        } else {
+            format!("HTTP {}", status.as_u16())
+        },
+    )
+    .await;
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .body(axum::body::Body::from(bytes))
+        .unwrap()
+}
+
+async fn handle_codex_official_images(
+    state: AppState,
+    mut account: Account,
+    endpoint: EndpointConfig,
+    body: axum::body::Bytes,
+    action: ImageAction,
+) -> Response {
+    let request = match parse_image_api_request(&body, action) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if request.stream {
+        tracing::info!(
+            "Codex 图片端点收到 stream=true，当前先收集官方 Responses 流并返回 OpenAI Images JSON"
+        );
+    }
+    let image_model = image_model_base(&request.model);
+    if image_model != DEFAULT_IMAGE_TOOL_MODEL {
+        return image_error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Model {} is not supported on /v1/{}. Use {}.",
+                request.model,
+                action.path(),
+                DEFAULT_IMAGE_TOOL_MODEL
+            ),
+            "invalid_request_error",
+        );
+    }
+    let body = match build_codex_images_responses_body(&request, action) {
+        Ok(body) => body,
+        Err(err) => {
+            return image_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("图片请求构造失败: {err}"),
+                "invalid_request_error",
+            )
+        }
+    };
+
+    let history_context =
+        history_context_for(&account, &endpoint, &format!("/v1/{}", action.path()));
+    let response_id = state.sessions.new_id();
+    let start = Instant::now();
+    let token = match fresh_oauth_access_token(&state, &mut account).await {
+        Ok(token) if !token.trim().is_empty() => token,
+        Ok(_) => account.api_key.clone(),
+        Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                DEFAULT_IMAGE_TOOL_MODEL,
+                StatusCode::UNAUTHORIZED,
+                format!("OAuth token refresh failed: {err}"),
+                None,
+            )
+            .await;
+            return image_error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("OAuth token refresh failed: {err}"),
+                "oauth_refresh_failed",
+            );
+        }
+    };
+    if token.trim().is_empty() {
+        return image_error_response(
+            StatusCode::UNAUTHORIZED,
+            "Codex 官方账号缺少 OAuth access token",
+            "missing_oauth_token",
+        );
+    }
+
+    let upstream = Url::parse(&endpoint.base_url)
+        .unwrap_or_else(|_| Url::parse(CODEX_OFFICIAL_BASE_URL).unwrap());
+    let url = format!("{}responses", join_base(&upstream));
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("Accept-Encoding", "identity")
+        .bearer_auth(token)
+        .header("Originator", codex_official_originator(&account))
+        .header(
+            "User-Agent",
+            "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/3.0",
+        )
+        .header("Connection", "Keep-Alive");
+    if let Some(account_id) = oauth_account_id(&account) {
+        builder = builder.header("Chatgpt-Account-Id", account_id);
+    }
+    for (k, v) in &endpoint.custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if let Some(secs) = endpoint.request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let upstream_resp = match builder.body(body).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                DEFAULT_IMAGE_TOOL_MODEL,
+                StatusCode::BAD_GATEWAY,
+                format!("Codex 官方图片上游连接失败: {err}"),
+                None,
+            )
+            .await;
+            record_image_history(
+                &state,
+                history_context,
+                response_id,
+                DEFAULT_IMAGE_TOOL_MODEL.into(),
+                "failed",
+                start,
+                url,
+                format!("connection error: {err}"),
+            )
+            .await;
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("Codex 官方图片上游连接失败: {err}"),
+                "upstream_error",
+            );
+        }
+    };
+    let status = upstream_resp.status();
+    let retry_after = retry_after_secs(upstream_resp.headers());
+    let bytes = match upstream_resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("Codex 官方图片响应读取失败: {err}"),
+                "upstream_read_error",
+            )
+        }
+    };
+    let retry_after = codex_usage_retry_after_secs(status, &bytes, retry_after);
+    if !status.is_success() {
+        let message = codex_error_message(status, &bytes);
+        update_runtime_result(
+            &state,
+            &account.id,
+            DEFAULT_IMAGE_TOOL_MODEL,
+            status,
+            message.clone(),
+            retry_after,
+        )
+        .await;
+        record_image_history(
+            &state,
+            history_context,
+            response_id,
+            DEFAULT_IMAGE_TOOL_MODEL.into(),
+            "failed",
+            start,
+            url,
+            message,
+        )
+        .await;
+        return Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(bytes))
+            .unwrap();
+    }
+
+    let images = match images_response_from_codex_sse(&bytes, &request.response_format) {
+        Ok(value) => value,
+        Err(err) => {
+            update_runtime_result(
+                &state,
+                &account.id,
+                DEFAULT_IMAGE_TOOL_MODEL,
+                StatusCode::BAD_GATEWAY,
+                err.to_string(),
+                None,
+            )
+            .await;
+            record_image_history(
+                &state,
+                history_context,
+                response_id,
+                DEFAULT_IMAGE_TOOL_MODEL.into(),
+                "failed",
+                start,
+                url,
+                err.to_string(),
+            )
+            .await;
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("Codex 官方图片响应解析失败: {err}"),
+                "invalid_response",
+            );
+        }
+    };
+
+    update_runtime_result(
+        &state,
+        &account.id,
+        DEFAULT_IMAGE_TOOL_MODEL,
+        StatusCode::OK,
+        String::new(),
+        None,
+    )
+    .await;
+    record_image_history(
+        &state,
+        history_context,
+        response_id,
+        DEFAULT_IMAGE_TOOL_MODEL.into(),
+        "completed",
+        start,
+        url,
+        String::new(),
+    )
+    .await;
+    Json(images).into_response()
+}
+
+async fn handle_responses_images(
+    state: AppState,
+    account: Account,
+    endpoint: EndpointConfig,
+    body: axum::body::Bytes,
+    action: ImageAction,
+) -> Response {
+    let request = match parse_image_api_request(&body, action) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if image_model_base(&request.model) != DEFAULT_IMAGE_TOOL_MODEL {
+        return image_error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Model {} is not supported on /v1/{}. Use {}.",
+                request.model,
+                action.path(),
+                DEFAULT_IMAGE_TOOL_MODEL
+            ),
+            "invalid_request_error",
+        );
+    }
+    let body = match build_codex_images_responses_body(&request, action) {
+        Ok(body) => body,
+        Err(err) => {
+            return image_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("图片请求构造失败: {err}"),
+                "invalid_request_error",
+            )
+        }
+    };
+
+    let history_context =
+        history_context_for(&account, &endpoint, &format!("/v1/{}", action.path()));
+    let response_id = state.sessions.new_id();
+    let start = Instant::now();
+    let upstream =
+        Url::parse(&endpoint.base_url).unwrap_or_else(|_| Url::parse("http://localhost").unwrap());
+    let path = if endpoint.path.trim().is_empty() {
+        "responses"
+    } else {
+        endpoint.effective_path()
+    };
+    let url = format!("{}{}", join_base(&upstream), path);
+    let mut builder = state
+        .client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("Accept-Encoding", "identity");
+    if !account.api_key.trim().is_empty() {
+        builder = builder.bearer_auth(account.api_key.trim());
+    }
+    for (k, v) in &endpoint.custom_headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(k.as_bytes()),
+            header::HeaderValue::from_str(v),
+        ) {
+            builder = builder.header(name, value);
+        }
+    }
+    if let Some(secs) = endpoint.request_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+
+    let upstream_resp = match builder.body(body).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            record_image_history(
+                &state,
+                history_context,
+                response_id,
+                DEFAULT_IMAGE_TOOL_MODEL.into(),
+                "failed",
+                start,
+                url,
+                format!("connection error: {err}"),
+            )
+            .await;
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("图片上游连接失败: {err}"),
+                "upstream_error",
+            );
+        }
+    };
+    let status = upstream_resp.status();
+    let bytes = match upstream_resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("图片上游响应读取失败: {err}"),
+                "upstream_read_error",
+            )
+        }
+    };
+    if !status.is_success() {
+        record_image_history(
+            &state,
+            history_context,
+            response_id,
+            DEFAULT_IMAGE_TOOL_MODEL.into(),
+            "failed",
+            start,
+            url,
+            format!("HTTP {}", status.as_u16()),
+        )
+        .await;
+        return Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(bytes))
+            .unwrap();
+    }
+    let images = match images_response_from_codex_sse(&bytes, &request.response_format) {
+        Ok(value) => value,
+        Err(err) => {
+            record_image_history(
+                &state,
+                history_context,
+                response_id,
+                DEFAULT_IMAGE_TOOL_MODEL.into(),
+                "failed",
+                start,
+                url,
+                err.to_string(),
+            )
+            .await;
+            return image_error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("图片响应解析失败: {err}"),
+                "invalid_response",
+            );
+        }
+    };
+    record_image_history(
+        &state,
+        history_context,
+        response_id,
+        DEFAULT_IMAGE_TOOL_MODEL.into(),
+        "completed",
+        start,
+        url,
+        String::new(),
+    )
+    .await;
+    Json(images).into_response()
+}
+
+fn image_request_model(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn parse_image_api_request(
+    body: &[u8],
+    action: ImageAction,
+) -> std::result::Result<ImageApiRequest, Response> {
+    let value: Value = serde_json::from_slice(body).map_err(|err| {
+        image_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid request: body must be valid JSON: {err}"),
+            "invalid_request_error",
+        )
+    })?;
+    let prompt = value
+        .get("prompt")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            image_error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid request: prompt is required",
+                "invalid_request_error",
+            )
+        })?;
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_IMAGE_TOOL_MODEL)
+        .to_string();
+    let images = collect_image_urls(&value);
+    if action == ImageAction::Edit && images.is_empty() {
+        return Err(image_error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid request: images[].image_url is required",
+            "invalid_request_error",
+        ));
+    }
+    let response_format = value
+        .get("response_format")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("b64_json")
+        .to_string();
+    let stream = value
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(ImageApiRequest {
+        model,
+        prompt,
+        images,
+        response_format,
+        stream,
+        raw: value,
+    })
+}
+
+fn collect_image_urls(value: &Value) -> Vec<String> {
+    let mut images = Vec::new();
+    if let Some(array) = value.get("images").and_then(Value::as_array) {
+        for item in array {
+            if let Some(url) = image_url_from_value(item) {
+                images.push(url);
+            }
+        }
+    }
+    if let Some(image) = value.get("image").and_then(image_url_from_value) {
+        images.push(image);
+    }
+    images
+}
+
+fn image_url_from_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .or_else(|| value.get("image_url").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("image_url")
+                .and_then(Value::as_object)
+                .and_then(|obj| obj.get("url"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn image_model_base(model: &str) -> String {
+    model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn build_codex_images_responses_body(
+    request: &ImageApiRequest,
+    action: ImageAction,
+) -> serde_json::Result<axum::body::Bytes> {
+    let main_model = if let Some((prefix, _)) = request.model.rsplit_once('/') {
+        if prefix.trim().is_empty() {
+            DEFAULT_IMAGE_MAIN_MODEL.to_string()
+        } else {
+            format!("{}/{}", prefix.trim(), DEFAULT_IMAGE_MAIN_MODEL)
+        }
+    } else {
+        DEFAULT_IMAGE_MAIN_MODEL.to_string()
+    };
+    let mut content = vec![json!({"type": "input_text", "text": request.prompt})];
+    for image in &request.images {
+        content.push(json!({"type": "input_image", "image_url": image}));
+    }
+    let mut tool = json!({
+        "type": "image_generation",
+        "action": action.tool_action(),
+        "model": request.model,
+    });
+    for field in [
+        "size",
+        "quality",
+        "background",
+        "output_format",
+        "input_fidelity",
+        "moderation",
+    ] {
+        if let Some(value) = request
+            .raw
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            tool[field] = json!(value);
+        }
+    }
+    for field in ["output_compression", "partial_images"] {
+        if let Some(value) = request.raw.get(field).and_then(Value::as_i64) {
+            tool[field] = json!(value);
+        }
+    }
+    if let Some(mask) = request
+        .raw
+        .get("mask")
+        .and_then(image_url_from_value)
+        .filter(|value| !value.trim().is_empty())
+    {
+        tool["input_image_mask"] = json!({"image_url": mask});
+    }
+    let body = json!({
+        "instructions": "",
+        "stream": true,
+        "reasoning": {"effort": "medium", "summary": "auto"},
+        "parallel_tool_calls": true,
+        "include": ["reasoning.encrypted_content"],
+        "model": main_model,
+        "store": false,
+        "tool_choice": {"type": "image_generation"},
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": content,
+        }],
+        "tools": [tool],
+    });
+    serde_json::to_vec(&body).map(axum::body::Bytes::from)
+}
+
+fn images_response_from_codex_sse(body: &[u8], response_format: &str) -> Result<Value> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        if value.get("type").and_then(Value::as_str) == Some("response.completed") {
+            return images_response_from_completed_event(&value, response_format);
+        }
+        if value.get("response").is_some() {
+            return images_response_from_completed_event(
+                &json!({
+                    "type": "response.completed",
+                    "response": value
+                }),
+                response_format,
+            );
+        }
+    }
+    let mut image_items = Vec::new();
+    let mut created = crate::accounts::now_secs() as i64;
+    let mut usage: Option<Value> = None;
+    for line in String::from_utf8_lossy(body).lines() {
+        let trimmed = line.trim();
+        let Some(payload) = trimmed.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let value: Value = serde_json::from_str(payload)?;
+        match value.get("type").and_then(Value::as_str).unwrap_or("") {
+            "response.output_item.done" => {
+                if let Some(item) = value.get("item") {
+                    if item.get("type").and_then(Value::as_str) == Some("image_generation_call") {
+                        image_items.push(item.clone());
+                    }
+                }
+            }
+            "response.completed" => {
+                if let Some(response) = value.get("response") {
+                    created = response
+                        .get("created_at")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(created);
+                    usage = response
+                        .get("tool_usage")
+                        .and_then(|usage| usage.get("image_gen"))
+                        .filter(|usage| usage.is_object())
+                        .cloned();
+                }
+                if let Ok(out) = images_response_from_completed_event(&value, response_format) {
+                    return Ok(out);
+                }
+                if !image_items.is_empty() {
+                    return images_response_from_image_items(
+                        &image_items,
+                        created,
+                        usage.as_ref(),
+                        response_format,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    if !image_items.is_empty() {
+        return images_response_from_image_items(
+            &image_items,
+            created,
+            usage.as_ref(),
+            response_format,
+        );
+    }
+    bail!("stream disconnected before response.completed image output");
+}
+
+fn images_response_from_completed_event(event: &Value, response_format: &str) -> Result<Value> {
+    let response = event.get("response").unwrap_or(event);
+    let created = response
+        .get("created_at")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| crate::accounts::now_secs() as i64);
+    let output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let usage = response
+        .get("tool_usage")
+        .and_then(|usage| usage.get("image_gen"))
+        .filter(|usage| usage.is_object());
+    images_response_from_image_items(&output, created, usage, response_format)
+}
+
+fn images_response_from_image_items(
+    items: &[Value],
+    created: i64,
+    usage: Option<&Value>,
+    response_format: &str,
+) -> Result<Value> {
+    let mut data = Vec::new();
+    let mut first_meta: Option<&Value> = None;
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+            continue;
+        }
+        let Some(result) = item
+            .get("result")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if first_meta.is_none() {
+            first_meta = Some(item);
+        }
+        let mut entry = serde_json::Map::new();
+        if response_format.trim().eq_ignore_ascii_case("url") {
+            let mime = image_mime_type_from_output_format(
+                item.get("output_format")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
+            entry.insert("url".into(), json!(format!("data:{mime};base64,{result}")));
+        } else {
+            entry.insert("b64_json".into(), json!(result));
+        }
+        if let Some(revised) = item
+            .get("revised_prompt")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            entry.insert("revised_prompt".into(), json!(revised));
+        }
+        data.push(Value::Object(entry));
+    }
+    if data.is_empty() {
+        bail!("upstream did not return image_generation_call result");
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("created".into(), json!(created));
+    out.insert("data".into(), Value::Array(data));
+    if let Some(meta) = first_meta {
+        for field in ["background", "output_format", "quality", "size"] {
+            if let Some(value) = meta
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                out.insert(field.into(), json!(value));
+            }
+        }
+    }
+    if let Some(usage) = usage {
+        out.insert("usage".into(), usage.clone());
+    }
+    Ok(Value::Object(out))
+}
+
+fn image_mime_type_from_output_format(format: &str) -> &'static str {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+async fn record_image_history(
+    state: &AppState,
+    history_context: HistoryContext,
+    response_id: String,
+    model: String,
+    status: &str,
+    start: Instant,
+    url: String,
+    error: String,
+) {
+    state
+        .request_history
+        .record(record_from_context(
+            &history_context,
+            response_id,
+            model,
+            status.into(),
+            0,
+            0,
+            start.elapsed().as_millis() as u64,
+            url,
+            error,
+            false,
+        ))
+        .await;
+}
+
+fn image_error_response(status: StatusCode, message: impl Into<String>, code: &str) -> Response {
+    (
+        status,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "invalid_request_error",
+                "code": code,
+            }
+        })),
+    )
+        .into_response()
 }
 
 async fn handle_list_files(State(state): State<AppState>) -> Response {
@@ -6882,6 +7842,52 @@ data: [DONE]
 "#;
         let (input, output, cache_hit) = extract_proxy_response_usage(body);
         assert_eq!((input, output, cache_hit), (9, 3, false));
+    }
+
+    #[test]
+    fn test_codex_images_request_uses_image_generation_tool() {
+        let request = parse_image_api_request(
+            br#"{
+                "model": "gpt-image-2",
+                "prompt": "draw a white DEX logo",
+                "size": "1024x1024",
+                "output_format": "png"
+            }"#,
+            ImageAction::Generate,
+        )
+        .ok()
+        .unwrap();
+
+        let body = build_codex_images_responses_body(&request, ImageAction::Generate).unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(value["model"], DEFAULT_IMAGE_MAIN_MODEL);
+        assert_eq!(value["tool_choice"]["type"], "image_generation");
+        assert_eq!(value["tools"][0]["type"], "image_generation");
+        assert_eq!(value["tools"][0]["action"], "generate");
+        assert_eq!(value["tools"][0]["model"], DEFAULT_IMAGE_TOOL_MODEL);
+        assert_eq!(value["tools"][0]["size"], "1024x1024");
+        assert_eq!(
+            value["input"][0]["content"][0]["text"],
+            "draw a white DEX logo"
+        );
+    }
+
+    #[test]
+    fn test_codex_image_sse_converts_to_images_response() {
+        let body = br#"event: response.completed
+data: {"type":"response.completed","response":{"created_at":1760000000,"output":[{"type":"image_generation_call","result":"QUJD","revised_prompt":"DEX mark","output_format":"png","size":"1024x1024"}],"tool_usage":{"image_gen":{"input_tokens":10,"output_tokens":1}}}}
+
+data: [DONE]
+"#;
+
+        let value = images_response_from_codex_sse(body, "b64_json").unwrap();
+
+        assert_eq!(value["created"], 1760000000);
+        assert_eq!(value["data"][0]["b64_json"], "QUJD");
+        assert_eq!(value["data"][0]["revised_prompt"], "DEX mark");
+        assert_eq!(value["size"], "1024x1024");
+        assert_eq!(value["usage"]["input_tokens"], 10);
     }
 
     #[test]

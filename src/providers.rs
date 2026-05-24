@@ -389,7 +389,9 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
                 "gpt-5.4",
                 "gpt-5.4-mini",
                 "gpt-5.3-codex",
-                "gpt-5",
+                "gpt-5.3-codex-spark",
+                "gpt-5.2",
+                "gpt-image-2",
                 "codex-auto-review",
             ],
             "OPENAI_CODEX_OAUTH",
@@ -664,6 +666,24 @@ mod tests {
         assert_eq!(
             profile_by_slug("google-ai").wire_protocol,
             WireProtocol::GeminiNative
+        );
+    }
+
+    #[test]
+    fn codex_official_models_match_cliproxy_registry() {
+        let codex = profile_by_slug("codex");
+        assert_eq!(
+            codex.known_models,
+            vec![
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.2",
+                "gpt-image-2",
+                "codex-auto-review",
+            ]
         );
     }
 

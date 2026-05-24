@@ -478,13 +478,14 @@ assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('
   'gpt-5.4': 'deepseek-v4-flash',
   'gpt-5.4-mini': 'deepseek-v4-flash',
   'gpt-5.3-codex': 'deepseek-v4-flash',
-  'gpt-5': 'deepseek-v4-flash',
+  'gpt-5.3-codex-spark': 'deepseek-v4-flash',
+  'gpt-5.2': 'deepseek-v4-flash',
   'codex-auto-review': 'deepseek-v4-flash',
 });
 context.addAccount('deepseek', 'codex');
 assert.strictEqual(context.editingAccount.client_surface, 'cli');
 assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'deepseek-v4-pro');
-assert.strictEqual(context.editingAccount.model_map['gpt-5'], 'deepseek-v4-flash');
+assert.strictEqual(context.editingAccount.model_map['gpt-5.2'], 'deepseek-v4-flash');
 assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.4'], 'deepseek-v4-flash');
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
 context.editingAccount.endpoints[0].path = '/v1/chat/completions';

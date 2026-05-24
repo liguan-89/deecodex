@@ -195,7 +195,15 @@
     if (accountKind === 'codex') {
       base.model_map = typeof codexProviderModelMap === 'function' ? codexProviderModelMap(values.provider) : {};
       if (model && !Object.keys(base.model_map).length) {
-        base.model_map = { 'gpt-5': model, 'gpt-5.5': model };
+        base.model_map = {
+          'gpt-5.5': model,
+          'gpt-5.4': model,
+          'gpt-5.4-mini': model,
+          'gpt-5.3-codex': model,
+          'gpt-5.3-codex-spark': model,
+          'gpt-5.2': model,
+          'codex-auto-review': model,
+        };
       }
       if (typeof providerDefaultTemplate === 'function' && typeof createEndpointFromTemplate === 'function') {
         base.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(values.provider), base)];
