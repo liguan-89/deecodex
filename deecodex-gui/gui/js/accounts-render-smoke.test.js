@@ -363,6 +363,29 @@ assert(codexDetail.includes('model-upstream-cell'));
 assert(codexDetail.includes('model-vision-cell'));
 assert(!codexDetail.includes('model-remove-placeholder'));
 
+context.editingAccount = {
+  id: 'r1',
+  name: 'OpenAI Responses',
+  provider: 'openai',
+  client_kind: 'codex',
+  upstream: 'https://dex.jinpai.lat/v1',
+  api_key: 'sk-responses',
+  model_map: { 'gpt-5.5': 'other-model' },
+  endpoints: [{
+    id: 'ep-responses',
+    kind: 'open_ai_responses',
+    base_url: 'https://dex.jinpai.lat/v1',
+    model_map: { 'gpt-5.5': 'other-model' },
+    vision: { mode: 'native' },
+  }],
+};
+const responsesDirectDetail = context.renderAccountsPanel();
+assert(!responsesDirectDetail.includes('model-map-table'));
+assert(!responsesDirectDetail.includes('fetchAndPopulateModels()'));
+assert(!responsesDirectDetail.includes('+ 添加模型映射'));
+assert(responsesDirectDetail.includes('Responses 直连保留 Codex 原始模型名'));
+assert(responsesDirectDetail.includes('<div class="section-sub-label">图片处理</div>'));
+
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c2');
 context.accountsView = 'edit';
 const officialDetail = context.renderAccountsPanel();
@@ -381,6 +404,9 @@ assert(officialDetail.includes('配额耗尽中'));
 assert(officialDetail.includes('runtime-state-grid'));
 assert(officialDetail.includes('runtime-model-row'));
 assert(officialDetail.includes('HTTP 429'));
+assert(!officialDetail.includes('model-map-table'));
+assert(!officialDetail.includes('fetchAndPopulateModels()'));
+assert(officialDetail.includes('Codex 官方账号使用官方模型名'));
 
 context.selectedClientKind = 'hermes';
 const hermesList = context.renderAccountList();

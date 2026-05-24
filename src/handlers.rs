@@ -3354,6 +3354,7 @@ async fn handle_client_anthropic_messages(
 }
 
 /// 从 SSE 字节流中提取 usage 和上游回显信息。
+#[cfg(test)]
 fn extract_bypass_response_observations(bytes: &[u8]) -> (u32, u32, bool, Option<String>) {
     let text = String::from_utf8_lossy(bytes);
     let mut input_tokens: u32 = 0;
@@ -3865,7 +3866,8 @@ async fn handle_responses_bypass(
             .into_response();
     }
 
-    // 模型映射（直连模式下仅此一项处理）
+    // Responses 直连用于转发 Codex 原生请求，默认保留请求体里的模型名。
+    // Chat 兼容端点才需要 Responses -> Chat 的模型映射。
     let (account, endpoint) = active_account_endpoint(&state).await;
     let history_context = history_context_for(&account, &endpoint, "/v1/responses");
     let fast_service_tier_status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
@@ -3884,17 +3886,12 @@ async fn handle_responses_bypass(
         ),
         FastServiceTierStatus::Skipped => {}
     }
-    let model_map = endpoint.model_map.clone();
-    let model = resolve_model(&req.model, &model_map);
-    let mut body = if model != req.model {
-        patch_body_model_field(&body, &model).unwrap_or(body)
-    } else {
-        body
-    };
+    let model_map = ModelMap::new();
+    let model = req.model.clone();
+    let mut body = body;
     if let Some(service_tier) = req.service_tier.as_deref() {
         body = patch_body_string_field(&body, "service_tier", service_tier).unwrap_or(body);
     }
-    req.model = model.clone();
 
     tracing::info!(
         bypass_body = %String::from_utf8_lossy(&body),
@@ -4563,7 +4560,9 @@ async fn bypass_stream_forward(
     let mut builder = state
         .client
         .post(&url)
-        .header("Content-Type", "application/json");
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("Accept-Encoding", "identity");
 
     if !api_key.is_empty() {
         builder = builder.bearer_auth(api_key.as_str());
@@ -4658,6 +4657,12 @@ async fn bypass_stream_forward(
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("text/event-stream")
+        .to_string();
 
     if !status.is_success() {
         let error_body = resp.text().await.unwrap_or_default();
@@ -4695,53 +4700,11 @@ async fn bypass_stream_forward(
             .into_response();
     }
 
-    // 收集完整响应体，解析 usage 后再透传
-    let body_bytes = match resp.bytes().await {
-        Ok(b) => {
-            tracing::info!(
-                bypass_response = %String::from_utf8_lossy(&b),
-                "bypass 响应体"
-            );
-            b
-        }
-        Err(e) => {
-            error!("bypass stream read body: {e}");
-            let _ = state
-                .request_history
-                .record(record_from_context(
-                    &history_context,
-                    response_id,
-                    model,
-                    "failed".into(),
-                    0,
-                    0,
-                    start.elapsed().as_millis() as u64,
-                    url,
-                    format!("stream read error: {e}"),
-                    false,
-                ))
-                .await;
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream stream error: {e}"),
-            )
-                .into_response();
-        }
-    };
-
-    let (input_tokens, output_tokens, cache_hit, upstream_service_tier) =
-        extract_bypass_response_observations(&body_bytes);
-    if let Some(service_tier) = upstream_service_tier.as_deref() {
-        tracing::info!(
-            model = %model,
-            service_tier = %service_tier,
-            "上游响应回显 service_tier"
-        );
-    } else if requested_service_tier.is_some() {
+    if requested_service_tier.is_some() {
         tracing::warn!(
             model = %model,
             requested_service_tier = %requested_service_tier.as_deref().unwrap_or(""),
-            "上游响应未回显 service_tier，无法仅凭响应确认 GPT 已采用该服务层"
+            "Responses 直连流式透传不再等待完整响应，无法在代理层解析 service_tier/usage"
         );
     }
     let _ = state
@@ -4751,19 +4714,20 @@ async fn bypass_stream_forward(
             response_id,
             model,
             "completed".into(),
-            input_tokens,
-            output_tokens,
+            0,
+            0,
             start.elapsed().as_millis() as u64,
             url,
             String::new(),
-            cache_hit,
+            false,
         ))
         .await;
 
-    let body_stream = axum::body::Body::from(body_bytes);
+    let body_stream =
+        axum::body::Body::from_stream(resp.bytes_stream().map_err(std::io::Error::other));
     let mut resp = Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "text/event-stream")
+        .header("Content-Type", content_type)
         .body(body_stream)
         .unwrap();
     if let Some(req_id) = x_request_id {

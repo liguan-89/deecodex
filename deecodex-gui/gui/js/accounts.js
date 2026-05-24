@@ -901,6 +901,22 @@ function endpointKindLabel(kind) {
   return labels[kind] || kind || 'Chat 兼容';
 }
 
+function endpointKindIsResponsesDirect(kind) {
+  return kind === 'open_ai_responses'
+    || kind === 'OpenAiResponses'
+    || kind === 'custom_responses'
+    || kind === 'CustomResponses';
+}
+
+function endpointKindUsesModelMapping(kind) {
+  return kind === 'open_ai_chat'
+    || kind === 'OpenAiChat'
+    || kind === 'custom_chat'
+    || kind === 'CustomChat'
+    || kind === 'anthropic_messages'
+    || kind === 'AnthropicMessages';
+}
+
 function visionModeLabel(mode) {
   const labels = {
     off: '视觉关闭',
@@ -1441,6 +1457,35 @@ function renderAccountDetail() {
   const requestTimeout = ep.request_timeout_secs ?? null;
   const maxRetries = ep.max_retries ?? a.max_retries;
   const knownModels = getProviderKnownModels(a.provider);
+  const responsesDirect = endpointKindIsResponsesDirect(ep.kind);
+  const usesModelMapping = endpointKindUsesModelMapping(ep.kind);
+  const modelSection = usesModelMapping ? `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">模型</div>
+      </div>
+      <div class="section-action-row">
+        <button class="btn btn-ghost" onclick="fetchAndPopulateModels()">从上游获取模型列表</button>
+        <span id="modelFetchStatus"></span>
+      </div>
+      <div class="model-map-table">
+        <div class="model-map-head">
+          <span>Codex 请求模型</span>
+          <span>上游模型</span>
+          <span>图片处理</span>
+        </div>
+        <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
+      </div>
+      <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
+    </section>` : '';
+  const passthroughModel = responsesDirect || ep.kind === 'codex_official' || ep.kind === 'CodexOfficial';
+  const visionSectionTitle = passthroughModel ? '图片处理' : '其他模型图片处理';
+  const visionTargetLabel = passthroughModel ? '当前端点' : '其他模型';
+  const visionHint = responsesDirect
+    ? 'Responses 直连保留 Codex 原始模型名；这里仅设置图片输入处理策略。'
+    : (ep.kind === 'codex_official' || ep.kind === 'CodexOfficial')
+      ? 'Codex 官方账号使用官方模型名；这里仅设置图片输入处理策略。'
+    : '模型映射行优先生效；这里处理临时模型或未列出的模型。';
 
   return `<div class="breadcrumb account-detail-breadcrumb">
     <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
@@ -1516,39 +1561,22 @@ function renderAccountDetail() {
 
     ${renderCodexOfficialRuntimePanel(a)}
 
-    <section class="account-edit-section">
-      <div class="account-section-head">
-        <div class="section-sub-label">模型</div>
-      </div>
-      <div class="section-action-row">
-        <button class="btn btn-ghost" onclick="fetchAndPopulateModels()">从上游获取模型列表</button>
-        <span id="modelFetchStatus"></span>
-      </div>
-      <div class="model-map-table">
-        <div class="model-map-head">
-          <span>Codex 请求模型</span>
-          <span>上游模型</span>
-          <span>图片处理</span>
-        </div>
-        <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
-      </div>
-      <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
-    </section>
+    ${modelSection}
 
     <section class="account-edit-section">
       <div class="account-section-head">
-        <div class="section-sub-label">其他模型图片处理</div>
+        <div class="section-sub-label">${visionSectionTitle}</div>
       </div>
       <div class="config-fields">
         <div class="config-field">
-          <label>其他模型</label>
+          <label>${visionTargetLabel}</label>
           <input type="hidden" id="edit_vision_mode" value="${escAttr(String(visionMode).toLowerCase())}">
           <div class="vision-mode-segments" role="group" aria-label="视觉能力">
             <button type="button" class="vision-mode-option ${visionMode === 'off' || visionMode === 'Off' ? 'active' : ''}" data-mode="off" onclick="setVisionMode('off')">关闭</button>
             <button type="button" class="vision-mode-option ${visionMode === 'native' || visionMode === 'Native' ? 'active' : ''}" data-mode="native" onclick="setVisionMode('native')">原生</button>
             <button type="button" class="vision-mode-option ${visionMode === 'glue' || visionMode === 'Glue' ? 'active' : ''}" data-mode="glue" onclick="setVisionMode('glue')">胶水</button>
           </div>
-          <span class="hint">模型映射行优先生效；这里处理临时模型或未列出的模型。</span>
+          <span class="hint">${visionHint}</span>
         </div>
         <div class="config-field">
           <label>不支持图片时</label>
@@ -2255,8 +2283,13 @@ function syncEditingDraftFromForm() {
   ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
   ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'reject';
 
-  ep.model_map = collectModelMap();
-  ep.model_profiles = collectModelProfiles();
+  if (!endpointKindUsesModelMapping(ep.kind)) {
+    ep.model_map = {};
+    ep.model_profiles = {};
+  } else {
+    ep.model_map = collectModelMap();
+    ep.model_profiles = collectModelProfiles();
+  }
   a.model_map = ep.model_map;
 
   const cwEnabled = document.getElementById('edit_cw_enabled');
