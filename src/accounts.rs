@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -850,6 +851,7 @@ impl AccountStore {
         for account in &mut self.accounts {
             account.normalize_v2();
         }
+        self.repair_duplicate_account_ids();
 
         let active_exists = self.active_account_id.as_ref().is_some_and(|id| {
             self.accounts
@@ -904,6 +906,29 @@ impl AccountStore {
             };
             if let Some(endpoint) = endpoint {
                 account.sync_legacy_from_endpoint(&endpoint);
+            }
+        }
+    }
+
+    fn repair_duplicate_account_ids(&mut self) {
+        let mut seen = HashSet::new();
+        for account in &mut self.accounts {
+            let original_id = account.id.clone();
+            if seen.insert(original_id.clone()) {
+                continue;
+            }
+
+            let mut repaired_id = generate_id();
+            while seen.contains(&repaired_id) {
+                repaired_id = generate_id();
+            }
+            seen.insert(repaired_id.clone());
+            account.id = repaired_id.clone();
+
+            for endpoint in &mut account.endpoints {
+                if endpoint.id == original_id || endpoint.id == format!("endpoint_{original_id}") {
+                    endpoint.id = format!("endpoint_{repaired_id}");
+                }
             }
         }
     }
@@ -1259,12 +1284,14 @@ pub fn validate_dev_pipeline_links(store: &AccountStore) -> Result<()> {
 // ── 工具函数 ────────────────────────────────────────────────────────────────
 
 pub fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
-    format!("{:x}", ts)
+        .as_nanos();
+    let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed) & 0xffff;
+    format!("{ts:x}{seq:04x}")
 }
 
 pub fn now_secs() -> u64 {
@@ -1765,6 +1792,47 @@ mod tests {
             store.active_endpoint_id.as_deref(),
             Some(expected_endpoint_id.as_str())
         );
+    }
+
+    #[test]
+    fn store_normalize_repairs_duplicate_account_ids() {
+        let mut first = legacy_account(true);
+        first.normalize_v2();
+        first.id = "duplicate".into();
+        first.endpoints[0].id = "endpoint_duplicate".into();
+        let mut second = first.clone();
+        second.name = "Second".into();
+        second.api_key = "second-key".into();
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![first, second],
+            active_id: Some("duplicate".into()),
+            active_account_id: Some("duplicate".into()),
+            active_endpoint_id: Some("endpoint_duplicate".into()),
+        };
+
+        store.normalize_v2();
+
+        assert_eq!(store.accounts[0].id, "duplicate");
+        assert_ne!(store.accounts[1].id, "duplicate");
+        assert_ne!(store.accounts[0].id, store.accounts[1].id);
+        assert_eq!(
+            store.accounts[1].endpoints[0].id,
+            format!("endpoint_{}", store.accounts[1].id)
+        );
+        assert_eq!(store.active_account_id.as_deref(), Some("duplicate"));
+        assert_eq!(
+            store.active_endpoint_id.as_deref(),
+            Some("endpoint_duplicate")
+        );
+    }
+
+    #[test]
+    fn generate_id_is_unique_for_batch_calls() {
+        let mut ids = HashSet::new();
+        for _ in 0..256 {
+            assert!(ids.insert(generate_id()));
+        }
     }
 
     #[test]
