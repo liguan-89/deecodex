@@ -9,12 +9,16 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_ROLLOUT_MESSAGE_CHARS: usize = 24_000;
 const MAX_ROLLOUT_TOTAL_CHARS: usize = 1_500_000;
+const DESKTOP_RECENT_LOAD_WINDOW: usize = 20;
 
 /// 线程信息（只读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +44,14 @@ pub struct MigrationDiff {
     pub before: Vec<ProviderSummary>,
     pub after: Vec<ProviderSummary>,
     pub changed_count: usize,
+    pub visibility_fixed_count: usize,
+    pub desktop_project_fixed_count: usize,
+    pub desktop_recent_fixed_count: usize,
+    pub desktop_project_pending_count: usize,
+    pub desktop_recent_pending_count: usize,
+    pub desktop_project_repair_blocked: bool,
+    pub desktop_recent_repair_blocked: bool,
+    pub cwd_aligned_count: usize,
 }
 
 /// 是否已有迁移备份（即迁移操作已执行过）。
@@ -49,6 +61,41 @@ pub struct ThreadStatus {
     pub total: usize,
     pub migrated: bool,
     pub non_deecodex_count: usize,
+    pub provider_unified_count: usize,
+    pub codex_visible_count: usize,
+    pub missing_preview_count: usize,
+    pub missing_user_event_count: usize,
+    pub current_cwd_visible_count: usize,
+    pub desktop_project_indexed_count: usize,
+    pub desktop_project_pending_count: usize,
+    pub desktop_project_repair_blocked: bool,
+    pub desktop_recent_visible_count: usize,
+    pub desktop_recent_pending_count: usize,
+    pub desktop_recent_repair_blocked: bool,
+    pub source_summary: Vec<ThreadSourceSummary>,
+}
+
+/// Codex 首页来源分布。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSourceSummary {
+    pub source: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ThreadVisibilityStatus {
+    provider_unified_count: usize,
+    codex_visible_count: usize,
+    missing_preview_count: usize,
+    missing_user_event_count: usize,
+    current_cwd_visible_count: usize,
+    desktop_project_indexed_count: usize,
+    desktop_project_pending_count: usize,
+    desktop_project_repair_blocked: bool,
+    desktop_recent_visible_count: usize,
+    desktop_recent_pending_count: usize,
+    desktop_recent_repair_blocked: bool,
+    source_summary: Vec<ThreadSourceSummary>,
 }
 
 /// 查找 Codex 的 state SQLite 数据库。
@@ -127,6 +174,16 @@ pub fn backup_path(data_dir: &Path) -> PathBuf {
     data_dir.join("thread_migration_backup.json")
 }
 
+/// 线程 cwd 可见性备份路径。
+pub fn cwd_backup_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("thread_cwd_visibility_backup.json")
+}
+
+/// Codex Desktop recent 可见性时间戳备份路径。
+pub fn desktop_recent_backup_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("thread_desktop_recent_backup.json")
+}
+
 /// 获取当前状态：各 provider 线程数、是否已迁移。
 pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
@@ -139,6 +196,7 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
         .filter(|s| s.provider != "deecodex")
         .map(|s| s.count)
         .sum();
+    let visibility = get_visibility_status(&db_path)?;
     let migrated = backup_path(data_dir).exists();
 
     Ok(ThreadStatus {
@@ -146,6 +204,18 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
         total,
         migrated,
         non_deecodex_count,
+        provider_unified_count: visibility.provider_unified_count,
+        codex_visible_count: visibility.codex_visible_count,
+        missing_preview_count: visibility.missing_preview_count,
+        missing_user_event_count: visibility.missing_user_event_count,
+        current_cwd_visible_count: visibility.current_cwd_visible_count,
+        desktop_project_indexed_count: visibility.desktop_project_indexed_count,
+        desktop_project_pending_count: visibility.desktop_project_pending_count,
+        desktop_project_repair_blocked: visibility.desktop_project_repair_blocked,
+        desktop_recent_visible_count: visibility.desktop_recent_visible_count,
+        desktop_recent_pending_count: visibility.desktop_recent_pending_count,
+        desktop_recent_repair_blocked: visibility.desktop_recent_repair_blocked,
+        source_summary: visibility.source_summary,
     })
 }
 
@@ -162,7 +232,12 @@ pub fn migrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
 
-    do_migrate(&db_path, &backup_path(data_dir))
+    do_migrate(
+        &db_path,
+        &backup_path(data_dir),
+        &cwd_backup_path(data_dir),
+        &desktop_recent_backup_path(data_dir),
+    )
 }
 
 /// 还原：从备份恢复原始 model_provider 值。
@@ -176,7 +251,12 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
         anyhow::bail!("没有迁移备份，无需还原");
     }
 
-    do_restore(&db_path, &bp)
+    do_restore(
+        &db_path,
+        &bp,
+        &cwd_backup_path(data_dir),
+        &desktop_recent_backup_path(data_dir),
+    )
 }
 
 /// 校准迁移备份：移除已删除的线程，追加新增的非 deecodex 线程。
@@ -184,7 +264,12 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
 pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    do_calibrate(&db_path, &backup_path(data_dir))
+    do_calibrate(
+        &db_path,
+        &backup_path(data_dir),
+        &cwd_backup_path(data_dir),
+        &desktop_recent_backup_path(data_dir),
+    )
 }
 
 /// 获取指定线程的完整内容（含元数据、摘要、工具）。
@@ -641,32 +726,873 @@ fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
     Ok(summary)
 }
 
-fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
-    let before = get_provider_summary(db_path)?;
+fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let provider_unified_count = query_count(
+        &conn,
+        "SELECT COUNT(*) FROM threads WHERE model_provider = 'deecodex'",
+    )?;
+    let codex_visible_count = query_count(
+        &conn,
+        "SELECT COUNT(*) FROM threads
+         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) <> ''",
+    )?;
+    let missing_preview_count = query_count(
+        &conn,
+        "SELECT COUNT(*) FROM threads
+         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) = ''",
+    )?;
+    let missing_user_event_count = query_count(
+        &conn,
+        "SELECT COUNT(*) FROM threads
+         WHERE model_provider = 'deecodex'
+           AND archived = 0
+           AND has_user_event = 0
+           AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
+    )?;
+    let current_cwd = std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let current_cwd_visible_count = if current_cwd.is_empty() {
+        0
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM threads
+             WHERE archived = 0
+               AND model_provider = 'deecodex'
+               AND TRIM(preview) <> ''
+               AND cwd = ?1",
+            rusqlite::params![current_cwd],
+            |row| row.get::<_, usize>(0),
+        )?
+    };
 
-    let conn = Connection::open(db_path)?;
-    // 设置 busy timeout 以应对 Codex 持有的 WAL 写锁
-    conn.pragma_update(None, "busy_timeout", "5000")?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(TRIM(source), ''), '(空)'), COUNT(*)
+         FROM threads
+         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) <> ''
+         GROUP BY source
+         ORDER BY COUNT(*) DESC",
+    )?;
+    let source_summary = stmt
+        .query_map([], |row| {
+            Ok(ThreadSourceSummary {
+                source: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let desktop_project_status = get_desktop_project_index_status(db_path, &conn)?;
 
+    Ok(ThreadVisibilityStatus {
+        provider_unified_count,
+        codex_visible_count,
+        missing_preview_count,
+        missing_user_event_count,
+        current_cwd_visible_count,
+        desktop_project_indexed_count: desktop_project_status.indexed_count,
+        desktop_project_pending_count: desktop_project_status.pending_count,
+        desktop_project_repair_blocked: desktop_project_status.repair_blocked,
+        desktop_recent_visible_count: desktop_project_status.recent_visible_count,
+        desktop_recent_pending_count: desktop_project_status.recent_pending_count,
+        desktop_recent_repair_blocked: desktop_project_status.recent_repair_blocked,
+        source_summary,
+    })
+}
+
+fn query_count(conn: &Connection, sql: &str) -> Result<usize> {
+    conn.query_row(sql, [], |row| row.get::<_, usize>(0))
+        .with_context(|| format!("执行统计失败: {sql}"))
+}
+
+fn repair_thread_visibility(conn: &Connection) -> Result<usize> {
+    let mut fixed = 0usize;
+    fixed += conn
+        .execute(
+            "UPDATE threads
+             SET preview = first_user_message
+             WHERE model_provider = 'deecodex'
+               AND archived = 0
+               AND TRIM(preview) = ''
+               AND TRIM(first_user_message) <> ''",
+            [],
+        )
+        .context("补齐 Codex 线程 preview(first_user_message) 失败")?;
+    fixed += conn
+        .execute(
+            "UPDATE threads
+             SET preview = title
+             WHERE model_provider = 'deecodex'
+               AND archived = 0
+               AND TRIM(preview) = ''
+               AND TRIM(title) <> ''",
+            [],
+        )
+        .context("补齐 Codex 线程 preview(title) 失败")?;
+    fixed += conn
+        .execute(
+            "UPDATE threads
+             SET has_user_event = 1
+             WHERE model_provider = 'deecodex'
+               AND archived = 0
+               AND has_user_event = 0
+               AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
+            [],
+        )
+        .context("补齐 Codex 线程 has_user_event 失败")?;
+
+    if fixed > 0 {
+        tracing::info!("已修复 {fixed} 个 Codex 线程首页可见性字段");
+    }
+    Ok(fixed)
+}
+
+fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn repair_desktop_project_metadata(conn: &Connection) -> Result<usize> {
+    let cwd_rows: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT cwd
+             FROM threads
+             WHERE model_provider = 'deecodex'
+               AND archived = 0
+               AND TRIM(preview) <> ''
+               AND TRIM(cwd) <> ''",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    let mut fixed = 0usize;
+    for cwd in cwd_rows {
+        let cwd_path = Path::new(&cwd);
+        if !cwd_path.is_dir() {
+            continue;
+        }
+
+        let Some(git_sha) = git_output(cwd_path, &["rev-parse", "HEAD"]) else {
+            continue;
+        };
+        let git_branch = git_output(cwd_path, &["branch", "--show-current"]);
+        let git_origin_url = git_output(cwd_path, &["config", "--get", "remote.origin.url"]);
+
+        let changed = conn
+            .execute(
+                "UPDATE threads
+                 SET git_sha = ?1,
+                     git_branch = COALESCE(?2, git_branch),
+                     git_origin_url = COALESCE(?3, git_origin_url)
+                 WHERE model_provider = 'deecodex'
+                   AND archived = 0
+                   AND TRIM(preview) <> ''
+                   AND cwd = ?4
+                   AND (
+                     COALESCE(git_sha, '') != ?1
+                     OR (?2 IS NOT NULL AND COALESCE(git_branch, '') != ?2)
+                     OR (?3 IS NOT NULL AND COALESCE(git_origin_url, '') != ?3)
+                   )",
+                rusqlite::params![git_sha, git_branch, git_origin_url, cwd],
+            )
+            .with_context(|| format!("修复 Codex Desktop 项目元数据失败: {cwd}"))?;
+        fixed += changed;
+    }
+
+    if fixed > 0 {
+        tracing::info!("已修复 {fixed} 个 Codex Desktop 项目会话元数据");
+    }
+    Ok(fixed)
+}
+
+#[derive(Debug, Clone)]
+struct DesktopThreadRow {
+    id: String,
+    cwd: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DesktopProjectIndexStatus {
+    indexed_count: usize,
+    pending_count: usize,
+    repair_blocked: bool,
+    recent_visible_count: usize,
+    recent_pending_count: usize,
+    recent_repair_blocked: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DesktopProjectRepairResult {
+    fixed_count: usize,
+    pending_count: usize,
+    blocked: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DesktopRecentRepairResult {
+    fixed_count: usize,
+    pending_count: usize,
+    blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DesktopRecentTimestampBackup {
+    id: String,
+    updated_at: i64,
+    updated_at_ms: Option<i64>,
+}
+
+fn codex_global_state_path(db_path: &Path) -> Option<PathBuf> {
+    db_path
+        .parent()
+        .map(|codex_home| codex_home.join(".codex-global-state.json"))
+}
+
+fn value_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_string_object(value: Option<&Value>) -> Map<String, Value> {
+    value
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn append_unique(items: &mut Vec<String>, value: &str) -> bool {
+    if items.iter().any(|item| item == value) {
+        return false;
+    }
+    items.push(value.to_string());
+    true
+}
+
+fn remove_value(items: &mut Vec<String>, value: &str) -> bool {
+    let before = items.len();
+    items.retain(|item| item != value);
+    before != items.len()
+}
+
+fn path_starts_with(path: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    let path = path.replace('\\', "/");
+    let root = root.trim_end_matches('/').replace('\\', "/");
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+fn is_codex_worktree_path(path: &str) -> bool {
+    let marker = "/.codex/worktrees/";
+    path.contains(marker) && path.ends_with("/deecodex/deecodex-gui")
+}
+
+fn project_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<String> {
+    let mut best: Option<&String> = None;
+    for root in known_roots {
+        if path_starts_with(cwd, root) && best.is_none_or(|current| root.len() > current.len()) {
+            best = Some(root);
+        }
+    }
+    best.cloned().or_else(|| {
+        if is_codex_worktree_path(cwd) && Path::new(cwd).is_dir() {
+            Some(cwd.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> {
+    let mut column_stmt = conn.prepare("PRAGMA table_info(threads)")?;
+    let columns: HashSet<String> = column_stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    let order_columns = ["updated_at_ms", "updated_at", "created_at_ms", "created_at"]
+        .into_iter()
+        .filter(|column| columns.contains(*column))
+        .map(|column| format!("COALESCE({column}, 0) DESC"))
+        .collect::<Vec<_>>();
+    let order_by = if order_columns.is_empty() {
+        "rowid DESC".to_string()
+    } else {
+        order_columns.join(", ")
+    };
+    let sql = format!(
+        "SELECT id, cwd
+         FROM threads
+         WHERE model_provider = 'deecodex'
+           AND source = 'vscode'
+           AND archived = 0
+           AND TRIM(preview) <> ''
+           AND TRIM(cwd) <> ''
+         ORDER BY {order_by}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DesktopThreadRow {
+                id: row.get(0)?,
+                cwd: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn desktop_recent_thread_ids(conn: &Connection, limit: usize) -> Result<HashSet<String>> {
+    let mut column_stmt = conn.prepare("PRAGMA table_info(threads)")?;
+    let columns: HashSet<String> = column_stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    let order_columns = ["updated_at", "created_at", "updated_at_ms", "created_at_ms"]
+        .into_iter()
+        .filter(|column| columns.contains(*column))
+        .map(|column| format!("COALESCE({column}, 0) DESC"))
+        .collect::<Vec<_>>();
+    let order_by = if order_columns.is_empty() {
+        "rowid DESC".to_string()
+    } else {
+        order_columns.join(", ")
+    };
+    let sql = format!(
+        "SELECT id
+         FROM threads
+         WHERE archived = 0
+           AND source = 'vscode'
+           AND TRIM(preview) <> ''
+         ORDER BY {order_by}
+         LIMIT ?1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let ids = stmt
+        .query_map(rusqlite::params![limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    Ok(ids)
+}
+
+fn desktop_recent_repair_thread_ids(
+    project_threads: &BTreeMap<String, Vec<String>>,
+) -> HashSet<String> {
+    project_threads
+        .iter()
+        .filter(|(project, _)| is_codex_worktree_path(project))
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .collect()
+}
+
+fn desktop_recent_repair_order(project_threads: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+    for (project, thread_ids) in project_threads {
+        if !is_codex_worktree_path(project) {
+            continue;
+        }
+        for id in thread_ids {
+            if seen.insert(id.clone()) {
+                ids.push(id.clone());
+            }
+        }
+    }
+    ids
+}
+
+fn is_live_codex_desktop_state(global_path: &Path) -> bool {
+    let Some(home) = crate::config::home_dir() else {
+        return false;
+    };
+    let expected = home.join(".codex/.codex-global-state.json");
+    if global_path != expected {
+        return false;
+    }
+
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg(r"/Applications/Codex\.app/Contents/MacOS/Codex($| )")
+        .output();
+    output
+        .map(|output| output.status.success() && !output.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+fn desktop_project_candidates(
+    state: &Value,
+    rows: Vec<DesktopThreadRow>,
+) -> (BTreeMap<String, Vec<String>>, HashMap<String, String>) {
+    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
+    let active_roots = value_string_array(state.get("active-workspace-roots"));
+    let project_order = value_string_array(state.get("project-order"));
+    let labels = value_string_object(state.get("electron-workspace-root-labels"));
+
+    let mut known_roots: BTreeSet<String> = saved_roots.iter().cloned().collect();
+    known_roots.extend(active_roots.iter().cloned());
+    known_roots.extend(project_order.iter().cloned());
+    known_roots.extend(labels.keys().cloned());
+
+    let mut order_project_by_thread: HashMap<String, String> = HashMap::new();
+    if let Some(orders) = state
+        .get("sidebar-project-thread-orders")
+        .and_then(Value::as_object)
+    {
+        for (project, order) in orders {
+            known_roots.insert(project.clone());
+            let Some(thread_ids) = order.get("threadIds").and_then(Value::as_array) else {
+                continue;
+            };
+            for thread_id in thread_ids.iter().filter_map(Value::as_str) {
+                order_project_by_thread
+                    .entry(thread_id.to_string())
+                    .or_insert_with(|| project.clone());
+            }
+        }
+    }
+
+    let mut project_threads: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut assignments_by_thread: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        let Some(project) = order_project_by_thread
+            .get(&row.id)
+            .cloned()
+            .or_else(|| project_for_thread(&row.cwd, &known_roots))
+        else {
+            continue;
+        };
+        project_threads
+            .entry(project.clone())
+            .or_default()
+            .push(row.id.clone());
+        assignments_by_thread.insert(row.id, project);
+    }
+    (project_threads, assignments_by_thread)
+}
+
+fn get_desktop_project_index_status(
+    db_path: &Path,
+    conn: &Connection,
+) -> Result<DesktopProjectIndexStatus> {
+    let Some(global_path) = codex_global_state_path(db_path) else {
+        return Ok(DesktopProjectIndexStatus::default());
+    };
+    if !global_path.exists() {
+        return Ok(DesktopProjectIndexStatus::default());
+    }
+
+    let raw = std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
+    let state: Value = serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
+    let rows = read_desktop_thread_rows(conn)?;
+    let (project_threads, assignments_by_thread) = desktop_project_candidates(&state, rows);
+    let recent_ids = desktop_recent_thread_ids(conn, DESKTOP_RECENT_LOAD_WINDOW)?;
+    let candidate_ids = desktop_recent_repair_thread_ids(&project_threads);
+    let recent_visible_count = candidate_ids
+        .iter()
+        .filter(|id| recent_ids.contains(*id))
+        .count();
+    let recent_pending_count = candidate_ids.len().saturating_sub(recent_visible_count);
+    let assignments = state
+        .get("thread-project-assignments")
+        .and_then(Value::as_object);
+    let orders = state
+        .get("sidebar-project-thread-orders")
+        .and_then(Value::as_object);
+    let projectless: HashSet<String> = value_string_array(state.get("projectless-thread-ids"))
+        .into_iter()
+        .collect();
+
+    let mut indexed_count = 0usize;
+    let mut pending_count = 0usize;
+    for (thread_id, project) in &assignments_by_thread {
+        let assigned = assignments
+            .and_then(|items| items.get(thread_id))
+            .and_then(|item| item.get("projectId"))
+            .and_then(Value::as_str)
+            == Some(project.as_str());
+        let ordered = orders
+            .and_then(|items| items.get(project))
+            .and_then(|item| item.get("threadIds"))
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(thread_id)));
+        if assigned && ordered && !projectless.contains(thread_id) {
+            indexed_count += 1;
+        } else {
+            pending_count += 1;
+        }
+    }
+
+    if project_threads.is_empty() {
+        pending_count = 0;
+    }
+
+    Ok(DesktopProjectIndexStatus {
+        indexed_count,
+        pending_count,
+        repair_blocked: pending_count > 0 && is_live_codex_desktop_state(&global_path),
+        recent_visible_count,
+        recent_pending_count,
+        recent_repair_blocked: recent_pending_count > 0
+            && is_live_codex_desktop_state(&global_path),
+    })
+}
+
+fn repair_desktop_project_index(
+    db_path: &Path,
+    conn: &Connection,
+) -> Result<DesktopProjectRepairResult> {
+    let Some(global_path) = codex_global_state_path(db_path) else {
+        return Ok(DesktopProjectRepairResult::default());
+    };
+    if !global_path.exists() {
+        tracing::debug!(
+            path = %global_path.display(),
+            "Codex Desktop 全局状态不存在，跳过项目索引修复"
+        );
+        return Ok(DesktopProjectRepairResult::default());
+    }
+
+    let raw = std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
+    let mut state: Value = serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
+
+    let rows = read_desktop_thread_rows(conn)?;
+    let (project_threads, assignments_by_thread) = desktop_project_candidates(&state, rows);
+    if project_threads.is_empty() {
+        return Ok(DesktopProjectRepairResult::default());
+    }
+    let before_status = get_desktop_project_index_status(db_path, conn)?;
+    if before_status.pending_count > 0 && is_live_codex_desktop_state(&global_path) {
+        tracing::warn!(
+            pending = before_status.pending_count,
+            path = %global_path.display(),
+            "Codex Desktop 正在运行，跳过项目索引写入以避免被运行态全局状态覆盖"
+        );
+        return Ok(DesktopProjectRepairResult {
+            fixed_count: 0,
+            pending_count: before_status.pending_count,
+            blocked: true,
+        });
+    }
+
+    let mut changed = 0usize;
+    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
+    let project_order = value_string_array(state.get("project-order"));
+    let labels = value_string_object(state.get("electron-workspace-root-labels"));
+    let mut next_saved_roots = saved_roots;
+    let mut next_project_order = project_order;
+    let mut next_labels = labels;
+    let mut next_assignments = value_string_object(state.get("thread-project-assignments"));
+    let mut next_projectless = value_string_array(state.get("projectless-thread-ids"));
+    let mut next_hints = value_string_object(state.get("thread-workspace-root-hints"));
+    let mut next_orders = value_string_object(state.get("sidebar-project-thread-orders"));
+
+    for project in project_threads.keys() {
+        changed += append_unique(&mut next_saved_roots, project) as usize;
+        changed += append_unique(&mut next_project_order, project) as usize;
+        if !next_labels.contains_key(project) {
+            next_labels.insert(project.clone(), Value::String(project_label(project)));
+            changed += 1;
+        }
+    }
+
+    for (thread_id, project) in &assignments_by_thread {
+        let assignment = json!({
+            "projectKind": "local",
+            "projectId": project,
+            "path": project,
+            "pendingCoreUpdate": false,
+        });
+        if next_assignments.get(thread_id) != Some(&assignment) {
+            next_assignments.insert(thread_id.clone(), assignment);
+            changed += 1;
+        }
+        changed += remove_value(&mut next_projectless, thread_id) as usize;
+        if next_hints.get(thread_id).and_then(Value::as_str) != Some(project.as_str()) {
+            next_hints.insert(thread_id.clone(), Value::String(project.clone()));
+            changed += 1;
+        }
+    }
+
+    for (project, thread_ids) in &project_threads {
+        let mut merged = Vec::new();
+        let mut seen = HashSet::new();
+        for id in thread_ids {
+            if seen.insert(id.clone()) {
+                merged.push(Value::String(id.clone()));
+            }
+        }
+        let sort_key = next_orders
+            .get(project)
+            .and_then(Value::as_object)
+            .and_then(|object| object.get("sortKey"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(existing_ids) = next_orders
+            .get(project)
+            .and_then(Value::as_object)
+            .and_then(|object| object.get("threadIds"))
+            .and_then(Value::as_array)
+        {
+            for id in existing_ids.iter().filter_map(Value::as_str) {
+                if seen.insert(id.to_string()) {
+                    merged.push(Value::String(id.to_string()));
+                }
+            }
+        }
+
+        let mut order = Map::new();
+        order.insert("threadIds".to_string(), Value::Array(merged));
+        if let Some(sort_key) = sort_key {
+            order.insert("sortKey".to_string(), Value::String(sort_key));
+        }
+        let next = Value::Object(order);
+        if next_orders.get(project) != Some(&next) {
+            next_orders.insert(project.clone(), next);
+            changed += 1;
+        }
+    }
+
+    if changed == 0 {
+        return Ok(DesktopProjectRepairResult::default());
+    }
+
+    state["electron-saved-workspace-roots"] = json!(next_saved_roots);
+    state["project-order"] = json!(next_project_order);
+    state["electron-workspace-root-labels"] = Value::Object(next_labels);
+    state["thread-project-assignments"] = Value::Object(next_assignments);
+    state["projectless-thread-ids"] = json!(next_projectless);
+    state["thread-workspace-root-hints"] = Value::Object(next_hints);
+    state["sidebar-project-thread-orders"] = Value::Object(next_orders);
+
+    let backup_path = global_path.with_file_name(format!(
+        ".codex-global-state.json.deecodex-desktop-index-{}.bak",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&backup_path, raw).context("备份 Codex Desktop 全局状态失败")?;
+
+    let next_raw =
+        serde_json::to_string(&state).context("序列化 Codex Desktop 全局状态失败")? + "\n";
+    std::fs::write(&global_path, next_raw).context("写入 Codex Desktop 全局状态失败")?;
+
+    tracing::info!(
+        fixed = changed,
+        projects = project_threads.len(),
+        path = %global_path.display(),
+        "已修复 Codex Desktop 项目线程索引"
+    );
+    Ok(DesktopProjectRepairResult {
+        fixed_count: changed,
+        pending_count: 0,
+        blocked: false,
+    })
+}
+
+fn load_desktop_recent_backup(
+    backup_path: &Path,
+) -> Result<HashMap<String, DesktopRecentTimestampBackup>> {
+    if !backup_path.exists() {
+        return Ok(HashMap::new());
+    }
+    let raw = std::fs::read_to_string(backup_path).context("读取 Desktop recent 备份失败")?;
+    let rows: Vec<DesktopRecentTimestampBackup> =
+        serde_json::from_str(&raw).context("解析 Desktop recent 备份失败")?;
+    Ok(rows.into_iter().map(|row| (row.id.clone(), row)).collect())
+}
+
+fn write_desktop_recent_backup(
+    backup_path: &Path,
+    backups: &HashMap<String, DesktopRecentTimestampBackup>,
+) -> Result<()> {
+    if backups.is_empty() {
+        if backup_path.exists() {
+            std::fs::remove_file(backup_path).context("删除 Desktop recent 备份失败")?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = backup_path.parent() {
+        std::fs::create_dir_all(parent).context("创建 Desktop recent 备份目录失败")?;
+    }
+    let mut rows = backups.values().cloned().collect::<Vec<_>>();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    let raw = serde_json::to_string_pretty(&rows).context("序列化 Desktop recent 备份失败")?;
+    std::fs::write(backup_path, raw).context("写入 Desktop recent 备份失败")
+}
+
+fn repair_desktop_recent_visibility(
+    db_path: &Path,
+    conn: &Connection,
+    backup_path: &Path,
+) -> Result<DesktopRecentRepairResult> {
+    let Some(global_path) = codex_global_state_path(db_path) else {
+        return Ok(DesktopRecentRepairResult::default());
+    };
+    if !global_path.exists() {
+        return Ok(DesktopRecentRepairResult::default());
+    }
+
+    let raw = std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
+    let state: Value = serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
+    let rows = read_desktop_thread_rows(conn)?;
+    let (project_threads, _) = desktop_project_candidates(&state, rows);
+    let repair_ids = desktop_recent_repair_order(&project_threads);
+    let candidate_ids: HashSet<String> = repair_ids.iter().cloned().collect();
+    if candidate_ids.is_empty() {
+        return Ok(DesktopRecentRepairResult::default());
+    }
+
+    let recent_ids = desktop_recent_thread_ids(conn, DESKTOP_RECENT_LOAD_WINDOW)?;
+    let mut pending_ids = candidate_ids
+        .into_iter()
+        .filter(|id| !recent_ids.contains(id))
+        .collect::<Vec<_>>();
+    if pending_ids.is_empty() {
+        return Ok(DesktopRecentRepairResult::default());
+    }
+    pending_ids.sort();
+
+    if is_live_codex_desktop_state(&global_path) {
+        tracing::warn!(
+            pending = pending_ids.len(),
+            path = %global_path.display(),
+            "Codex Desktop 正在运行，跳过 Recent 时间戳修复以避免被运行态线程状态覆盖"
+        );
+        return Ok(DesktopRecentRepairResult {
+            fixed_count: 0,
+            pending_count: pending_ids.len(),
+            blocked: true,
+        });
+    }
+
+    let mut backups = load_desktop_recent_backup(backup_path)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    let now_sec = now_ms / 1000;
+    let mut fixed = 0usize;
+
+    for (idx, id) in repair_ids.iter().enumerate() {
+        if !backups.contains_key(id) {
+            let original = conn.query_row(
+                "SELECT updated_at, updated_at_ms FROM threads WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(DesktopRecentTimestampBackup {
+                        id: id.clone(),
+                        updated_at: row.get(0)?,
+                        updated_at_ms: row.get(1)?,
+                    })
+                },
+            )?;
+            backups.insert(id.clone(), original);
+        }
+
+        let offset = idx as i64;
+        let next_ms = now_ms.saturating_sub(offset);
+        let next_sec = now_sec.saturating_sub(offset);
+        let changed = conn
+            .execute(
+                "UPDATE threads
+                 SET updated_at = ?1,
+                     updated_at_ms = ?2
+                 WHERE id = ?3",
+                rusqlite::params![next_sec, next_ms, id],
+            )
+            .with_context(|| format!("修复 Codex Desktop recent 可见性失败: {id}"))?;
+        fixed += changed;
+    }
+
+    write_desktop_recent_backup(backup_path, &backups)?;
+    if fixed > 0 {
+        tracing::info!("已提升 {fixed} 条 Codex Desktop 项目线程进入 recent 加载窗口");
+    }
+    Ok(DesktopRecentRepairResult {
+        fixed_count: fixed,
+        pending_count: 0,
+        blocked: false,
+    })
+}
+
+fn restore_desktop_recent_timestamps(conn: &Connection, backup_path: &Path) -> Result<usize> {
+    let backups = load_desktop_recent_backup(backup_path)?;
+    if backups.is_empty() {
+        return Ok(0);
+    }
+
+    let mut restored = 0usize;
+    let mut failed: HashMap<String, DesktopRecentTimestampBackup> = HashMap::new();
+    for backup in backups.values() {
+        match conn.execute(
+            "UPDATE threads
+             SET updated_at = ?1,
+                 updated_at_ms = ?2
+             WHERE id = ?3",
+            rusqlite::params![backup.updated_at, backup.updated_at_ms, backup.id],
+        ) {
+            Ok(n) => restored += n,
+            Err(err) => {
+                tracing::warn!("还原线程 {} Desktop recent 时间戳失败: {err}", backup.id);
+                failed.insert(backup.id.clone(), backup.clone());
+            }
+        }
+    }
+    write_desktop_recent_backup(backup_path, &failed)?;
+    Ok(restored)
+}
+
+fn backup_non_deecodex_threads(
+    conn: &Connection,
+    backup_path: &Path,
+) -> Result<Vec<(String, String)>> {
     let mut stmt =
         conn.prepare("SELECT id, model_provider FROM threads WHERE model_provider != 'deecodex'")?;
-    let new_originals: Vec<(String, String)> = stmt
+    let non_unified: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(stmt);
 
-    if new_originals.is_empty() {
-        return Ok(MigrationDiff {
-            before: before.clone(),
-            after: before,
-            changed_count: 0,
-        });
+    if non_unified.is_empty() {
+        return Ok(Vec::new());
     }
 
-    // 与已有备份合并（追加新线程，保留旧备份中的原始 provider）
     let mut merged: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if backup_path.exists() {
         if let Ok(existing_json) = std::fs::read_to_string(backup_path) {
@@ -677,17 +1603,92 @@ fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
             }
         }
     }
-    for (id, provider) in new_originals {
-        merged.entry(id).or_insert(provider);
+    for (id, provider) in &non_unified {
+        merged.entry(id.clone()).or_insert_with(|| provider.clone());
     }
     let merged_vec: Vec<(String, String)> = merged.into_iter().collect();
-
     let backup_json = serde_json::to_string_pretty(&merged_vec).context("序列化迁移备份失败")?;
     std::fs::write(backup_path, backup_json).context("写入迁移备份文件失败")?;
 
+    Ok(non_unified)
+}
+
+fn unify_remaining_non_deecodex(conn: &Connection, backup_path: &Path) -> Result<usize> {
+    let non_unified = backup_non_deecodex_threads(conn, backup_path)?;
+    if non_unified.is_empty() {
+        return Ok(0);
+    }
+
+    let changed = conn
+        .execute(
+            "UPDATE threads SET model_provider = 'deecodex' WHERE model_provider != 'deecodex'",
+            [],
+        )
+        .context("兜底统一 Codex 线程 provider 失败")?;
+    if changed < non_unified.len() {
+        tracing::warn!(
+            "兜底统一: 发现 {} 条非 deecodex 线程，仅更新 {changed} 条",
+            non_unified.len()
+        );
+    } else {
+        tracing::info!("兜底统一 {changed} 条 Codex 线程到 deecodex");
+    }
+    Ok(changed)
+}
+
+fn restore_thread_cwds(conn: &Connection, cwd_backup_path: &Path) -> Result<usize> {
+    if !cwd_backup_path.exists() {
+        return Ok(0);
+    }
+
+    let backup_json =
+        std::fs::read_to_string(cwd_backup_path).context("读取 cwd 可见性备份失败")?;
+    let originals: Vec<(String, String)> =
+        serde_json::from_str(&backup_json).context("解析 cwd 可见性备份失败")?;
+
+    let mut restored = 0usize;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for (id, original_cwd) in &originals {
+        match conn.execute(
+            "UPDATE threads SET cwd = ?1 WHERE id = ?2",
+            rusqlite::params![original_cwd, id],
+        ) {
+            Ok(n) => restored += n,
+            Err(err) => {
+                tracing::warn!("还原线程 {id} cwd 失败: {err}");
+                failed.push((id.clone(), original_cwd.clone()));
+            }
+        }
+    }
+
+    if failed.is_empty() {
+        std::fs::remove_file(cwd_backup_path).context("删除 cwd 可见性备份失败")?;
+    } else {
+        let failed_json =
+            serde_json::to_string_pretty(&failed).context("序列化剩余 cwd 备份失败")?;
+        std::fs::write(cwd_backup_path, failed_json).context("写入剩余 cwd 备份失败")?;
+    }
+    Ok(restored)
+}
+
+fn do_migrate(
+    db_path: &Path,
+    backup_path: &Path,
+    _cwd_backup_path: &Path,
+    desktop_recent_backup_path: &Path,
+) -> Result<MigrationDiff> {
+    let before = get_provider_summary(db_path)?;
+
+    let conn = Connection::open(db_path)?;
+    // 设置 busy timeout 以应对 Codex 持有的 WAL 写锁
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+
+    let new_originals = backup_non_deecodex_threads(&conn, backup_path)?;
+
     // 逐条 UPDATE 以避免 WAL 锁冲突导致整批失败
     let mut changed = 0usize;
-    for (id, _) in &merged_vec {
+    for (id, _) in &new_originals {
         match conn.execute(
             "UPDATE threads SET model_provider = 'deecodex' WHERE id = ?1 AND model_provider != 'deecodex'",
             rusqlite::params![id],
@@ -698,16 +1699,23 @@ fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
             }
         }
     }
+    changed += unify_remaining_non_deecodex(&conn, backup_path)?;
+    let visibility_fixed_count = repair_thread_visibility(&conn)?;
+    let metadata_fixed_count = repair_desktop_project_metadata(&conn)?;
+    let desktop_project_repair = repair_desktop_project_index(db_path, &conn)?;
+    let desktop_recent_repair =
+        repair_desktop_recent_visibility(db_path, &conn, desktop_recent_backup_path)?;
+    let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
 
     let after = get_provider_summary(db_path)?;
 
-    let skipped = merged_vec.len().saturating_sub(changed);
+    let skipped = new_originals.len().saturating_sub(changed);
     if skipped > 0 {
         tracing::warn!("迁移: {changed} 条成功, {skipped} 条因锁冲突跳过，下次迁移会自动重试");
     } else {
         tracing::info!(
             "已迁移 {changed} 条线程到 deecodex，备份条目数 {}",
-            merged_vec.len()
+            new_originals.len()
         );
     }
 
@@ -715,17 +1723,49 @@ fn do_migrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
         before,
         after,
         changed_count: changed,
+        visibility_fixed_count,
+        desktop_project_fixed_count,
+        desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
+        desktop_project_pending_count: desktop_project_repair.pending_count,
+        desktop_recent_pending_count: desktop_recent_repair.pending_count,
+        desktop_project_repair_blocked: desktop_project_repair.blocked,
+        desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+        cwd_aligned_count: 0,
     })
 }
 
-fn do_calibrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
+fn do_calibrate(
+    db_path: &Path,
+    backup_path: &Path,
+    _cwd_backup_path: &Path,
+    desktop_recent_backup_path: &Path,
+) -> Result<MigrationDiff> {
     let before = get_provider_summary(db_path)?;
 
     if !backup_path.exists() {
+        let conn = Connection::open(db_path)?;
+        conn.pragma_update(None, "busy_timeout", "5000")?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        let migrated = unify_remaining_non_deecodex(&conn, backup_path)?;
+        let visibility_fixed_count = repair_thread_visibility(&conn)?;
+        let metadata_fixed_count = repair_desktop_project_metadata(&conn)?;
+        let desktop_project_repair = repair_desktop_project_index(db_path, &conn)?;
+        let desktop_recent_repair =
+            repair_desktop_recent_visibility(db_path, &conn, desktop_recent_backup_path)?;
+        let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
+        let after = get_provider_summary(db_path)?;
         return Ok(MigrationDiff {
-            before: before.clone(),
-            after: before,
-            changed_count: 0,
+            before,
+            after,
+            changed_count: migrated,
+            visibility_fixed_count,
+            desktop_project_fixed_count,
+            desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
+            desktop_project_pending_count: desktop_project_repair.pending_count,
+            desktop_recent_pending_count: desktop_recent_repair.pending_count,
+            desktop_project_repair_blocked: desktop_project_repair.blocked,
+            desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+            cwd_aligned_count: 0,
         });
     }
 
@@ -781,6 +1821,13 @@ fn do_calibrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
             }
         }
     }
+    migrated += unify_remaining_non_deecodex(&conn, backup_path)?;
+    let visibility_fixed_count = repair_thread_visibility(&conn)?;
+    let metadata_fixed_count = repair_desktop_project_metadata(&conn)?;
+    let desktop_project_repair = repair_desktop_project_index(db_path, &conn)?;
+    let desktop_recent_repair =
+        repair_desktop_recent_visibility(db_path, &conn, desktop_recent_backup_path)?;
+    let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
 
     let after = get_provider_summary(db_path)?;
     let skipped = originals.len().saturating_sub(migrated);
@@ -795,10 +1842,23 @@ fn do_calibrate(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
         before,
         after,
         changed_count: migrated + removed,
+        visibility_fixed_count,
+        desktop_project_fixed_count,
+        desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
+        desktop_project_pending_count: desktop_project_repair.pending_count,
+        desktop_recent_pending_count: desktop_recent_repair.pending_count,
+        desktop_project_repair_blocked: desktop_project_repair.blocked,
+        desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+        cwd_aligned_count: 0,
     })
 }
 
-fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
+fn do_restore(
+    db_path: &Path,
+    backup_path: &Path,
+    cwd_backup_path: &Path,
+    desktop_recent_backup_path: &Path,
+) -> Result<MigrationDiff> {
     let before = get_provider_summary(db_path)?;
 
     let backup_json = std::fs::read_to_string(backup_path).context("读取迁移备份文件失败")?;
@@ -837,6 +1897,9 @@ fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
             failed = failed.len()
         );
     }
+    let cwd_restored = restore_thread_cwds(&conn, cwd_backup_path)?;
+    let desktop_recent_fixed_count =
+        restore_desktop_recent_timestamps(&conn, desktop_recent_backup_path)?;
 
     let after = get_provider_summary(db_path)?;
 
@@ -844,6 +1907,14 @@ fn do_restore(db_path: &Path, backup_path: &Path) -> Result<MigrationDiff> {
         before,
         after,
         changed_count: restored,
+        visibility_fixed_count: 0,
+        desktop_project_fixed_count: 0,
+        desktop_recent_fixed_count,
+        desktop_project_pending_count: 0,
+        desktop_recent_pending_count: 0,
+        desktop_project_repair_blocked: false,
+        desktop_recent_repair_blocked: false,
+        cwd_aligned_count: cwd_restored,
     })
 }
 
@@ -860,19 +1931,68 @@ mod tests {
     }
 
     fn create_test_threads_db(path: &Path, threads: &[(&str, &str)]) {
+        create_test_threads_db_with_rows(
+            path,
+            &threads
+                .iter()
+                .map(|(id, provider)| (*id, *provider, "", "", "", "vscode", "/tmp/project", 0))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_test_threads_db_with_rows(
+        path: &Path,
+        threads: &[(&str, &str, &str, &str, &str, &str, &str, i32)],
+    ) {
         let conn = Connection::open(path).expect("open test db");
         conn.execute(
-            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                preview TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                thread_source TEXT,
+                source TEXT NOT NULL DEFAULT 'vscode',
+                cwd TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0
+            )",
             [],
         )
         .expect("create threads table");
-        for (id, provider) in threads {
+        for (id, provider, title, preview, first_user_message, source, cwd, archived) in threads {
             conn.execute(
-                "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
-                params![id, provider],
+                "INSERT INTO threads (
+                    id, model_provider, title, preview, first_user_message,
+                    thread_source, source, cwd, archived
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    provider,
+                    title,
+                    preview,
+                    first_user_message,
+                    "user",
+                    source,
+                    cwd,
+                    archived
+                ],
             )
             .expect("insert thread");
         }
+        conn.execute(
+            "CREATE TABLE stage1_outputs (
+                thread_id TEXT PRIMARY KEY,
+                source_updated_at INTEGER NOT NULL,
+                raw_memory TEXT NOT NULL,
+                rollout_summary TEXT NOT NULL,
+                generated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .expect("create stage1_outputs table");
     }
 
     #[test]
@@ -970,7 +2090,14 @@ mod tests {
         )
         .unwrap();
 
-        let diff = do_calibrate(&db_path, &backup_path).expect("calibrate threads");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
         assert_eq!(diff.changed_count, 3);
 
         let after = get_provider_summary(&db_path).expect("provider summary");
@@ -990,6 +2117,496 @@ mod tests {
                 ("new-codex".to_string(), "codex".to_string()),
             ]
         );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn migrate_repairs_codex_visibility_without_changing_source_or_cwd() {
+        let dir = temp_test_dir("thread-migrate-visibility");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[
+                (
+                    "needs-preview",
+                    "custom",
+                    "标题兜底",
+                    "",
+                    "首条用户消息",
+                    "vscode",
+                    "/tmp/a",
+                    0,
+                ),
+                (
+                    "keeps-source-cwd",
+                    "deecodex",
+                    "已有标题",
+                    "",
+                    "",
+                    "cli",
+                    "/tmp/b",
+                    0,
+                ),
+                (
+                    "archived-preview",
+                    "deecodex",
+                    "归档标题",
+                    "",
+                    "归档消息",
+                    "vscode",
+                    "/tmp/c",
+                    1,
+                ),
+            ],
+        );
+
+        let diff = do_migrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("migrate threads");
+        assert_eq!(diff.changed_count, 1);
+        assert_eq!(diff.visibility_fixed_count, 4);
+        assert_eq!(diff.cwd_aligned_count, 0);
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let row: (String, i32, String, String) = conn
+            .query_row(
+                "SELECT preview, has_user_event, source, cwd FROM threads WHERE id = 'needs-preview'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read row");
+        assert_eq!(
+            row,
+            ("首条用户消息".into(), 1, "vscode".into(), "/tmp/a".into())
+        );
+
+        let keeps: (String, String) = conn
+            .query_row(
+                "SELECT source, cwd FROM threads WHERE id = 'keeps-source-cwd'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read source cwd");
+        assert_eq!(keeps, ("cli".into(), "/tmp/b".into()));
+
+        let archived_cwd: String = conn
+            .query_row(
+                "SELECT cwd FROM threads WHERE id = 'archived-preview'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read archived cwd");
+        assert_eq!(archived_cwd, "/tmp/c");
+
+        let stage1_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM stage1_outputs", [], |row| row.get(0))
+            .expect("stage1 count");
+        assert_eq!(stage1_count, 0);
+        assert!(!cwd_backup_path.exists());
+
+        let provider_backup: Vec<(String, String)> = serde_json::from_str(
+            &std::fs::read_to_string(&backup_path).expect("read provider backup"),
+        )
+        .expect("parse provider backup");
+        assert_eq!(
+            provider_backup,
+            vec![("needs-preview".to_string(), "custom".to_string())]
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn calibrate_without_backup_still_repairs_visibility() {
+        let dir = temp_test_dir("thread-calibrate-visibility");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[(
+                "already-unified",
+                "deecodex",
+                "标题兜底",
+                "",
+                "",
+                "vscode",
+                "/tmp/a",
+                0,
+            )],
+        );
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
+        assert_eq!(diff.changed_count, 0);
+        assert_eq!(diff.visibility_fixed_count, 2);
+        assert_eq!(diff.cwd_aligned_count, 0);
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let row: (String, i32, String) = conn
+            .query_row(
+                "SELECT preview, has_user_event, cwd FROM threads WHERE id = 'already-unified'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read row");
+        assert_eq!(row, ("标题兜底".into(), 1, "/tmp/a".into()));
+        assert!(!backup_path.exists());
+        assert!(!cwd_backup_path.exists());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn calibrate_without_backup_unifies_remaining_provider() {
+        let dir = temp_test_dir("thread-calibrate-provider");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[(
+                "needs-unify",
+                "openai",
+                "已有预览",
+                "已有预览",
+                "用户消息",
+                "vscode",
+                "/tmp/a",
+                1,
+            )],
+        );
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
+        assert_eq!(diff.changed_count, 1);
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = 'needs-unify'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read provider");
+        assert_eq!(provider, "deecodex");
+        assert!(backup_path.exists());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn calibrate_repairs_codex_desktop_project_index() {
+        let dir = temp_test_dir("thread-desktop-project-index");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[
+                (
+                    "thread-a",
+                    "deecodex",
+                    "标题 A",
+                    "预览 A",
+                    "",
+                    "vscode",
+                    "/tmp/project-a",
+                    0,
+                ),
+                (
+                    "thread-b",
+                    "deecodex",
+                    "标题 B",
+                    "预览 B",
+                    "",
+                    "vscode",
+                    "/tmp/project-a/sub",
+                    0,
+                ),
+                (
+                    "projectless",
+                    "deecodex",
+                    "标题 C",
+                    "预览 C",
+                    "",
+                    "vscode",
+                    "/tmp/other",
+                    0,
+                ),
+            ],
+        );
+        let global_path = dir.join(".codex-global-state.json");
+        std::fs::write(
+            &global_path,
+            serde_json::to_string(&json!({
+                "electron-saved-workspace-roots": ["/tmp/project-a"],
+                "project-order": [],
+                "electron-workspace-root-labels": {},
+                "projectless-thread-ids": ["thread-a", "projectless"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
+        assert!(diff.desktop_project_fixed_count >= 1);
+
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(&global_path).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert!(state["project-order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("/tmp/project-a")));
+        assert_eq!(
+            state["thread-project-assignments"]["thread-a"]["projectId"].as_str(),
+            Some("/tmp/project-a")
+        );
+        assert_eq!(
+            state["thread-project-assignments"]["thread-b"]["projectId"].as_str(),
+            Some("/tmp/project-a")
+        );
+        assert!(state["projectless-thread-ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_str() != Some("thread-a")));
+        let order_ids = state["sidebar-project-thread-orders"]["/tmp/project-a"]["threadIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(order_ids.contains(&"thread-a"));
+        assert!(order_ids.contains(&"thread-b"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn desktop_project_index_uses_existing_sidebar_order_as_project_hint() {
+        let dir = temp_test_dir("thread-desktop-project-order-hint");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let project = "/tmp/order-project";
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[(
+                "ordered-thread",
+                "deecodex",
+                "标题",
+                "预览",
+                "",
+                "vscode",
+                "/tmp/moved-project/subdir",
+                0,
+            )],
+        );
+        let global_path = dir.join(".codex-global-state.json");
+        let mut state = json!({
+            "electron-saved-workspace-roots": [],
+            "project-order": [],
+            "electron-workspace-root-labels": {},
+            "projectless-thread-ids": [],
+            "sidebar-project-thread-orders": {}
+        });
+        state["sidebar-project-thread-orders"][project] =
+            json!({ "threadIds": ["ordered-thread"] });
+        std::fs::write(&global_path, serde_json::to_string(&state).unwrap())
+            .expect("write global state");
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
+        assert!(diff.desktop_project_fixed_count >= 1);
+
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(&global_path).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert_eq!(
+            state["thread-project-assignments"]["ordered-thread"]["projectId"].as_str(),
+            Some(project)
+        );
+        assert!(!state["active-workspace-roots"].is_array());
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let status = get_desktop_project_index_status(&db_path, &conn).expect("project status");
+        assert_eq!(status.indexed_count, 1);
+        assert_eq!(status.pending_count, 0);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn calibrate_surfaces_desktop_project_threads_into_recent_window() {
+        let dir = temp_test_dir("thread-desktop-recent");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let recent_backup_path = desktop_recent_backup_path(&dir);
+        let project_dir = dir
+            .join(".codex")
+            .join("worktrees")
+            .join("c7e2")
+            .join("deecodex")
+            .join("deecodex-gui");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        let project = project_dir.to_string_lossy().to_string();
+
+        let conn = Connection::open(&db_path).expect("open test db");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                preview TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                thread_source TEXT,
+                source TEXT NOT NULL DEFAULT 'vscode',
+                cwd TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT
+            )",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "CREATE TABLE stage1_outputs (thread_id TEXT, rollout_summary TEXT, rollout_slug TEXT)",
+            [],
+        )
+        .expect("create stage1");
+        for idx in 0..55 {
+            let id = format!("recent-{idx:02}");
+            conn.execute(
+                "INSERT INTO threads
+                 (id, model_provider, title, preview, source, cwd, updated_at, updated_at_ms, created_at, created_at_ms)
+                 VALUES (?1, 'deecodex', ?2, '预览', 'vscode', '/tmp/other', ?3, ?4, ?3, ?4)",
+                params![id, format!("最近 {idx}"), 2_000_i64 - idx, (2_000_i64 - idx) * 1000],
+            )
+            .expect("insert recent");
+        }
+        conn.execute(
+            "INSERT INTO threads
+             (id, model_provider, title, preview, source, cwd, updated_at, updated_at_ms, created_at, created_at_ms)
+             VALUES ('project-old', 'deecodex', '旧项目线程', '预览', 'vscode', ?1, 100, 100000, 100, 100000)",
+            params![project],
+        )
+        .expect("insert project thread");
+        conn.execute(
+            "INSERT INTO threads
+             (id, model_provider, title, preview, source, cwd, updated_at, updated_at_ms, created_at, created_at_ms)
+             VALUES ('project-new', 'deecodex', '新项目线程', '预览', 'vscode', ?1, 1995, 1995000, 1995, 1995000)",
+            params![project],
+        )
+        .expect("insert visible project thread");
+        drop(conn);
+
+        std::fs::write(
+            dir.join(".codex-global-state.json"),
+            serde_json::to_string(&json!({
+                "electron-saved-workspace-roots": [project],
+                "project-order": [],
+                "electron-workspace-root-labels": {},
+                "projectless-thread-ids": []
+            }))
+            .unwrap(),
+        )
+        .expect("write global state");
+
+        let conn = Connection::open(&db_path).expect("open db");
+        assert!(
+            !desktop_recent_thread_ids(&conn, DESKTOP_RECENT_LOAD_WINDOW)
+                .expect("recent before")
+                .contains("project-old")
+        );
+        drop(conn);
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &recent_backup_path,
+        )
+        .expect("calibrate threads");
+        assert_eq!(diff.desktop_recent_fixed_count, 2);
+
+        let conn = Connection::open(&db_path).expect("open db after");
+        let recent_after =
+            desktop_recent_thread_ids(&conn, DESKTOP_RECENT_LOAD_WINDOW).expect("recent after");
+        assert!(recent_after.contains("project-old"));
+        assert!(recent_after.contains("project-new"));
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM threads WHERE id = 'project-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read updated");
+        assert!(updated_at > 2_000);
+
+        let backups: Vec<DesktopRecentTimestampBackup> = serde_json::from_str(
+            &std::fs::read_to_string(&recent_backup_path).expect("read recent backup"),
+        )
+        .expect("parse recent backup");
+        assert_eq!(backups.len(), 2);
+        let backup_by_id: HashMap<_, _> = backups
+            .iter()
+            .map(|backup| (backup.id.as_str(), backup.updated_at))
+            .collect();
+        assert_eq!(backup_by_id.get("project-old"), Some(&100));
+        assert_eq!(backup_by_id.get("project-new"), Some(&1_995));
+
+        let restored =
+            restore_desktop_recent_timestamps(&conn, &recent_backup_path).expect("restore recent");
+        assert_eq!(restored, 2);
+        let restored_updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM threads WHERE id = 'project-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored updated");
+        assert_eq!(restored_updated_at, 100);
+        assert!(!recent_backup_path.exists());
 
         std::fs::remove_dir_all(dir).ok();
     }

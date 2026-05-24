@@ -5005,9 +5005,6 @@ pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Val
     let status =
         deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
 
-    // 校准需求：已迁移但仍有非 deecodex 线程（备份可能过时）
-    let calibration_needed = status.migrated && status.non_deecodex_count > 0;
-
     // 活跃 provider：迁移后为 "deecodex"，否则取数量最多的 provider
     let active_provider = if status.migrated {
         "deecodex"
@@ -5023,9 +5020,22 @@ pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Val
     Ok(serde_json::json!({
         "summary": status.summary,
         "total": status.total,
+        "non_deecodex_count": status.non_deecodex_count,
         "non_unified_count": status.non_deecodex_count,
+        "provider_unified_count": status.provider_unified_count,
+        "codex_visible_count": status.codex_visible_count,
+        "missing_preview_count": status.missing_preview_count,
+        "missing_user_event_count": status.missing_user_event_count,
+        "current_cwd_visible_count": status.current_cwd_visible_count,
+        "desktop_project_indexed_count": status.desktop_project_indexed_count,
+        "desktop_project_pending_count": status.desktop_project_pending_count,
+        "desktop_project_repair_blocked": status.desktop_project_repair_blocked,
+        "desktop_recent_visible_count": status.desktop_recent_visible_count,
+        "desktop_recent_pending_count": status.desktop_recent_pending_count,
+        "desktop_recent_repair_blocked": status.desktop_recent_repair_blocked,
+        "source_summary": status.source_summary,
         "migrated": status.migrated,
-        "calibration_needed": calibration_needed,
+        "calibration_needed": false,
         "active_provider": active_provider,
     }))
 }

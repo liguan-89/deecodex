@@ -2387,6 +2387,7 @@ body {
 }
 .tag-current { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
 .tag-other { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+.tag-warning { background: rgba(220, 72, 72, 0.10); color: #dc4848; border: 1px solid rgba(220, 72, 72, 0.20); }
 
 @media (max-width: 980px) {
   .threads-console,
@@ -5314,6 +5315,11 @@ body {
   background: var(--amber-dim);
   color: var(--amber);
   border: 1px solid rgba(199, 120, 32, 0.18);
+}
+[data-theme="light"] .tag-warning {
+  background: rgba(181, 67, 67, 0.07);
+  color: #b54343;
+  border: 1px solid rgba(181, 67, 67, 0.14);
 }
 
 [data-theme="light"] .plugin-state-badge.on {
