@@ -277,10 +277,12 @@ fn select_codex_official_account_endpoint(
     let fallback = (fallback_account, active_endpoint.clone());
 
     let active_pool = account_routing_options(active_account).pool;
+    let active_surface = active_account.client_surface.clone();
     let mut candidates: Vec<(Account, EndpointConfig, i64, u32)> = store
         .accounts
         .iter()
         .filter(|account| account.client_kind.is_codex())
+        .filter(|account| account.client_surface == active_surface)
         .filter_map(|account| {
             let routing = account_routing_options(account);
             if !routing.effective_enabled() || routing.pool != active_pool {
@@ -6370,6 +6372,26 @@ mod tests {
             select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
 
         assert_eq!(account.id, "high");
+    }
+
+    #[test]
+    fn codex_official_selector_keeps_client_surfaces_separate() {
+        let mut active_desktop = official_codex_account("active-desktop", 0, 1);
+        active_desktop.client_surface = AccountClientSurface::Desktop;
+        let mut cli_high_priority = official_codex_account("cli-high", 100, 1);
+        cli_high_priority.client_surface = AccountClientSurface::Cli;
+        let mut desktop_peer = official_codex_account("desktop-peer", 10, 1);
+        desktop_peer.client_surface = AccountClientSurface::Desktop;
+        let store = official_store(
+            vec![active_desktop, cli_high_priority, desktop_peer],
+            "active-desktop",
+        );
+
+        let (account, _) =
+            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+
+        assert_eq!(account.id, "desktop-peer");
+        assert_eq!(account.client_surface, AccountClientSurface::Desktop);
     }
 
     #[test]
