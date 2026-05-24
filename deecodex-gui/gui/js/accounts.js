@@ -2853,6 +2853,8 @@ async function importAuthJsonAccounts() {
       })));
       const result = await invoke('import_auth_json_accounts', {
         authFilesJson: JSON.stringify(payload),
+        clientSurface: selectedSurfaceForKind('codex'),
+        client_surface: selectedSurfaceForKind('codex'),
       });
       const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
       showToast((result.message || '认证 JSON 导入完成') + (failedCount ? `，失败 ${failedCount} 个` : ''), failedCount ? 'info' : 'success');

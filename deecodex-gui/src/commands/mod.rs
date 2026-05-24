@@ -314,11 +314,11 @@ fn codex_official_endpoint_config(account_id: &str) -> deecodex::accounts::Endpo
 fn codex_account_from_imported_token(
     token: deecodex::oauth_accounts::OAuthToken,
     source_name: &str,
+    client_surface: AccountClientSurface,
     now: u64,
 ) -> deecodex::accounts::Account {
     use deecodex::accounts::{
-        Account, AccountAuthMode, AccountClientKind, AccountClientSurface, DevPipelineToolMode,
-        DevPipelineTriggerMode,
+        Account, AccountAuthMode, AccountClientKind, DevPipelineToolMode, DevPipelineTriggerMode,
     };
 
     let account_id = deecodex::accounts::generate_id();
@@ -347,7 +347,7 @@ fn codex_account_from_imported_token(
         name: oauth_account_name("Codex", &token.email),
         provider: "codex".into(),
         client_kind: AccountClientKind::Codex,
-        client_surface: AccountClientSurface::Cli,
+        client_surface,
         wire_protocol: Default::default(),
         upstream: deecodex::handlers::CODEX_OFFICIAL_BASE_URL.into(),
         api_key: token.access_token.clone(),
@@ -398,8 +398,12 @@ fn codex_account_from_imported_token(
 fn same_imported_codex_oauth(
     account: &deecodex::accounts::Account,
     token: &deecodex::oauth_accounts::OAuthToken,
+    client_surface: &AccountClientSurface,
 ) -> bool {
     if !account.client_kind.is_codex() || account.provider != "codex" {
+        return false;
+    }
+    if &account.client_surface != client_surface {
         return false;
     }
     let existing = account
@@ -2947,6 +2951,7 @@ pub async fn set_account_routing(
 pub async fn import_auth_json_accounts(
     manager: State<'_, ServerManager>,
     auth_files_json: String,
+    client_surface: Option<String>,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
     let mut store = deecodex::accounts::load_accounts(&data_dir);
@@ -2962,6 +2967,10 @@ pub async fn import_auth_json_accounts(
     let mut first_imported_id: Option<String> = None;
     let mut imported_ids = Vec::<String>::new();
     let now = deecodex::accounts::now_secs();
+    let target_surface = client_surface
+        .as_deref()
+        .map(|value| parse_account_client_surface(value, &AccountClientKind::Codex))
+        .unwrap_or_default();
 
     for file in files {
         let name = file.name.trim();
@@ -2995,13 +3004,13 @@ pub async fn import_auth_json_accounts(
         if store
             .accounts
             .iter()
-            .any(|account| same_imported_codex_oauth(account, &token))
+            .any(|account| same_imported_codex_oauth(account, &token, &target_surface))
         {
             skipped += 1;
             continue;
         }
 
-        let account = codex_account_from_imported_token(token, name, now);
+        let account = codex_account_from_imported_token(token, name, target_surface.clone(), now);
         if first_imported_id.is_none() {
             first_imported_id = Some(account.id.clone());
         }
@@ -6306,10 +6315,12 @@ mod tests {
             last_refresh: String::new(),
         };
 
-        let account = codex_account_from_imported_token(token, "pool.json", 100);
+        let account =
+            codex_account_from_imported_token(token, "pool.json", AccountClientSurface::Cli, 100);
         let routing = deecodex::accounts::account_routing_options(&account);
 
         assert_eq!(account.provider, "codex");
+        assert_eq!(account.client_surface, AccountClientSurface::Cli);
         assert_eq!(
             account.auth_mode,
             deecodex::accounts::AccountAuthMode::OAuth
@@ -6320,6 +6331,50 @@ mod tests {
             .endpoints
             .iter()
             .any(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial));
+    }
+
+    #[test]
+    fn imported_codex_oauth_duplicate_is_scoped_by_surface() {
+        let token = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "access-surface".into(),
+            refresh_token: "refresh-surface".into(),
+            id_token: String::new(),
+            email: "surface@example.com".into(),
+            account_id: "acct_surface".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+
+        let cli_account = codex_account_from_imported_token(
+            token.clone(),
+            "cli.json",
+            AccountClientSurface::Cli,
+            100,
+        );
+        let desktop_account = codex_account_from_imported_token(
+            token.clone(),
+            "desktop.json",
+            AccountClientSurface::Desktop,
+            100,
+        );
+
+        assert!(same_imported_codex_oauth(
+            &cli_account,
+            &token,
+            &AccountClientSurface::Cli
+        ));
+        assert!(!same_imported_codex_oauth(
+            &cli_account,
+            &token,
+            &AccountClientSurface::Desktop
+        ));
+        assert!(same_imported_codex_oauth(
+            &desktop_account,
+            &token,
+            &AccountClientSurface::Desktop
+        ));
     }
 
     fn test_account(id: &str) -> deecodex::accounts::Account {

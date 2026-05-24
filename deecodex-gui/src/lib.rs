@@ -249,7 +249,7 @@ pub fn run() {
     if beta_trial_expired() {
         show_startup_blocking_alert(
             "deecodex 测试版已过期",
-            "此测试版 3.0.7beta 的 7 天使用期限已结束，请安装新的正式版或更新的测试版。",
+            "此测试版的 7 天使用期限已结束，请安装新的正式版或更新的测试版。",
         );
         std::process::exit(1);
     }
