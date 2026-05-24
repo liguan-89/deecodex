@@ -16418,6 +16418,18 @@ body {
   font-weight: 400;
 }
 
+[data-theme="dark"] .main.accounts-form-main .model-row .model-label.codex {
+  border-color: var(--content-border) !important;
+  background: var(--bg-input) !important;
+  box-shadow: none !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .main.accounts-form-main .model-row .model-label.codex.custom-codex-cell {
+  border: 0 !important;
+  background: transparent !important;
+}
+
 [data-theme="dark"] .main:not(.dex-main) :where(input:focus, select:focus, textarea:focus, .plugin-install-bar input:focus, .pc-add-account input:focus) {
   border-color: rgba(88, 166, 255, 0.36) !important;
   box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12) !important;
