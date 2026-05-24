@@ -183,7 +183,7 @@ function renderPluginDetail() {
     accountsHtml = '<div class="plugin-empty-line">暂无账号</div>';
   }
 
-  return `<button class="plugin-detail-back" onclick="backToPluginList()">← 插件管理</button>
+  return `<button class="page-back-button plugin-detail-back" onclick="backToPluginList()" aria-label="返回插件管理"><span class="line-action-icon line-action-icon-back" aria-hidden="true"></span></button>
 
   <div class="plugin-detail-shell">
   <div class="plugin-detail-header">

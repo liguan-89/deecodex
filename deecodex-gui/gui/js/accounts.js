@@ -617,7 +617,9 @@ function renderClientAccountDetail() {
       ? 'Hermes 会把非密钥配置写入 config.yaml，密钥写入 .env。'
       : '写入前会展示脱敏 diff，不显示完整密钥。');
   return `<div class="breadcrumb account-detail-breadcrumb">
-    <button type="button" class="account-back-icon" onclick="navigateAccounts('list')" title="返回账号列表" aria-label="返回账号列表">←</button>
+    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
   </div>
   <div class="page-header account-detail-header">
     <div class="account-detail-title">
@@ -1154,9 +1156,8 @@ function renderAddAccount() {
   }
 
   return `<div class="breadcrumb add-account-breadcrumb">
-    <button type="button" class="add-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
-      <span aria-hidden="true">←</span>
-      <span>账号列表</span>
+    <button type="button" class="page-back-button add-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
     </button>
   </div>
   <div class="page-header add-provider-header">
@@ -1205,9 +1206,8 @@ function renderOAuthLoginPanel() {
   const userCode = state.user_code ? `<div class="oauth-device-code">${esc(state.user_code)}</div>` : '';
   const statusText = status === 'success' ? '登录完成' : (status === 'error' ? '登录失败' : (status === 'expired' ? '登录已过期' : '等待授权'));
   return `<div class="breadcrumb add-account-breadcrumb">
-    <button type="button" class="add-back-link" onclick="cancelOAuthAccountLogin()" aria-label="返回添加账号">
-      <span aria-hidden="true">←</span>
-      <span>选择供应商</span>
+    <button type="button" class="page-back-button add-back-link" onclick="cancelOAuthAccountLogin()" aria-label="返回添加账号">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
     </button>
   </div>
   <div class="page-header add-provider-header oauth-login-header">
@@ -1349,7 +1349,9 @@ function renderAccountDetail() {
   const knownModels = getProviderKnownModels(a.provider);
 
   return `<div class="breadcrumb account-detail-breadcrumb">
-    <button type="button" class="account-back-icon" onclick="navigateAccounts('list')" title="返回账号列表" aria-label="返回账号列表">←</button>
+    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
   </div>
   <div class="page-header account-detail-header">
     <div class="account-detail-title">
@@ -2279,7 +2281,7 @@ function addModelRow(containerId, knownModelsJson) {
   const container = document.getElementById(containerId);
   const row = document.createElement('div');
   row.className = 'model-row model-map-row removable';
-  row.innerHTML = `<div class="model-label codex"><input type="text" class="custom-codex-model" placeholder="Codex 模型名"></div>
+  row.innerHTML = `<div class="model-label codex custom-codex-cell"><input type="text" class="custom-codex-model" placeholder="Codex 模型名"></div>
     <div class="model-autocomplete model-upstream-cell">
       <input type="text" placeholder="上游模型名" autocomplete="off"
         onchange="syncModelVisionTarget(this)"

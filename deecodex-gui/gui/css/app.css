@@ -2536,26 +2536,39 @@ body {
 .account-detail-breadcrumb {
   margin-bottom: 18px;
 }
-.account-back-icon {
-  width: 34px;
-  height: 34px;
-  display: inline-grid;
-  place-items: center;
+.page-back-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   background: transparent;
   color: var(--text-secondary);
-  font-family: var(--font-sans);
-  font-size: 25px;
-  line-height: 1;
   cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 24px;
+  font-weight: 520;
+  line-height: 1;
+  letter-spacing: 0;
   transition: color var(--transition), background var(--transition);
 }
-.account-back-icon:hover {
+.page-back-button:hover {
   color: var(--text-primary);
   background: rgba(107,127,168,0.08);
 }
-
+.page-back-button span {
+  color: inherit;
+}
+.page-back-button svg {
+  width: 21px;
+  height: 21px;
+}
 .accounts-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -3742,6 +3755,13 @@ body {
   color: var(--text-primary);
   font-weight: 500;
 }
+.model-row .model-label.codex.custom-codex-cell {
+  width: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
 .model-row.client-model-template {
   grid-template-columns: minmax(132px, 0.7fr) minmax(220px, 1.5fr) 24px;
   margin-top: 0;
@@ -3806,7 +3826,8 @@ body {
   font-family: var(--font-mono);
   outline: none;
 }
-.model-row .model-value input:focus {
+.model-row .model-value input:focus,
+.model-row .model-label input:focus {
   border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim);
 }
 .model-row .model-value input::placeholder {
@@ -7001,11 +7022,14 @@ body {
 }
 
 [data-theme="light"] .nav-item.active {
-  color: #101216;
-  background: rgba(255,255,255,0.96);
-  box-shadow: inset 0 0 0 1px rgba(29,29,31,0.045), 0 1px 2px rgba(29,29,31,0.035);
-  font-weight: 430;
-  font-variation-settings: "wght" 430;
+  color: #18202c;
+  background: rgba(255,255,255,0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(29,29,31,0.075),
+    0 3px 10px rgba(20,24,30,0.055),
+    0 1px 2px rgba(16,24,40,0.04);
+  font-weight: 450;
+  font-variation-settings: "wght" 450;
 }
 
 [data-theme="light"] .nav-item .icon {
@@ -11334,26 +11358,34 @@ body {
   letter-spacing: 0;
 }
 
+.page-back-button,
 .add-back-link,
+[data-theme="light"] .page-back-button,
 [data-theme="light"] .add-back-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 9px 0 7px;
+  justify-content: center;
+  gap: 0;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: transparent;
   color: #606874;
   cursor: pointer;
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 24px;
   font-weight: 520;
   letter-spacing: 0;
   transition: color var(--transition), background var(--transition);
 }
 
+.page-back-button:hover,
 .add-back-link:hover,
+[data-theme="light"] .page-back-button:hover,
 [data-theme="light"] .add-back-link:hover {
   color: #111827;
   background: rgba(17,24,39,0.045);
@@ -12200,7 +12232,7 @@ body {
 }
 
 /* 线程聚合：跟账号管理保持同源的客户端切换器、线条动作和轻量列表节奏。 */
-.line-action-icon-back { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 6 9 12l6 6'/%3E%3C/svg%3E"); }
+.line-action-icon-back { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.32' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 12H6'/%3E%3Cpath d='m12 6-6 6 6 6'/%3E%3C/svg%3E"); }
 .line-action-icon-thread-refresh { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 8a7 7 0 0 0-12-3'/%3E%3Cpath d='M19 4v4h-4'/%3E%3Cpath d='M5 16a7 7 0 0 0 12 3'/%3E%3Cpath d='M5 20v-4h4'/%3E%3C/svg%3E"); }
 
 .threads-page-header {
@@ -16635,10 +16667,12 @@ body {
 [data-theme="dark"] .provider-card .provider-desc,
 [data-theme="dark"] .add-provider-client,
 [data-theme="dark"] .provider-card-arrow,
+[data-theme="dark"] .page-back-button,
 [data-theme="dark"] .add-back-link {
   color: var(--text-muted) !important;
 }
 
+[data-theme="dark"] .page-back-button:hover,
 [data-theme="dark"] .add-back-link:hover {
   color: var(--text-heading) !important;
   background: var(--content-hover) !important;
@@ -17606,4 +17640,58 @@ body {
 
 [data-theme="dark"] .main.status-main .status-overview-shell {
   background: #111620 !important;
+}
+
+/* 全局返回键统一：纯图标、大点击区，不显示文字标签。 */
+.page-back-button,
+.detail-back-btn.page-back-button,
+.plugin-detail-back.page-back-button,
+.add-back-link.page-back-button,
+.account-back-link.page-back-button,
+[data-theme="light"] .page-back-button,
+[data-theme="dark"] .page-back-button {
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0 !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 24px !important;
+  line-height: 1 !important;
+}
+
+.page-back-button:hover,
+.detail-back-btn.page-back-button:hover,
+.plugin-detail-back.page-back-button:hover,
+.add-back-link.page-back-button:hover,
+.account-back-link.page-back-button:hover,
+[data-theme="light"] .page-back-button:hover,
+[data-theme="dark"] .page-back-button:hover {
+  background: var(--content-hover, rgba(107,127,168,0.08)) !important;
+  color: var(--text-heading, var(--text-primary)) !important;
+}
+
+.page-back-button svg {
+  width: 21px !important;
+  height: 21px !important;
+}
+
+.page-back-button .line-action-icon,
+.page-back-button .line-action-icon::before {
+  width: 24px !important;
+  height: 24px !important;
+}
+
+.page-back-button .line-action-icon::before {
+  -webkit-mask-size: 24px 24px !important;
+  mask-size: 24px 24px !important;
 }

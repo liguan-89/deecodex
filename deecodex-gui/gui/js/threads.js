@@ -344,7 +344,7 @@ function openThread(clientKind, nativeId, threadKey) {
   if (!container) return;
   container.innerHTML = `<div class="detail-panel">
     <div class="detail-header">
-      <button class="detail-back-btn" onclick="closeThreadDetail()" title="返回线程列表" aria-label="返回线程列表">${threadLineActionIcon('back')}</button>
+      <button class="page-back-button detail-back-btn" onclick="closeThreadDetail()" title="返回线程列表" aria-label="返回线程列表">${threadLineActionIcon('back')}</button>
       <h2 id="detailTitle">加载中...</h2>
       <button class="detail-delete-btn" id="detailDeleteBtn" style="display:none;" onclick="deleteThreadFromDetail()" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>
     </div>
