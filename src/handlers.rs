@@ -3893,11 +3893,6 @@ async fn handle_responses_bypass(
         body = patch_body_string_field(&body, "service_tier", service_tier).unwrap_or(body);
     }
 
-    tracing::info!(
-        bypass_body = %String::from_utf8_lossy(&body),
-        "bypass 请求体"
-    );
-
     let conversation_id = conversation_id_from_request(&req);
     let store_response = req.store.unwrap_or(true);
 
@@ -3984,7 +3979,17 @@ async fn handle_responses_bypass(
         }
     }
 
-    tracing::info!("⇢ bypass {} → {}", model, upstream_url);
+    tracing::info!(
+        model = %model,
+        upstream = %upstream_url,
+        endpoint_path = %endpoint_path,
+        stream = req.stream,
+        body_bytes = body.len(),
+        service_tier = %req.service_tier.as_deref().unwrap_or(""),
+        has_image = has_new_image,
+        vision_mode = ?vision_mode,
+        "⇢ bypass 请求摘要"
+    );
 
     let response_id = state.sessions.new_id();
     let bypass = BypassArgs {
