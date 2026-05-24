@@ -1855,6 +1855,9 @@ fn client_process_instances_for_spec(spec: &ClientAppSpec) -> Vec<Value> {
             if spec.kind == "claude_cli" && !status_command_is_claude_cli(&command) {
                 continue;
             }
+            if spec.kind == "hermes" && !status_command_is_hermes_cli(&command) {
+                continue;
+            }
             out.push(instance);
         }
     }
@@ -1890,6 +1893,9 @@ fn status_command_uses_executable(command: &str, name: &str) -> bool {
         return false;
     };
     let first = command.split_whitespace().next().unwrap_or("");
+    if exe == name && first == name {
+        return true;
+    }
     if exe == name
         && (first.contains(std::path::MAIN_SEPARATOR) || status_command_has_args(command))
     {
@@ -1913,6 +1919,17 @@ fn status_command_is_codex_cli(command: &str) -> bool {
 
 fn status_command_is_claude_cli(command: &str) -> bool {
     !status_command_is_claude_desktop(command) && status_command_uses_executable(command, "claude")
+}
+
+fn status_command_is_hermes_cli(command: &str) -> bool {
+    let text = command.trim();
+    if text.is_empty() || text.contains("hermes_cli.main gateway") {
+        return false;
+    }
+    status_command_uses_executable(text, "hermes")
+        || text
+            .split_whitespace()
+            .any(|part| Path::new(part).file_name().and_then(|v| v.to_str()) == Some("hermes"))
 }
 
 fn install_command_for_current_os(spec: &ClientAppSpec) -> Option<&'static str> {
@@ -2326,7 +2343,9 @@ pub fn dex_toggle_desktop_client(kind: String, running: bool) -> Result<Value, S
 }
 
 fn detect_process_instances(target: &str) -> Vec<Value> {
-    // 尝试 pgrep -a，失败则降级到 pgrep -l
+    // 尝试 pgrep -a，失败则用 -f 查命令行参数，再降级到 pgrep -l。
+    // Python/pipx 安装的 CLI（例如 Hermes）真实进程名可能是 Python，
+    // 只有完整命令行里保留 hermes 入口路径。
     let output = std::process::Command::new("pgrep")
         .arg("-a")
         .arg(target)
@@ -2338,6 +2357,29 @@ fn detect_process_instances(target: &str) -> Vec<Value> {
             parse_pgrep_output(&stdout)
         }
         _ => {
+            let output = std::process::Command::new("pgrep")
+                .arg("-af")
+                .arg(target)
+                .output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let instances = parse_pgrep_output(&stdout)
+                        .into_iter()
+                        .filter(|instance| {
+                            let command = instance
+                                .get("command")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            !process_probe_noise(command)
+                        })
+                        .collect::<Vec<_>>();
+                    if !instances.is_empty() {
+                        return instances;
+                    }
+                }
+            }
+
             let output = std::process::Command::new("pgrep")
                 .arg("-l")
                 .arg(target)
@@ -2352,6 +2394,19 @@ fn detect_process_instances(target: &str) -> Vec<Value> {
             }
         }
     }
+}
+
+fn process_probe_noise(command: &str) -> bool {
+    let exe = command
+        .split_whitespace()
+        .next()
+        .and_then(|part| Path::new(part).file_name())
+        .and_then(|part| part.to_str())
+        .unwrap_or("");
+    matches!(exe, "pgrep" | "grep" | "rg")
+        || command.contains("pgrep -af")
+        || command.contains("rg -i")
+        || command.contains("grep -i")
 }
 
 fn parse_pgrep_output(stdout: &str) -> Vec<Value> {
@@ -4640,11 +4695,36 @@ mod tests {
         assert!(!status_command_is_codex_cli(
             "/Users/me/.codex/plugins/example/index.js"
         ));
-        assert!(!status_command_is_codex_cli("codex"));
+        assert!(status_command_is_codex_cli("codex"));
         assert!(status_command_is_codex_cli("/usr/local/bin/codex"));
         assert!(status_command_is_codex_cli("codex --model gpt-5"));
         assert!(!status_command_is_claude_cli("Claude"));
+        assert!(status_command_is_claude_cli("claude"));
         assert!(status_command_is_claude_cli("/usr/local/bin/claude"));
+    }
+
+    #[test]
+    fn process_probe_noise_filters_shell_search_commands() {
+        assert!(process_probe_noise("pgrep -af hermes"));
+        assert!(process_probe_noise("rg -i hermes"));
+        assert!(process_probe_noise("/opt/homebrew/bin/rg -i hermes"));
+        assert!(!process_probe_noise(
+            "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Users/me/.local/bin/hermes"
+        ));
+        assert!(!process_probe_noise(
+            "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace"
+        ));
+    }
+
+    #[test]
+    fn hermes_gateway_does_not_count_as_cli_runtime() {
+        assert!(status_command_is_hermes_cli("/Users/me/.local/bin/hermes"));
+        assert!(status_command_is_hermes_cli(
+            "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python /Users/me/.local/bin/hermes"
+        ));
+        assert!(!status_command_is_hermes_cli(
+            "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace"
+        ));
     }
 
     #[test]

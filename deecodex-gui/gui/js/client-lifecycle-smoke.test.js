@@ -124,6 +124,25 @@ context.window._clientProcessMap = {
 };
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);
 
+context.window._clientProcessMap = {
+  codex: { running: true, instances: [{ pid: '103', command: 'codex' }] },
+  claude: { running: true, instances: [{ pid: '104', command: 'claude' }] },
+  hermes: { running: true, instances: [{ pid: '105', command: '/Users/me/.local/bin/hermes' }] },
+};
+assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);
+assert.strictEqual(context.statusClientProcessRunning('claude_cli'), true);
+assert.strictEqual(context.statusClientProcessRunning('hermes'), true);
+
+context.window._clientProcessMap = {
+  hermes: {
+    running: true,
+    instances: [
+      { pid: '106', command: '/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace' },
+    ],
+  },
+};
+assert.strictEqual(context.statusClientProcessRunning('hermes'), false);
+
 (async () => {
   await context.window.refreshClientLifecycleDock();
   assert(calls.some(call => call.name === 'dex_client_lifecycle_status'));

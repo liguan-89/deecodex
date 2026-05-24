@@ -430,9 +430,32 @@ function renderOfficialPoolOverview(list) {
 
 function clientAccountHasIssue(a) {
   if (!a || isCodexAccount(a)) return false;
-  const status = a._client_status_report || a.last_check;
+  const status = clientAccountStatusReport(a) || a.last_check;
   if (!status) return false;
   return status.ok === false;
+}
+
+function clientAccountStatusReport(a) {
+  if (!a || isCodexAccount(a)) return null;
+  return a._client_status_report || a.last_check?.details || null;
+}
+
+function clientAccountApplied(a) {
+  if (!a || isCodexAccount(a)) return false;
+  const report = clientAccountStatusReport(a);
+  return Boolean(a.last_applied_at || report?.applied_at);
+}
+
+function renderClientCardStatusSummary(report, applied) {
+  if (!report) {
+    return '<div class="client-status-summary"><span class="status-muted">未检查</span></div>';
+  }
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const hasError = diagnostics.some(item => item.level === 'error');
+  if (report.ok === false || hasError) {
+    return '<div class="client-status-summary"><span class="status-error">需处理</span></div>';
+  }
+  return `<div class="client-status-summary"><span class="status-ok">${applied ? '已写入' : '可写入'}</span></div>`;
 }
 
 function getClientProfile(kind) {
@@ -1102,7 +1125,10 @@ function renderClientAccountCard(a) {
   const surface = accountClientSurface(a);
   const profile = getClientProfile(kind);
   const statusId = `client-status-${escAttr(a.id)}`;
-  return `<div class="account-card client-account-card">
+  const applied = clientAccountApplied(a);
+  const statusReport = clientAccountStatusReport(a);
+  const statusHtml = renderClientCardStatusSummary(statusReport, applied);
+  return `<div class="account-card client-account-card${applied ? ' active' : ''}">
     <div class="account-card-mainline">
       <div class="account-card-primary">
         <div class="account-card-info">
@@ -1110,6 +1136,7 @@ function renderClientAccountCard(a) {
             <div class="account-card-titlebar">
               <span class="client-kind-badge">${clientIcon(kind)}${esc(clientSurfaceTitle(kind, surface))}</span>
               ${renderProviderBadge(a.provider)}
+              ${applied ? '<span class="active-badge">已写入</span>' : ''}
               ${accountRuntimeBadge(a)}
             </div>
           </div>
@@ -1121,9 +1148,10 @@ function renderClientAccountCard(a) {
         </div>
       </div>
       <div class="account-card-side">
-        <div class="card-balance client-status-box" id="${statusId}"><span class="balance-loading">待检查</span></div>
+        <div class="card-balance client-status-box" id="${statusId}">${statusHtml}</div>
         <div class="card-actions-row">
-          ${renderAccountIconAction('写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, 'account-apply')}
+          ${renderAccountIconAction(applied ? '重新写入配置' : '写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, applied ? 'account-apply account-applied' : 'account-apply')}
+          ${renderAccountIconAction('刷新状态', 'refresh', `refreshClientAccountStatus('${escAttr(a.id)}')`, 'account-refresh')}
           ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', '${escAttr(kind)}')`)}
           ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
         </div>
@@ -2722,6 +2750,10 @@ async function deleteAccount(id) {
     showToast('账号已删除', 'success');
     accountsView = 'list'; editingAccount = null;
     await loadAccountsData();
+    if (currentPanel === 'accounts') {
+      accountsListRenderSignature = accountListRenderSignature(accountsData);
+      renderMainContent();
+    }
   } catch (e) {
     showToast('删除账号失败: ' + e, 'error');
   }
@@ -2967,6 +2999,11 @@ async function refreshClientAccountStatus(id) {
       account._client_status_report = report;
       account.last_check = { ok: report.ok, message: report.message, details: report };
     }
+    if (accountsView === 'list') {
+      renderMainContent();
+      refreshClientSwitcherIssues();
+      return;
+    }
     const el = document.getElementById('client-status-' + id);
     if (el) el.innerHTML = renderClientStatusSummary(report);
     const preview = document.getElementById('clientApplyPreview');
@@ -3102,6 +3139,11 @@ async function applyClientAccount(id) {
     const report = await invoke('apply_client_account', { accountId: id, dryRun: false });
     showToast(report.ok ? '客户端配置已写入' : '客户端配置写入后仍有问题', report.ok ? 'success' : 'error');
     await loadAccountsData();
+    if (accountsView === 'list') {
+      renderMainContent();
+      refreshClientSwitcherIssues();
+      return;
+    }
     const el = document.getElementById('client-status-' + id);
     if (el) el.innerHTML = renderClientStatusSummary(report);
     fetchClientEventsForDetail(id);

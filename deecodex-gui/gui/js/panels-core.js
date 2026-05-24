@@ -222,6 +222,7 @@ function statusCommandUsesExecutable(command, name) {
   if (!text) return false;
   const first = text.split(/\s+/)[0] || '';
   const exe = statusCommandExecutableName(text);
+  if (exe === name && first === name) return true;
   if (exe === name && (first.includes('/') || statusCommandHasArgs(text))) return true;
   if ((exe === 'node' || exe === 'nodejs') && new RegExp(`(^|/)${name}(\\s|$)`).test(text)) return true;
   return false;
@@ -236,6 +237,13 @@ function statusCommandIsCodexCli(command) {
 function statusCommandIsClaudeCli(command) {
   return !statusCommandIsClaudeDesktop(command)
     && statusCommandUsesExecutable(command, 'claude');
+}
+
+function statusCommandIsHermesCli(command) {
+  const text = String(command || '').trim();
+  if (!text || text.includes('hermes_cli.main gateway')) return false;
+  if (statusCommandUsesExecutable(text, 'hermes')) return true;
+  return text.split(/\s+/).some(part => statusCommandExecutableName(part) === 'hermes');
 }
 
 function statusClientProcessRunning(kind) {
@@ -255,10 +263,14 @@ function statusClientProcessRunning(kind) {
     if (!commands.length) return false;
     return commands.some(statusCommandIsClaudeCli);
   }
+  if (kind === 'hermes') {
+    const commands = statusProcessCommands('hermes');
+    if (!commands.length) return false;
+    return commands.some(statusCommandIsHermesCli);
+  }
   const entry = (window._clientProcessMap || {})[kind];
   if (entry && typeof entry === 'object') return Boolean(entry.running);
   if (kind === 'openclaw') return Boolean(entry);
-  if (kind === 'hermes') return Boolean(entry);
   return false;
 }
 
