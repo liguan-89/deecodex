@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder},
     LogicalSize, Manager, Size,
 };
 use tokio::sync::Mutex;
@@ -286,9 +286,15 @@ pub fn run() {
                 .icon(icon)
                 .icon_as_template(false)
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .tooltip("deecodex · 已停止")
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
