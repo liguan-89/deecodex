@@ -11610,9 +11610,72 @@ body {
   border-color: rgba(0,122,255,0.22);
 }
 
+.official-add-details,
+[data-theme="light"] .official-add-details {
+  display: block;
+  min-width: 0;
+}
+
+.official-add-details[open],
+[data-theme="light"] .official-add-details[open] {
+  grid-column: 1 / -1;
+}
+
+.official-add-master-card,
+[data-theme="light"] .official-add-master-card {
+  min-height: 68px;
+  list-style: none;
+  user-select: none;
+}
+
+.official-add-master-card::-webkit-details-marker {
+  display: none;
+}
+
+.official-add-details[open] .official-add-master-card .provider-card-arrow {
+  opacity: 1;
+  transform: translateX(0) rotate(135deg);
+}
+
+.official-add-submenu,
+[data-theme="light"] .official-add-submenu {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 6px 0 0;
+}
+
+.official-add-subitem,
+[data-theme="light"] .official-add-subitem {
+  min-height: 52px;
+  grid-template-columns: minmax(0, 1fr) 12px;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.56);
+}
+
+.official-add-subitem .provider-icon,
+[data-theme="light"] .official-add-subitem .provider-icon {
+  display: none;
+}
+
+.official-add-subitem .provider-name,
+[data-theme="light"] .official-add-subitem .provider-name {
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+.official-add-subitem .provider-desc,
+[data-theme="light"] .official-add-subitem .provider-desc {
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
 @media (max-width: 900px) {
   .provider-grid,
-  [data-theme="light"] .provider-grid {
+  [data-theme="light"] .provider-grid,
+  .official-add-submenu,
+  [data-theme="light"] .official-add-submenu {
     grid-template-columns: 1fr;
   }
 }

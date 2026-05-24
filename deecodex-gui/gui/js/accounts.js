@@ -275,9 +275,20 @@ function renderCodexOfficialRuntimePanel(a) {
         <span>${esc(runtimeStatusLabel(state?.status || 'active'))}</span>
         <span>${esc(formatRuntimeDate(state?.next_retry_after))}</span>
         <span title="${escAttr(state?.status_message || '')}">${esc(state?.status_message || '—')}</span>
-      </div>`).join('') : '<div class="runtime-model-empty">暂无模型级冷却；该账号还没有失败或配额记录，当前按可用处理。</div>'}
+      </div>`).join('') : `<div class="runtime-model-empty">${esc(runtimeModelEmptyText(a))}</div>`}
     </div>
   </section>`;
+}
+
+function runtimeModelEmptyText(a) {
+  const runtime = a?.runtime_state || {};
+  const success = Number(runtime.success || 0);
+  const failed = Number(runtime.failed || 0);
+  const quota = officialQuotaSnapshot(a);
+  if (success || failed || quota) {
+    return '暂无模型级冷却；账号级请求和额度状态见上方统计，当前没有单模型限制。';
+  }
+  return '暂无模型级冷却；尚无请求记录，当前按可用处理。';
 }
 
 function officialAccountEligibility(a) {
@@ -929,6 +940,18 @@ function selectedEndpointId(a) {
 
 function providerDefaultTemplate(provider) {
   const templates = endpointTemplates || [];
+  if (provider === 'codex') {
+    return templates.find(t => t.id === 'codex_official')
+      || templates.find(t => t.kind === 'codex_official' || t.kind === 'CodexOfficial')
+      || {
+        id: 'codex_official',
+        label: 'Codex 官方',
+        kind: 'codex_official',
+        default_base_url: 'https://chatgpt.com/backend-api/codex',
+        default_path: 'responses',
+        default_vision_mode: 'native',
+      };
+  }
   if (provider === 'anthropic') {
     return templates.find(t => t.id === 'anthropic_messages')
       || templates.find(t => t.kind === 'anthropic_messages' || t.kind === 'AnthropicMessages')
@@ -1168,10 +1191,11 @@ function renderAddAccount() {
   if (providerPresets.length === 0) {
     cards = '<div class="empty-state">加载供应商列表...</div>';
   } else {
-    const providers = providersForClientKind(selectedClientKind);
-    const officialCards = renderOfficialOAuthCards(selectedClientKind);
+    const providers = providersForClientKind(selectedClientKind).filter(p =>
+      !(normalizeClientKind(selectedClientKind) === 'codex' && p && p.slug === 'codex')
+    );
     const surface = selectedSurfaceForKind(selectedClientKind);
-    cards = officialCards + '<div class="provider-grid">' + providers.map(p => {
+    cards = '<div class="provider-grid">' + renderOfficialAccountCard(selectedClientKind) + providers.map(p => {
       return `<div class="provider-card" role="button" tabindex="0" aria-label="添加 ${escAttr(p.label)} 账号" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')}">
         <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
         <div class="provider-copy">
@@ -1195,6 +1219,48 @@ function renderAddAccount() {
     </div>
   </div>
   <div class="provider-picker-shell">${cards}</div>`;
+}
+
+function renderOfficialAccountCard(kind) {
+  const normalized = normalizeClientKind(kind);
+  if (normalized === 'codex') return renderCodexOfficialAccountCard();
+  return renderOfficialOAuthCards(kind);
+}
+
+function renderCodexOfficialAccountCard() {
+  const surface = selectedSurfaceForKind('codex');
+  const surfaceTitle = clientSurfaceTitle('codex', surface);
+  return `<details class="official-add-details">
+    <summary class="provider-card official-login-card official-add-master-card" aria-label="展开 Codex 官方添加方式">
+      <div class="provider-icon">${providerIcon('codex', 'Codex 官方')}</div>
+      <div class="provider-copy">
+        <div class="provider-name">Codex 官方</div>
+        <div class="provider-desc">登录、设备码、认证 JSON 或手动配置</div>
+      </div>
+      <div class="provider-card-arrow" aria-hidden="true"></div>
+    </summary>
+    <div class="official-add-submenu">
+      ${renderOfficialAddSubItem('导入认证 JSON', '导入到账号池', 'importAuthJsonAccounts()')}
+      ${renderOfficialAddSubItem(`官方 ${surfaceTitle} 登录`, 'OAuth 登录', "startOAuthAccountLogin('codex', 'browser')")}
+      ${renderOfficialAddSubItem(`${surfaceTitle} 设备码登录`, '设备码登录', "startOAuthAccountLogin('codex', 'device')")}
+      ${renderOfficialAddSubItem('Codex 官方', '手动配置', `addCodexOfficialAccount('${escAttr(surface)}')`)}
+    </div>
+  </details>`;
+}
+
+function renderOfficialAddSubItem(title, desc, onclick) {
+  return `<div class="provider-card official-login-card official-add-subitem" role="button" tabindex="0" aria-label="${escAttr(title)}" onclick="${onclick}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${onclick}}">
+    <div class="provider-icon">${providerIcon('codex', title)}</div>
+    <div class="provider-copy">
+      <div class="provider-name">${esc(title)}</div>
+      <div class="provider-desc">${esc(desc)}</div>
+    </div>
+    <div class="provider-card-arrow" aria-hidden="true"></div>
+  </div>`;
+}
+
+function addCodexOfficialAccount(surface) {
+  addAccount('codex', 'codex', surface || selectedSurfaceForKind('codex'));
 }
 
 function renderOfficialOAuthCards(kind) {
@@ -2767,6 +2833,45 @@ async function importFromCodex() {
   } catch (e) {
     showToast('导入失败: ' + e, 'error');
   }
+}
+
+async function importAuthJsonAccounts() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if (!files.length) return;
+    try {
+      const payload = await Promise.all(files.map(async file => ({
+        name: file.name,
+        content: await file.text(),
+      })));
+      const result = await invoke('import_auth_json_accounts', {
+        authFilesJson: JSON.stringify(payload),
+      });
+      const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
+      showToast((result.message || '认证 JSON 导入完成') + (failedCount ? `，失败 ${failedCount} 个` : ''), failedCount ? 'info' : 'success');
+      await loadAccountsData();
+      const importedAccounts = Array.isArray(result.accounts) ? result.accounts : [];
+      const preferred = importedAccounts[0];
+      if (preferred) {
+        selectedClientKind = accountClientKind(preferred);
+        selectedClientSurface = accountClientSurface(preferred);
+      }
+      accountsView = 'list';
+      if (currentPanel === 'accounts') renderMainContent();
+      else if (currentPanel === 'config') renderPanel('config');
+    } catch (e) {
+      showToast('认证 JSON 导入失败: ' + e, 'error');
+    }
+  };
+  input.oncancel = () => input.remove();
+  input.click();
 }
 
 async function scanClientAccounts() {

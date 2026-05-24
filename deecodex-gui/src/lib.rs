@@ -31,6 +31,37 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+const BETA_EXPIRES_AT_UNIX: u64 = 1_780_243_199; // 2026-05-31 23:59:59 Asia/Shanghai
+
+fn beta_trial_expired() -> bool {
+    if !env!("CARGO_PKG_VERSION").contains("beta") {
+        return false;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(u64::MAX);
+    now > BETA_EXPIRES_AT_UNIX
+}
+
+fn show_startup_blocking_alert(title: &str, message: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display dialog {:?} with title {:?} buttons {{\"退出\"}} default button \"退出\" with icon stop",
+            message, title
+        );
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("{title}: {message}");
+    }
+}
+
 pub struct ServerManager {
     pub shutdown_tx: Mutex<Option<tokio::sync::watch::Sender<()>>>,
     pub handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -215,6 +246,14 @@ fn load_env() {
 }
 
 pub fn run() {
+    if beta_trial_expired() {
+        show_startup_blocking_alert(
+            "deecodex 测试版已过期",
+            "此测试版 3.0.7beta 的 7 天使用期限已结束，请安装新的正式版或更新的测试版。",
+        );
+        std::process::exit(1);
+    }
+
     // 单实例控制：检测已有 GUI 实例，避免重复启动。
     // 开发调试可通过环境变量允许并行窗口，避免影响已安装版本。
     let allow_multi_instance = cfg!(debug_assertions)
@@ -458,6 +497,7 @@ pub fn run() {
             commands::clear_account_cooldown,
             commands::reset_account_runtime_state,
             commands::set_account_routing,
+            commands::import_auth_json_accounts,
             commands::import_codex_config,
             commands::get_provider_presets,
             commands::get_client_profiles,
@@ -571,7 +611,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::env_flag_enabled;
+    use super::{beta_trial_expired, env_flag_enabled, BETA_EXPIRES_AT_UNIX};
 
     #[test]
     fn gui_allow_multiple_flag_accepts_common_truthy_values() {
@@ -586,5 +626,17 @@ mod tests {
         assert!(!env_flag_enabled(Some("")));
         assert!(!env_flag_enabled(Some("false")));
         assert!(!env_flag_enabled(Some("0")));
+    }
+
+    #[test]
+    fn beta_expiry_timestamp_is_seven_day_window() {
+        assert_eq!(BETA_EXPIRES_AT_UNIX, 1_780_243_199);
+    }
+
+    #[test]
+    fn beta_expiry_gate_is_version_scoped() {
+        if !env!("CARGO_PKG_VERSION").contains("beta") {
+            assert!(!beta_trial_expired());
+        }
     }
 }

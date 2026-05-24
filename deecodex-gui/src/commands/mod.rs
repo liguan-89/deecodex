@@ -159,6 +159,280 @@ fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> 
     serde_json::from_value(value).map_err(|e| format!("解析账号 JSON 失败: {e}"))
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthJsonImportFile {
+    #[serde(default)]
+    name: String,
+    content: String,
+}
+
+fn auth_json_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .or_else(|| value.get("tokens").and_then(|tokens| tokens.get(key)))
+        .or_else(|| value.get("token").and_then(|token| token.get(key)))
+        .or_else(|| value.get("oauth").and_then(|oauth| oauth.get(key)))
+        .or_else(|| value.get("auth").and_then(|auth| auth.get(key)))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn auth_json_u64(value: &Value, key: &str) -> Option<u64> {
+    value
+        .get(key)
+        .or_else(|| value.get("tokens").and_then(|tokens| tokens.get(key)))
+        .or_else(|| value.get("token").and_then(|token| token.get(key)))
+        .or_else(|| value.get("oauth").and_then(|oauth| oauth.get(key)))
+        .and_then(|raw| {
+            raw.as_u64().or_else(|| {
+                raw.as_str()
+                    .map(str::trim)
+                    .and_then(|text| text.parse::<u64>().ok())
+            })
+        })
+}
+
+fn parse_auth_json_import_files(raw: &str) -> Result<Vec<AuthJsonImportFile>, String> {
+    let value: Value =
+        serde_json::from_str(raw).map_err(|e| format!("解析认证文件列表失败: {e}"))?;
+    if value.is_array() {
+        return serde_json::from_value(value).map_err(|e| format!("解析认证文件列表失败: {e}"));
+    }
+    if value.get("content").is_some() {
+        return serde_json::from_value(value)
+            .map(|file| vec![file])
+            .map_err(|e| format!("解析认证文件失败: {e}"));
+    }
+    Ok(vec![AuthJsonImportFile {
+        name: "auth.json".into(),
+        content: raw.to_string(),
+    }])
+}
+
+fn codex_oauth_token_from_auth_json(
+    value: &Value,
+    now: u64,
+) -> Result<deecodex::oauth_accounts::OAuthToken, String> {
+    let provider = auth_json_string(value, "type");
+    let provider = if provider.is_empty() {
+        auth_json_string(value, "provider")
+    } else {
+        provider
+    };
+    let provider = provider.to_ascii_lowercase();
+    let access_token = auth_json_string(value, "access_token");
+    let refresh_token = auth_json_string(value, "refresh_token");
+    let id_token = auth_json_string(value, "id_token");
+    if (provider == "codex" || provider == "openai" || provider == "chatgpt")
+        && access_token.is_empty()
+    {
+        return Err("认证文件缺少 access_token".into());
+    }
+    let explicit_codex = provider == "codex" || provider == "openai" || provider == "chatgpt";
+    let looks_like_codex = !access_token.is_empty()
+        && (explicit_codex
+            || (provider.is_empty() && (!id_token.is_empty() || !refresh_token.is_empty())));
+    if !looks_like_codex {
+        let label = if provider.is_empty() {
+            "未知".to_string()
+        } else {
+            provider
+        };
+        return Err(format!("暂不支持的认证类型: {label}"));
+    }
+
+    let token_info = deecodex::oauth_accounts::codex_id_token_info(&id_token);
+    let mut email = auth_json_string(value, "email");
+    if email.is_empty() {
+        email = token_info
+            .get("email")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+    }
+    let mut account_id = auth_json_string(value, "account_id");
+    if account_id.is_empty() {
+        account_id = token_info
+            .get("chatgpt_account_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+    }
+
+    let expired_at = auth_json_u64(value, "expired_at")
+        .or_else(|| auth_json_u64(value, "expires_at"))
+        .or_else(|| {
+            auth_json_u64(value, "expires_in").map(|expires_in| now.saturating_add(expires_in))
+        })
+        .unwrap_or(0);
+
+    Ok(deecodex::oauth_accounts::OAuthToken {
+        provider: "codex".into(),
+        access_token,
+        refresh_token,
+        id_token,
+        email,
+        account_id,
+        expired: auth_json_string(value, "expired"),
+        expired_at,
+        last_refresh: auth_json_string(value, "last_refresh"),
+    })
+}
+
+fn codex_official_endpoint_config(account_id: &str) -> deecodex::accounts::EndpointConfig {
+    deecodex::accounts::EndpointConfig {
+        id: format!("endpoint_{account_id}"),
+        name: "Codex 官方".into(),
+        kind: deecodex::accounts::EndpointKind::CodexOfficial,
+        base_url: deecodex::handlers::CODEX_OFFICIAL_BASE_URL.into(),
+        path: "responses".into(),
+        template_id: "codex_official".into(),
+        template_version: 1,
+        model_map: HashMap::new(),
+        model_profiles: HashMap::new(),
+        vision: deecodex::accounts::VisionConfig {
+            mode: deecodex::accounts::VisionMode::Native,
+            ..Default::default()
+        },
+        custom_headers: HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        fast_mode_enabled: false,
+        fast_service_tier: "priority".into(),
+        balance_url: String::new(),
+    }
+}
+
+fn codex_account_from_imported_token(
+    token: deecodex::oauth_accounts::OAuthToken,
+    source_name: &str,
+    now: u64,
+) -> deecodex::accounts::Account {
+    use deecodex::accounts::{
+        Account, AccountAuthMode, AccountClientKind, AccountClientSurface, DevPipelineToolMode,
+        DevPipelineTriggerMode,
+    };
+
+    let account_id = deecodex::accounts::generate_id();
+    let mut client_options = HashMap::new();
+    client_options.insert(
+        "oauth".into(),
+        deecodex::oauth_accounts::oauth_token_to_value(&token, "import"),
+    );
+    client_options.insert("auth_mode".into(), json!("oauth"));
+    client_options.insert(
+        "routing".into(),
+        json!({
+            "enabled": true,
+            "pool": "codex-official",
+            "priority": 0,
+            "weight": 1,
+            "disabled": false,
+        }),
+    );
+    if !source_name.trim().is_empty() {
+        client_options.insert("auth_file_name".into(), json!(source_name.trim()));
+    }
+
+    let mut account = Account {
+        id: account_id.clone(),
+        name: oauth_account_name("Codex", &token.email),
+        provider: "codex".into(),
+        client_kind: AccountClientKind::Codex,
+        client_surface: AccountClientSurface::Cli,
+        wire_protocol: Default::default(),
+        upstream: deecodex::handlers::CODEX_OFFICIAL_BASE_URL.into(),
+        api_key: token.access_token.clone(),
+        auth_mode: AccountAuthMode::OAuth,
+        default_model: String::new(),
+        client_options,
+        runtime_state: Default::default(),
+        last_applied_at: None,
+        last_check: None,
+        model_map: HashMap::new(),
+        vision_upstream: String::new(),
+        vision_api_key: String::new(),
+        vision_model: String::new(),
+        vision_endpoint: String::new(),
+        vision_enabled: false,
+        from_codex_config: false,
+        balance_url: String::new(),
+        created_at: now,
+        updated_at: now,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        custom_headers: HashMap::new(),
+        provider_options: deecodex::providers::provider_options_for_slug("codex"),
+        request_timeout_secs: None,
+        max_retries: None,
+        translate_enabled: false,
+        capability_enabled: false,
+        capability_account_id: None,
+        dev_pipeline_enabled: false,
+        dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+        dev_pipeline_command: "/dev-pipeline".into(),
+        dev_pipeline_architect_account_id: None,
+        dev_pipeline_implementer_account_id: None,
+        dev_pipeline_reviewer_account_id: None,
+        dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+        dev_pipeline_max_iterations: 3,
+        dev_pipeline_show_trace: false,
+        dev_pipeline_architect_instruction: String::new(),
+        dev_pipeline_implementer_instruction: String::new(),
+        dev_pipeline_reviewer_instruction: String::new(),
+        endpoints: vec![codex_official_endpoint_config(&account_id)],
+    };
+    account.normalize_v2();
+    account
+}
+
+fn same_imported_codex_oauth(
+    account: &deecodex::accounts::Account,
+    token: &deecodex::oauth_accounts::OAuthToken,
+) -> bool {
+    if !account.client_kind.is_codex() || account.provider != "codex" {
+        return false;
+    }
+    let existing = account
+        .client_options
+        .get("oauth")
+        .and_then(deecodex::oauth_accounts::oauth_token_from_value);
+    if let Some(existing) = existing {
+        if !token.account_id.trim().is_empty() && existing.account_id == token.account_id {
+            return true;
+        }
+        if !token.refresh_token.trim().is_empty() && existing.refresh_token == token.refresh_token {
+            return true;
+        }
+        if !token.email.trim().is_empty()
+            && existing.email == token.email
+            && !existing.email.trim().is_empty()
+        {
+            return true;
+        }
+    }
+    !token.access_token.trim().is_empty() && account.api_key == token.access_token
+}
+
+fn store_has_active_codex_official(store: &deecodex::accounts::AccountStore) -> bool {
+    let Some(active) = store.active_account() else {
+        return false;
+    };
+    active
+        .active_endpoint(store.active_endpoint_id.as_deref())
+        .or_else(|| active.endpoints.first())
+        .is_some_and(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial)
+}
+
 fn secret_is_redacted(value: &str) -> bool {
     value.contains("****")
 }
@@ -2666,6 +2940,159 @@ pub async fn set_account_routing(
     sync_account_mutation_to_running_state(&manager, &store, &account).await;
 
     Ok(account_to_value_for_store(&account, &store))
+}
+
+/// 导入 CLIProxyAPI / Codex OAuth 认证 JSON，并转成 deecodex 账号池账号。
+#[tauri::command]
+pub async fn import_auth_json_accounts(
+    manager: State<'_, ServerManager>,
+    auth_files_json: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let files = parse_auth_json_import_files(&auth_files_json)?;
+    if files.is_empty() {
+        return Err("没有选择认证 JSON 文件".into());
+    }
+
+    let mut imported = Vec::new();
+    let mut imported_events = Vec::new();
+    let mut failed = Vec::new();
+    let mut skipped = 0usize;
+    let mut first_imported_id: Option<String> = None;
+    let mut imported_ids = Vec::<String>::new();
+    let now = deecodex::accounts::now_secs();
+
+    for file in files {
+        let name = file.name.trim();
+        if !name.is_empty() && !name.to_ascii_lowercase().ends_with(".json") {
+            failed.push(json!({
+                "name": name,
+                "error": "文件必须是 .json",
+            }));
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&file.content) {
+            Ok(value) => value,
+            Err(err) => {
+                failed.push(json!({
+                    "name": name,
+                    "error": format!("JSON 无效: {err}"),
+                }));
+                continue;
+            }
+        };
+        let token = match codex_oauth_token_from_auth_json(&value, now) {
+            Ok(token) => token,
+            Err(err) => {
+                failed.push(json!({
+                    "name": name,
+                    "error": err,
+                }));
+                continue;
+            }
+        };
+        if store
+            .accounts
+            .iter()
+            .any(|account| same_imported_codex_oauth(account, &token))
+        {
+            skipped += 1;
+            continue;
+        }
+
+        let account = codex_account_from_imported_token(token, name, now);
+        if first_imported_id.is_none() {
+            first_imported_id = Some(account.id.clone());
+        }
+        imported_ids.push(account.id.clone());
+        imported_events.push((
+            account.id.clone(),
+            account.client_kind.clone(),
+            json!({ "source_file": name }),
+        ));
+        store.accounts.push(account);
+    }
+
+    let imported_count = imported_events.len();
+    let mut activated = false;
+    if imported_count > 0 {
+        if !store_has_active_codex_official(&store) {
+            if let Some(account_id) = first_imported_id.clone() {
+                store.active_id = Some(account_id.clone());
+                store.active_account_id = Some(account_id.clone());
+                store.active_endpoint_id = store
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                    .and_then(|account| account.endpoints.first())
+                    .map(|endpoint| endpoint.id.clone());
+                activated = true;
+            }
+        }
+        deecodex::accounts::save_accounts(&data_dir, &store)
+            .map_err(|e| format!("保存导入账号失败: {e}"))?;
+        sync_account_store_to_running_state(&manager, &store).await;
+        if activated {
+            if let Some(account_id) = store.active_account_id.clone() {
+                if let Some(account) = store
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                {
+                    sync_active_account_to_running_state(&manager, &store, account).await?;
+                }
+            }
+        }
+        for (account_id, client_kind, details) in imported_events {
+            append_account_event(
+                &data_dir,
+                &account_id,
+                &client_kind,
+                "auth_json_import",
+                true,
+                "已从认证 JSON 导入 Codex 官方账号",
+                details,
+            );
+        }
+        imported = store
+            .accounts
+            .iter()
+            .filter(|account| imported_ids.iter().any(|id| id == &account.id))
+            .map(|account| account_to_value_for_store(account, &store))
+            .collect();
+    }
+
+    if imported_count == 0 && !failed.is_empty() {
+        let first_error = failed
+            .first()
+            .and_then(|item| item.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or("导入失败");
+        return Err(format!("认证 JSON 导入失败: {first_error}"));
+    }
+
+    let message = if imported_count > 0 {
+        let active_text = if activated {
+            "，已设为活跃官方账号"
+        } else {
+            ""
+        };
+        format!(
+            "已导入 {imported_count} 个 Codex 官方账号到账号池，跳过 {skipped} 个已存在账号{active_text}"
+        )
+    } else {
+        format!("未导入新账号，跳过 {skipped} 个已存在账号")
+    };
+
+    Ok(json!({
+        "imported": imported_count,
+        "skipped": skipped,
+        "failed": failed,
+        "activated": activated,
+        "accounts": imported,
+        "message": message,
+    }))
 }
 
 /// 从 Codex 的 config.toml 导入账号
@@ -5825,6 +6252,74 @@ mod tests {
         );
         assert!(secret_override(Some("sk-****-abcd".into())).is_none());
         assert!(secret_override(Some("   ".into())).is_none());
+    }
+
+    #[test]
+    fn codex_auth_json_import_accepts_cli_proxy_shape() {
+        let value = json!({
+            "type": "codex",
+            "email": "alpha@example.com",
+            "access_token": "access-1",
+            "refresh_token": "refresh-1",
+            "account_id": "acct_1",
+            "expired_at": 12345u64
+        });
+
+        let token = codex_oauth_token_from_auth_json(&value, 100).unwrap();
+
+        assert_eq!(token.provider, "codex");
+        assert_eq!(token.access_token, "access-1");
+        assert_eq!(token.refresh_token, "refresh-1");
+        assert_eq!(token.email, "alpha@example.com");
+        assert_eq!(token.account_id, "acct_1");
+        assert_eq!(token.expired_at, 12345);
+    }
+
+    #[test]
+    fn codex_auth_json_import_accepts_nested_tokens_shape() {
+        let value = json!({
+            "tokens": {
+                "access_token": "access-2",
+                "refresh_token": "refresh-2",
+                "expires_in": 3600
+            }
+        });
+
+        let token = codex_oauth_token_from_auth_json(&value, 100).unwrap();
+
+        assert_eq!(token.access_token, "access-2");
+        assert_eq!(token.refresh_token, "refresh-2");
+        assert_eq!(token.expired_at, 3700);
+    }
+
+    #[test]
+    fn imported_codex_account_joins_official_pool() {
+        let token = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "access-3".into(),
+            refresh_token: "refresh-3".into(),
+            id_token: String::new(),
+            email: "pool@example.com".into(),
+            account_id: "acct_pool".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+
+        let account = codex_account_from_imported_token(token, "pool.json", 100);
+        let routing = deecodex::accounts::account_routing_options(&account);
+
+        assert_eq!(account.provider, "codex");
+        assert_eq!(
+            account.auth_mode,
+            deecodex::accounts::AccountAuthMode::OAuth
+        );
+        assert_eq!(routing.pool, "codex-official");
+        assert!(routing.effective_enabled());
+        assert!(account
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial));
     }
 
     fn test_account(id: &str) -> deecodex::accounts::Account {
