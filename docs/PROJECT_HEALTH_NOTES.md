@@ -27,6 +27,7 @@
 - DEX 后端进程探测已拆成 `deecodex-gui/src/commands/dex_process.rs`，`dex.rs` 保留同名 Tauri wrapper。
 - DEX 后端 CLI/只读命令辅助函数已拆成 `deecodex-gui/src/commands/dex_cli.rs`，相关单测随私有 helper 迁移。
 - DEX 后端客户端 Dock 生命周期逻辑已拆成 `deecodex-gui/src/commands/dex_clients.rs`，对外 IPC 命令路径保持不变。
+- DEX 后端工作区工具已拆成 `deecodex-gui/src/commands/dex_workspace.rs`，读文件、列目录、执行 shell、搜索日志和工作区上下文保持原命令入口。
 
 ## 保留的兼容边界
 
@@ -39,7 +40,7 @@
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
 - `deecodex-gui/src/commands/mod.rs` 约 6776 行，插件命令已移出，但账号、线程、额度等命令仍集中在同一文件。
-- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助和客户端生命周期；诊断、聊天协议转换、工作区工具和 AI 工具链检测仍需继续分层。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期和工作区工具；诊断、聊天协议转换和 AI 工具链检测仍需继续分层。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
 

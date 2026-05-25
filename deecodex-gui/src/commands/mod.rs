@@ -5,6 +5,7 @@ pub mod dex_plugins;
 pub mod dex_process;
 pub mod dex_registry;
 pub mod dex_security;
+pub mod dex_workspace;
 pub mod logs;
 pub mod plugins;
 
