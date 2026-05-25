@@ -12,8 +12,11 @@ pub mod dex_security;
 pub mod dex_tool_executor;
 pub mod dex_toolchain;
 pub mod dex_workspace;
+pub mod dialogs;
 pub mod logs;
 pub mod plugins;
+pub mod request_history;
+pub mod sessions;
 pub mod upgrade;
 
 pub use plugins::*;
@@ -5069,14 +5072,7 @@ pub async fn fetch_balance(
 /// 列出所有活跃会话
 #[tauri::command]
 pub async fn list_sessions(manager: State<'_, ServerManager>) -> Result<Value, String> {
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-    let responses = state.sessions.list_responses();
-    let conversations = state.sessions.list_conversations();
-    Ok(json!({
-        "responses": responses.iter().map(|r| json!({"id": r.id, "status": r.status})).collect::<Vec<_>>(),
-        "conversations": conversations.iter().map(|c| json!({"id": c.id, "message_count": c.message_count})).collect::<Vec<_>>(),
-    }))
+    sessions::list_sessions_impl(manager).await
 }
 
 /// 删除会话（先备份）
@@ -5086,46 +5082,7 @@ pub async fn delete_session(
     session_type: String,
     session_id: String,
 ) -> Result<Value, String> {
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-
-    let backup_store = deecodex::backup_store::BackupStore::new(state.data_dir.join("backups"))
-        .map_err(|e| format!("备份存储初始化失败: {e}"))?;
-
-    match session_type.as_str() {
-        "responses" => {
-            if let Some((messages, response, input_items)) =
-                state.sessions.delete_response_with_data(&session_id)
-            {
-                let data =
-                    json!({"messages": messages, "response": response, "input_items": input_items});
-                let token = backup_store
-                    .write_backup(&session_id, "response", &data)
-                    .unwrap_or_default();
-                Ok(
-                    json!({"id": session_id, "object": "response.deleted", "deleted": true, "undo_token": token}),
-                )
-            } else {
-                Err(format!("未找到响应: {}", session_id))
-            }
-        }
-        "conversations" => {
-            if let Some((messages, items)) =
-                state.sessions.delete_conversation_with_data(&session_id)
-            {
-                let data = json!({"messages": messages, "items": items});
-                let token = backup_store
-                    .write_backup(&session_id, "conversation", &data)
-                    .unwrap_or_default();
-                Ok(
-                    json!({"id": session_id, "object": "conversation.deleted", "deleted": true, "undo_token": token}),
-                )
-            } else {
-                Err(format!("未找到对话: {}", session_id))
-            }
-        }
-        _ => Err(format!("未知的会话类型: {}", session_type)),
-    }
+    sessions::delete_session_impl(manager, session_type, session_id).await
 }
 
 /// 撤销删除会话
@@ -5134,50 +5091,7 @@ pub async fn undo_delete_session(
     manager: State<'_, ServerManager>,
     undo_token: String,
 ) -> Result<Value, String> {
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-
-    let backup_store = deecodex::backup_store::BackupStore::new(state.data_dir.join("backups"))
-        .map_err(|e| format!("备份存储初始化失败: {e}"))?;
-    let backup = backup_store
-        .read_backup(&undo_token)
-        .map_err(|e| format!("备份未找到: {e}"))?;
-
-    let session_type = backup
-        .get("session_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let data = &backup["data"];
-
-    match session_type {
-        "response" => {
-            let response_id = backup["session_id"].as_str().unwrap_or("");
-            let messages: Vec<deecodex::types::ChatMessage> =
-                serde_json::from_value(data["messages"].clone())
-                    .map_err(|e| format!("备份数据损坏: {e}"))?;
-            let response = data["response"].clone();
-            let input_items: Vec<Value> =
-                serde_json::from_value(data["input_items"].clone()).unwrap_or_default();
-            state
-                .sessions
-                .undo_delete_response(response_id, messages, response, input_items);
-        }
-        "conversation" => {
-            let conversation_id = backup["session_id"].as_str().unwrap_or("");
-            let messages: Vec<deecodex::types::ChatMessage> =
-                serde_json::from_value(data["messages"].clone())
-                    .map_err(|e| format!("备份数据损坏: {e}"))?;
-            let items: Vec<Value> =
-                serde_json::from_value(data["items"].clone()).unwrap_or_default();
-            state
-                .sessions
-                .undo_delete_conversation(conversation_id, messages, items);
-        }
-        _ => return Err(format!("未知的会话类型: {}", session_type)),
-    }
-
-    let _ = backup_store.delete_backup(&undo_token);
-    Ok(json!({"ok": true}))
+    sessions::undo_delete_session_impl(manager, undo_token).await
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
@@ -5776,18 +5690,6 @@ pub async fn test_upstream_connectivity(
     }))
 }
 
-// ── 请求历史 ──────────────────────────────────────────────────────────────
-
-fn request_history_filter(
-    client_kind: Option<String>,
-    account_id: Option<String>,
-) -> deecodex::request_history::HistoryFilter {
-    deecodex::request_history::HistoryFilter {
-        client_kind: client_kind.filter(|v| !v.trim().is_empty()),
-        account_id: account_id.filter(|v| !v.trim().is_empty()),
-    }
-}
-
 #[tauri::command]
 pub async fn list_request_history(
     manager: State<'_, ServerManager>,
@@ -5795,20 +5697,7 @@ pub async fn list_request_history(
     client_kind: Option<String>,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    let filter = request_history_filter(client_kind, account_id);
-    let rh = manager.request_history.lock().await;
-    if let Some(store) = rh.as_ref() {
-        let entries = store.list(limit.unwrap_or(3000), &filter).await;
-        return Ok(serde_json::to_value(entries).unwrap_or_default());
-    }
-    drop(rh);
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-    let entries = state
-        .request_history
-        .list(limit.unwrap_or(100), &filter)
-        .await;
-    Ok(serde_json::to_value(entries).unwrap_or_default())
+    request_history::list_request_history_impl(manager, limit, client_kind, account_id).await
 }
 
 #[tauri::command]
@@ -5817,17 +5706,7 @@ pub async fn clear_request_history(
     client_kind: Option<String>,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    let filter = request_history_filter(client_kind, account_id);
-    let rh = manager.request_history.lock().await;
-    if let Some(store) = rh.as_ref() {
-        store.clear(&filter).await?;
-        return Ok(json!({ "ok": true }));
-    }
-    drop(rh);
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-    state.request_history.clear(&filter).await?;
-    Ok(json!({ "ok": true }))
+    request_history::clear_request_history_impl(manager, client_kind, account_id).await
 }
 
 #[tauri::command]
@@ -5837,20 +5716,7 @@ pub async fn get_monthly_stats(
     client_kind: Option<String>,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    let filter = request_history_filter(client_kind, account_id);
-    let rh = manager.request_history.lock().await;
-    if let Some(store) = rh.as_ref() {
-        let stats = store.list_monthly_stats(limit.unwrap_or(6), &filter).await;
-        return Ok(serde_json::to_value(stats).unwrap_or_default());
-    }
-    drop(rh);
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-    let stats = state
-        .request_history
-        .list_monthly_stats(limit.unwrap_or(6), &filter)
-        .await;
-    Ok(serde_json::to_value(stats).unwrap_or_default())
+    request_history::get_monthly_stats_impl(manager, limit, client_kind, account_id).await
 }
 
 #[tauri::command]
@@ -5860,36 +5726,17 @@ pub async fn get_request_stats_since(
     client_kind: Option<String>,
     account_id: Option<String>,
 ) -> Result<Value, String> {
-    let since_secs = since.unwrap_or(0);
-    let filter = request_history_filter(client_kind, account_id);
-    let rh = manager.request_history.lock().await;
-    if let Some(store) = rh.as_ref() {
-        let stats = store.stats_since(since_secs, &filter).await;
-        return Ok(serde_json::to_value(stats).unwrap_or_default());
-    }
-    drop(rh);
-    let guard = manager.app_state.lock().await;
-    let state = guard.as_ref().ok_or("服务未启动")?;
-    let stats = state.request_history.stats_since(since_secs, &filter).await;
-    Ok(serde_json::to_value(stats).unwrap_or_default())
+    request_history::get_request_stats_since_impl(manager, since, client_kind, account_id).await
 }
 
 #[tauri::command]
 pub async fn browse_file() -> Result<Option<String>, String> {
-    let path = rfd::AsyncFileDialog::new()
-        .pick_file()
-        .await
-        .map(|f| f.path().to_string_lossy().to_string());
-    Ok(path)
+    dialogs::browse_file_impl().await
 }
 
 #[tauri::command]
 pub async fn browse_attachment_file() -> Result<Option<String>, String> {
-    let path = rfd::AsyncFileDialog::new()
-        .pick_file()
-        .await
-        .map(|f| f.path().to_string_lossy().to_string());
-    Ok(path)
+    dialogs::browse_attachment_file_impl().await
 }
 
 #[cfg(test)]
