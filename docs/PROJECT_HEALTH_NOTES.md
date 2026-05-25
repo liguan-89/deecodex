@@ -16,6 +16,7 @@
 - 后端插件 Tauri 命令已从 `commands/mod.rs` 拆到 `commands/plugins.rs`，外部命令名保持不变。
 - DEX Markdown 链接只允许 `http:` 和 `https:` 协议渲染成可点击链接。
 - DEX Markdown 渲染器已从页面文件抽出，并补链接、表格和代码块 smoke test。
+- DEX 助手前端主体已从 `placeholder-pages.js` 拆到 `dex-assistant.js`，个人中心占位页保持独立。
 
 ## 保留的兼容边界
 
@@ -49,6 +50,7 @@
 ## DEX 助手后续建议
 
 - DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
+- DEX 助手前端主体已独立为 `dex-assistant.js`，后续可继续按 agent、消息列表、附件和搜索拆更细模块。
 - DEX 输出区、输入区和工具调用 UI 应继续保持透明结构层，避免再次叠出多层内容框。
 - DEX 工具执行结果需要统一轻量样式，避免输出块比主内容更重。
 
