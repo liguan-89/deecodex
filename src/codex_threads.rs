@@ -19,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_ROLLOUT_MESSAGE_CHARS: usize = 24_000;
 const MAX_ROLLOUT_TOTAL_CHARS: usize = 1_500_000;
 const DESKTOP_RECENT_LOAD_WINDOW: usize = 20;
+const MAX_ROLLOUT_TOKEN_USAGE_SCAN_FILES: usize = 400;
 
 /// 线程信息（只读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +74,7 @@ pub struct ThreadStatus {
     pub desktop_recent_pending_count: usize,
     pub desktop_recent_repair_blocked: bool,
     pub source_summary: Vec<ThreadSourceSummary>,
+    pub context_window: CodexContextWindowStatus,
 }
 
 /// Codex 首页来源分布。
@@ -80,6 +82,19 @@ pub struct ThreadStatus {
 pub struct ThreadSourceSummary {
     pub source: String,
     pub count: usize,
+}
+
+/// Codex Desktop 上下文窗口诊断。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexContextWindowStatus {
+    pub active_model: Option<String>,
+    pub configured_model_context_window: Option<i64>,
+    pub catalog_model_context_window: Option<i64>,
+    pub effective_model_context_window: Option<i64>,
+    pub latest_rollout_model_context_window: Option<i64>,
+    pub latest_rollout_last_total_tokens: Option<i64>,
+    pub latest_rollout_token_usage_found: bool,
+    pub latest_rollout_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +111,13 @@ struct ThreadVisibilityStatus {
     desktop_recent_pending_count: usize,
     desktop_recent_repair_blocked: bool,
     source_summary: Vec<ThreadSourceSummary>,
+}
+
+#[derive(Debug, Clone)]
+struct RolloutTokenUsage {
+    model_context_window: Option<i64>,
+    last_total_tokens: Option<i64>,
+    path: PathBuf,
 }
 
 /// 查找 Codex 的 state SQLite 数据库。
@@ -198,6 +220,7 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
         .sum();
     let visibility = get_visibility_status(&db_path)?;
     let migrated = backup_path(data_dir).exists();
+    let context_window = get_context_window_status(&home);
 
     Ok(ThreadStatus {
         summary,
@@ -216,6 +239,7 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
         desktop_recent_pending_count: visibility.desktop_recent_pending_count,
         desktop_recent_repair_blocked: visibility.desktop_recent_repair_blocked,
         source_summary: visibility.source_summary,
+        context_window,
     })
 }
 
@@ -804,6 +828,251 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
 fn query_count(conn: &Connection, sql: &str) -> Result<usize> {
     conn.query_row(sql, [], |row| row.get::<_, usize>(0))
         .with_context(|| format!("执行统计失败: {sql}"))
+}
+
+fn get_context_window_status(home: &Path) -> CodexContextWindowStatus {
+    let mut status = match read_codex_context_window_status(home) {
+        Ok(status) => status,
+        Err(err) => {
+            tracing::warn!("读取 Codex 上下文窗口配置失败: {err}");
+            CodexContextWindowStatus::default()
+        }
+    };
+
+    match find_latest_rollout_token_usage(home) {
+        Ok(Some(usage)) => {
+            status.latest_rollout_model_context_window = usage.model_context_window;
+            status.latest_rollout_last_total_tokens = usage.last_total_tokens;
+            status.latest_rollout_token_usage_found = true;
+            status.latest_rollout_path = Some(usage.path.to_string_lossy().to_string());
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!("读取 Codex rollout token_count 失败: {err}");
+        }
+    }
+
+    status
+}
+
+fn read_codex_context_window_status(home: &Path) -> Result<CodexContextWindowStatus> {
+    let config_path = home.join(".codex").join("config.toml");
+    if !config_path.exists() {
+        return Ok(CodexContextWindowStatus::default());
+    }
+
+    let content = crate::codex_config::read_config_file(&config_path)
+        .with_context(|| format!("读取 Codex config.toml 失败: {}", config_path.display()))?;
+    let doc: toml_edit::DocumentMut = content
+        .parse()
+        .with_context(|| format!("解析 Codex config.toml 失败: {}", config_path.display()))?;
+
+    let active_model = doc
+        .get("model")
+        .and_then(|model| model.as_str())
+        .map(ToString::to_string);
+    let configured_model_context_window =
+        toml_item_i64(doc.get("model_context_window")).filter(|value| *value > 0);
+    let catalog_path = doc
+        .get("model_catalog_json")
+        .and_then(|path| path.as_str())
+        .map(|path| expand_codex_path(home, path))
+        .or_else(|| {
+            let fallback = home.join(".codex").join("models_deecodex.json");
+            fallback.exists().then_some(fallback)
+        });
+
+    let (catalog_model_context_window, effective_model_context_window) =
+        if let Some(catalog_path) = catalog_path {
+            read_catalog_context_window(
+                &catalog_path,
+                active_model.as_deref(),
+                configured_model_context_window,
+            )
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    path = %catalog_path.display(),
+                    "读取 Codex 模型目录上下文窗口失败: {err}"
+                );
+                (None, configured_model_context_window)
+            })
+        } else {
+            (None, configured_model_context_window)
+        };
+
+    Ok(CodexContextWindowStatus {
+        active_model,
+        configured_model_context_window,
+        catalog_model_context_window,
+        effective_model_context_window,
+        latest_rollout_model_context_window: None,
+        latest_rollout_last_total_tokens: None,
+        latest_rollout_token_usage_found: false,
+        latest_rollout_path: None,
+    })
+}
+
+fn expand_codex_path(home: &Path, raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        home.join(".codex").join(path)
+    }
+}
+
+fn toml_item_i64(item: Option<&toml_edit::Item>) -> Option<i64> {
+    item.and_then(|item| item.as_value())
+        .and_then(|value| value.as_integer())
+}
+
+fn read_catalog_context_window(
+    catalog_path: &Path,
+    active_model: Option<&str>,
+    configured_model_context_window: Option<i64>,
+) -> Result<(Option<i64>, Option<i64>)> {
+    let raw = std::fs::read_to_string(catalog_path)
+        .with_context(|| format!("读取模型目录失败: {}", catalog_path.display()))?;
+    let catalog: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("解析模型目录失败: {}", catalog_path.display()))?;
+    let Some(models) = catalog.get("models").and_then(Value::as_array) else {
+        return Ok((None, configured_model_context_window));
+    };
+    let model = active_model
+        .and_then(|active| {
+            models.iter().find(|model| {
+                ["slug", "id", "name", "model"]
+                    .iter()
+                    .any(|key| model.get(*key).and_then(Value::as_str) == Some(active))
+            })
+        })
+        .or_else(|| models.first());
+
+    let Some(model) = model else {
+        return Ok((None, configured_model_context_window));
+    };
+
+    let catalog_model_context_window = json_i64(model.get("context_window"))
+        .or_else(|| json_i64(model.get("max_context_window")))
+        .filter(|value| *value > 0);
+    let percent = json_i64(model.get("effective_context_window_percent"))
+        .filter(|value| *value > 0)
+        .unwrap_or(100);
+    let base = configured_model_context_window.or(catalog_model_context_window);
+    let effective_model_context_window = base.map(|value| value.saturating_mul(percent) / 100);
+
+    Ok((catalog_model_context_window, effective_model_context_window))
+}
+
+fn json_i64(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_u64()
+                .map(|value| value.min(i64::MAX as u64) as i64)
+        }),
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_i64_at(value: &Value, path: &[&str]) -> Option<i64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    json_i64(Some(current))
+}
+
+fn find_latest_rollout_token_usage(home: &Path) -> Result<Option<RolloutTokenUsage>> {
+    let sessions_dir = home.join(".codex").join("sessions");
+    if !sessions_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let mut files = Vec::new();
+    collect_rollout_files(&sessions_dir, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (path, _) in files.into_iter().take(MAX_ROLLOUT_TOKEN_USAGE_SCAN_FILES) {
+        if let Some(usage) = read_latest_rollout_token_usage(&path)? {
+            return Ok(Some(usage));
+        }
+    }
+
+    Ok(None)
+}
+
+fn collect_rollout_files(dir: &Path, files: &mut Vec<(PathBuf, SystemTime)>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(dir = %dir.display(), "读取 Codex sessions 目录失败: {err}");
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_rollout_files(&path, files);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with("rollout-") && name.ends_with(".jsonl") {
+            files.push((path, metadata.modified().unwrap_or(UNIX_EPOCH)));
+        }
+    }
+}
+
+fn read_latest_rollout_token_usage(path: &Path) -> Result<Option<RolloutTokenUsage>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("打开 rollout 文件失败: {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut latest = None;
+
+    for line in reader.lines() {
+        let line = line.context("读取 rollout 行失败")?;
+        if !line.contains("\"token_count\"") {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(info) = token_count_info(&event) else {
+            continue;
+        };
+        latest = Some(RolloutTokenUsage {
+            model_context_window: json_i64(info.get("model_context_window")),
+            last_total_tokens: json_i64_at(info, &["last_token_usage", "total_tokens"])
+                .or_else(|| json_i64_at(info, &["last", "totalTokens"]))
+                .or_else(|| json_i64_at(info, &["last", "total_tokens"])),
+            path: path.to_path_buf(),
+        });
+    }
+
+    Ok(latest)
+}
+
+fn token_count_info(event: &Value) -> Option<&Value> {
+    let payload = event.get("payload").unwrap_or(event);
+    let is_token_count = event.get("type").and_then(Value::as_str) == Some("token_count")
+        || payload.get("type").and_then(Value::as_str) == Some("token_count");
+    if !is_token_count {
+        return None;
+    }
+    payload
+        .get("info")
+        .or_else(|| event.get("info"))
+        .or(Some(payload))
 }
 
 fn repair_thread_visibility(conn: &Connection) -> Result<usize> {
@@ -2065,6 +2334,52 @@ mod tests {
         assert!(text.contains("工具文本"));
         assert!(text.contains("图片内容"));
         assert!(!text.contains("AAAAAAAAAAAAAAAA"));
+    }
+
+    #[test]
+    fn read_latest_rollout_token_usage_reads_context_window() {
+        let path = std::env::temp_dir().join(format!(
+            "deecodex-rollout-token-test-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::File::create(&path).expect("create temp rollout");
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":1200}},"model_context_window":258400}}}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":2400}},"model_context_window":258400}}}}}}"#
+        )
+        .unwrap();
+
+        let usage = read_latest_rollout_token_usage(&path)
+            .expect("read rollout token usage")
+            .expect("token usage");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(usage.model_context_window, Some(258400));
+        assert_eq!(usage.last_total_tokens, Some(2400));
+    }
+
+    #[test]
+    fn read_catalog_context_window_applies_effective_percent() {
+        let dir = temp_test_dir("codex-context-catalog");
+        let path = dir.join("models_deecodex.json");
+        std::fs::write(
+            &path,
+            r#"{"models":[{"slug":"gpt-5.5","context_window":272000,"effective_context_window_percent":95}]}"#,
+        )
+        .expect("write catalog");
+
+        let (catalog_window, effective_window) =
+            read_catalog_context_window(&path, Some("gpt-5.5"), Some(272000))
+                .expect("read catalog");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(catalog_window, Some(272000));
+        assert_eq!(effective_window, Some(258400));
     }
 
     #[test]

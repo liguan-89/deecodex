@@ -4,7 +4,7 @@ pub mod dex_registry;
 pub mod dex_security;
 pub mod logs;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -22,7 +22,7 @@ use deecodex::config::Args;
 use deecodex::handlers;
 use deecodex::{files, metrics, vector_stores};
 
-use deecodex_plugin_host::PluginManager;
+use deecodex_plugin_host::{PluginManager, PluginManifest};
 
 use crate::ServerManager;
 
@@ -5480,6 +5480,7 @@ pub async fn get_threads_status(manager: State<'_, ServerManager>) -> Result<Val
         "desktop_recent_pending_count": status.desktop_recent_pending_count,
         "desktop_recent_repair_blocked": status.desktop_recent_repair_blocked,
         "source_summary": status.source_summary,
+        "context_window": status.context_window,
         "migrated": status.migrated,
         "calibration_needed": false,
         "active_provider": active_provider,
@@ -6063,6 +6064,138 @@ async fn get_pm(manager: &ServerManager) -> Result<Arc<PluginManager>, String> {
         .ok_or_else(|| "插件管理器未初始化".into())
 }
 
+#[derive(Debug, Clone)]
+struct PluginMarketplaceCandidate {
+    path: PathBuf,
+    source_type: &'static str,
+    source_label: &'static str,
+    template: bool,
+}
+
+fn push_plugin_marketplace_dir(
+    items: &mut Vec<PluginMarketplaceCandidate>,
+    path: PathBuf,
+    source_type: &'static str,
+    source_label: &'static str,
+    template: bool,
+) {
+    if path.join("plugin.json").exists() {
+        items.push(PluginMarketplaceCandidate {
+            path,
+            source_type,
+            source_label,
+            template,
+        });
+    }
+}
+
+fn push_plugin_marketplace_children(
+    items: &mut Vec<PluginMarketplaceCandidate>,
+    root: PathBuf,
+    source_type: &'static str,
+    source_label: &'static str,
+    template: bool,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            push_plugin_marketplace_dir(items, path, source_type, source_label, template);
+        }
+    }
+}
+
+fn plugin_marketplace_candidates() -> Vec<PluginMarketplaceCandidate> {
+    let mut items = Vec::new();
+    let mut roots = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.clone());
+        if let Some(parent) = cwd.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+            roots.push(dir.join("../Resources"));
+            roots.push(dir.join("../Resources/deecodex-plugins"));
+        }
+    }
+
+    for root in roots {
+        push_plugin_marketplace_children(
+            &mut items,
+            root.join("deecodex-plugins/plugins"),
+            "builtin",
+            "内置插件",
+            false,
+        );
+        push_plugin_marketplace_children(
+            &mut items,
+            root.join("deecodex-plugins/templates"),
+            "template",
+            "开发模板",
+            true,
+        );
+        push_plugin_marketplace_children(
+            &mut items,
+            root.join("plugins"),
+            "builtin",
+            "内置插件",
+            false,
+        );
+        push_plugin_marketplace_children(
+            &mut items,
+            root.join("templates"),
+            "template",
+            "开发模板",
+            true,
+        );
+        for direct in [
+            "deecodex-weixin",
+            "node-tool",
+            "node-automation",
+            "python-datasource",
+        ] {
+            let template = direct != "deecodex-weixin";
+            push_plugin_marketplace_dir(
+                &mut items,
+                root.join(direct),
+                if template { "template" } else { "builtin" },
+                if template {
+                    "开发模板"
+                } else {
+                    "内置插件"
+                },
+                template,
+            );
+        }
+    }
+
+    items
+}
+
+fn plugin_manifest_summary(manifest: &PluginManifest) -> Value {
+    json!({
+        "id": manifest.id,
+        "name": manifest.name,
+        "version": manifest.version,
+        "description": manifest.description,
+        "author": manifest.author,
+        "kind": manifest.kind,
+        "tags": manifest.tags,
+        "features": manifest.features,
+        "permissions": manifest.permissions,
+        "config_schema": manifest.config_schema,
+        "account": manifest.account,
+        "dex_tools": manifest.dex_tools,
+        "min_deecodex_version": manifest.min_deecodex_version,
+    })
+}
+
 fn plugin_method_missing(error: &str) -> bool {
     error.contains("方法未找到")
         || error.contains("Method not found")
@@ -6155,6 +6288,109 @@ pub async fn list_plugin_events(
         .iter()
         .map(|event| serde_json::to_value(event).unwrap_or_default())
         .collect())
+}
+
+#[tauri::command]
+pub async fn list_plugin_marketplace(
+    manager: State<'_, ServerManager>,
+) -> Result<Vec<Value>, String> {
+    let pm = get_pm(&manager).await?;
+    let installed = pm
+        .list()
+        .await
+        .into_iter()
+        .map(|plugin| (plugin.id.clone(), plugin))
+        .collect::<HashMap<_, _>>();
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+
+    for candidate in plugin_marketplace_candidates() {
+        let manifest = match PluginManifest::from_dir(&candidate.path) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                tracing::warn!(
+                    path = %candidate.path.display(),
+                    "跳过无效插件市场条目: {error}"
+                );
+                continue;
+            }
+        };
+        if !seen.insert(manifest.id.clone()) {
+            continue;
+        }
+        let preview = match pm.preview_install(&candidate.path).await {
+            Ok(preview) => preview,
+            Err(error) => {
+                tracing::warn!(
+                    id = %manifest.id,
+                    path = %candidate.path.display(),
+                    "生成插件市场预览失败: {error}"
+                );
+                continue;
+            }
+        };
+        let installed_plugin = installed.get(&manifest.id);
+        let installed_version = installed_plugin.map(|plugin| plugin.version.clone());
+        let installed_state = installed_plugin
+            .and_then(|plugin| serde_json::to_value(&plugin.state).ok())
+            .unwrap_or(Value::Null);
+        let update_available = installed_version
+            .as_ref()
+            .map(|version| version != &manifest.version)
+            .unwrap_or(false);
+        let status = if update_available {
+            "update_available"
+        } else if installed_version.is_some() {
+            "installed"
+        } else {
+            "available"
+        };
+        items.push(json!({
+            "id": manifest.id,
+            "name": manifest.name,
+            "version": manifest.version,
+            "description": manifest.description,
+            "author": manifest.author,
+            "kind": manifest.kind,
+            "tags": manifest.tags,
+            "features": manifest.features,
+            "permissions": manifest.permissions,
+            "config_schema": manifest.config_schema,
+            "account": manifest.account,
+            "dex_tools": manifest.dex_tools,
+            "min_deecodex_version": manifest.min_deecodex_version,
+            "manifest": plugin_manifest_summary(&manifest),
+            "path": candidate.path.to_string_lossy().to_string(),
+            "source_type": candidate.source_type,
+            "source_label": candidate.source_label,
+            "template": candidate.template,
+            "status": status,
+            "installed": installed_version.is_some(),
+            "installed_version": installed_version,
+            "installed_enabled": installed_plugin.map(|plugin| plugin.enabled),
+            "installed_state": installed_state,
+            "update_available": update_available,
+            "permission_risk": preview.permission_risk,
+            "permission_details": preview.permission_details,
+            "source_hash": preview.source_hash,
+        }));
+    }
+
+    items.sort_by(|a, b| {
+        let rank = |item: &Value| match item.get("source_type").and_then(Value::as_str) {
+            Some("builtin") => 0,
+            Some("template") => 1,
+            _ => 2,
+        };
+        rank(a).cmp(&rank(b)).then_with(|| {
+            a.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(b.get("name").and_then(Value::as_str).unwrap_or(""))
+        })
+    });
+
+    Ok(items)
 }
 
 #[tauri::command]

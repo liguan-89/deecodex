@@ -1,9 +1,11 @@
 // 插件状态常量
 let _pluginsData = [];
+let _pluginMarketplaceData = [];
 let _pluginsRefreshTimer = null;
 let _pluginsRefreshMs = 0;
 let _pluginsAutoRefresh = true;
 let _pluginQrPollTimer = null;
+let _pluginPanelMode = 'market';
 let _pluginKindFilter = 'all';
 let _pluginFeatureFilter = 'all';
 let _pluginSearch = '';
@@ -722,6 +724,27 @@ function syncPluginAutoRefreshUi() {
   }
 }
 
+function pluginPanelData() {
+  return _pluginPanelMode === 'installed' ? (_pluginsData || []) : (_pluginMarketplaceData || []);
+}
+
+function pluginModeLabel(mode) {
+  return mode === 'installed' ? '已安装' : '插件市场';
+}
+
+function renderPluginModeTabs() {
+  const marketCount = (_pluginMarketplaceData || []).length;
+  const installedCount = (_pluginsData || []).length;
+  return `<div class="plugin-mode-tabs" role="tablist" aria-label="插件视图">
+    <button type="button" class="${_pluginPanelMode === 'market' ? 'active' : ''}" onclick="setPluginPanelMode('market')" role="tab" aria-selected="${_pluginPanelMode === 'market' ? 'true' : 'false'}">
+      <span>插件市场</span><em>${marketCount}</em>
+    </button>
+    <button type="button" class="${_pluginPanelMode === 'installed' ? 'active' : ''}" onclick="setPluginPanelMode('installed')" role="tab" aria-selected="${_pluginPanelMode === 'installed' ? 'true' : 'false'}">
+      <span>已安装</span><em>${installedCount}</em>
+    </button>
+  </div>`;
+}
+
 function renderPluginsPanel() {
   // detail view
   if (_pluginDetailId) return renderPluginDetail();
@@ -730,6 +753,7 @@ function renderPluginsPanel() {
     <h2>插件中心</h2>
   </div>
   <div class="plugin-console">
+    ${renderPluginModeTabs()}
     <div class="plugin-install-bar">
       <input id="pluginZipPath" placeholder="插件包路径（.zip 或插件目录）">
       <button class="btn btn-ghost" onclick="browsePluginZip()">选择包</button>
@@ -770,7 +794,7 @@ function renderPluginFilterBar() {
 
 function pluginFilterOptions(type) {
   const map = new Map();
-  (_pluginsData || []).forEach(plugin => {
+  pluginPanelData().forEach(plugin => {
     if (type === 'kind') {
       const kind = String(plugin.kind || 'tool');
       map.set(kind, pluginKindLabel(plugin));
@@ -823,9 +847,27 @@ function setPluginSearch(value) {
   renderPluginList();
 }
 
+function setPluginPanelMode(mode) {
+  _pluginPanelMode = mode === 'installed' ? 'installed' : 'market';
+  const consoleEl = document.querySelector('.plugin-console');
+  if (consoleEl) {
+    const tabs = consoleEl.querySelector('.plugin-mode-tabs');
+    if (tabs) tabs.outerHTML = renderPluginModeTabs();
+    const filterBar = consoleEl.querySelector('.plugin-filter-bar');
+    if (filterBar) filterBar.outerHTML = renderPluginFilterBar();
+  }
+  renderPluginList();
+}
+
 async function loadPluginsData() {
   try {
     _pluginsData = await invoke('list_plugins') || [];
+    try {
+      _pluginMarketplaceData = await invoke('list_plugin_marketplace') || [];
+    } catch(e) {
+      console.warn('插件市场加载失败', e);
+      _pluginMarketplaceData = [];
+    }
     if (_pluginDetailId) {
       const input = document.activeElement;
       const focusedId = input && input.id ? input.id : null;
@@ -845,6 +887,8 @@ async function loadPluginsData() {
       startPluginEventRefresh(_pluginDetailId);
     } else {
       stopPluginEventRefresh();
+      const modeTabs = document.querySelector('.plugin-mode-tabs');
+      if (modeTabs) modeTabs.outerHTML = renderPluginModeTabs();
       const filterBar = document.querySelector('.plugin-filter-bar');
       if (filterBar) filterBar.outerHTML = renderPluginFilterBar();
       renderPluginList();
@@ -875,10 +919,57 @@ async function loadPluginEvents(pluginId, silent) {
 function renderPluginList() {
   var el = document.getElementById('pluginList');
   if (!el) return;
-  if (!_pluginsData.length) { el.innerHTML = '<div class="empty-state">暂无已安装插件</div>'; return; }
-  const filtered = _pluginsData.filter(pluginMatchesFilters);
-  if (!filtered.length) { el.innerHTML = '<div class="empty-state">没有匹配的插件</div>'; return; }
-  el.innerHTML = filtered.map(p => renderPluginCard(p)).join('');
+  const data = pluginPanelData();
+  el.className = _pluginPanelMode === 'market' ? 'plugin-market-grid' : 'plugin-list';
+  if (!data.length) {
+    el.innerHTML = `<div class="empty-state">${_pluginPanelMode === 'market' ? '暂无市场插件' : '暂无已安装插件'}</div>`;
+    return;
+  }
+  const filtered = data.filter(pluginMatchesFilters);
+  if (!filtered.length) { el.innerHTML = `<div class="empty-state">没有匹配的${esc(pluginModeLabel(_pluginPanelMode))}插件</div>`; return; }
+  el.innerHTML = filtered.map(p => _pluginPanelMode === 'market' ? renderPluginMarketCard(p) : renderPluginCard(p)).join('');
+}
+
+function pluginMarketStatus(item) {
+  if (item.update_available) return { label: '可更新', cls: 'update' };
+  if (item.installed) return { label: '已安装', cls: 'installed' };
+  return { label: '可安装', cls: 'available' };
+}
+
+function renderPluginMarketCard(item) {
+  const status = pluginMarketStatus(item);
+  const features = pluginFeatures(item);
+  const featureText = features.length
+    ? features.slice(0, 3).map(feature => feature.label || pluginFeatureKindLabel(feature.kind)).join(' · ')
+    : pluginKindLabel(item);
+  const tags = [
+    item.source_label || '本地',
+    pluginKindLabel(item),
+    ...(item.template ? ['模板'] : []),
+  ];
+  const action = item.update_available
+    ? `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')">更新</button>`
+    : item.installed
+      ? `<button class="btn-apply" onclick="event.stopPropagation(); openInstalledPluginFromMarket('${escAttr(item.id)}')">管理</button>`
+      : `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')">安装</button>`;
+  const installed = item.installed_version ? `<span class="plugin-market-installed">当前 v${esc(item.installed_version)}</span>` : '';
+  return `<div class="plugin-market-card ${escAttr(status.cls)}" onclick="previewMarketplacePlugin('${escAttr(item.id)}')">
+    <div class="plugin-market-head">
+      <div class="plugin-market-title">
+        <span>${esc(item.name || item.id)}</span>
+        <em>v${esc(item.version || '-')}</em>
+      </div>
+      <span class="plugin-market-status ${escAttr(status.cls)}">${esc(status.label)}</span>
+    </div>
+    ${item.description ? `<p class="plugin-market-desc">${esc(item.description)}</p>` : ''}
+    <div class="plugin-market-tags">${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}</div>
+    <div class="plugin-market-foot">
+      <span title="${escAttr(featureText)}">${esc(featureText || '基础插件')}</span>
+      <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[item.permission_risk] || 'low')}">${esc(pluginRiskLabel(item.permission_risk))}</span>
+      ${installed}
+      ${action}
+    </div>
+  </div>`;
 }
 
 // 列表视图卡片 — 状态灯 + 名称版本/简介 + 启停按钮
@@ -1139,13 +1230,15 @@ async function setPluginEnabled(id, enabled) {
   }
 }
 
-async function installPluginFromPath() {
-  const path = document.getElementById('pluginZipPath').value.trim();
-  if (!path) { showToast('请输入插件包路径'); return; }
+function marketplaceItemById(id) {
+  return (_pluginMarketplaceData || []).find(item => String(item.id) === String(id));
+}
+
+async function installPluginPathWithPreview(path) {
   try {
     const preview = await invoke('preview_plugin_install', { path: path });
     const ok = await showPluginInstallPreview(preview || {});
-    if (!ok) return;
+    if (!ok) return false;
     if (ok === 'update') {
       await invoke('update_plugin', { path: path });
       showToast('插件已更新', 'success');
@@ -1153,9 +1246,46 @@ async function installPluginFromPath() {
       await invoke('install_plugin', { path: path });
       showToast('插件已安装', 'success');
     }
-    document.getElementById('pluginZipPath').value = '';
     await loadPluginsData();
-  } catch(e) { showToast('安装失败: ' + esc(String(e)), 'error'); }
+    return true;
+  } catch(e) {
+    showToast('安装失败: ' + esc(String(e)), 'error');
+    return false;
+  }
+}
+
+async function previewMarketplacePlugin(id) {
+  const item = marketplaceItemById(id);
+  if (!item || !item.path) return;
+  await installPluginPathWithPreview(item.path);
+}
+
+async function installMarketplacePlugin(id) {
+  const item = marketplaceItemById(id);
+  if (!item || !item.path) {
+    showToast('市场条目不可用: ' + esc(id), 'error');
+    return;
+  }
+  await installPluginPathWithPreview(item.path);
+}
+
+function openInstalledPluginFromMarket(id) {
+  const installed = (_pluginsData || []).find(plugin => String(plugin.id) === String(id));
+  if (!installed) {
+    showToast('插件还未安装', 'error');
+    return;
+  }
+  _pluginPanelMode = 'installed';
+  showPluginDetail(id);
+}
+
+async function installPluginFromPath() {
+  const path = document.getElementById('pluginZipPath').value.trim();
+  if (!path) { showToast('请输入插件包路径'); return; }
+  const changed = await installPluginPathWithPreview(path);
+  if (changed) {
+    document.getElementById('pluginZipPath').value = '';
+  }
 }
 
 async function browsePluginZip() {

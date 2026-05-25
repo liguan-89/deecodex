@@ -542,6 +542,7 @@ pub fn run() {
             commands::browse_attachment_file,
             commands::list_plugins,
             commands::list_plugin_events,
+            commands::list_plugin_marketplace,
             commands::preview_plugin_install,
             commands::install_plugin,
             commands::update_plugin,

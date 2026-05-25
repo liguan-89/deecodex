@@ -70,6 +70,39 @@ function threadSourceTone(source) {
   return 'warn';
 }
 
+function formatThreadTokenCount(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  return String(Math.round(n));
+}
+
+function renderContextWindowTags(status) {
+  const context = status?.context_window || {};
+  const windowTokens = Number(
+    context.latest_rollout_model_context_window
+    || context.effective_model_context_window
+    || context.configured_model_context_window
+    || context.catalog_model_context_window
+    || 0
+  );
+  const usedTokens = Number(context.latest_rollout_last_total_tokens || 0);
+  const source = context.latest_rollout_token_usage_found ? 'rollout' : (windowTokens ? 'config' : '—');
+  const sourceTone = context.latest_rollout_token_usage_found ? 'tag-current' : (windowTokens ? 'tag-warning' : 'tag-other');
+  const titleParts = [];
+  if (context.active_model) titleParts.push(`模型: ${context.active_model}`);
+  if (context.configured_model_context_window) titleParts.push(`配置: ${formatThreadTokenCount(context.configured_model_context_window)}`);
+  if (context.catalog_model_context_window) titleParts.push(`目录: ${formatThreadTokenCount(context.catalog_model_context_window)}`);
+  if (context.effective_model_context_window) titleParts.push(`有效: ${formatThreadTokenCount(context.effective_model_context_window)}`);
+  if (context.latest_rollout_path) titleParts.push(`rollout: ${context.latest_rollout_path}`);
+  const title = titleParts.length ? ` title="${escAttr(titleParts.join('\n'))}"` : '';
+  return `
+      <span class="tag tag-current"${title}>上下文: ${formatThreadTokenCount(windowTokens)}</span>
+      <span class="tag tag-current">最近已用: ${formatThreadTokenCount(usedTokens)}</span>
+      <span class="tag ${sourceTone}"${title}>Token源: ${esc(source)}</span>`;
+}
+
 function renderThreads() {
   return `<div class="page-header threads-page-header">
     <h2>线程聚合</h2>
@@ -195,6 +228,7 @@ function renderCodexThreadActions(status) {
       <span class="tag ${recentPending ? 'tag-warning' : 'tag-other'}"${recentTitle}>待入 Recent: ${recentPending}</span>
       <span class="tag tag-other">缺预览: ${missingPreview}</span>
       <span class="tag tag-other">缺用户事件: ${missingUserEvent}</span>
+      ${renderContextWindowTags(status)}
     </div>
     <div class="codex-thread-tool-row">
       <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateDisabled}>聚合 Codex 线程</button>
