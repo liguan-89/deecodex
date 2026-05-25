@@ -33,6 +33,7 @@
 - DEX 后端 AI 工具链/客户端环境检测已拆成 `deecodex-gui/src/commands/dex_toolchain.rs`，Claude、OpenClaw、Hermes 检查和工具链总览保持原命令入口。
 - DEX 后端运维/配置/报告工具已拆成 `deecodex-gui/src/commands/dex_ops.rs`，配置备份、差异、成本、测速、线程清理、自动调优、网络检查、SSL 和报告导出保持原命令入口。
 - DEX 后端工具执行路由已拆成 `deecodex-gui/src/commands/dex_tool_executor.rs`，`dex_execute_tool` 仍保留原 Tauri 命令入口。
+- DEX 后端聊天主链路已拆成 `deecodex-gui/src/commands/dex_chat.rs`，`dex_chat` 仍保留原 Tauri 命令入口。
 
 ## 保留的兼容边界
 
@@ -45,7 +46,7 @@
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
 - `deecodex-gui/src/commands/mod.rs` 约 6776 行，插件命令已移出，但账号、线程、额度等命令仍集中在同一文件。
-- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换、诊断/环境信息、AI 工具链检测、运维/配置/报告工具和工具执行路由；剩余重点是聊天主链路和 facade 公共 helper。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换、诊断/环境信息、AI 工具链检测、运维/配置/报告工具、工具执行路由和聊天主链路；当前主要承担 Tauri 命令 facade 和少量公共 helper。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
 

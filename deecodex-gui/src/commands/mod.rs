@@ -1,4 +1,5 @@
 pub mod dex;
+pub mod dex_chat;
 pub mod dex_cli;
 pub mod dex_clients;
 pub mod dex_diagnostics;
