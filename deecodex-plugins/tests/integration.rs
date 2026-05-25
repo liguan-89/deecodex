@@ -32,6 +32,30 @@ fn copy_fixture_dir(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
+fn copy_echo_plugin_with_id(root: &std::path::Path, plugin_id: &str) -> PathBuf {
+    let plugin_dir = root.join(plugin_id);
+    copy_fixture_dir(&echo_plugin_dir(), &plugin_dir);
+    let manifest_path = plugin_dir.join("plugin.json");
+    let mut manifest_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest_json["id"] = serde_json::json!(plugin_id);
+    manifest_json["name"] = serde_json::json!(format!("Echo {plugin_id}"));
+    if let Some(tools) = manifest_json
+        .get_mut("dex_tools")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for tool in tools {
+            tool["capability"] = serde_json::json!(format!("plugin.{plugin_id}"));
+        }
+    }
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest_json).unwrap(),
+    )
+    .unwrap();
+    plugin_dir
+}
+
 // ── 单元测试 ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -706,6 +730,67 @@ async fn test_plugin_update_preserves_config_and_enabled_state() {
     assert_eq!(info.assets.account_count, 1);
     assert!(info.assets.data_bytes >= "preserved".len() as u64);
     assert!(asset_file.exists(), "更新插件不应删除资产目录");
+}
+
+#[tokio::test]
+async fn test_plugin_account_assets_are_scoped_by_plugin_id() {
+    let dir = data_dir();
+    let manager = PluginManager::new(dir.path().to_path_buf(), "http://127.0.0.1:4446".into());
+    let first_dir = copy_echo_plugin_with_id(dir.path(), "echo-first");
+    let second_dir = copy_echo_plugin_with_id(dir.path(), "echo-second");
+
+    manager.install(&first_dir).await.expect("安装 first 失败");
+    manager
+        .install(&second_dir)
+        .await
+        .expect("安装 second 失败");
+    manager
+        .upsert_account_asset(
+            "echo-first",
+            "shared-account",
+            serde_json::json!({"name": "First Account"}),
+        )
+        .await
+        .expect("写入 first 连接资产失败");
+    manager
+        .upsert_account_asset(
+            "echo-second",
+            "shared-account",
+            serde_json::json!({"name": "Second Account"}),
+        )
+        .await
+        .expect("写入 second 连接资产失败");
+
+    let list = manager.list().await;
+    let first = list
+        .iter()
+        .find(|plugin| plugin.id == "echo-first")
+        .expect("找不到 first 插件");
+    let second = list
+        .iter()
+        .find(|plugin| plugin.id == "echo-second")
+        .expect("找不到 second 插件");
+    assert_eq!(first.accounts.len(), 1);
+    assert_eq!(first.accounts[0].name, "First Account");
+    assert_eq!(second.accounts.len(), 1);
+    assert_eq!(second.accounts[0].name, "Second Account");
+
+    manager
+        .remove_account_asset("echo-first", "shared-account")
+        .await
+        .expect("删除 first 连接资产失败");
+    let list = manager.list().await;
+    let first = list
+        .iter()
+        .find(|plugin| plugin.id == "echo-first")
+        .expect("找不到 first 插件");
+    let second = list
+        .iter()
+        .find(|plugin| plugin.id == "echo-second")
+        .expect("找不到 second 插件");
+    assert!(first.accounts.is_empty());
+    assert_eq!(second.accounts.len(), 1);
+    assert_eq!(second.accounts[0].name, "Second Account");
 }
 
 #[tokio::test]

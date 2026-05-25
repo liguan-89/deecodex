@@ -6119,15 +6119,12 @@ pub async fn validate_plugin_path(
     let pm = get_pm(&manager).await?;
     match pm.preview_install(&path).await {
         Ok(preview) => {
-            let source_changed = preview
-                .previous_source_hash
-                .as_ref()
-                .is_some_and(|hash| hash != &preview.source_hash);
-            let update_available = preview
-                .existing_version
-                .as_ref()
-                .is_some_and(|version| version != &preview.manifest.version)
-                || source_changed;
+            let update_available = plugin_update_available(
+                preview.existing_version.as_deref(),
+                &preview.manifest.version,
+                preview.previous_source_hash.as_deref(),
+                &preview.source_hash,
+            );
             let compatibility = plugin_compatibility_summary(
                 &preview.manifest,
                 &path,
@@ -6369,6 +6366,16 @@ fn plugin_manifest_summary(manifest: &PluginManifest) -> Value {
         "dex_tools": manifest.dex_tools,
         "min_deecodex_version": manifest.min_deecodex_version,
     })
+}
+
+fn plugin_update_available(
+    existing_version: Option<&str>,
+    manifest_version: &str,
+    previous_source_hash: Option<&str>,
+    source_hash: &str,
+) -> bool {
+    existing_version.is_some_and(|version| version != manifest_version)
+        || previous_source_hash.is_some_and(|hash| hash != source_hash)
 }
 
 fn plugin_version_parts(version: &str) -> Option<(u64, u64, u64)> {
@@ -6792,14 +6799,12 @@ pub async fn list_plugin_marketplace(
         let installed_state = installed_plugin
             .and_then(|plugin| serde_json::to_value(&plugin.state).ok())
             .unwrap_or(Value::Null);
-        let source_changed = preview
-            .previous_source_hash
-            .as_ref()
-            .is_some_and(|hash| hash != &preview.source_hash);
-        let update_available = installed_version
-            .as_ref()
-            .is_some_and(|version| version != &manifest.version)
-            || source_changed;
+        let update_available = plugin_update_available(
+            installed_version.as_deref(),
+            &manifest.version,
+            preview.previous_source_hash.as_deref(),
+            &preview.source_hash,
+        );
         let status = if update_available {
             "update_available"
         } else if installed_version.is_some() {
@@ -6918,15 +6923,12 @@ pub async fn preview_plugin_install(
         .await
         .map_err(|e| e.to_string())?;
     let source_path = std::path::Path::new(&path);
-    let source_changed = preview
-        .previous_source_hash
-        .as_ref()
-        .is_some_and(|hash| hash != &preview.source_hash);
-    let update_available = preview
-        .existing_version
-        .as_ref()
-        .is_some_and(|version| version != &preview.manifest.version)
-        || source_changed;
+    let update_available = plugin_update_available(
+        preview.existing_version.as_deref(),
+        &preview.manifest.version,
+        preview.previous_source_hash.as_deref(),
+        &preview.source_hash,
+    );
     let compatibility = plugin_compatibility_summary(
         &preview.manifest,
         source_path,
@@ -7536,6 +7538,29 @@ mod tests {
             validate_config_text_for_editor("env", "OPENAI_MODEL")["ok"],
             false
         );
+    }
+
+    #[test]
+    fn plugin_update_available_requires_version_or_source_change() {
+        assert!(!plugin_update_available(
+            Some("1.0.0"),
+            "1.0.0",
+            Some("sha256:same"),
+            "sha256:same"
+        ));
+        assert!(plugin_update_available(
+            Some("1.0.0"),
+            "1.0.1",
+            Some("sha256:same"),
+            "sha256:same"
+        ));
+        assert!(plugin_update_available(
+            Some("1.0.0"),
+            "1.0.0",
+            Some("sha256:old"),
+            "sha256:new"
+        ));
+        assert!(!plugin_update_available(None, "1.0.0", None, "sha256:new"));
     }
 
     #[test]
