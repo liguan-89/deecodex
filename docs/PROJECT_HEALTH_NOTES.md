@@ -24,6 +24,9 @@
 - DEX 助手面板控制、模型菜单、状态刷新和 token 计数已拆成 `dex-assistant-controls.js`。
 - DEX 助手能力注册表、系统 Prompt、动态工具清单和能力包辅助函数已拆成 `dex-assistant-registry.js`。
 - DEX 助手 Agent 请求循环、工具执行和历史持久化已拆成 `dex-assistant-agent.js`。
+- DEX 后端进程探测已拆成 `deecodex-gui/src/commands/dex_process.rs`，`dex.rs` 保留同名 Tauri wrapper。
+- DEX 后端 CLI/只读命令辅助函数已拆成 `deecodex-gui/src/commands/dex_cli.rs`，相关单测随私有 helper 迁移。
+- DEX 后端客户端 Dock 生命周期逻辑已拆成 `deecodex-gui/src/commands/dex_clients.rs`，对外 IPC 命令路径保持不变。
 
 ## 保留的兼容边界
 
@@ -36,7 +39,7 @@
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
 - `deecodex-gui/src/commands/mod.rs` 约 6776 行，插件命令已移出，但账号、线程、额度等命令仍集中在同一文件。
-- `deecodex-gui/src/commands/dex.rs` 约 5131 行，DEX 助手工具、诊断和环境读取逻辑需要继续分层。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助和客户端生命周期；诊断、聊天协议转换、工作区工具和 AI 工具链检测仍需继续分层。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
 
@@ -57,7 +60,8 @@
 ## DEX 助手后续建议
 
 - DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
-- DEX 助手前端主体已独立为 `dex-assistant.js`，注册表、Agent、附件、搜索、快捷键、消息列表和面板控制也已拆出；后续重点转向后端 DEX 工具命令拆分。
+- DEX 助手前端主体已独立为 `dex-assistant.js`，注册表、Agent、附件、搜索、快捷键、消息列表和面板控制也已拆出。
+- DEX 后端拆分应继续保持 `dex.rs` facade 模式：Tauri 命令名和 `commands::dex::*` 注册路径不动，真实实现移动到小模块。
 - DEX 输出区、输入区和工具调用 UI 应继续保持透明结构层，避免再次叠出多层内容框。
 - DEX 工具执行结果需要统一轻量样式，避免输出块比主内容更重。
 
