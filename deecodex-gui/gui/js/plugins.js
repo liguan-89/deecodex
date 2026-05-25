@@ -6,9 +6,18 @@ let _pluginsRefreshMs = 0;
 let _pluginsAutoRefresh = true;
 let _pluginQrPollTimer = null;
 let _pluginPanelMode = 'market';
+let _pluginCategoryFilter = 'all';
 let _pluginKindFilter = 'all';
 let _pluginFeatureFilter = 'all';
 let _pluginSearch = '';
+let _pluginDevOpen = Boolean(window.deeStorage && window.deeStorage.getItem('deecodex.pluginDevOpen') === '1');
+let _pluginDevDraft = {
+  templateId: '',
+  pluginId: '',
+  name: '',
+  root: '',
+  path: ''
+};
 let _pluginEventsById = {};
 let _pluginEventRefreshTimer = null;
 let _pluginEventRefreshId = null;
@@ -72,6 +81,21 @@ var PLUGIN_WORKFLOW_ACTIONS = {
   connection: ['login', 'status', 'start', 'stop'],
   dex_tool: ['status', 'run']
 };
+var PLUGIN_CATEGORY_DEFS = [
+  { key: 'all', label: '全部' },
+  { key: 'tool', label: '工具插件' },
+  { key: 'datasource', label: '数据源' },
+  { key: 'automation', label: '自动化' },
+  { key: 'account', label: '账号连接' },
+  { key: 'model', label: '模型供应商' },
+  { key: 'channel', label: '通讯通道' },
+  { key: 'ui', label: 'UI 扩展' }
+];
+var PLUGIN_CATEGORY_LABEL = PLUGIN_CATEGORY_DEFS.reduce((map, item) => {
+  map[item.key] = item.label;
+  return map;
+}, {});
+var PLUGIN_CATEGORY_PRIORITY = ['datasource', 'automation', 'account', 'model', 'channel', 'ui', 'tool'];
 
 var _pluginDetailId = null;
 var _pluginFeatureResults = {};
@@ -163,6 +187,47 @@ function pluginFeatures(p) {
     addInferred('connection', 'connection', pluginAccountLabel(p), '需要维护连接或认证状态');
   }
   return features;
+}
+
+function pluginCategoryLabel(key) {
+  return PLUGIN_CATEGORY_LABEL[String(key || '')] || key || '工具插件';
+}
+
+function pluginCategoryKeys(p) {
+  const keys = new Set();
+  const kind = String((p && p.kind) || 'tool').trim() || 'tool';
+  const features = pluginFeatures(p);
+  const featureKinds = features.map(feature => String(feature.kind || '').trim()).filter(Boolean);
+  const has = value => kind === value || featureKinds.includes(value);
+
+  if (has('datasource')) keys.add('datasource');
+  if (has('automation') || has('workspace')) keys.add('automation');
+  if (pluginHasAccountFeature(p) || has('connection')) keys.add('account');
+  if (kind === 'provider' || has('model_provider')) keys.add('model');
+  if (has('channel')) keys.add('channel');
+  if (has('ui_panel')) keys.add('ui');
+  if ((p && (p.dex_tools || []).length) || kind === 'tool' || has('dex_tool') || !keys.size) {
+    keys.add('tool');
+  }
+  return Array.from(keys);
+}
+
+function pluginPrimaryCategory(p) {
+  const keys = pluginCategoryKeys(p);
+  return PLUGIN_CATEGORY_PRIORITY.find(key => keys.includes(key)) || keys[0] || 'tool';
+}
+
+function pluginCategoryLabels(p) {
+  return pluginCategoryKeys(p).map(pluginCategoryLabel);
+}
+
+function pluginPermissionRisk(p) {
+  const direct = String((p && p.permission_risk) || '').trim();
+  if (direct) return direct;
+  const details = (p && p.permission_details) || [];
+  if (details.some(item => item && item.risk === 'high')) return 'high';
+  if (details.some(item => item && item.risk === 'medium')) return 'medium';
+  return 'low';
 }
 
 function pluginConfigFieldId(pluginId, key) {
@@ -643,6 +708,77 @@ function showPluginFeatureResult(result) {
   overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(); });
 }
 
+function renderPluginPreviewSummary(preview, manifest, risk) {
+  const categories = pluginCategoryLabels(manifest);
+  const featureCount = (manifest.features || []).length;
+  const toolCount = (manifest.dex_tools || []).length;
+  const permissionCount = (preview.permission_details || manifest.permissions || []).length;
+  const items = [
+    { label: '分类', value: categories.join(' / ') || '工具插件' },
+    { label: '能力', value: `${featureCount} 项${toolCount ? ` · ${toolCount} 工具` : ''}` },
+    { label: '权限', value: `${pluginRiskLabel(risk)} · ${permissionCount} 项`, cls: `risk-${PLUGIN_RISK_CLASS[risk] || 'low'}` },
+    { label: '要求', value: manifest.min_deecodex_version ? `DEX AI ${manifest.min_deecodex_version}+` : '无最低版本' }
+  ];
+  return `<div class="plugin-preview-summary">
+    ${items.map(item => `<div class="plugin-preview-summary-item">
+      <span>${esc(item.label)}</span>
+      <strong class="${escAttr(item.cls || '')}">${esc(item.value)}</strong>
+    </div>`).join('')}
+  </div>`;
+}
+
+function renderPluginCompatibilityChecks(item) {
+  const compat = pluginCompatibility(item);
+  const checks = Array.isArray(compat.checks) ? compat.checks : [];
+  if (!checks.length) return '';
+  const reasons = Array.isArray(compat.reasons) ? compat.reasons : [];
+  return `<div class="plugin-preview-block plugin-compat-checks">
+    <h4>兼容性</h4>
+    <div class="plugin-compat-check-list">
+      ${checks.map(check => `<div class="plugin-compat-check-row ${escAttr(check.tone || 'muted')}">
+        <span>${esc(check.label || '-')}</span>
+        <strong>${esc(check.value || '-')}</strong>
+      </div>`).join('')}
+    </div>
+    ${reasons.length ? `<div class="plugin-compat-reasons">${reasons.map(reason => `<span>${esc(reason)}</span>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function renderPluginPreviewFeatures(features) {
+  if (!features.length) return '';
+  return `<div class="plugin-preview-block">
+    <h4>能力</h4>
+    <div class="plugin-preview-feature-list">
+      ${features.map(feature => {
+        const methods = Object.keys(feature.methods || {});
+        const methodText = methods.length ? methods.map(pluginActionLabel).join(' / ') : '无动作';
+        return `<div class="plugin-preview-feature-row">
+          <div>
+            <strong>${esc(feature.label || feature.id || feature.kind || '能力')}</strong>
+            ${feature.description ? `<span>${esc(feature.description)}</span>` : ''}
+          </div>
+          <em>${esc(pluginFeatureKindLabel(feature.kind))}</em>
+          <code>${esc(methodText)}</code>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function renderPluginPreviewDexTools(tools) {
+  if (!tools.length) return '';
+  return `<div class="plugin-preview-block">
+    <h4>DEX 工具</h4>
+    <div class="plugin-preview-tool-list">
+      ${tools.map(tool => `<div class="plugin-preview-tool-row">
+        <strong>${esc(tool.name || tool.method || 'tool')}</strong>
+        <span>${esc(tool.description || '')}</span>
+        <em>L${Number(tool.level || 0)}</em>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
 function showPluginInstallPreview(preview) {
   return new Promise(function (resolve) {
     var existing = document.getElementById('pluginPreviewModal');
@@ -654,33 +790,44 @@ function showPluginInstallPreview(preview) {
     const permissionChanges = preview.permission_changes || [];
     const risk = preview.permission_risk || 'low';
     const isUpdate = Boolean(preview.already_installed);
+    const statusLabel = isUpdate ? '已安装' : '可安装';
+    const categories = pluginCategoryLabels(manifest);
+    const compatibility = pluginCompatibility(preview);
+    const canInstall = compatibility.compatible !== false;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'pluginPreviewModal';
     overlay.innerHTML = `<div class="modal-box plugin-preview-modal">
-      <div class="modal-header"><h3>安装插件</h3></div>
+      <div class="modal-header"><h3>插件详情</h3></div>
       <div class="modal-body plugin-preview-body">
-        <div class="plugin-preview-title">
-          <strong>${esc(manifest.name || manifest.id || '未知插件')}</strong>
-          <span>v${esc(manifest.version || '-')}</span>
-          <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[risk] || 'low')}">风险 ${esc(pluginRiskLabel(risk))}</span>
+        <div class="plugin-preview-hero">
+          <div class="plugin-preview-title">
+            <strong>${esc(manifest.name || manifest.id || '未知插件')}</strong>
+            <span>v${esc(manifest.version || '-')}</span>
+            <span class="plugin-preview-status ${isUpdate ? 'installed' : 'available'}">${esc(statusLabel)}</span>
+            ${renderPluginCompatibilityPill(preview)}
+            <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[risk] || 'low')}">风险 ${esc(pluginRiskLabel(risk))}</span>
+          </div>
+          ${manifest.description ? `<p>${esc(manifest.description)}</p>` : ''}
+          ${categories.length ? `<div class="plugin-perm-tags">${categories.map(label => `<span class="plugin-perm-tag">${esc(label)}</span>`).join('')}</div>` : ''}
         </div>
-        ${manifest.description ? `<p>${esc(manifest.description)}</p>` : ''}
+        ${renderPluginPreviewSummary(preview, manifest, risk)}
+        ${renderPluginCompatibilityChecks(preview)}
         <div class="plugin-source-grid">
           <span>ID</span><code>${esc(manifest.id || '-')}</code>
-          <span>类型</span><code>${esc(pluginFeatureKindLabel(manifest.kind || 'tool'))}</code>
+          <span>类型</span><code>${esc(pluginKindLabel(manifest))}</code>
+          ${manifest.author ? `<span>作者</span><code>${esc(manifest.author)}</code>` : ''}
+          ${manifest.min_deecodex_version ? `<span>最低版本</span><code>${esc(manifest.min_deecodex_version)}</code>` : ''}
           ${preview.existing_version ? `<span>当前版本</span><code>v${esc(preview.existing_version)}</code>` : ''}
           ${preview.previous_source_hash ? `<span>当前 SHA</span><code>${esc(preview.previous_source_hash)}</code>` : ''}
-	          <span>来源</span><code>${esc(preview.source_path || '-')}</code>
-	          <span>SHA-256</span><code>${esc(preview.source_hash || '-')}</code>
-	          <span>安装目录</span><code>${esc(preview.install_dir || '-')}</code>
-	          <span>资产目录</span><code>${esc(preview.asset_dir || '-')}</code>
-	        </div>
+          <span>来源</span><code>${esc(preview.source_path || '-')}</code>
+          <span>SHA-256</span><code>${esc(preview.source_hash || '-')}</code>
+          <span>安装目录</span><code>${esc(preview.install_dir || '-')}</code>
+          <span>资产目录</span><code>${esc(preview.asset_dir || '-')}</code>
+        </div>
         ${isUpdate ? `<div class="plugin-preview-warning">该插件已安装，将更新插件文件并保留配置、启用状态和连接资产。</div>` : ''}
-        ${features.length ? `<div class="plugin-preview-block">
-          <h4>能力</h4>
-          <div class="plugin-perm-tags">${features.map(feature => `<span class="plugin-perm-tag">${esc(feature.label || feature.id || feature.kind)}</span>`).join('')}</div>
-        </div>` : ''}
+        ${renderPluginPreviewFeatures(features)}
+        ${renderPluginPreviewDexTools(manifest.dex_tools || [])}
         ${permissionChanges.length ? `<div class="plugin-preview-block">
           <h4>权限变化</h4>
           <div class="plugin-permission-list">${permissionChanges.map(item => `<div class="plugin-permission-row">
@@ -699,7 +846,7 @@ function showPluginInstallPreview(preview) {
         </div>` : ''}
       </div>
       <div class="plugin-preview-actions">
-        <button class="btn btn-primary" id="pluginPreviewOk" type="button">${isUpdate ? '更新' : '安装'}</button>
+        <button class="btn btn-primary" id="pluginPreviewOk" type="button" ${canInstall ? '' : 'disabled'}>${canInstall ? (isUpdate ? '更新' : '安装') : '不可安装'}</button>
         <button class="btn btn-ghost" id="pluginPreviewCancel" type="button">取消</button>
       </div>
     </div>`;
@@ -708,7 +855,7 @@ function showPluginInstallPreview(preview) {
     function cleanup(value) { overlay.remove(); resolve(value); }
     const ok = document.getElementById('pluginPreviewOk');
     const cancel = document.getElementById('pluginPreviewCancel');
-    if (ok) ok.onclick = function () { cleanup(isUpdate ? 'update' : 'install'); };
+    if (ok && canInstall) ok.onclick = function () { cleanup(isUpdate ? 'update' : 'install'); };
     if (cancel) cancel.onclick = function () { cleanup(false); };
     overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(false); });
   });
@@ -745,21 +892,88 @@ function renderPluginModeTabs() {
   </div>`;
 }
 
+function renderPluginCategoryTabs() {
+  const data = pluginPanelData();
+  const counts = { all: data.length };
+  data.forEach(plugin => {
+    pluginCategoryKeys(plugin).forEach(key => {
+      counts[key] = (counts[key] || 0) + 1;
+    });
+  });
+  const visibleCategories = PLUGIN_CATEGORY_DEFS.filter(item => item.key === 'all' || (counts[item.key] || 0) > 0);
+  if (_pluginCategoryFilter !== 'all' && !visibleCategories.some(item => item.key === _pluginCategoryFilter)) {
+    _pluginCategoryFilter = 'all';
+  }
+  return `<div class="plugin-category-tabs" role="tablist" aria-label="插件分类">
+    ${visibleCategories.map(item => {
+      const count = counts[item.key] || 0;
+      return `<button type="button" class="${_pluginCategoryFilter === item.key ? 'active' : ''}" onclick="setPluginCategoryFilter('${escAttr(item.key)}')" role="tab" aria-selected="${_pluginCategoryFilter === item.key ? 'true' : 'false'}">
+        <span>${esc(item.label)}</span><em>${count}</em>
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
+function pluginTemplateItems() {
+  return (_pluginMarketplaceData || []).filter(item => item.template);
+}
+
+function renderPluginDevBar() {
+  const templates = pluginTemplateItems();
+  const options = templates.length
+    ? templates.map(item => `<option value="${escAttr(item.id)}" ${_pluginDevDraft.templateId === item.id ? 'selected' : ''}>${esc(item.name || item.id)}</option>`).join('')
+    : '<option value="">暂无模板</option>';
+  return `<div class="plugin-dev-entry" id="pluginDevEntry">
+    <div class="plugin-dev-head">
+      <button class="plugin-dev-toggle ${_pluginDevOpen ? 'active' : ''}" type="button" onclick="togglePluginDevBar()" aria-expanded="${_pluginDevOpen ? 'true' : 'false'}">
+        <strong>开发入口</strong>
+        <span>模板创建 / 校验 / 打包</span>
+        <em>${_pluginDevOpen ? '收起' : '展开'}</em>
+      </button>
+      <button class="btn btn-ghost" type="button" onclick="openPluginMarketplaceRoot()">市场目录</button>
+    </div>
+    ${_pluginDevOpen ? `<div class="plugin-dev-bar">
+      <div class="plugin-dev-group plugin-dev-create">
+        <span class="plugin-dev-label">创建</span>
+        <select class="history-select" id="pluginTemplateSelect" ${templates.length ? '' : 'disabled'}>
+          ${options}
+        </select>
+        <input id="pluginDevId" placeholder="插件 ID" value="${escAttr(_pluginDevDraft.pluginId)}">
+        <input id="pluginDevName" placeholder="插件名称" value="${escAttr(_pluginDevDraft.name)}">
+        <input id="pluginDevRoot" placeholder="创建到目录" value="${escAttr(_pluginDevDraft.root)}">
+        <button class="btn btn-ghost" onclick="browsePluginDevRoot()">目录</button>
+        <button class="btn btn-primary" onclick="createPluginFromTemplate()">创建</button>
+      </div>
+      <div class="plugin-dev-group plugin-dev-tools">
+        <span class="plugin-dev-label">检查</span>
+        <input id="pluginDevPath" placeholder="插件目录或包路径" value="${escAttr(_pluginDevDraft.path)}">
+        <button class="btn btn-ghost" onclick="browsePluginDevPath()">目录</button>
+        <button class="btn btn-ghost" onclick="browsePluginDevPackage()">包</button>
+        <button class="btn btn-ghost" onclick="validatePluginDevPath()">校验</button>
+        <button class="btn btn-ghost" onclick="packagePluginDevPath()">打包</button>
+        <button class="btn btn-ghost" onclick="openPluginDevPath()">打开</button>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
 function renderPluginsPanel() {
   // detail view
   if (_pluginDetailId) return renderPluginDetail();
   // list view
   return `<div class="page-header">
-    <h2>插件中心</h2>
+    <h2>插件市场</h2>
   </div>
   <div class="plugin-console">
     ${renderPluginModeTabs()}
+    ${renderPluginCategoryTabs()}
     <div class="plugin-install-bar">
       <input id="pluginZipPath" placeholder="插件包路径（.zip 或插件目录）">
       <button class="btn btn-ghost" onclick="browsePluginZip()">选择包</button>
       <button class="btn btn-ghost" onclick="browsePluginDir()">选择目录</button>
       <button class="btn btn-primary" onclick="installPluginFromPath()">安装</button>
     </div>
+    ${renderPluginDevBar()}
     ${renderPluginFilterBar()}
     <div class="plugin-controls">
       <label class="history-toggle${_pluginsRefreshTimer ? ' on' : ''}" id="pluginAutoToggle" onclick="togglePluginAutoRefresh()">
@@ -811,6 +1025,9 @@ function pluginFilterOptions(type) {
 }
 
 function pluginMatchesFilters(plugin) {
+  if (_pluginCategoryFilter !== 'all' && !pluginCategoryKeys(plugin).includes(_pluginCategoryFilter)) {
+    return false;
+  }
   if (_pluginKindFilter !== 'all' && String(plugin.kind || 'tool') !== _pluginKindFilter) {
     return false;
   }
@@ -826,10 +1043,18 @@ function pluginMatchesFilters(plugin) {
     plugin.description,
     plugin.author,
     plugin.kind,
+    ...pluginCategoryLabels(plugin),
     ...(plugin.tags || []),
     ...pluginFeatures(plugin).map(feature => feature.label + ' ' + feature.kind)
   ].join(' ').toLowerCase();
   return haystack.includes(search);
+}
+
+function setPluginCategoryFilter(value) {
+  _pluginCategoryFilter = value || 'all';
+  const categoryTabs = document.querySelector('.plugin-category-tabs');
+  if (categoryTabs) categoryTabs.outerHTML = renderPluginCategoryTabs();
+  renderPluginList();
 }
 
 function setPluginKindFilter(value) {
@@ -849,10 +1074,15 @@ function setPluginSearch(value) {
 
 function setPluginPanelMode(mode) {
   _pluginPanelMode = mode === 'installed' ? 'installed' : 'market';
+  capturePluginDevDraft();
   const consoleEl = document.querySelector('.plugin-console');
   if (consoleEl) {
     const tabs = consoleEl.querySelector('.plugin-mode-tabs');
     if (tabs) tabs.outerHTML = renderPluginModeTabs();
+    const categoryTabs = consoleEl.querySelector('.plugin-category-tabs');
+    if (categoryTabs) categoryTabs.outerHTML = renderPluginCategoryTabs();
+    const devBar = consoleEl.querySelector('.plugin-dev-entry');
+    if (devBar) devBar.outerHTML = renderPluginDevBar();
     const filterBar = consoleEl.querySelector('.plugin-filter-bar');
     if (filterBar) filterBar.outerHTML = renderPluginFilterBar();
   }
@@ -861,6 +1091,7 @@ function setPluginPanelMode(mode) {
 
 async function loadPluginsData() {
   try {
+    capturePluginDevDraft();
     _pluginsData = await invoke('list_plugins') || [];
     try {
       _pluginMarketplaceData = await invoke('list_plugin_marketplace') || [];
@@ -889,6 +1120,10 @@ async function loadPluginsData() {
       stopPluginEventRefresh();
       const modeTabs = document.querySelector('.plugin-mode-tabs');
       if (modeTabs) modeTabs.outerHTML = renderPluginModeTabs();
+      const categoryTabs = document.querySelector('.plugin-category-tabs');
+      if (categoryTabs) categoryTabs.outerHTML = renderPluginCategoryTabs();
+      const devBar = document.getElementById('pluginDevEntry');
+      if (devBar) devBar.outerHTML = renderPluginDevBar();
       const filterBar = document.querySelector('.plugin-filter-bar');
       if (filterBar) filterBar.outerHTML = renderPluginFilterBar();
       renderPluginList();
@@ -936,22 +1171,50 @@ function pluginMarketStatus(item) {
   return { label: '可安装', cls: 'available' };
 }
 
+function pluginCompatibility(item) {
+  return (item && item.compatibility) || {};
+}
+
+function pluginCompatibilityTone(item) {
+  const tone = String(pluginCompatibility(item).tone || '');
+  if (tone === 'block' || tone === 'warn' || tone === 'ok') return tone;
+  return pluginCompatibility(item).compatible === false ? 'block' : 'ok';
+}
+
+function pluginCompatibilityLabel(item) {
+  const compat = pluginCompatibility(item);
+  return compat.label || (pluginCompatibilityTone(item) === 'block' ? '不可安装' : '兼容');
+}
+
+function pluginCompatibilityReasonText(item) {
+  const reasons = pluginCompatibility(item).reasons || [];
+  return reasons.length ? reasons.join('；') : pluginCompatibilityLabel(item);
+}
+
+function renderPluginCompatibilityPill(item) {
+  const tone = pluginCompatibilityTone(item);
+  return `<span class="plugin-compat-pill ${escAttr(tone)}" title="${escAttr(pluginCompatibilityReasonText(item))}">${esc(pluginCompatibilityLabel(item))}</span>`;
+}
+
 function renderPluginMarketCard(item) {
   const status = pluginMarketStatus(item);
+  const compatibility = pluginCompatibility(item);
+  const canInstall = compatibility.compatible !== false;
   const features = pluginFeatures(item);
+  const risk = pluginPermissionRisk(item);
   const featureText = features.length
     ? features.slice(0, 3).map(feature => feature.label || pluginFeatureKindLabel(feature.kind)).join(' · ')
     : pluginKindLabel(item);
   const tags = [
+    pluginCategoryLabel(pluginPrimaryCategory(item)),
     item.source_label || '本地',
-    pluginKindLabel(item),
     ...(item.template ? ['模板'] : []),
   ];
   const action = item.update_available
-    ? `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')">更新</button>`
+    ? `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')" ${canInstall ? '' : 'disabled'}>更新</button>`
     : item.installed
       ? `<button class="btn-apply" onclick="event.stopPropagation(); openInstalledPluginFromMarket('${escAttr(item.id)}')">管理</button>`
-      : `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')">安装</button>`;
+      : `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')" ${canInstall ? '' : 'disabled'}>安装</button>`;
   const installed = item.installed_version ? `<span class="plugin-market-installed">当前 v${esc(item.installed_version)}</span>` : '';
   return `<div class="plugin-market-card ${escAttr(status.cls)}" onclick="previewMarketplacePlugin('${escAttr(item.id)}')">
     <div class="plugin-market-head">
@@ -965,7 +1228,8 @@ function renderPluginMarketCard(item) {
     <div class="plugin-market-tags">${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}</div>
     <div class="plugin-market-foot">
       <span title="${escAttr(featureText)}">${esc(featureText || '基础插件')}</span>
-      <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[item.permission_risk] || 'low')}">${esc(pluginRiskLabel(item.permission_risk))}</span>
+      ${renderPluginCompatibilityPill(item)}
+      <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[risk] || 'low')}">${esc(pluginRiskLabel(risk))}</span>
       ${installed}
       ${action}
     </div>
@@ -981,8 +1245,8 @@ function renderPluginCard(p) {
   var sc = running ? 'var(--green)' : 'var(--text-muted)';
   var dexTools = p.dex_tools || [];
   var features = pluginFeatures(p);
-  var meta = [pluginKindLabel(p)].concat(features.slice(0, 3).map(feature => feature.label));
-  if (features.length > 3) meta.push('+' + (features.length - 3));
+  var meta = pluginCategoryLabels(p).concat(features.slice(0, 2).map(feature => feature.label));
+  if (features.length > 2) meta.push('+' + (features.length - 2));
 
   return `<div class="plugin-card${running ? ' running' : ''}${enabled ? '' : ' disabled'}" onclick="showPluginDetail('${escAttr(p.id)}')">
     <span class="plugin-card-status">
@@ -1003,6 +1267,30 @@ function renderPluginCard(p) {
         : running
           ? `<button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止</button>`
           : `<button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动</button>`}
+    </div>
+  </div>`;
+}
+
+function renderPluginOverviewSection(p) {
+  const features = pluginFeatures(p);
+  const risk = pluginPermissionRisk(p);
+  const categories = pluginCategoryLabels(p).join(' / ');
+  const accountText = pluginHasAccountFeature(p) ? pluginAccountLabel(p) : '无需连接';
+  const toolCount = (p.dex_tools || []).length;
+  const permissionList = p.permission_details && p.permission_details.length ? p.permission_details : (p.permissions || []);
+  const permissionCount = permissionList.length;
+  const items = [
+    { label: '分类', value: categories || '工具插件' },
+    { label: '能力', value: `${features.length || 0} 项${toolCount ? ` · ${toolCount} 工具` : ''}` },
+    { label: '权限', value: `${pluginRiskLabel(risk)} · ${permissionCount} 项`, cls: `risk-${PLUGIN_RISK_CLASS[risk] || 'low'}` },
+    { label: '连接', value: accountText }
+  ];
+  return `<div class="plugin-detail-section plugin-overview-section">
+    <div class="plugin-overview-grid">
+      ${items.map(item => `<div class="plugin-overview-item">
+        <span>${esc(item.label)}</span>
+        <strong class="${escAttr(item.cls || '')}">${esc(item.value)}</strong>
+      </div>`).join('')}
     </div>
   </div>`;
 }
@@ -1061,11 +1349,12 @@ function renderPluginDetail() {
     accountsHtml = '<div class="plugin-empty-line">暂无连接</div>';
   }
   var infoTags = [
+    ...pluginCategoryLabels(p).map(label => `<span class="plugin-perm-tag">${esc(label)}</span>`),
     `<span class="plugin-perm-tag">类型 ${esc(pluginKindLabel(p))}</span>`,
     ...(tags || []).map(tag => `<span class="plugin-perm-tag">${esc(tag)}</span>`)
   ].join('');
 
-  return `<button class="page-back-button plugin-detail-back" onclick="backToPluginList()" aria-label="返回插件管理"><span class="line-action-icon line-action-icon-back" aria-hidden="true"></span></button>
+  return `<button class="page-back-button plugin-detail-back" onclick="backToPluginList()" aria-label="返回插件市场"><span class="line-action-icon line-action-icon-back" aria-hidden="true"></span></button>
 
   <div class="plugin-detail-shell">
   <div class="plugin-detail-header">
@@ -1098,6 +1387,8 @@ function renderPluginDetail() {
     <p class="plugin-detail-text">${esc(p.description)}</p>
     ${infoTags ? `<div class="plugin-perm-tags">${infoTags}</div>` : ''}
   </div>` : ''}
+
+  ${renderPluginOverviewSection(p)}
 
   ${renderPluginFeaturesSection(p)}
 
@@ -1239,12 +1530,21 @@ async function installPluginPathWithPreview(path) {
     const preview = await invoke('preview_plugin_install', { path: path });
     const ok = await showPluginInstallPreview(preview || {});
     if (!ok) return false;
+    let installedManifest = null;
     if (ok === 'update') {
-      await invoke('update_plugin', { path: path });
+      installedManifest = await invoke('update_plugin', { path: path });
       showToast('插件已更新', 'success');
     } else {
-      await invoke('install_plugin', { path: path });
+      installedManifest = await invoke('install_plugin', { path: path });
       showToast('插件已安装', 'success');
+    }
+    const nextId = (installedManifest && installedManifest.id) || (preview && preview.manifest && preview.manifest.id);
+    if (nextId) {
+      _pluginPanelMode = 'installed';
+      _pluginCategoryFilter = 'all';
+      _pluginKindFilter = 'all';
+      _pluginFeatureFilter = 'all';
+      _pluginDetailId = nextId;
     }
     await loadPluginsData();
     return true;
@@ -1284,13 +1584,14 @@ async function installPluginFromPath() {
   if (!path) { showToast('请输入插件包路径'); return; }
   const changed = await installPluginPathWithPreview(path);
   if (changed) {
-    document.getElementById('pluginZipPath').value = '';
+    const input = document.getElementById('pluginZipPath');
+    if (input) input.value = '';
   }
 }
 
 async function browsePluginZip() {
   try {
-    const path = await invoke('browse_file');
+    const path = await invoke('browse_plugin_package');
     if (path) {
       document.getElementById('pluginZipPath').value = path;
     }
@@ -1307,6 +1608,200 @@ async function browsePluginDir() {
     }
   } catch(e) {
     showToast('目录选择失败: ' + esc(String(e)), 'error');
+  }
+}
+
+function pluginDevInputValue(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || '').trim() : '';
+}
+
+function pluginDevMaybeValue(id, fallback) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || '').trim() : (fallback || '');
+}
+
+function capturePluginDevDraft() {
+  _pluginDevDraft = {
+    templateId: pluginDevMaybeValue('pluginTemplateSelect', _pluginDevDraft.templateId),
+    pluginId: pluginDevMaybeValue('pluginDevId', _pluginDevDraft.pluginId),
+    name: pluginDevMaybeValue('pluginDevName', _pluginDevDraft.name),
+    root: pluginDevMaybeValue('pluginDevRoot', _pluginDevDraft.root),
+    path: pluginDevMaybeValue('pluginDevPath', _pluginDevDraft.path)
+  };
+}
+
+function rememberPluginDevValue(id, value) {
+  const next = value || '';
+  if (id === 'pluginTemplateSelect') _pluginDevDraft.templateId = next;
+  if (id === 'pluginDevId') _pluginDevDraft.pluginId = next;
+  if (id === 'pluginDevName') _pluginDevDraft.name = next;
+  if (id === 'pluginDevRoot') _pluginDevDraft.root = next;
+  if (id === 'pluginDevPath') _pluginDevDraft.path = next;
+}
+
+function setPluginDevInputValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value || '';
+  rememberPluginDevValue(id, value);
+}
+
+function showPluginDevResult(title, result) {
+  var existing = document.getElementById('pluginDevResultModal');
+  if (existing) existing.remove();
+  const manifest = result && (result.manifest || (result.preview && result.preview.manifest));
+  const compat = result && (result.compatibility || (result.preview && result.preview.compatibility));
+  const rows = result && result.ok
+    ? [
+        ['状态', compat && compat.label ? compat.label : '通过'],
+        ['插件', manifest ? `${manifest.name || manifest.id} v${manifest.version || '-'}` : '-'],
+        ['ID', manifest ? manifest.id || '-' : '-'],
+        ['类型', manifest ? pluginKindLabel(manifest) : '-'],
+        ['路径', result.path || (result.preview && result.preview.source_path) || '-']
+      ]
+    : [
+        ['状态', '失败'],
+        ['原因', result && result.error ? result.error : '未知错误'],
+        ['路径', result && result.path ? result.path : '-']
+      ];
+  const checks = compat && Array.isArray(compat.checks) ? compat.checks : [];
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'pluginDevResultModal';
+  overlay.innerHTML = `<div class="modal-box plugin-action-modal">
+    <div class="modal-header"><h3>${esc(title || '插件开发')}</h3></div>
+    <div class="modal-body plugin-action-body">
+      <div class="plugin-source-grid">${rows.map(row => `<span>${esc(row[0])}</span><code>${esc(row[1])}</code>`).join('')}</div>
+      ${checks.length ? `<div class="plugin-compat-check-list plugin-dev-checks">${checks.map(check => `<div class="plugin-compat-check-row ${escAttr(check.tone || 'muted')}">
+        <span>${esc(check.label || '-')}</span>
+        <strong>${esc(check.value || '-')}</strong>
+      </div>`).join('')}</div>` : ''}
+    </div>
+    <div class="plugin-preview-actions">
+      <button class="btn btn-primary" id="pluginDevResultClose" type="button">完成</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = document.getElementById('pluginDevResultClose');
+  const cleanup = function () { overlay.remove(); };
+  if (close) close.onclick = cleanup;
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(); });
+}
+
+async function browsePluginDevRoot() {
+  try {
+    const path = await invoke('browse_plugin_directory');
+    if (path) setPluginDevInputValue('pluginDevRoot', path);
+  } catch(e) {
+    showToast('目录选择失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function browsePluginDevPath() {
+  try {
+    const path = await invoke('browse_plugin_directory');
+    if (path) setPluginDevInputValue('pluginDevPath', path);
+  } catch(e) {
+    showToast('插件目录选择失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function browsePluginDevPackage() {
+  try {
+    const path = await invoke('browse_plugin_package');
+    if (path) setPluginDevInputValue('pluginDevPath', path);
+  } catch(e) {
+    showToast('插件包选择失败: ' + esc(String(e)), 'error');
+  }
+}
+
+function togglePluginDevBar() {
+  capturePluginDevDraft();
+  _pluginDevOpen = !_pluginDevOpen;
+  if (window.deeStorage) {
+    window.deeStorage.setItem('deecodex.pluginDevOpen', _pluginDevOpen ? '1' : '0');
+  }
+  const entry = document.getElementById('pluginDevEntry');
+  if (entry) entry.outerHTML = renderPluginDevBar();
+}
+
+async function createPluginFromTemplate() {
+  const templateId = pluginDevInputValue('pluginTemplateSelect');
+  const pluginId = pluginDevInputValue('pluginDevId');
+  const name = pluginDevInputValue('pluginDevName');
+  const destinationDir = pluginDevInputValue('pluginDevRoot');
+  if (!templateId || !pluginId || !name || !destinationDir) {
+    showToast('请补全模板、插件 ID、名称和目录', 'error');
+    return;
+  }
+  try {
+    const result = await invoke('create_plugin_from_template', {
+      templateId,
+      pluginId,
+      name,
+      destinationDir
+    });
+    setPluginDevInputValue('pluginDevPath', result.path || '');
+    showToast('插件草稿已创建', 'success');
+    showPluginDevResult('插件草稿', result || {});
+    await loadPluginsData();
+  } catch(e) {
+    showToast('创建失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function validatePluginDevPath() {
+  const path = pluginDevInputValue('pluginDevPath') || pluginDevInputValue('pluginZipPath');
+  if (!path) {
+    showToast('请选择插件目录或插件包', 'error');
+    return;
+  }
+  try {
+    const result = await invoke('validate_plugin_path', { path });
+    showPluginDevResult('插件校验', result || {});
+    showToast(result && result.ok ? '插件校验通过' : '插件校验失败', result && result.ok ? 'success' : 'error');
+  } catch(e) {
+    showToast('校验失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function packagePluginDevPath() {
+  const path = pluginDevInputValue('pluginDevPath');
+  if (!path) {
+    showToast('请选择插件目录', 'error');
+    return;
+  }
+  try {
+    const result = await invoke('package_plugin_directory', { path });
+    if (result && result.path) setPluginDevInputValue('pluginZipPath', result.path);
+    showToast('插件包已生成', 'success');
+    showPluginDevResult('插件打包', result || {});
+  } catch(e) {
+    showToast('打包失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function openPluginDevPath() {
+  const path = pluginDevInputValue('pluginDevPath') || pluginDevInputValue('pluginZipPath');
+  if (!path) {
+    showToast('请选择要打开的路径', 'error');
+    return;
+  }
+  try {
+    await invoke('open_plugin_directory', { path });
+  } catch(e) {
+    showToast('打开失败: ' + esc(String(e)), 'error');
+  }
+}
+
+async function openPluginMarketplaceRoot() {
+  try {
+    const result = await invoke('open_plugin_marketplace_directory');
+    if (result && result.path) {
+      showToast('已打开个人插件市场目录', 'success');
+    }
+  } catch(e) {
+    showToast('打开市场目录失败: ' + esc(String(e)), 'error');
   }
 }
 

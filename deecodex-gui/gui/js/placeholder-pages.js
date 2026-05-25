@@ -710,7 +710,7 @@ function dexToolActionHtml(fnName, data) {
     return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'sessions\')">打开请求历史</button></div>';
   }
   if (fnName === 'list_plugins' || fnName.indexOf('plugin') >= 0) {
-    return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'plugins\')">打开插件管理</button></div>';
+    return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'plugins\')">打开插件市场</button></div>';
   }
   if (fnName === 'get_threads_status' || fnName === 'list_threads') {
     return '<div class="dex-tool-actions"><button class="btn btn-ghost btn-sm" onclick="switchPanel(\'threads\')">打开线程面板</button></div>';

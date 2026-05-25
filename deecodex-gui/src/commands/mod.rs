@@ -5,7 +5,7 @@ pub mod dex_security;
 pub mod logs;
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -6029,6 +6029,15 @@ pub async fn get_request_stats_since(
 #[tauri::command]
 pub async fn browse_file() -> Result<Option<String>, String> {
     let path = rfd::AsyncFileDialog::new()
+        .pick_file()
+        .await
+        .map(|f| f.path().to_string_lossy().to_string());
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn browse_plugin_package() -> Result<Option<String>, String> {
+    let path = rfd::AsyncFileDialog::new()
         .add_filter("插件包", &["zip"])
         .pick_file()
         .await
@@ -6043,6 +6052,143 @@ pub async fn browse_plugin_directory() -> Result<Option<String>, String> {
         .await
         .map(|f| f.path().to_string_lossy().to_string());
     Ok(path)
+}
+
+#[tauri::command]
+pub async fn create_plugin_from_template(
+    template_id: String,
+    plugin_id: String,
+    name: String,
+    destination_dir: String,
+) -> Result<Value, String> {
+    let plugin_id = plugin_id.trim();
+    if !plugin_id_is_valid(plugin_id) {
+        return Err("插件 ID 只能包含 ASCII 字母、数字、短横线、下划线或点".into());
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("插件名称不能为空".into());
+    }
+    let parent = PathBuf::from(destination_dir.trim());
+    if parent.as_os_str().is_empty() {
+        return Err("请选择目标目录".into());
+    }
+    std::fs::create_dir_all(&parent).map_err(|e| format!("无法创建目标目录: {e}"))?;
+
+    let mut selected: Option<(PathBuf, PluginManifest)> = None;
+    for candidate in plugin_marketplace_candidates() {
+        if !candidate.template {
+            continue;
+        }
+        let Ok(manifest) = PluginManifest::from_dir(&candidate.path) else {
+            continue;
+        };
+        if manifest.id == template_id {
+            selected = Some((candidate.path, manifest));
+            break;
+        }
+    }
+    let (template_path, _template_manifest) =
+        selected.ok_or_else(|| format!("未找到插件模板: {template_id}"))?;
+    let target = parent.join(plugin_id);
+    copy_plugin_template_dir(&template_path, &target)?;
+    update_plugin_template_manifest(&target, plugin_id, name)?;
+    let manifest = PluginManifest::from_dir(&target).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "ok": true,
+        "path": target.to_string_lossy().to_string(),
+        "manifest": plugin_manifest_summary(&manifest),
+    }))
+}
+
+#[tauri::command]
+pub async fn validate_plugin_path(
+    manager: State<'_, ServerManager>,
+    path: String,
+) -> Result<Value, String> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Ok(json!({ "ok": false, "error": "请选择插件目录或插件包" }));
+    }
+    let pm = get_pm(&manager).await?;
+    match pm.preview_install(&path).await {
+        Ok(preview) => {
+            let update_available = preview
+                .existing_version
+                .as_ref()
+                .map(|version| version != &preview.manifest.version)
+                .unwrap_or(preview.already_installed);
+            let compatibility = plugin_compatibility_summary(
+                &preview.manifest,
+                &path,
+                &preview.permission_risk,
+                update_available,
+            );
+            Ok(json!({
+                "ok": true,
+                "manifest": plugin_manifest_summary(&preview.manifest),
+                "preview": preview,
+                "compatibility": compatibility,
+            }))
+        }
+        Err(error) => Ok(json!({
+            "ok": false,
+            "error": error.to_string(),
+            "path": path.to_string_lossy().to_string(),
+        })),
+    }
+}
+
+#[tauri::command]
+pub async fn package_plugin_directory(path: String) -> Result<Value, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.is_dir() {
+        return Err("请选择插件目录".into());
+    }
+    let manifest = PluginManifest::from_dir(&path).map_err(|e| e.to_string())?;
+    let output = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{}-{}.zip", manifest.id, manifest.version));
+    let file = std::fs::File::create(&output).map_err(|e| format!("无法创建插件包: {e}"))?;
+    let mut writer = zip::ZipWriter::new(file);
+    add_plugin_dir_to_zip(&mut writer, &path, &path)?;
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(json!({
+        "ok": true,
+        "path": output.to_string_lossy().to_string(),
+        "manifest": plugin_manifest_summary(&manifest),
+    }))
+}
+
+#[tauri::command]
+pub async fn open_plugin_directory(path: String) -> Result<Value, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(format!("路径不存在: {}", path.display()));
+    }
+    open_path_with_system_editor(&path).map_err(|e| format!("打开失败: {e}"))?;
+    Ok(json!({ "ok": true }))
+}
+
+fn personal_plugin_marketplace_root() -> Result<PathBuf, String> {
+    deecodex::config::home_dir()
+        .map(|home| home.join(".deecodex").join("plugin-marketplace"))
+        .ok_or_else(|| "无法确定 HOME 目录".to_string())
+}
+
+#[tauri::command]
+pub async fn open_plugin_marketplace_directory() -> Result<Value, String> {
+    let root = personal_plugin_marketplace_root()?;
+    std::fs::create_dir_all(root.join("plugins"))
+        .map_err(|e| format!("无法创建个人插件目录: {e}"))?;
+    std::fs::create_dir_all(root.join("templates"))
+        .map_err(|e| format!("无法创建个人模板目录: {e}"))?;
+    open_path_with_system_editor(&root).map_err(|e| format!("打开失败: {e}"))?;
+    Ok(json!({
+        "ok": true,
+        "path": root.to_string_lossy().to_string(),
+    }))
 }
 
 #[tauri::command]
@@ -6110,6 +6256,24 @@ fn push_plugin_marketplace_children(
 fn plugin_marketplace_candidates() -> Vec<PluginMarketplaceCandidate> {
     let mut items = Vec::new();
     let mut roots = Vec::new();
+
+    if let Some(home) = deecodex::config::home_dir() {
+        let personal = home.join(".deecodex").join("plugin-marketplace");
+        push_plugin_marketplace_children(
+            &mut items,
+            personal.join("plugins"),
+            "personal",
+            "个人市场",
+            false,
+        );
+        push_plugin_marketplace_children(
+            &mut items,
+            personal.join("templates"),
+            "template",
+            "个人模板",
+            true,
+        );
+    }
 
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd.clone());
@@ -6194,6 +6358,289 @@ fn plugin_manifest_summary(manifest: &PluginManifest) -> Value {
         "dex_tools": manifest.dex_tools,
         "min_deecodex_version": manifest.min_deecodex_version,
     })
+}
+
+fn plugin_version_parts(version: &str) -> Option<(u64, u64, u64)> {
+    let cleaned = version.trim().trim_start_matches('v');
+    let stable = cleaned.split(['-', '+']).next().unwrap_or(cleaned);
+    let mut parts = stable.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn plugin_version_satisfies(current: &str, minimum: &str) -> bool {
+    match (plugin_version_parts(current), plugin_version_parts(minimum)) {
+        (Some(current), Some(minimum)) => current >= minimum,
+        _ => true,
+    }
+}
+
+fn command_available(command: &str) -> bool {
+    std::process::Command::new(command)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn plugin_runtime_status(runtime: &str) -> (bool, String, String) {
+    match runtime {
+        "node" => {
+            let ok = command_available("node");
+            (
+                ok,
+                "Node.js".to_string(),
+                if ok {
+                    "Node.js 可用"
+                } else {
+                    "缺少 Node.js"
+                }
+                .to_string(),
+            )
+        }
+        "python" => {
+            let ok = command_available("python3") || command_available("python");
+            (
+                ok,
+                "Python".to_string(),
+                if ok { "Python 可用" } else { "缺少 Python" }.to_string(),
+            )
+        }
+        "binary" => (true, "Binary".to_string(), "本地二进制".to_string()),
+        other => (false, other.to_string(), format!("未知运行时 {other}")),
+    }
+}
+
+fn plugin_entry_script_status(
+    source_path: &Path,
+    manifest: &PluginManifest,
+) -> (Option<bool>, String) {
+    if !source_path.is_dir() {
+        return (None, "压缩包安装时检查".to_string());
+    }
+    let exists = source_path.join(&manifest.entry.script).exists();
+    (
+        Some(exists),
+        if exists {
+            "入口脚本已找到".to_string()
+        } else {
+            format!("入口脚本缺失: {}", manifest.entry.script)
+        },
+    )
+}
+
+fn plugin_compatibility_summary(
+    manifest: &PluginManifest,
+    source_path: &Path,
+    permission_risk: &str,
+    update_available: bool,
+) -> Value {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let min_version = manifest.min_deecodex_version.as_deref().unwrap_or("");
+    let version_ok =
+        min_version.is_empty() || plugin_version_satisfies(current_version, min_version);
+    let (runtime_ok, runtime_label, runtime_text) = plugin_runtime_status(&manifest.entry.runtime);
+    let (script_ok, script_text) = plugin_entry_script_status(source_path, manifest);
+
+    let mut reasons = Vec::new();
+    if !version_ok {
+        reasons.push(format!("需要 DEX AI {min_version}+"));
+    }
+    if !runtime_ok {
+        reasons.push(runtime_text.clone());
+    }
+    if script_ok == Some(false) {
+        reasons.push(script_text.clone());
+    }
+    if permission_risk == "high" {
+        reasons.push("高风险权限，安装和执行需要确认".to_string());
+    } else if permission_risk == "medium" {
+        reasons.push("中风险权限，安装前建议检查".to_string());
+    }
+    if update_available {
+        reasons.push("已安装旧版本，可更新".to_string());
+    }
+
+    let compatible = version_ok && runtime_ok && script_ok != Some(false);
+    let needs_confirm = permission_risk == "high";
+    let tone = if !compatible {
+        "block"
+    } else if needs_confirm || permission_risk == "medium" || update_available {
+        "warn"
+    } else {
+        "ok"
+    };
+    let label = if !compatible {
+        "不可安装"
+    } else if update_available {
+        "可更新"
+    } else if needs_confirm {
+        "需确认"
+    } else {
+        "兼容"
+    };
+
+    json!({
+        "compatible": compatible,
+        "needs_confirm": needs_confirm,
+        "tone": tone,
+        "label": label,
+        "current_version": current_version,
+        "min_version": manifest.min_deecodex_version,
+        "runtime": manifest.entry.runtime,
+        "entry_script": manifest.entry.script,
+        "reasons": reasons,
+        "checks": [
+            {
+                "label": "DEX 版本",
+                "value": if min_version.is_empty() {
+                    format!("当前 {current_version}")
+                } else {
+                    format!("当前 {current_version} / 要求 {min_version}+")
+                },
+                "tone": if version_ok { "ok" } else { "block" }
+            },
+            {
+                "label": "运行时",
+                "value": format!("{runtime_label} · {runtime_text}"),
+                "tone": if runtime_ok { "ok" } else { "block" }
+            },
+            {
+                "label": "入口脚本",
+                "value": script_text,
+                "tone": match script_ok {
+                    Some(true) => "ok",
+                    Some(false) => "block",
+                    None => "muted",
+                }
+            },
+            {
+                "label": "权限",
+                "value": format!("风险 {}", permission_risk),
+                "tone": match permission_risk {
+                    "high" => "warn",
+                    "medium" => "warn",
+                    _ => "ok",
+                }
+            }
+        ]
+    })
+}
+
+fn plugin_id_is_valid(id: &str) -> bool {
+    let trimmed = id.trim();
+    !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+}
+
+fn copy_plugin_template_dir(source: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        return Err(format!("目标目录已存在: {}", target.display()));
+    }
+    std::fs::create_dir_all(target).map_err(|e| format!("无法创建目标目录: {e}"))?;
+    copy_plugin_dir_contents(source, target)
+}
+
+fn copy_plugin_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(source)
+        .map_err(|e| format!("无法读取模板目录 {}: {e}", source.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if name == ".git" || name == ".DS_Store" || name == "target" {
+            continue;
+        }
+        let dest = target.join(&name);
+        if path.is_dir() {
+            std::fs::create_dir_all(&dest).map_err(|e| format!("无法创建目录: {e}"))?;
+            copy_plugin_dir_contents(&path, &dest)?;
+        } else {
+            std::fs::copy(&path, &dest).map_err(|e| {
+                format!("无法复制文件 {} -> {}: {e}", path.display(), dest.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn update_plugin_template_manifest(
+    target: &Path,
+    plugin_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let manifest_path = target.join("plugin.json");
+    let content = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("无法读取 plugin.json: {e}"))?;
+    let mut value: Value =
+        serde_json::from_str(&content).map_err(|e| format!("plugin.json 格式错误: {e}"))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| "plugin.json 必须是对象".to_string())?;
+    obj.insert("id".to_string(), Value::String(plugin_id.to_string()));
+    obj.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(tags) = obj.get_mut("tags").and_then(Value::as_array_mut) {
+        tags.retain(|tag| tag.as_str() != Some("template"));
+        if !tags.iter().any(|tag| tag.as_str() == Some("local")) {
+            tags.push(Value::String("local".to_string()));
+        }
+        if !tags.iter().any(|tag| tag.as_str() == Some("draft")) {
+            tags.push(Value::String("draft".to_string()));
+        }
+    }
+    let next = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    std::fs::write(&manifest_path, format!("{next}\n"))
+        .map_err(|e| format!("无法写入 plugin.json: {e}"))?;
+    PluginManifest::from_dir(target).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn add_plugin_dir_to_zip(
+    writer: &mut zip::ZipWriter<std::fs::File>,
+    root: &Path,
+    dir: &Path,
+) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("无法读取目录 {}: {e}", dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|entry| entry.path());
+
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        if name == ".git" || name == ".DS_Store" || name == "target" {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if path.is_dir() {
+            writer
+                .add_directory(format!("{relative}/"), options)
+                .map_err(|e| e.to_string())?;
+            add_plugin_dir_to_zip(writer, root, &path)?;
+        } else {
+            writer
+                .start_file(relative, options)
+                .map_err(|e| e.to_string())?;
+            let mut file = std::fs::File::open(&path).map_err(|e| format!("无法读取文件: {e}"))?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            writer.write_all(&buf).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn plugin_method_missing(error: &str) -> bool {
@@ -6345,6 +6792,12 @@ pub async fn list_plugin_marketplace(
         } else {
             "available"
         };
+        let compatibility = plugin_compatibility_summary(
+            &manifest,
+            &candidate.path,
+            &preview.permission_risk,
+            update_available,
+        );
         items.push(json!({
             "id": manifest.id,
             "name": manifest.name,
@@ -6372,6 +6825,7 @@ pub async fn list_plugin_marketplace(
             "update_available": update_available,
             "permission_risk": preview.permission_risk,
             "permission_details": preview.permission_details,
+            "compatibility": compatibility,
             "source_hash": preview.source_hash,
         }));
     }
@@ -6380,7 +6834,8 @@ pub async fn list_plugin_marketplace(
         let rank = |item: &Value| match item.get("source_type").and_then(Value::as_str) {
             Some("builtin") => 0,
             Some("template") => 1,
-            _ => 2,
+            Some("personal") => 2,
+            _ => 3,
         };
         rank(a).cmp(&rank(b)).then_with(|| {
             a.get("name")
@@ -6447,7 +6902,23 @@ pub async fn preview_plugin_install(
         .preview_install(std::path::Path::new(&path))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(serde_json::to_value(&preview).unwrap_or_default())
+    let source_path = std::path::Path::new(&path);
+    let update_available = preview
+        .existing_version
+        .as_ref()
+        .map(|version| version != &preview.manifest.version)
+        .unwrap_or(preview.already_installed);
+    let compatibility = plugin_compatibility_summary(
+        &preview.manifest,
+        source_path,
+        &preview.permission_risk,
+        update_available,
+    );
+    let mut value = serde_json::to_value(&preview).unwrap_or_default();
+    if let Value::Object(ref mut map) = value {
+        map.insert("compatibility".to_string(), compatibility);
+    }
+    Ok(value)
 }
 
 #[tauri::command]

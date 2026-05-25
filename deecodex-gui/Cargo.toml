@@ -29,3 +29,4 @@ dashmap = "6"
 anyhow = "1"
 deecodex-plugin-host = { path = "../deecodex-plugins" }
 rfd = "0.15"
+zip = "2"
