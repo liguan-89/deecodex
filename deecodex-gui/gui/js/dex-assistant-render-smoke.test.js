@@ -12,10 +12,15 @@ const expectedOrder = [
   'placeholder-pages.js',
 ];
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const appCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'app.css'), 'utf8');
+const dexAssistantSource = fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8');
 const loadedDexScripts = Array.from(indexHtml.matchAll(/<script src="js\/(dex-[^"?]+\.js|placeholder-pages\.js)\?/g))
   .map(match => match[1])
   .filter(file => expectedOrder.includes(file));
 assert.deepStrictEqual(loadedDexScripts, expectedOrder);
+assert(!dexAssistantSource.includes('dex-inline-style'));
+assert(appCss.includes('.dex-spinner'));
+assert(appCss.includes('.dex-confirm-command'));
 
 function escapeHtml(value) {
   return String(value ?? '')

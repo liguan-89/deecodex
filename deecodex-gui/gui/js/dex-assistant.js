@@ -1,40 +1,6 @@
 // DEX助手
 // ═══════════════════════════════════════════════════════════════
 
-// ── CSS 注入：DEX 运行态补丁样式（一次性）──
-(function () {
-  if (!document.getElementById('dex-inline-style')) {
-    var style = document.createElement('style');
-    style.id = 'dex-inline-style';
-    style.textContent = [
-      '.dex-spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border-color,#334155);border-top-color:var(--accent-color,#00c8e8);border-radius:50%;animation:dex-spin 0.8s linear infinite;vertical-align:middle;margin-right:6px;flex-shrink:0}',
-      '@keyframes dex-spin{to{transform:rotate(360deg)}}',
-      '.dex-chat-header{min-width:0}',
-      '.dex-header-title{min-width:0;flex:1 1 auto}',
-      '.dex-header-title h3{overflow:hidden;text-overflow:ellipsis}',
-      '.dex-header-actions{flex:0 1 auto;justify-content:flex-end}',
-      '.dex-header-actions .dex-icon-btn{width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1}',
-      '.dex-tool-msg{flex-wrap:wrap;align-items:flex-start}',
-      '.dex-tool-name{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}',
-      '.dex-tool-args{flex:1 1 160px;min-width:0;max-width:none}',
-      '.dex-tool-summary{margin-left:auto;min-width:0;max-width:45%;overflow:hidden;text-overflow:ellipsis}',
-      '.dex-tool-details{flex:1 0 100%;margin-top:4px;font-size:12px}',
-      '.dex-tool-details summary{cursor:pointer;color:var(--text-secondary,#6b7fa8)}',
-      '.dex-tool-details pre{max-height:300px;overflow:auto;font-size:11px;margin-top:4px;padding:6px 8px;white-space:pre-wrap;word-break:break-word}',
-      '.dex-tool-error-details summary{color:var(--error-color,#ef4444)}',
-      '.dex-confirm-command{margin-top:8px;padding:8px 10px;border:1px solid rgba(240,144,64,0.28);border-radius:4px;background:rgba(0,0,0,0.24);font-family:var(--font-mono);font-size:11px;line-height:1.5;color:var(--text-primary);white-space:pre-wrap;word-break:break-word}',
-      '.dex-msg-highlight .dex-bubble{outline:2px solid var(--accent-color,#00c8e8);outline-offset:2px;border-radius:8px}',
-      '.dex-msg-highlight.dex-msg-search-current .dex-bubble{outline-color:#f59e0b;outline-width:3px}',
-      '.dex-token-count{font-size:11px;color:var(--text-secondary,#6b7fa8);white-space:nowrap;margin-right:6px;align-self:center}',
-      '.dex-tool-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(148,163,184,0.22);border-radius:4px;padding:1px 5px;font-size:10px;color:var(--text-secondary,#6b7fa8);white-space:nowrap}',
-      '.dex-tool-actions{flex:1 0 100%;display:flex;gap:6px;margin-top:6px}',
-      '.dex-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}',
-      '@media (max-width:720px){.dex-chat-header{align-items:flex-start;flex-direction:column}.dex-header-actions{width:100%;justify-content:flex-start}.dex-model-drop{max-width:100%}.dex-model-btn{max-width:220px}.dex-tool-summary{max-width:100%;margin-left:0}.dex-input-row{grid-template-columns:1fr}.dex-input-row .btn{width:100%;min-height:40px}}'
-    ].join('\n');
-    document.head.appendChild(style);
-  }
-})();
-
 // ── 工具定义由后端能力注册中心动态提供 ──
 var DEX_TOOLS = [];
 var DEX_CAPABILITIES = [];

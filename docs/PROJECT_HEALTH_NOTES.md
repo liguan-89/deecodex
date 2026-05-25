@@ -18,6 +18,7 @@
 - DEX Markdown 渲染器已从页面文件抽出，并补链接、表格和代码块 smoke test。
 - DEX 助手前端主体已从 `placeholder-pages.js` 拆到 `dex-assistant.js`，个人中心占位页保持独立。
 - DEX 助手附件输入和对话搜索已拆成独立脚本，避免继续堆进主 Agent 文件。
+- DEX 助手运行态补丁样式已从 JS 注入迁移到 `app.css`，减少页面初始化副作用。
 
 ## 保留的兼容边界
 
