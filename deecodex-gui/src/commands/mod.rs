@@ -4316,7 +4316,13 @@ pub struct ModelRemain {
 }
 
 const CODEX_WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-const CODEX_QUOTA_USER_AGENT: &str = "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) deecodex/3.0beta";
+
+fn codex_quota_user_agent() -> String {
+    format!(
+        "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) DEXAI/{}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 #[derive(Debug, Clone)]
 struct CodexUsageError {
@@ -4501,7 +4507,7 @@ async fn fetch_codex_wham_usage_once(
         .bearer_auth(access_token)
         .header("Accept", "application/json")
         .header("Originator", "codex_cli_rs")
-        .header("User-Agent", CODEX_QUOTA_USER_AGENT)
+        .header("User-Agent", codex_quota_user_agent())
         .header("Connection", "Keep-Alive");
     if !oauth.account_id.trim().is_empty() {
         request = request.header("Chatgpt-Account-Id", oauth.account_id.trim());
@@ -6113,11 +6119,15 @@ pub async fn validate_plugin_path(
     let pm = get_pm(&manager).await?;
     match pm.preview_install(&path).await {
         Ok(preview) => {
+            let source_changed = preview
+                .previous_source_hash
+                .as_ref()
+                .is_some_and(|hash| hash != &preview.source_hash);
             let update_available = preview
                 .existing_version
                 .as_ref()
-                .map(|version| version != &preview.manifest.version)
-                .unwrap_or(preview.already_installed);
+                .is_some_and(|version| version != &preview.manifest.version)
+                || source_changed;
             let compatibility = plugin_compatibility_summary(
                 &preview.manifest,
                 &path,
@@ -6128,6 +6138,7 @@ pub async fn validate_plugin_path(
                 "ok": true,
                 "manifest": plugin_manifest_summary(&preview.manifest),
                 "preview": preview,
+                "update_available": update_available,
                 "compatibility": compatibility,
             }))
         }
@@ -6781,10 +6792,14 @@ pub async fn list_plugin_marketplace(
         let installed_state = installed_plugin
             .and_then(|plugin| serde_json::to_value(&plugin.state).ok())
             .unwrap_or(Value::Null);
+        let source_changed = preview
+            .previous_source_hash
+            .as_ref()
+            .is_some_and(|hash| hash != &preview.source_hash);
         let update_available = installed_version
             .as_ref()
-            .map(|version| version != &manifest.version)
-            .unwrap_or(false);
+            .is_some_and(|version| version != &manifest.version)
+            || source_changed;
         let status = if update_available {
             "update_available"
         } else if installed_version.is_some() {
@@ -6903,11 +6918,15 @@ pub async fn preview_plugin_install(
         .await
         .map_err(|e| e.to_string())?;
     let source_path = std::path::Path::new(&path);
+    let source_changed = preview
+        .previous_source_hash
+        .as_ref()
+        .is_some_and(|hash| hash != &preview.source_hash);
     let update_available = preview
         .existing_version
         .as_ref()
-        .map(|version| version != &preview.manifest.version)
-        .unwrap_or(preview.already_installed);
+        .is_some_and(|version| version != &preview.manifest.version)
+        || source_changed;
     let compatibility = plugin_compatibility_summary(
         &preview.manifest,
         source_path,
@@ -6917,6 +6936,10 @@ pub async fn preview_plugin_install(
     let mut value = serde_json::to_value(&preview).unwrap_or_default();
     if let Value::Object(ref mut map) = value {
         map.insert("compatibility".to_string(), compatibility);
+        map.insert(
+            "update_available".to_string(),
+            Value::Bool(update_available),
+        );
     }
     Ok(value)
 }

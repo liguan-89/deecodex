@@ -1005,7 +1005,14 @@ function dexRenderMarkdown(text) {
   }
   fAll();
   html = result.join('\n');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (match, label, href) {
+    var url = String(href || '').trim();
+    var protocol = url.toLowerCase();
+    if (protocol.startsWith('http://') || protocol.startsWith('https://')) {
+      return '<a href="' + url + '" target="_blank" rel="noopener">' + label + '</a>';
+    }
+    return label + ' (' + url + ')';
+  });
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   html = html.replace(/%%CODEBLOCK_(\d+)%%/g, function (m, n) { return codeBlocks[parseInt(n)]; });

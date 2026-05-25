@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "deecodex",
+  "productName": "DEX AI",
   "version": "3.1.0",
   "identifier": "com.deecodex.app",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "deecodex 控制台",
+        "title": "DEX AI",
         "width": 1000,
         "height": 650,
         "resizable": true,

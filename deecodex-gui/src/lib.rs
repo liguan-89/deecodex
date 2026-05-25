@@ -115,7 +115,7 @@ impl ServerManager {
             if let Ok(menu) = build_tray_menu(app, running, &data_dir) {
                 let _ = tray.set_menu(Some(menu));
             }
-            let _ = tray.set_tooltip(Some(&format!("deecodex · {label}")));
+            let _ = tray.set_tooltip(Some(&format!("DEX AI · {label}")));
         }
     }
 }
@@ -126,7 +126,7 @@ fn build_tray_menu(
     data_dir: &std::path::Path,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let label = if running { "运行中" } else { "已停止" };
-    let status_item = MenuItemBuilder::with_id("status", format!("deecodex · {label}"))
+    let status_item = MenuItemBuilder::with_id("status", format!("DEX AI · {label}"))
         .enabled(false)
         .build(app)?;
     let start_item = MenuItemBuilder::with_id("start", "启动服务")
@@ -134,7 +134,7 @@ fn build_tray_menu(
         .build(app)?;
     let stop_item = MenuItemBuilder::with_id("stop", "停止服务").build(app)?;
     let open_item = MenuItemBuilder::with_id("open", "打开控制面板").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "退出 deecodex")
+    let quit_item = MenuItemBuilder::with_id("quit", "退出 DEX AI")
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
 
@@ -248,7 +248,7 @@ fn load_env() {
 pub fn run() {
     if beta_trial_expired() {
         show_startup_blocking_alert(
-            "deecodex 测试版已过期",
+            "DEX AI 测试版已过期",
             "此测试版的 7 天使用期限已结束，请安装新的正式版或更新的测试版。",
         );
         std::process::exit(1);
@@ -326,7 +326,7 @@ pub fn run() {
                 .icon_as_template(false)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("deecodex · 已停止")
+                .tooltip("DEX AI · 已停止")
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -423,10 +423,6 @@ pub fn run() {
                     // 开发环境 — 项目树内
                     std::path::PathBuf::from("../deecodex-plugins/plugins/deecodex-weixin"),
                     std::path::PathBuf::from("deecodex-plugins/plugins/deecodex-weixin"),
-                    // macOS 开发机绝对路径
-                    std::path::PathBuf::from(
-                        "/Users/liguan/projects/deecodex-gui-worktree/deecodex-plugins/plugins/deecodex-weixin",
-                    ),
                 ];
                 if let Ok(exe) = std::env::current_exe() {
                     if let Some(dir) = exe.parent() {
@@ -613,7 +609,7 @@ pub fn run() {
             commands::stop_plugin_account,
         ])
         .build(tauri::generate_context!())
-        .expect("启动 deecodex GUI 失败")
+        .expect("启动 DEX AI GUI 失败")
         .run(|app_handle, _event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {

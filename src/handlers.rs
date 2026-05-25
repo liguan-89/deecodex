@@ -1873,6 +1873,39 @@ struct ImageApiRequest {
     raw: Value,
 }
 
+#[derive(Debug)]
+struct ImageApiError {
+    status: StatusCode,
+    message: String,
+    code: &'static str,
+}
+
+impl ImageApiError {
+    fn new(status: StatusCode, message: impl Into<String>, code: &'static str) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            code,
+        }
+    }
+}
+
+impl IntoResponse for ImageApiError {
+    fn into_response(self) -> Response {
+        image_error_response(self.status, self.message, self.code)
+    }
+}
+
+struct ImageHistoryRecord {
+    history_context: HistoryContext,
+    response_id: String,
+    model: String,
+    status: &'static str,
+    start: Instant,
+    url: String,
+    error: String,
+}
+
 async fn handle_images_api(
     state: AppState,
     headers: HeaderMap,
@@ -1949,13 +1982,15 @@ async fn forward_images_api(
         Err(err) => {
             record_image_history(
                 &state,
-                history_context,
-                response_id,
-                model,
-                "failed",
-                start,
-                url,
-                format!("connection error: {err}"),
+                ImageHistoryRecord {
+                    history_context,
+                    response_id,
+                    model,
+                    status: "failed",
+                    start,
+                    url,
+                    error: format!("connection error: {err}"),
+                },
             )
             .await;
             return image_error_response(
@@ -1984,20 +2019,22 @@ async fn forward_images_api(
     };
     record_image_history(
         &state,
-        history_context,
-        response_id,
-        model,
-        if status.is_success() {
-            "completed"
-        } else {
-            "failed"
-        },
-        start,
-        url,
-        if status.is_success() {
-            String::new()
-        } else {
-            format!("HTTP {}", status.as_u16())
+        ImageHistoryRecord {
+            history_context,
+            response_id,
+            model,
+            status: if status.is_success() {
+                "completed"
+            } else {
+                "failed"
+            },
+            start,
+            url,
+            error: if status.is_success() {
+                String::new()
+            } else {
+                format!("HTTP {}", status.as_u16())
+            },
         },
     )
     .await;
@@ -2017,7 +2054,7 @@ async fn handle_codex_official_images(
 ) -> Response {
     let request = match parse_image_api_request(&body, action) {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(err) => return err.into_response(),
     };
     if request.stream {
         tracing::info!(
@@ -2125,13 +2162,15 @@ async fn handle_codex_official_images(
             .await;
             record_image_history(
                 &state,
-                history_context,
-                response_id,
-                DEFAULT_IMAGE_TOOL_MODEL.into(),
-                "failed",
-                start,
-                url,
-                format!("connection error: {err}"),
+                ImageHistoryRecord {
+                    history_context,
+                    response_id,
+                    model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                    status: "failed",
+                    start,
+                    url,
+                    error: format!("connection error: {err}"),
+                },
             )
             .await;
             return image_error_response(
@@ -2167,13 +2206,15 @@ async fn handle_codex_official_images(
         .await;
         record_image_history(
             &state,
-            history_context,
-            response_id,
-            DEFAULT_IMAGE_TOOL_MODEL.into(),
-            "failed",
-            start,
-            url,
-            message,
+            ImageHistoryRecord {
+                history_context,
+                response_id,
+                model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                status: "failed",
+                start,
+                url,
+                error: message,
+            },
         )
         .await;
         return Response::builder()
@@ -2197,13 +2238,15 @@ async fn handle_codex_official_images(
             .await;
             record_image_history(
                 &state,
-                history_context,
-                response_id,
-                DEFAULT_IMAGE_TOOL_MODEL.into(),
-                "failed",
-                start,
-                url,
-                err.to_string(),
+                ImageHistoryRecord {
+                    history_context,
+                    response_id,
+                    model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                    status: "failed",
+                    start,
+                    url,
+                    error: err.to_string(),
+                },
             )
             .await;
             return image_error_response(
@@ -2225,13 +2268,15 @@ async fn handle_codex_official_images(
     .await;
     record_image_history(
         &state,
-        history_context,
-        response_id,
-        DEFAULT_IMAGE_TOOL_MODEL.into(),
-        "completed",
-        start,
-        url,
-        String::new(),
+        ImageHistoryRecord {
+            history_context,
+            response_id,
+            model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+            status: "completed",
+            start,
+            url,
+            error: String::new(),
+        },
     )
     .await;
     Json(images).into_response()
@@ -2246,7 +2291,7 @@ async fn handle_responses_images(
 ) -> Response {
     let request = match parse_image_api_request(&body, action) {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(err) => return err.into_response(),
     };
     if image_model_base(&request.model) != DEFAULT_IMAGE_TOOL_MODEL {
         return image_error_response(
@@ -2309,13 +2354,15 @@ async fn handle_responses_images(
         Err(err) => {
             record_image_history(
                 &state,
-                history_context,
-                response_id,
-                DEFAULT_IMAGE_TOOL_MODEL.into(),
-                "failed",
-                start,
-                url,
-                format!("connection error: {err}"),
+                ImageHistoryRecord {
+                    history_context,
+                    response_id,
+                    model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                    status: "failed",
+                    start,
+                    url,
+                    error: format!("connection error: {err}"),
+                },
             )
             .await;
             return image_error_response(
@@ -2339,13 +2386,15 @@ async fn handle_responses_images(
     if !status.is_success() {
         record_image_history(
             &state,
-            history_context,
-            response_id,
-            DEFAULT_IMAGE_TOOL_MODEL.into(),
-            "failed",
-            start,
-            url,
-            format!("HTTP {}", status.as_u16()),
+            ImageHistoryRecord {
+                history_context,
+                response_id,
+                model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                status: "failed",
+                start,
+                url,
+                error: format!("HTTP {}", status.as_u16()),
+            },
         )
         .await;
         return Response::builder()
@@ -2359,13 +2408,15 @@ async fn handle_responses_images(
         Err(err) => {
             record_image_history(
                 &state,
-                history_context,
-                response_id,
-                DEFAULT_IMAGE_TOOL_MODEL.into(),
-                "failed",
-                start,
-                url,
-                err.to_string(),
+                ImageHistoryRecord {
+                    history_context,
+                    response_id,
+                    model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+                    status: "failed",
+                    start,
+                    url,
+                    error: err.to_string(),
+                },
             )
             .await;
             return image_error_response(
@@ -2377,13 +2428,15 @@ async fn handle_responses_images(
     };
     record_image_history(
         &state,
-        history_context,
-        response_id,
-        DEFAULT_IMAGE_TOOL_MODEL.into(),
-        "completed",
-        start,
-        url,
-        String::new(),
+        ImageHistoryRecord {
+            history_context,
+            response_id,
+            model: DEFAULT_IMAGE_TOOL_MODEL.into(),
+            status: "completed",
+            start,
+            url,
+            error: String::new(),
+        },
     )
     .await;
     Json(images).into_response()
@@ -2405,9 +2458,9 @@ fn image_request_model(body: &[u8]) -> Option<String> {
 fn parse_image_api_request(
     body: &[u8],
     action: ImageAction,
-) -> std::result::Result<ImageApiRequest, Response> {
+) -> std::result::Result<ImageApiRequest, ImageApiError> {
     let value: Value = serde_json::from_slice(body).map_err(|err| {
-        image_error_response(
+        ImageApiError::new(
             StatusCode::BAD_REQUEST,
             format!("Invalid request: body must be valid JSON: {err}"),
             "invalid_request_error",
@@ -2420,7 +2473,7 @@ fn parse_image_api_request(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| {
-            image_error_response(
+            ImageApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Invalid request: prompt is required",
                 "invalid_request_error",
@@ -2435,7 +2488,7 @@ fn parse_image_api_request(
         .to_string();
     let images = collect_image_urls(&value);
     if action == ImageAction::Edit && images.is_empty() {
-        return Err(image_error_response(
+        return Err(ImageApiError::new(
             StatusCode::BAD_REQUEST,
             "Invalid request: images[].image_url is required",
             "invalid_request_error",
@@ -2740,16 +2793,16 @@ fn image_mime_type_from_output_format(format: &str) -> &'static str {
     }
 }
 
-async fn record_image_history(
-    state: &AppState,
-    history_context: HistoryContext,
-    response_id: String,
-    model: String,
-    status: &str,
-    start: Instant,
-    url: String,
-    error: String,
-) {
+async fn record_image_history(state: &AppState, record: ImageHistoryRecord) {
+    let ImageHistoryRecord {
+        history_context,
+        response_id,
+        model,
+        status,
+        start,
+        url,
+        error,
+    } = record;
     state
         .request_history
         .record(record_from_context(

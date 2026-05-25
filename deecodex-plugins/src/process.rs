@@ -34,6 +34,17 @@ pub struct PluginProcessHandle {
     pub exit_rx: Option<oneshot::Receiver<()>>,
 }
 
+struct PluginStdoutLoopContext {
+    plugin_id: String,
+    stdout: ChildStdout,
+    pending: Arc<DashMap<u64, oneshot::Sender<JsonRpcResponse>>>,
+    events_tx: broadcast::Sender<PluginEvent>,
+    stdin: Arc<Mutex<ChildStdin>>,
+    llm_base_url: String,
+    asset_paths: PluginAssetPaths,
+    permissions: Vec<String>,
+}
+
 impl PluginProcessHandle {
     /// 发送 JSON-RPC 请求并等待响应（30s 超时）
     pub async fn send_request(
@@ -198,16 +209,16 @@ pub async fn spawn_plugin(
     let permissions_for_reader = manifest.permissions.clone();
     let (exit_tx, exit_rx) = oneshot::channel();
     let stdout_task = tokio::spawn(async move {
-        read_stdout_loop(
+        read_stdout_loop(PluginStdoutLoopContext {
             plugin_id,
             stdout,
-            pending_clone,
-            events_tx_clone,
-            stdin_for_reader,
-            llm_url,
-            asset_paths_for_reader,
-            permissions_for_reader,
-        )
+            pending: pending_clone,
+            events_tx: events_tx_clone,
+            stdin: stdin_for_reader,
+            llm_base_url: llm_url,
+            asset_paths: asset_paths_for_reader,
+            permissions: permissions_for_reader,
+        })
         .await;
         let _ = exit_tx.send(());
     });
@@ -239,16 +250,17 @@ pub async fn spawn_plugin(
 }
 
 /// 持续读取插件 stdout，解析 JSON-RPC 消息并分发
-async fn read_stdout_loop(
-    plugin_id: String,
-    stdout: ChildStdout,
-    pending: Arc<DashMap<u64, oneshot::Sender<JsonRpcResponse>>>,
-    events_tx: broadcast::Sender<PluginEvent>,
-    stdin: Arc<Mutex<ChildStdin>>,
-    llm_base_url: String,
-    asset_paths: PluginAssetPaths,
-    permissions: Vec<String>,
-) {
+async fn read_stdout_loop(context: PluginStdoutLoopContext) {
+    let PluginStdoutLoopContext {
+        plugin_id,
+        stdout,
+        pending,
+        events_tx,
+        stdin,
+        llm_base_url,
+        asset_paths,
+        permissions,
+    } = context;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 

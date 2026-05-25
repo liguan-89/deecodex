@@ -478,7 +478,7 @@ function syncConfigSaveVisibility() {
 function configClientProfiles() {
   if (typeof clientProfiles !== 'undefined' && Array.isArray(clientProfiles) && clientProfiles.length) return clientProfiles;
   return [
-    { slug: 'codex', label: 'Codex', description: 'deecodex 代理配置', config_path_hint: '~/.codex/config.toml', model_slots: [] },
+    { slug: 'codex', label: 'Codex', description: 'DEX AI 代理配置', config_path_hint: '~/.codex/config.toml', model_slots: [] },
     { slug: 'claude_code', label: 'Claude Code', description: 'Claude 本地配置', config_path_hint: '~/.claude/settings.json', model_slots: [] },
     { slug: 'openclaw', label: 'OpenClaw', description: 'OpenClaw 配置', config_path_hint: '~/.openclaw/openclaw.json', model_slots: [] },
     { slug: 'hermes', label: 'Hermes', description: 'Hermes 配置', config_path_hint: '~/.hermes/config.yaml', model_slots: [] },
@@ -1122,14 +1122,14 @@ function renderHelp() {
 
     <div class="help-section" id="h-quickstart">
       <h3>快速开始</h3>
-      <p>安装完成后，<strong>deecodex 已自动启动</strong>。你需要配置 Codex 将请求发送到 deecodex：</p>
+      <p>安装完成后，<strong>DEX AI 已自动启动</strong>。你需要配置 Codex 将请求发送到 DEX AI：</p>
       <ul>
         <li>打开 Codex 设置 → 找到「模型提供商」或「自定义 Provider」</li>
         <li>将 API 地址设为 <strong>http://127.0.0.1:4446/v1</strong></li>
-        <li>API Key 可填任意值（如果 deecodex 未开启客户端认证）</li>
-        <li>模型名填写 deecodex 模型映射中的任一 Codex 侧名称，如 <strong>gpt-5.5</strong></li>
+        <li>API Key 可填任意值（如果 DEX AI 未开启客户端认证）</li>
+        <li>模型名填写 DEX AI 模型映射中的任一 Codex 侧名称，如 <strong>gpt-5.5</strong></li>
       </ul>
-      <p>配置完成后发送一条测试消息，观察 deecodex 日志应有 ← codex 和 → upstream 输出。</p>
+      <p>配置完成后发送一条测试消息，观察 DEX AI 日志应有 ← codex 和 → upstream 输出。</p>
     </div>
 
     <div class="help-section" id="h-codex-config">
@@ -1145,12 +1145,12 @@ function renderHelp() {
 <span class="key">name</span> = <span class="str">"custom"</span>
 <span class="key">requires_openai_auth</span> = <span class="val">false</span>
 <span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
-      <p class="help-note">注意：base_url 末尾不要加 /，端口须与 deecodex 监听端口一致。</p>
+      <p class="help-note">注意：base_url 末尾不要加 /，端口须与 DEX AI 监听端口一致。</p>
 
       <p class="help-subsection"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
       <ul>
         <li>API 请求地址：<strong>http://127.0.0.1:4446/v1</strong></li>
-        <li>API Key：任意值（若 deecodex 未开启客户端认证）。如需使用 CC Switch，请关闭高级设置中的「自动注入」和「持久注入」，避免两个工具同时修改配置文件路由导致冲突。</li>
+        <li>API Key：任意值（若 DEX AI 未开启客户端认证）。如需使用 CC Switch，请关闭高级设置中的「自动注入」和「持久注入」，避免两个工具同时修改配置文件路由导致冲突。</li>
       </ul>
     </div>
 
@@ -1195,12 +1195,12 @@ function renderHelp() {
       <h3>常见问题</h3>
       <div class="faq-list">
         <div class="faq-item">
-          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> Codex 连接不上 deecodex (connection refused)</button>
-          <div class="faq-a">deecodex 可能未启动。在此 GUI 中点击「启动服务」，或终端执行<code>./deecodex.sh start</code>（Windows 用<code>deecodex.bat start</code>）确认服务是否运行。</div>
+          <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> Codex 连接不上 DEX AI (connection refused)</button>
+          <div class="faq-a">DEX AI 可能未启动。在此 GUI 中点击「启动服务」，或终端执行<code>./deecodex.sh start</code>（Windows 用<code>deecodex.bat start</code>）确认服务是否运行。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 提示 model not found</button>
-          <div class="faq-a">Codex 请求的模型名未在 deecodex 模型映射中找到。在配置面板的「配置 → 模型映射」中添加对应条目，或检查 Codex 中填写的模型名大小写是否与映射键名一致。</div>
+          <div class="faq-a">Codex 请求的模型名未在 DEX AI 模型映射中找到。在配置面板的「配置 → 模型映射」中添加对应条目，或检查 Codex 中填写的模型名大小写是否与映射键名一致。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 对话一直转圈不响应</button>
@@ -1208,7 +1208,7 @@ function renderHelp() {
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 思维链 (reasoning_content) 输出异常</button>
-          <div class="faq-a">DeepSeek 流式响应中思维链可能跨 chunk 分片。deecodex 内置三级恢复策略（call_id 匹配 / turn 指纹 / 历史扫描）并自动重试最多 3 次。若仍出现错误，尝试缩短对话上下文。</div>
+          <div class="faq-a">DeepSeek 流式响应中思维链可能跨 chunk 分片。DEX AI 内置三级恢复策略（call_id 匹配 / turn 指纹 / 历史扫描）并自动重试最多 3 次。若仍出现错误，尝试缩短对话上下文。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 413 Payload Too Large</button>
@@ -1216,7 +1216,7 @@ function renderHelp() {
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 保存配置后什么时候生效？</button>
-          <div class="faq-a">多数配置保存后即时生效（如模型映射、Token 检测参数）。端口、数据目录等核心配置需要重启 deecodex 才会生效。</div>
+          <div class="faq-a">多数配置保存后即时生效（如模型映射、Token 检测参数）。端口、数据目录等核心配置需要重启 DEX AI 才会生效。</div>
         </div>
       </div>
     </div>

@@ -6173,6 +6173,16 @@ body {
 }
 .btn-apply:hover { background: rgba(0,200,232,0.2); }
 .btn-apply:active { transform: scale(0.97); }
+.btn-apply.btn-danger {
+  background: var(--red-dim);
+  border-color: rgba(255,60,92,0.3);
+  color: var(--red);
+}
+.btn-apply.btn-danger:hover {
+  background: rgba(255,60,92,0.22);
+  border-color: rgba(255,60,92,0.36);
+  box-shadow: 0 0 16px rgba(255,60,92,0.12);
+}
 
 /* ── QR 弹窗 ── */
 .qr-overlay {

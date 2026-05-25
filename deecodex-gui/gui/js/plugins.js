@@ -789,11 +789,12 @@ function showPluginInstallPreview(preview) {
     const permissions = preview.permission_details || [];
     const permissionChanges = preview.permission_changes || [];
     const risk = preview.permission_risk || 'low';
-    const isUpdate = Boolean(preview.already_installed);
-    const statusLabel = isUpdate ? '已安装' : '可安装';
+    const isInstalled = Boolean(preview.already_installed);
+    const isUpdate = Boolean(preview.update_available);
+    const statusLabel = isUpdate ? '可更新' : (isInstalled ? '已安装' : '可安装');
     const categories = pluginCategoryLabels(manifest);
     const compatibility = pluginCompatibility(preview);
-    const canInstall = compatibility.compatible !== false;
+    const canInstall = compatibility.compatible !== false && (!isInstalled || isUpdate);
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.id = 'pluginPreviewModal';
@@ -804,7 +805,7 @@ function showPluginInstallPreview(preview) {
           <div class="plugin-preview-title">
             <strong>${esc(manifest.name || manifest.id || '未知插件')}</strong>
             <span>v${esc(manifest.version || '-')}</span>
-            <span class="plugin-preview-status ${isUpdate ? 'installed' : 'available'}">${esc(statusLabel)}</span>
+            <span class="plugin-preview-status ${isUpdate ? 'installed' : (isInstalled ? 'installed' : 'available')}">${esc(statusLabel)}</span>
             ${renderPluginCompatibilityPill(preview)}
             <span class="plugin-risk-badge ${escAttr(PLUGIN_RISK_CLASS[risk] || 'low')}">风险 ${esc(pluginRiskLabel(risk))}</span>
           </div>
@@ -846,7 +847,7 @@ function showPluginInstallPreview(preview) {
         </div>` : ''}
       </div>
       <div class="plugin-preview-actions">
-        <button class="btn btn-primary" id="pluginPreviewOk" type="button" ${canInstall ? '' : 'disabled'}>${canInstall ? (isUpdate ? '更新' : '安装') : '不可安装'}</button>
+        <button class="btn btn-primary" id="pluginPreviewOk" type="button" ${canInstall ? '' : 'disabled'}>${canInstall ? (isUpdate ? '更新' : '安装') : (isInstalled ? '已安装' : '不可安装')}</button>
         <button class="btn btn-ghost" id="pluginPreviewCancel" type="button">取消</button>
       </div>
     </div>`;
@@ -1216,7 +1217,7 @@ function renderPluginMarketCard(item) {
       ? `<button class="btn-apply" onclick="event.stopPropagation(); openInstalledPluginFromMarket('${escAttr(item.id)}')">管理</button>`
       : `<button class="btn-apply" onclick="event.stopPropagation(); installMarketplacePlugin('${escAttr(item.id)}')" ${canInstall ? '' : 'disabled'}>安装</button>`;
   const installed = item.installed_version ? `<span class="plugin-market-installed">当前 v${esc(item.installed_version)}</span>` : '';
-  return `<div class="plugin-market-card ${escAttr(status.cls)}" onclick="previewMarketplacePlugin('${escAttr(item.id)}')">
+  return `<div class="plugin-market-card ${escAttr(status.cls)}" onclick="openMarketplaceCard('${escAttr(item.id)}')">
     <div class="plugin-market-head">
       <div class="plugin-market-title">
         <span>${esc(item.name || item.id)}</span>
@@ -1265,7 +1266,7 @@ function renderPluginCard(p) {
       ${!enabled
         ? `<button class="btn-apply" onclick="setPluginEnabled('${escAttr(p.id)}', true)">启用</button>`
         : running
-          ? `<button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止</button>`
+          ? `<button class="btn-apply btn-danger" onclick="stopPlugin('${escAttr(p.id)}')">停止</button>`
           : `<button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动</button>`}
     </div>
   </div>`;
@@ -1338,10 +1339,10 @@ function renderPluginDetail() {
         </span>
         <span class="pc-account-actions">
           ${isConnected
-            ? `<button class="btn-apply" onclick="stopPluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止连接</button>`
+            ? `<button class="btn-apply btn-danger" onclick="stopPluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')">停止连接</button>`
             : `<button class="btn-apply" onclick="scanAndStart('${escAttr(p.id)}','${escAttr(a.account_id)}')">启动连接</button>`}
           <button class="btn-apply" onclick="scanPluginQr('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent);">认证</button>
-          <button class="btn-apply" onclick="deletePluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">删除</button>
+          <button class="btn-apply btn-danger" onclick="deletePluginAccount('${escAttr(p.id)}','${escAttr(a.account_id)}')">删除</button>
         </span>
       </div>`;
     }).join('');
@@ -1376,7 +1377,7 @@ function renderPluginDetail() {
         : `<button class="btn-apply" onclick="setPluginEnabled('${escAttr(p.id)}', true)">启用插件</button>`}
       ${enabled
         ? (running
-          ? `<button class="btn-apply" onclick="stopPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">停止插件</button>`
+          ? `<button class="btn-apply btn-danger" onclick="stopPlugin('${escAttr(p.id)}')">停止插件</button>`
           : `<button class="btn-apply" onclick="startPlugin('${escAttr(p.id)}')">启动插件</button>`)
         : ''}
     </div>
@@ -1409,7 +1410,7 @@ function renderPluginDetail() {
   <div class="plugin-danger-zone">
     <h3>卸载插件</h3>
     <p class="plugin-detail-text">卸载后将删除插件所有文件，此操作不可恢复。</p>
-    <button class="btn-apply" onclick="uninstallPlugin('${escAttr(p.id)}')" style="background:var(--red-dim);color:var(--red);border-color:var(--red);">卸载插件</button>
+    <button class="btn-apply btn-danger" onclick="uninstallPlugin('${escAttr(p.id)}')">卸载插件</button>
   </div>
   </div>`;
 }
@@ -1557,6 +1558,17 @@ async function installPluginPathWithPreview(path) {
 async function previewMarketplacePlugin(id) {
   const item = marketplaceItemById(id);
   if (!item || !item.path) return;
+  await installPluginPathWithPreview(item.path);
+}
+
+async function openMarketplaceCard(id) {
+  const item = marketplaceItemById(id);
+  if (!item) return;
+  if (item.installed && !item.update_available) {
+    openInstalledPluginFromMarket(id);
+    return;
+  }
+  if (!item.path) return;
   await installPluginPathWithPreview(item.path);
 }
 

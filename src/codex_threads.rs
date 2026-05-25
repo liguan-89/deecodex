@@ -995,7 +995,7 @@ fn find_latest_rollout_token_usage(home: &Path) -> Result<Option<RolloutTokenUsa
 
     let mut files = Vec::new();
     collect_rollout_files(&sessions_dir, &mut files);
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     for (path, _) in files.into_iter().take(MAX_ROLLOUT_TOKEN_USAGE_SCAN_FILES) {
         if let Some(usage) = read_latest_rollout_token_usage(&path)? {
