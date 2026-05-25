@@ -7,6 +7,7 @@ const expectedOrder = [
   'dex-agent-state.js',
   'dex-assistant-registry.js',
   'dex-render-markdown.js',
+  'dex-assistant-agent.js',
   'dex-assistant.js',
   'dex-assistant-messages.js',
   'dex-assistant-controls.js',
@@ -84,6 +85,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-agent-state.js'), 'utf8'), context, { filename: 'dex-agent-state.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-registry.js'), 'utf8'), context, { filename: 'dex-assistant-registry.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-render-markdown.js'), 'utf8'), context, { filename: 'dex-render-markdown.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-agent.js'), 'utf8'), context, { filename: 'dex-assistant-agent.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8'), context, { filename: 'dex-assistant.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-messages.js'), 'utf8'), context, { filename: 'dex-assistant-messages.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-controls.js'), 'utf8'), context, { filename: 'dex-assistant-controls.js' });
