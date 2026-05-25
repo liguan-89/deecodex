@@ -30,6 +30,7 @@
 - DEX 后端工作区工具已拆成 `deecodex-gui/src/commands/dex_workspace.rs`，读文件、列目录、执行 shell、搜索日志和工作区上下文保持原命令入口。
 - DEX 后端聊天协议转换已拆成 `deecodex-gui/src/commands/dex_protocol.rs`，活跃账号解析、Responses 请求体转换和 Responses 响应回填测试随模块迁移。
 - DEX 后端诊断/环境信息已拆成 `deecodex-gui/src/commands/dex_diagnostics.rs`，端口检测、环境信息、健康概览、自检、请求分析和系统资源检测保持原命令入口。
+- DEX 后端 AI 工具链/客户端环境检测已拆成 `deecodex-gui/src/commands/dex_toolchain.rs`，Claude、OpenClaw、Hermes 检查和工具链总览保持原命令入口。
 
 ## 保留的兼容边界
 
@@ -42,7 +43,7 @@
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
 - `deecodex-gui/src/commands/mod.rs` 约 6776 行，插件命令已移出，但账号、线程、额度等命令仍集中在同一文件。
-- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换和诊断/环境信息；AI 工具链检测仍需继续分层。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换、诊断/环境信息和 AI 工具链检测；剩余配置、网络、报告等工具仍需继续分层。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
 
