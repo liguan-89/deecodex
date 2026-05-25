@@ -3,6 +3,7 @@ pub mod dex_cli;
 pub mod dex_clients;
 pub mod dex_plugins;
 pub mod dex_process;
+pub mod dex_protocol;
 pub mod dex_registry;
 pub mod dex_security;
 pub mod dex_workspace;
