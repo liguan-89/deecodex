@@ -60,6 +60,12 @@
 
 ```bash
 node --check deecodex-gui/gui/js/plugins.js
+node --check deecodex-gui/gui/js/plugins-events.js
+node --check deecodex-gui/gui/js/plugins-dev.js
+node --check deecodex-gui/gui/js/plugins-detail.js
+node --check deecodex-gui/gui/js/plugins-market.js
+node --check deecodex-gui/gui/js/plugins-exports.js
+node deecodex-gui/gui/js/plugins-render-smoke.test.js
 cargo test --manifest-path deecodex-plugins/Cargo.toml
 cargo clippy --manifest-path deecodex-plugins/Cargo.toml --all-targets -- -D warnings
 git diff --check
