@@ -175,6 +175,25 @@ fn parse_account_json(raw: &str) -> Result<deecodex::accounts::Account, String> 
     serde_json::from_value(value).map_err(|e| format!("解析账号 JSON 失败: {e}"))
 }
 
+fn apply_explicit_account_client(
+    account: &mut deecodex::accounts::Account,
+    client_kind: Option<&AccountClientKind>,
+    client_surface: Option<&str>,
+) {
+    let Some(kind) = client_kind else {
+        return;
+    };
+    account.client_kind = kind.clone();
+    account.client_surface = parse_account_client_surface(client_surface.unwrap_or("cli"), kind);
+    account
+        .client_options
+        .insert("client_kind".into(), json!(client_kind_slug(kind)));
+    account.client_options.insert(
+        "client_surface".into(),
+        json!(account.client_surface.clone()),
+    );
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthJsonImportFile {
     #[serde(default)]
@@ -2301,6 +2320,8 @@ pub async fn add_account(
     manager: State<'_, ServerManager>,
     provider: String,
     account_json: Option<String>,
+    client_kind: Option<String>,
+    client_surface: Option<String>,
 ) -> Result<Value, String> {
     use deecodex::accounts::{
         generate_id, get_provider_presets, guess_provider, now_secs, Account,
@@ -2309,10 +2330,21 @@ pub async fn add_account(
     let data_dir = manager.data_dir.lock().await.clone();
     let (host, port) = service_endpoint_for_manager(&manager).await;
     let mut store = deecodex::accounts::load_accounts(&data_dir);
+    let explicit_client_kind = client_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_account_client_kind);
+    let default_client_kind = explicit_client_kind.clone().unwrap_or_default();
 
     let mut new_account = if let Some(json) = account_json {
         let mut a: Account = parse_account_json(&json)?;
         a.id = generate_id();
+        apply_explicit_account_client(
+            &mut a,
+            explicit_client_kind.as_ref(),
+            client_surface.as_deref(),
+        );
         if a.provider.is_empty() {
             a.provider = guess_provider(&a.upstream).to_string();
         }
@@ -2333,8 +2365,11 @@ pub async fn add_account(
             id: generate_id(),
             name: format!("{} 账号", preset.label),
             provider: provider.clone(),
-            client_kind: Default::default(),
-            client_surface: Default::default(),
+            client_kind: default_client_kind.clone(),
+            client_surface: parse_account_client_surface(
+                client_surface.as_deref().unwrap_or("cli"),
+                &default_client_kind,
+            ),
             wire_protocol: preset.wire_protocol.clone(),
             upstream: preset.default_upstream.clone(),
             api_key: String::new(),
@@ -5926,6 +5961,42 @@ mod tests {
         let account = parse_account_json(&raw).unwrap();
 
         assert_eq!(account.client_kind, AccountClientKind::ClaudeCode);
+    }
+
+    #[test]
+    fn explicit_client_kind_overrides_default_codex_payload() {
+        let raw = json!({
+            "id": "a1",
+            "name": "MiniMax",
+            "provider": "minimax",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://api.minimaxi.com/v1",
+            "api_key": "sk-test",
+            "translate_enabled": true,
+            "endpoints": [{
+                "id": "ep1",
+                "name": "Chat 兼容",
+                "kind": "open_ai_chat",
+                "base_url": "https://api.minimaxi.com/v1"
+            }]
+        })
+        .to_string();
+        let mut account = parse_account_json(&raw).unwrap();
+
+        apply_explicit_account_client(
+            &mut account,
+            Some(&AccountClientKind::Hermes),
+            Some("desktop"),
+        );
+        account.normalize_v2();
+
+        assert_eq!(account.client_kind, AccountClientKind::Hermes);
+        assert_eq!(account.client_surface, AccountClientSurface::Cli);
+        assert!(!account.translate_enabled);
+        assert!(account.endpoints.is_empty());
+        assert_eq!(account.client_options["client_kind"], "hermes");
+        assert_eq!(account.client_options["client_surface"], "cli");
     }
 
     #[test]

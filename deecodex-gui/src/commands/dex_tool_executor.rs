@@ -22,6 +22,10 @@ fn opt_string(args: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn opt_string_any(args: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| opt_string(args, key))
+}
+
 fn opt_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(Value::as_u64).map(|v| v as usize)
 }
@@ -139,6 +143,8 @@ pub(super) async fn dex_execute_tool_impl(
                     manager,
                     req_string(&args, "provider")?,
                     opt_string(&args, "account_json"),
+                    opt_string_any(&args, &["client_kind", "clientKind"]),
+                    opt_string_any(&args, &["client_surface", "clientSurface"]),
                 )
                 .await?
             }

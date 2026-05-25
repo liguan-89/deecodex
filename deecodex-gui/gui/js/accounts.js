@@ -2744,6 +2744,19 @@ function serializeAccountForBackend(account) {
   return JSON.stringify(payload);
 }
 
+function addAccountInvokeArgs(account) {
+  const clientKind = accountClientKind(account);
+  const clientSurface = accountClientSurface(account);
+  return {
+    provider: account?.provider || 'custom',
+    accountJson: serializeAccountForBackend(account),
+    clientKind,
+    client_kind: clientKind,
+    clientSurface,
+    client_surface: clientSurface,
+  };
+}
+
 async function saveAccount(options = {}) {
   if (!editingAccount) return;
   if (options instanceof Event) options = {};
@@ -2817,7 +2830,7 @@ async function saveAccount(options = {}) {
     let result;
     if (isNewAccount) {
       // 新账号
-      result = await invoke('add_account', { provider: a.provider || 'custom', accountJson: serializeAccountForBackend(a) });
+      result = await invoke('add_account', addAccountInvokeArgs(a));
       if (!options.silent) showToast('账号已创建', 'success');
     } else {
       result = await invoke('update_account', { accountJson: serializeAccountForBackend(a) });

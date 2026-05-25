@@ -458,6 +458,22 @@ const savePayload = JSON.parse(context.serializeAccountForBackend({
 assert.strictEqual(savePayload.client_kind, 'hermes');
 assert(!Object.prototype.hasOwnProperty.call(savePayload, 'target'));
 assert(!Object.prototype.hasOwnProperty.call(savePayload, '_editing_endpoint_id'));
+const addArgs = context.addAccountInvokeArgs({
+  name: 'MiniMax',
+  provider: 'minimax',
+  client_kind: 'hermes',
+  client_surface: 'desktop',
+  target: 'client_config',
+  upstream: 'https://api.minimaxi.com/v1',
+  api_key: 'sk-test',
+});
+assert.strictEqual(addArgs.provider, 'minimax');
+assert.strictEqual(addArgs.clientKind, 'hermes');
+assert.strictEqual(addArgs.client_kind, 'hermes');
+assert.strictEqual(addArgs.clientSurface, 'cli');
+assert.strictEqual(addArgs.client_surface, 'cli');
+assert.strictEqual(JSON.parse(addArgs.accountJson).client_kind, 'hermes');
+assert.strictEqual(JSON.parse(addArgs.accountJson).client_surface, 'desktop');
 assert.strictEqual(context.accountClientKind({ name: 'OpenClaw OpenRouter', provider: 'openrouter', target: 'client_config' }), 'openclaw');
 assert.strictEqual(context.accountClientKind({ name: 'Hermes MiniMax', provider: 'minimax', target: 'client_config' }), 'hermes');
 assert.strictEqual(context.accountClientKind({ clientKind: 'OpenClaw', target: 'client_config' }), 'openclaw');

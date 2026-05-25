@@ -219,7 +219,12 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             description: "添加新账号",
             capability: "core.system",
             parameters: params(
-                json!({"provider":{"type":"string","description":"供应商标识"},"account_json":{"type":"string","description":"JSON 格式的账号配置"}}),
+                json!({
+                    "provider":{"type":"string","description":"供应商标识"},
+                    "account_json":{"type":"string","description":"JSON 格式的账号配置"},
+                    "client_kind":{"type":"string","description":"账号所属客户端，如 codex/claude_code/openclaw/hermes/generic_client"},
+                    "client_surface":{"type":"string","description":"客户端形态，如 cli/desktop"}
+                }),
                 &["provider", "account_json"],
             ),
         },

@@ -18,10 +18,14 @@ pub(super) type DexAccountInfo = (
 
 pub(super) fn get_active_account_info(data_dir: &Path) -> Option<DexAccountInfo> {
     let store = deecodex::accounts::load_accounts(data_dir);
-    let mut active = store
-        .active_id
+    let active_id = store
+        .active_account_id
         .as_ref()
-        .and_then(|id| store.accounts.iter().find(|a| &a.id == id))
+        .or(store.active_id.as_ref())?;
+    let mut active = store
+        .accounts
+        .iter()
+        .find(|account| &account.id == active_id)
         .cloned()?;
     active.normalize_v2();
     let endpoint = active
@@ -29,14 +33,19 @@ pub(super) fn get_active_account_info(data_dir: &Path) -> Option<DexAccountInfo>
         .cloned()
         .or_else(|| active.endpoints.first().cloned())?;
     active.sync_legacy_from_endpoint(&endpoint);
-    let mut profile = deecodex::providers::profile_for_account(&active);
+    let provider = if active.provider == "custom" {
+        deecodex::providers::guess_provider(&active.upstream).to_string()
+    } else {
+        active.provider.clone()
+    };
+    let mut profile = deecodex::providers::profile_by_slug(&provider);
     profile.wire_protocol = dex_wire_protocol_for_endpoint(&endpoint.kind);
 
     Some((
         active.upstream.clone(),
         active.api_key.clone(),
         active.model_map.clone(),
-        active.provider.clone(),
+        provider,
         profile,
         endpoint.kind.clone(),
         endpoint.effective_path().to_string(),
@@ -361,5 +370,55 @@ mod tests {
             chat["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
             "health_summary"
         );
+    }
+
+    #[test]
+    fn dex_profile_guesses_custom_minimax_from_upstream() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "deecodex-dex-account-info-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let path = deecodex::accounts::accounts_file_path(&data_dir);
+        std::fs::write(
+            &path,
+            json!({
+                "version": deecodex::accounts::ACCOUNT_STORE_VERSION,
+                "active_id": "a1",
+                "active_account_id": "a1",
+                "active_endpoint_id": "ep1",
+                "accounts": [{
+                    "id": "a1",
+                    "name": "MiniMax",
+                    "provider": "custom",
+                    "client_kind": "codex",
+                    "client_surface": "cli",
+                    "wire_protocol": "chat_completions",
+                    "upstream": "https://api.minimaxi.com/v1",
+                    "api_key": "sk-test",
+                    "model_map": {"gpt-5.5": "MiniMax-M2.7"},
+                    "endpoints": [{
+                        "id": "ep1",
+                        "name": "Chat",
+                        "kind": "open_ai_chat",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "model_map": {"gpt-5.5": "MiniMax-M2.7"}
+                    }]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (_, _, _, provider, profile, _, _) = get_active_account_info(&data_dir).unwrap();
+
+        assert_eq!(provider, "minimax");
+        assert_eq!(profile.slug, "minimax");
+        assert!(profile.capabilities.allow_missing_done);
+
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }
