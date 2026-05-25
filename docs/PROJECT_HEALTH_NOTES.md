@@ -36,6 +36,7 @@
 - DEX 后端聊天主链路已拆成 `deecodex-gui/src/commands/dex_chat.rs`，`dex_chat` 仍保留原 Tauri 命令入口。
 - GUI 升级检查和升级执行已拆成 `deecodex-gui/src/commands/upgrade.rs`，`check_upgrade` 和 `run_upgrade` 仍保留原 Tauri 命令入口。
 - GUI 会话管理、请求历史统计和文件选择对话框已拆成 `sessions.rs`、`request_history.rs`、`dialogs.rs`，原 Tauri 命令名保持不变。
+- GUI 线程聚合命令已拆成 `deecodex-gui/src/commands/threads.rs`，聚合、还原、校准、线程内容读取和删除的 Tauri 命令入口保持不变。
 
 ## 保留的兼容边界
 
@@ -47,7 +48,7 @@
 ## 大文件风险
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
-- `deecodex-gui/src/commands/mod.rs` 已拆出插件、升级、会话、请求历史和文件选择命令，但账号、线程、额度等命令仍集中在同一文件。
+- `deecodex-gui/src/commands/mod.rs` 已拆出插件、升级、会话、请求历史、文件选择和线程聚合命令，但账号、额度、连通性检测等命令仍集中在同一文件。
 - `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换、诊断/环境信息、AI 工具链检测、运维/配置/报告工具、工具执行路由和聊天主链路；当前主要承担 Tauri 命令 facade 和少量公共 helper。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
