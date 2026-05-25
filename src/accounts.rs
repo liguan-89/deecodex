@@ -1,10 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::warn;
 
 use crate::providers::{
     get_provider_profiles, provider_options_for_slug, AuthScheme, ModelDiscovery,
@@ -1163,17 +1169,129 @@ pub fn accounts_file_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("accounts.json")
 }
 
-#[allow(dead_code)]
-pub fn load_accounts(data_dir: &Path) -> AccountStore {
-    let path = accounts_file_path(data_dir);
-    match std::fs::read_to_string(&path) {
+pub fn accounts_backup_file_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("accounts.json.bak")
+}
+
+pub fn accounts_lock_file_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("accounts.json.lock")
+}
+
+fn account_store_file_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct AccountStoreFileGuard {
+    _thread: MutexGuard<'static, ()>,
+    _process_file: File,
+}
+
+fn lock_account_store_file(data_dir: &Path) -> Result<AccountStoreFileGuard> {
+    let thread = account_store_file_lock().lock().unwrap_or_else(|poisoned| {
+        warn!("账号文件锁已被污染，继续接管锁以避免中断账号操作");
+        poisoned.into_inner()
+    });
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("创建账号目录失败: {}", data_dir.display()))?;
+    let lock_path = accounts_lock_file_path(data_dir);
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("打开账号锁文件失败: {}", lock_path.display()))?;
+    lock_file_exclusive(&file, &lock_path)?;
+    Ok(AccountStoreFileGuard {
+        _thread: thread,
+        _process_file: file,
+    })
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &File, path: &Path) -> Result<()> {
+    const LOCK_EX: i32 = 2;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    let result = unsafe { flock(file.as_raw_fd(), LOCK_EX) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+            .with_context(|| format!("锁定账号文件失败: {}", path.display()))
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive(_file: &File, _path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn load_accounts_from_path(path: &Path) -> Result<Option<AccountStore>> {
+    match std::fs::read_to_string(path) {
         Ok(content) => {
-            let mut store = parse_account_store(&content).unwrap_or_default();
+            let mut store = parse_account_store(&content)
+                .with_context(|| format!("解析账号文件失败: {}", path.display()))?;
             hydrate_account_defaults(&mut store);
             store.normalize_v2();
-            store
+            Ok(Some(store))
         }
-        Err(_) => AccountStore::default(),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("读取账号文件失败: {}", path.display())),
+    }
+}
+
+pub fn load_accounts_checked(data_dir: &Path) -> Result<AccountStore> {
+    let _guard = lock_account_store_file(data_dir)?;
+    load_accounts_checked_inner(data_dir, true)
+}
+
+fn load_accounts_checked_inner(
+    data_dir: &Path,
+    repair_primary_from_backup: bool,
+) -> Result<AccountStore> {
+    let path = accounts_file_path(data_dir);
+    match load_accounts_from_path(&path) {
+        Ok(Some(store)) => Ok(store),
+        Ok(None) => Ok(AccountStore::default()),
+        Err(primary_err) => {
+            let backup_path = accounts_backup_file_path(data_dir);
+            match load_accounts_from_path(&backup_path) {
+                Ok(Some(store)) => {
+                    warn!(
+                        "账号主文件不可用，已从备份恢复读取: primary={}, backup={}, error={primary_err:#}",
+                        path.display(),
+                        backup_path.display()
+                    );
+                    if repair_primary_from_backup {
+                        if let Err(err) = save_accounts_unlocked(data_dir, &store) {
+                            warn!("从账号备份修复主文件失败: {err:#}");
+                        }
+                    }
+                    Ok(store)
+                }
+                Ok(None) => Err(primary_err),
+                Err(backup_err) => Err(primary_err).with_context(|| {
+                    format!(
+                        "备份账号文件也不可用: {}, error={backup_err:#}",
+                        backup_path.display()
+                    )
+                }),
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn load_accounts(data_dir: &Path) -> AccountStore {
+    match load_accounts_checked(data_dir) {
+        Ok(store) => store,
+        Err(err) => {
+            warn!("账号文件读取失败，返回空账号库以保持界面可打开: {err:#}");
+            AccountStore::default()
+        }
     }
 }
 
@@ -1195,14 +1313,68 @@ pub fn parse_account_store(content: &str) -> Result<AccountStore> {
 
 #[allow(dead_code)]
 pub fn save_accounts(data_dir: &Path, store: &AccountStore) -> Result<()> {
+    let _guard = lock_account_store_file(data_dir)?;
+    save_accounts_unlocked(data_dir, store)
+}
+
+pub fn with_account_store<R, F>(data_dir: &Path, mutate: F) -> Result<(AccountStore, R)>
+where
+    F: FnOnce(&mut AccountStore) -> Result<R>,
+{
+    let _guard = lock_account_store_file(data_dir)?;
+    let mut store = load_accounts_checked_inner(data_dir, false)?;
+    let result = mutate(&mut store)?;
+    save_accounts_unlocked(data_dir, &store)?;
+    store.normalize_v2();
+    Ok((store, result))
+}
+
+fn save_accounts_unlocked(data_dir: &Path, store: &AccountStore) -> Result<()> {
     let path = accounts_file_path(data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut normalized = store.clone();
     normalized.normalize_v2();
-    std::fs::write(&path, serde_json::to_string_pretty(&normalized)?)?;
+    let content = serde_json::to_string_pretty(&normalized)?;
+    parse_account_store(&content).context("账号文件序列化后无法重新解析，已停止写入")?;
+
+    let temp_path = account_temp_file_path(&path);
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("创建临时账号文件失败: {}", temp_path.display()))?;
+        use std::io::Write;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("写入临时账号文件失败: {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("同步临时账号文件失败: {}", temp_path.display()))?;
+    }
+
+    if path.exists() {
+        if load_accounts_from_path(&path).ok().flatten().is_some() {
+            std::fs::copy(&path, accounts_backup_file_path(data_dir))
+                .with_context(|| format!("备份账号文件失败: {}", path.display()))?;
+        } else {
+            warn!("跳过账号备份：当前主文件不可解析: {}", path.display());
+        }
+    }
+
+    if let Err(err) = std::fs::rename(&temp_path, &path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err).with_context(|| format!("替换账号文件失败: {}", path.display()));
+    }
     Ok(())
+}
+
+fn account_temp_file_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("accounts.json");
+    path.with_file_name(format!(".{file_name}.{}.tmp", generate_id()))
 }
 
 pub fn hydrate_account_defaults(store: &mut AccountStore) {
@@ -1834,6 +2006,77 @@ mod tests {
         for _ in 0..256 {
             assert!(ids.insert(generate_id()));
         }
+    }
+
+    fn test_data_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deecodex-{label}-{}", generate_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_accounts_writes_atomically_and_keeps_backup() {
+        let dir = test_data_dir("accounts-save");
+        let mut first = legacy_account(true);
+        first.id = "first".into();
+        let first_store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            active_id: Some(first.id.clone()),
+            active_account_id: Some(first.id.clone()),
+            active_endpoint_id: None,
+            accounts: vec![first],
+        };
+        save_accounts(&dir, &first_store).unwrap();
+
+        let mut second = legacy_account(true);
+        second.id = "second".into();
+        let second_store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            active_id: Some(second.id.clone()),
+            active_account_id: Some(second.id.clone()),
+            active_endpoint_id: None,
+            accounts: vec![second],
+        };
+        save_accounts(&dir, &second_store).unwrap();
+
+        let loaded = load_accounts_checked(&dir).unwrap();
+        assert_eq!(loaded.active_account_id.as_deref(), Some("second"));
+        let backup = std::fs::read_to_string(accounts_backup_file_path(&dir)).unwrap();
+        let backup_store = parse_account_store(&backup).unwrap();
+        assert_eq!(backup_store.active_account_id.as_deref(), Some("first"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_accounts_checked_recovers_from_backup_when_primary_is_invalid() {
+        let dir = test_data_dir("accounts-backup");
+        let mut account = legacy_account(true);
+        account.id = "backup-account".into();
+        let store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: None,
+            accounts: vec![account],
+        };
+        std::fs::write(
+            accounts_backup_file_path(&dir),
+            serde_json::to_string_pretty(&store).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(accounts_file_path(&dir), "{broken").unwrap();
+
+        let loaded = load_accounts_checked(&dir).unwrap();
+        assert_eq!(loaded.active_account_id.as_deref(), Some("backup-account"));
+        let repaired = std::fs::read_to_string(accounts_file_path(&dir)).unwrap();
+        let repaired_store = parse_account_store(&repaired).unwrap();
+        assert_eq!(
+            repaired_store.active_account_id.as_deref(),
+            Some("backup-account")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

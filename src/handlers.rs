@@ -248,19 +248,29 @@ fn account_endpoint_or_fallback(
 async fn codex_official_account_endpoint(
     state: &AppState,
     requested_model: &str,
-) -> (Account, EndpointConfig) {
+) -> Option<(Account, EndpointConfig)> {
     let store = state.account_store.read().await.clone();
     let cursor = CODEX_OFFICIAL_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
-    if let Some((account, endpoint)) = select_codex_official_account_endpoint(
+    select_codex_official_account_endpoint(
         &store,
         requested_model,
         crate::accounts::now_secs(),
         cursor,
-    ) {
-        return (account, endpoint);
-    }
+    )
+}
 
-    active_account_endpoint_without_hot_overrides(state).await
+fn codex_official_pool_unavailable_response() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({
+            "error": {
+                "message": "Codex 官方号池暂无可用账号：所有参与账号都在冷却、额度耗尽或已停用",
+                "type": "rate_limit_error",
+                "code": "codex_official_pool_unavailable"
+            }
+        })),
+    )
+        .into_response()
 }
 
 fn select_codex_official_account_endpoint(
@@ -274,9 +284,6 @@ fn select_codex_official_account_endpoint(
     if active_endpoint.kind != EndpointKind::CodexOfficial {
         return None;
     }
-    let mut fallback_account = active_account.clone();
-    fallback_account.sync_legacy_from_endpoint(&active_endpoint);
-    let fallback = (fallback_account, active_endpoint.clone());
 
     let active_pool = account_routing_options(active_account).pool;
     let active_surface = active_account.client_surface.clone();
@@ -308,9 +315,7 @@ fn select_codex_official_account_endpoint(
             .then_with(|| left.0.id.cmp(&right.0.id))
             .then_with(|| left.1.id.cmp(&right.1.id))
     });
-    let Some(max_priority) = candidates.first().map(|candidate| candidate.2) else {
-        return Some(fallback);
-    };
+    let max_priority = candidates.first().map(|candidate| candidate.2)?;
     let top: Vec<_> = candidates
         .into_iter()
         .filter(|candidate| candidate.2 == max_priority)
@@ -320,7 +325,7 @@ fn select_codex_official_account_endpoint(
         .map(|candidate| u64::from(candidate.3.max(1)))
         .sum();
     if total_weight == 0 {
-        return Some(fallback);
+        return None;
     }
     let mut slot = cursor % total_weight;
     for (account, endpoint, _priority, weight) in top {
@@ -330,7 +335,7 @@ fn select_codex_official_account_endpoint(
         }
         slot = slot.saturating_sub(weight);
     }
-    Some(fallback)
+    None
 }
 
 fn active_official_endpoint(store: &AccountStore, account: &Account) -> Option<EndpointConfig> {
@@ -1916,8 +1921,11 @@ async fn handle_images_api(
     if endpoint.kind == EndpointKind::CodexOfficial
         || upstream_is_codex_official_endpoint(&endpoint)
     {
-        let (account, endpoint) =
-            codex_official_account_endpoint(&state, DEFAULT_IMAGE_TOOL_MODEL).await;
+        let Some((account, endpoint)) =
+            codex_official_account_endpoint(&state, DEFAULT_IMAGE_TOOL_MODEL).await
+        else {
+            return codex_official_pool_unavailable_response();
+        };
         return handle_codex_official_images(state, account, endpoint, body, action).await;
     }
     if endpoint.kind.is_responses_like() {
@@ -4163,7 +4171,11 @@ async fn handle_codex_official(
     mut body: axum::body::Bytes,
 ) -> Response {
     let original_model = req.model.clone();
-    let (mut account, endpoint) = codex_official_account_endpoint(&state, &original_model).await;
+    let Some((mut account, endpoint)) =
+        codex_official_account_endpoint(&state, &original_model).await
+    else {
+        return codex_official_pool_unavailable_response();
+    };
     let history_context = history_context_for(&account, &endpoint, "/v1/responses");
     let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
@@ -4478,7 +4490,7 @@ async fn fresh_oauth_access_token(state: &AppState, account: &mut Account) -> Re
 }
 
 async fn persist_refreshed_oauth_account(state: &AppState, account: Account) {
-    let store_to_save = {
+    {
         let mut store = state.account_store.write().await;
         if let Some(existing) = store
             .accounts
@@ -4489,12 +4501,22 @@ async fn persist_refreshed_oauth_account(state: &AppState, account: Account) {
             existing.client_options = account.client_options.clone();
             existing.updated_at = crate::accounts::now_secs();
         }
-        store.clone()
-    };
-    if state.active_account.read().await.id == account.id {
-        *state.active_account.write().await = account;
     }
-    if let Err(err) = crate::accounts::save_accounts(state.data_dir.as_ref(), &store_to_save) {
+    if state.active_account.read().await.id == account.id {
+        *state.active_account.write().await = account.clone();
+    }
+    if let Err(err) = crate::accounts::with_account_store(state.data_dir.as_ref(), |store| {
+        if let Some(existing) = store
+            .accounts
+            .iter_mut()
+            .find(|candidate| candidate.id == account.id)
+        {
+            existing.api_key = account.api_key.clone();
+            existing.client_options = account.client_options.clone();
+            existing.updated_at = crate::accounts::now_secs();
+        }
+        Ok(())
+    }) {
         warn!("保存刷新后的 OAuth token 失败: {err}");
     }
 }
@@ -4508,8 +4530,9 @@ async fn update_runtime_result(
     retry_after_secs: Option<u64>,
 ) {
     let now = crate::accounts::now_secs();
+    let message_for_persist = message.clone();
     let mut active_update = None;
-    let store_to_save = {
+    {
         let mut store = state.account_store.write().await;
         if let Some(account) = store
             .accounts
@@ -4522,21 +4545,39 @@ async fn update_runtime_result(
                 account.record_runtime_failure(
                     model,
                     status.as_u16(),
-                    message,
+                    message.clone(),
                     retry_after_secs,
                     now,
                 );
             }
             active_update = Some(account.clone());
         }
-        store.clone()
-    };
+    }
     if let Some(account) = active_update {
         if state.active_account.read().await.id == account.id {
             *state.active_account.write().await = account;
         }
     }
-    if let Err(err) = crate::accounts::save_accounts(state.data_dir.as_ref(), &store_to_save) {
+    if let Err(err) = crate::accounts::with_account_store(state.data_dir.as_ref(), |store| {
+        if let Some(account) = store
+            .accounts
+            .iter_mut()
+            .find(|candidate| candidate.id == account_id)
+        {
+            if status.is_success() {
+                account.record_runtime_success(model, now);
+            } else {
+                account.record_runtime_failure(
+                    model,
+                    status.as_u16(),
+                    message_for_persist,
+                    retry_after_secs,
+                    now,
+                );
+            }
+        }
+        Ok(())
+    }) {
         warn!("保存账号运行态失败: {err}");
     }
 }
@@ -7377,7 +7418,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_official_selector_falls_back_to_active_when_none_ready() {
+    fn codex_official_selector_returns_none_when_none_ready() {
         let mut active = official_codex_account("active", 0, 1);
         active.runtime_state.next_retry_after = Some(2_000);
         let mut other = official_codex_account("other", 0, 1);
@@ -7398,10 +7439,9 @@ mod tests {
         );
         let store = official_store(vec![active, other], "active");
 
-        let (account, _) =
-            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+        let selected = select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0);
 
-        assert_eq!(account.id, "active");
+        assert!(selected.is_none());
     }
 
     #[test]
