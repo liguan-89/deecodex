@@ -179,99 +179,9 @@ function statusClientPrimaryAccount(kind) {
     .sort((a, b) => Number(b.last_applied_at || 0) - Number(a.last_applied_at || 0))[0];
 }
 
-function statusProcessEntries(name) {
-  const entry = (window._clientProcessMap || {})[name];
-  if (!entry) return [];
-  if (Array.isArray(entry)) return entry;
-  if (Array.isArray(entry.instances)) return entry.instances;
-  return entry.running ? [{}] : [];
-}
-
-function statusProcessCommands(...names) {
-  return names.flatMap(name => statusProcessEntries(name))
-    .map(item => String(item?.command || item?.name || ''))
-    .filter(Boolean);
-}
-
-function statusCommandIsCodexDesktop(command) {
-  return /\/Codex\.app\//.test(command)
-    || /com\.openai\.codex/.test(command)
-    || /Codex Helper/.test(command)
-    || /Application Support\/Codex/.test(command)
-    || command.trim() === 'Codex';
-}
-
-function statusCommandIsClaudeDesktop(command) {
-  return /\/Claude\.app\//.test(command)
-    || /Claude Helper/.test(command)
-    || /Application Support\/Claude/.test(command)
-    || command.trim() === 'Claude';
-}
-
-function statusCommandExecutableName(command) {
-  const first = String(command || '').trim().split(/\s+/)[0] || '';
-  return first.split(/[\\/]/).pop() || '';
-}
-
-function statusCommandHasArgs(command) {
-  return String(command || '').trim().split(/\s+/).length > 1;
-}
-
-function statusCommandUsesExecutable(command, name) {
-  const text = String(command || '').trim();
-  if (!text) return false;
-  const first = text.split(/\s+/)[0] || '';
-  const exe = statusCommandExecutableName(text);
-  if (exe === name && first === name) return true;
-  if (exe === name && (first.includes('/') || statusCommandHasArgs(text))) return true;
-  if ((exe === 'node' || exe === 'nodejs') && new RegExp(`(^|/)${name}(\\s|$)`).test(text)) return true;
-  return false;
-}
-
-function statusCommandIsCodexCli(command) {
-  return !statusCommandIsCodexDesktop(command)
-    && !/deecodex/i.test(command)
-    && statusCommandUsesExecutable(command, 'codex');
-}
-
-function statusCommandIsClaudeCli(command) {
-  return !statusCommandIsClaudeDesktop(command)
-    && statusCommandUsesExecutable(command, 'claude');
-}
-
-function statusCommandIsHermesCli(command) {
-  const text = String(command || '').trim();
-  if (!text || text.includes('hermes_cli.main gateway')) return false;
-  if (statusCommandUsesExecutable(text, 'hermes')) return true;
-  return text.split(/\s+/).some(part => statusCommandExecutableName(part) === 'hermes');
-}
-
 function statusClientProcessRunning(kind) {
-  if (kind === 'codex_desktop') {
-    return statusProcessCommands('codex', 'Codex').some(statusCommandIsCodexDesktop);
-  }
-  if (kind === 'codex_cli') {
-    const commands = statusProcessCommands('codex', 'Codex');
-    if (!commands.length) return false;
-    return commands.some(statusCommandIsCodexCli);
-  }
-  if (kind === 'claude_desktop') {
-    return statusProcessCommands('claude', 'Claude').some(statusCommandIsClaudeDesktop);
-  }
-  if (kind === 'claude_cli') {
-    const commands = statusProcessCommands('claude', 'Claude');
-    if (!commands.length) return false;
-    return commands.some(statusCommandIsClaudeCli);
-  }
-  if (kind === 'hermes') {
-    const commands = statusProcessCommands('hermes');
-    if (!commands.length) return false;
-    return commands.some(statusCommandIsHermesCli);
-  }
-  const entry = (window._clientProcessMap || {})[kind];
-  if (entry && typeof entry === 'object') return Boolean(entry.running);
-  if (kind === 'openclaw') return Boolean(entry);
-  return false;
+  const status = (window._clientLifecycleMap || {})[kind];
+  return Boolean(status?.runtime?.running);
 }
 
 function statusClientEnabled(kind, account, gatewayRunning) {
@@ -357,43 +267,11 @@ function renderStatusClientDock(gatewayRunning) {
 async function refreshStatusClientDock() {
   if (currentPanel !== 'status') return;
   try {
-    const result = await invoke('dex_detect_processes');
-    const map = {};
-    (result.processes || []).forEach(item => {
-      map[item.process] = {
-        running: Boolean(item.running),
-        instances: Array.isArray(item.instances) ? item.instances : [],
-      };
-    });
-    window._clientProcessMap = map;
-    document.querySelectorAll('.client-dock-item').forEach(button => {
-      const kind = button.dataset.clientKind;
-      const info = statusClientInfo(kind, Boolean(window._statusData?.running));
-      button.classList.toggle('on', info.state === 'on');
-      button.classList.toggle('off', info.state === 'off');
-      button.classList.toggle('process-running', info.processRunning);
-      const lifecycle = statusClientLifecycleMeta(kind, info);
-      ['is-installed', 'needs-install', 'has-account', 'needs-account', 'config-ready', 'config-pending', 'next-install', 'next-configure', 'next-launch', 'next-running'].forEach(cls => {
-        button.classList.remove(cls);
-      });
-      lifecycle.classes.split(/\s+/).filter(Boolean).forEach(cls => button.classList.add(cls));
-      button.dataset.nextAction = lifecycle.action || '';
-      button.setAttribute('aria-label', `${button.dataset.clientLabel || clientKindUiLabel(statusClientAccountKind(kind))} · ${info.text}`);
-      const runtime = button.querySelector('.client-dock-runtime');
-      if (runtime) {
-        runtime.classList.toggle('live', info.processRunning);
-        runtime.classList.toggle('idle', !info.processRunning);
-        runtime.title = info.processRunning ? '客户端进程运行中' : '未检测到客户端进程';
-      }
-      const installDot = button.querySelector('.client-dock-state-dot.install');
-      const accountDot = button.querySelector('.client-dock-state-dot.account');
-      const runtimeDot = button.querySelector('.client-dock-state-dot.runtime');
-      if (installDot) installDot.title = lifecycle.installLabel;
-      if (accountDot) accountDot.title = lifecycle.accountLabel;
-      if (runtimeDot) runtimeDot.title = lifecycle.runLabel;
-    });
-    if (typeof refreshClientLifecycleDock === 'function') {
-      refreshClientLifecycleDock();
+    const refreshLifecycle = typeof window !== 'undefined' && typeof window.refreshClientLifecycleDock === 'function'
+      ? window.refreshClientLifecycleDock
+      : (typeof refreshClientLifecycleDock === 'function' ? refreshClientLifecycleDock : null);
+    if (refreshLifecycle) {
+      await refreshLifecycle();
     }
   } catch (_) {}
 }

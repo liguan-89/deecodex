@@ -100,50 +100,32 @@ assert(css.includes('visibility: hidden'));
 assert(css.includes('.client-dock-item:hover .client-dock-state-row'));
 assert(css.includes('visibility: visible'));
 
-context.window._clientProcessMap = {
-  codex: { running: true, instances: [{ pid: '101', command: 'Codex' }] },
-  Codex: { running: true, instances: [{ pid: '101', command: 'Codex' }] },
-};
+context.window._clientLifecycleMap.codex_desktop = { runtime: { running: true } };
 assert.strictEqual(context.statusClientProcessRunning('codex_desktop'), true);
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), false);
 
-context.window._clientProcessMap = {
-  codex: {
-    running: true,
-    instances: [
-      { pid: '201', command: '/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://' },
-      { pid: '202', command: '/Users/me/.codex/plugins/example/index.js' },
-      { pid: '203', command: '/Users/me/project/target/debug/deecodex-gui' },
-    ],
-  },
-};
+context.window._clientLifecycleMap.codex_cli = { runtime: { running: false } };
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), false);
 
-context.window._clientProcessMap = {
-  codex: { running: true, instances: [{ pid: '102', command: '/usr/local/bin/codex' }] },
-};
+context.window._clientLifecycleMap.codex_cli = { runtime: { running: true } };
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);
 
-context.window._clientProcessMap = {
-  codex: { running: true, instances: [{ pid: '103', command: 'codex' }] },
-  claude: { running: true, instances: [{ pid: '104', command: 'claude' }] },
-  hermes: { running: true, instances: [{ pid: '105', command: '/Users/me/.local/bin/hermes' }] },
-};
+context.window._clientLifecycleMap.claude_cli = { runtime: { running: true } };
+context.window._clientLifecycleMap.hermes = { runtime: { running: true } };
 assert.strictEqual(context.statusClientProcessRunning('codex_cli'), true);
 assert.strictEqual(context.statusClientProcessRunning('claude_cli'), true);
 assert.strictEqual(context.statusClientProcessRunning('hermes'), true);
 
-context.window._clientProcessMap = {
-  hermes: {
-    running: true,
-    instances: [
-      { pid: '106', command: '/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace' },
-    ],
-  },
-};
+context.window._clientLifecycleMap.hermes = { runtime: { running: false } };
 assert.strictEqual(context.statusClientProcessRunning('hermes'), false);
 
 (async () => {
+  calls.length = 0;
+  await context.refreshStatusClientDock();
+  assert(calls.some(call => call.name === 'dex_client_lifecycle_status'));
+  assert(!calls.some(call => call.name === 'dex_detect_processes'));
+
+  calls.length = 0;
   await context.window.refreshClientLifecycleDock();
   assert(calls.some(call => call.name === 'dex_client_lifecycle_status'));
   assert.strictEqual(context.window._clientLifecycleMap.codex_cli.next_action, 'launch');
