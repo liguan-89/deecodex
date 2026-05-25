@@ -29,6 +29,7 @@
 - DEX 后端客户端 Dock 生命周期逻辑已拆成 `deecodex-gui/src/commands/dex_clients.rs`，对外 IPC 命令路径保持不变。
 - DEX 后端工作区工具已拆成 `deecodex-gui/src/commands/dex_workspace.rs`，读文件、列目录、执行 shell、搜索日志和工作区上下文保持原命令入口。
 - DEX 后端聊天协议转换已拆成 `deecodex-gui/src/commands/dex_protocol.rs`，活跃账号解析、Responses 请求体转换和 Responses 响应回填测试随模块迁移。
+- DEX 后端诊断/环境信息已拆成 `deecodex-gui/src/commands/dex_diagnostics.rs`，端口检测、环境信息、健康概览、自检、请求分析和系统资源检测保持原命令入口。
 
 ## 保留的兼容边界
 
@@ -41,7 +42,7 @@
 
 - `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
 - `deecodex-gui/src/commands/mod.rs` 约 6776 行，插件命令已移出，但账号、线程、额度等命令仍集中在同一文件。
-- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具和聊天协议转换；诊断和 AI 工具链检测仍需继续分层。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换和诊断/环境信息；AI 工具链检测仍需继续分层。
 - 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
 - `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
 
@@ -61,7 +62,6 @@
 
 ## DEX 助手后续建议
 
-- 待办：下一轮优先拆 `deecodex-gui/src/commands/dex.rs` 的诊断/环境信息模块，目标函数包括 `dex_get_env_info`、`dex_detect_ports`、`dex_health_summary`、`dex_self_check`、`dex_analyze_requests`、`get_os_version`、`get_total_memory_gb`、`get_disk_free_gb`；继续保持 `dex.rs` facade 和原 Tauri 命令路径不变。
 - DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
 - DEX 助手前端主体已独立为 `dex-assistant.js`，注册表、Agent、附件、搜索、快捷键、消息列表和面板控制也已拆出。
 - DEX 后端拆分应继续保持 `dex.rs` facade 模式：Tauri 命令名和 `commands::dex::*` 注册路径不动，真实实现移动到小模块。
