@@ -61,6 +61,7 @@
 
 ## DEX 助手后续建议
 
+- 待办：下一轮优先拆 `deecodex-gui/src/commands/dex.rs` 的诊断/环境信息模块，目标函数包括 `dex_get_env_info`、`dex_detect_ports`、`dex_health_summary`、`dex_self_check`、`dex_analyze_requests`、`get_os_version`、`get_total_memory_gb`、`get_disk_free_gb`；继续保持 `dex.rs` facade 和原 Tauri 命令路径不变。
 - DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
 - DEX 助手前端主体已独立为 `dex-assistant.js`，注册表、Agent、附件、搜索、快捷键、消息列表和面板控制也已拆出。
 - DEX 后端拆分应继续保持 `dex.rs` facade 模式：Tauri 命令名和 `commands::dex::*` 注册路径不动，真实实现移动到小模块。
