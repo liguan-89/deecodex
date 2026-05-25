@@ -21,6 +21,7 @@
 - DEX 助手运行态补丁样式已从 JS 注入迁移到 `app.css`，减少页面初始化副作用。
 - DEX 助手快捷键绑定已拆成独立脚本，主 Agent 文件继续减负。
 - DEX 助手消息气泡、工具结果、确认卡片和思考状态已拆成 `dex-assistant-messages.js`。
+- DEX 助手面板控制、模型菜单、状态刷新和 token 计数已拆成 `dex-assistant-controls.js`。
 
 ## 保留的兼容边界
 
@@ -54,7 +55,7 @@
 ## DEX 助手后续建议
 
 - DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
-- DEX 助手前端主体已独立为 `dex-assistant.js`，附件、搜索、快捷键和消息列表也已拆出；后续可继续拆 agent 与模型状态。
+- DEX 助手前端主体已独立为 `dex-assistant.js`，附件、搜索、快捷键、消息列表和面板控制也已拆出；后续可继续拆 agent 请求循环。
 - DEX 输出区、输入区和工具调用 UI 应继续保持透明结构层，避免再次叠出多层内容框。
 - DEX 工具执行结果需要统一轻量样式，避免输出块比主内容更重。
 

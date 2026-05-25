@@ -8,6 +8,7 @@ const expectedOrder = [
   'dex-render-markdown.js',
   'dex-assistant.js',
   'dex-assistant-messages.js',
+  'dex-assistant-controls.js',
   'dex-assistant-attachments.js',
   'dex-assistant-search.js',
   'dex-assistant-shortcuts.js',
@@ -83,6 +84,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-render-markdown.js'), 
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-agent-state.js'), 'utf8'), context, { filename: 'dex-agent-state.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8'), context, { filename: 'dex-assistant.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-messages.js'), 'utf8'), context, { filename: 'dex-assistant-messages.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-controls.js'), 'utf8'), context, { filename: 'dex-assistant-controls.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-attachments.js'), 'utf8'), context, { filename: 'dex-assistant-attachments.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-search.js'), 'utf8'), context, { filename: 'dex-assistant-search.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-shortcuts.js'), 'utf8'), context, { filename: 'dex-assistant-shortcuts.js' });
@@ -93,6 +95,8 @@ assert.strictEqual(typeof context.renderProfile, 'function');
 assert.strictEqual(typeof context.window.dexAgent.run, 'function');
 assert.strictEqual(typeof context.dexAppendMessage, 'function');
 assert.strictEqual(typeof context.dexShowInlineConfirm, 'function');
+assert.strictEqual(typeof context.dexLoadModels, 'function');
+assert.strictEqual(typeof context.dexUpdateTokenCount, 'function');
 assert.strictEqual(typeof context.dexAttachLastFile, 'function');
 assert.strictEqual(typeof context.dexToggleSearch, 'function');
 assert.strictEqual(typeof context.dexBindShortcuts, 'function');
