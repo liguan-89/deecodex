@@ -5,6 +5,7 @@ const vm = require('vm');
 
 const expectedOrder = [
   'dex-agent-state.js',
+  'dex-assistant-registry.js',
   'dex-render-markdown.js',
   'dex-assistant.js',
   'dex-assistant-messages.js',
@@ -80,8 +81,9 @@ context.window.deeStorage = context.deeStorage;
 context.window.DeeCodexTauri = context.DeeCodexTauri;
 
 vm.createContext(context);
-vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-render-markdown.js'), 'utf8'), context, { filename: 'dex-render-markdown.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-agent-state.js'), 'utf8'), context, { filename: 'dex-agent-state.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-registry.js'), 'utf8'), context, { filename: 'dex-assistant-registry.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-render-markdown.js'), 'utf8'), context, { filename: 'dex-render-markdown.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8'), context, { filename: 'dex-assistant.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-messages.js'), 'utf8'), context, { filename: 'dex-assistant-messages.js' });
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-controls.js'), 'utf8'), context, { filename: 'dex-assistant-controls.js' });
@@ -93,6 +95,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, 'placeholder-pages.js'), 'u
 assert.strictEqual(typeof context.renderDexAssistant, 'function');
 assert.strictEqual(typeof context.renderProfile, 'function');
 assert.strictEqual(typeof context.window.dexAgent.run, 'function');
+assert.strictEqual(typeof context.dexBuildSystemPrompt, 'function');
+assert.strictEqual(typeof context.dexLoadDynamicContext, 'function');
 assert.strictEqual(typeof context.dexAppendMessage, 'function');
 assert.strictEqual(typeof context.dexShowInlineConfirm, 'function');
 assert.strictEqual(typeof context.dexLoadModels, 'function');
