@@ -8,6 +8,7 @@ pub mod dex_process;
 pub mod dex_protocol;
 pub mod dex_registry;
 pub mod dex_security;
+pub mod dex_tool_executor;
 pub mod dex_toolchain;
 pub mod dex_workspace;
 pub mod logs;
