@@ -185,14 +185,14 @@ const context = {
       label: 'MiMo',
       description: 'MiMo',
       default_upstream: 'https://token-plan-cn.xiaomimimo.com/v1',
-      known_models: ['mimo-v2.5-pro'],
+      known_models: ['mimo-v2-omni', 'mimo-v2-pro', 'mimo-v2.5', 'mimo-v2.5-pro'],
     },
     {
       slug: 'longcat',
       label: 'LongCat',
       description: 'LongCat',
-      default_upstream: 'https://api.longcat.chat/v1',
-      known_models: ['LongCat-Flash-Chat'],
+      default_upstream: 'https://api.longcat.chat/openai',
+      known_models: ['LongCat-2.0-Preview', 'LongCat-Flash-Lite', 'LongCat-Flash-Chat', 'LongCat-Flash-Thinking-2601', 'LongCat-Flash-Omni-2603'],
     },
     {
       slug: 'kimi',
@@ -656,6 +656,24 @@ assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('
   'gpt-5.2': 'deepseek-v4-flash',
   'codex-auto-review': 'deepseek-v4-flash',
 });
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('longcat'))), {
+  'gpt-5.5': 'LongCat-Flash-Chat',
+  'gpt-5.4': 'LongCat-Flash-Chat',
+  'gpt-5.4-mini': 'LongCat-Flash-Chat',
+  'gpt-5.3-codex': 'LongCat-Flash-Chat',
+  'gpt-5.3-codex-spark': 'LongCat-Flash-Chat',
+  'gpt-5.2': 'LongCat-Flash-Chat',
+  'codex-auto-review': 'LongCat-Flash-Chat',
+});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('mimo'))), {
+  'gpt-5.5': 'mimo-v2.5-pro',
+  'gpt-5.4': 'mimo-v2.5-pro',
+  'gpt-5.4-mini': 'mimo-v2.5-pro',
+  'gpt-5.3-codex': 'mimo-v2.5-pro',
+  'gpt-5.3-codex-spark': 'mimo-v2.5-pro',
+  'gpt-5.2': 'mimo-v2.5-pro',
+  'codex-auto-review': 'mimo-v2-omni',
+});
 context.addAccount('deepseek', 'codex');
 assert.strictEqual(context.editingAccount.client_surface, 'cli');
 assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'deepseek-v4-pro');
@@ -668,6 +686,19 @@ assert(codexDefaultVisionDetail.includes('data-mode="native"'));
 assert(!codexDefaultVisionDetail.includes('collapsible-toggle open'));
 assert(!codexDefaultVisionDetail.includes('collapsible-content open'));
 assert(codexDefaultVisionDetail.includes('onchange="handleEndpointKindChange(this.value)"'));
+
+context.addAccount('longcat', 'codex');
+assert.strictEqual(context.editingAccount.upstream, 'https://api.longcat.chat/openai');
+assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'LongCat-Flash-Chat');
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.3-codex'], 'LongCat-Flash-Chat');
+
+context.addAccount('mimo', 'codex');
+assert.strictEqual(context.editingAccount.upstream, 'https://token-plan-cn.xiaomimimo.com/v1');
+assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'mimo-v2.5-pro');
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['codex-auto-review'], 'mimo-v2-omni');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'off');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2-omni'])), { vision_mode: 'native' });
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2.5-pro'])), { vision_mode: 'off' });
 
 context.editingAccount.context_window_override = 1000000;
 context.editingAccount.reasoning_effort_override = 'high';
@@ -781,9 +812,22 @@ assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').upst
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').api_key_env, 'ANTHROPIC_API_KEY');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://token-plan-cn.xiaomimimo.com/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro');
+assert.deepStrictEqual(Array.from(context.clientProviderDefaults('claude_code', 'mimo').known_models), [
+  'mimo-v2-omni',
+  'mimo-v2-pro',
+  'mimo-v2.5',
+  'mimo-v2.5-pro',
+]);
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').upstream, 'https://api.longcat.chat/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').default_model, 'LongCat-Flash-Chat');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').api_key_env, 'ANTHROPIC_AUTH_TOKEN');
+assert.deepStrictEqual(Array.from(context.clientProviderDefaults('claude_code', 'longcat').known_models), [
+  'LongCat-2.0-Preview',
+  'LongCat-Flash-Lite',
+  'LongCat-Flash-Chat',
+  'LongCat-Flash-Thinking-2601',
+  'LongCat-Flash-Omni-2603',
+]);
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'qwen').upstream, 'https://dashscope.aliyuncs.com/apps/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'qwen').default_model, 'qwen3.6-plus');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'glm').upstream, 'https://open.bigmodel.cn/api/anthropic');

@@ -681,6 +681,43 @@ impl Account {
         }
     }
 
+    fn normalize_mimo_codex_defaults(&mut self) {
+        if !self.client_kind.is_codex() || !self.provider.eq_ignore_ascii_case("mimo") {
+            return;
+        }
+        for endpoint in &mut self.endpoints {
+            if !endpoint.kind.is_chat_like() {
+                continue;
+            }
+            for codex_model in CODEX_MODEL_LIST {
+                endpoint
+                    .model_map
+                    .entry((*codex_model).into())
+                    .or_insert_with(|| {
+                        if *codex_model == "codex-auto-review" {
+                            "mimo-v2-omni".into()
+                        } else {
+                            "mimo-v2.5-pro".into()
+                        }
+                    });
+            }
+            endpoint
+                .model_profiles
+                .entry("mimo-v2-omni".into())
+                .or_insert(ModelProfile {
+                    vision_mode: ModelVisionMode::Native,
+                });
+            for model in ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"] {
+                endpoint
+                    .model_profiles
+                    .entry(model.into())
+                    .or_insert(ModelProfile {
+                        vision_mode: ModelVisionMode::Off,
+                    });
+            }
+        }
+    }
+
     pub fn normalize_v2(&mut self) {
         if !self.client_kind.supports_desktop_surface() {
             self.client_surface = AccountClientSurface::Cli;
@@ -694,6 +731,7 @@ impl Account {
             self.endpoints.push(endpoint_from_legacy_account(self));
         }
         self.normalize_responses_direct();
+        self.normalize_mimo_codex_defaults();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -2612,6 +2650,25 @@ mod tests {
 
         assert_eq!(endpoint.model_vision_mode("deepseek-chat"), VisionMode::Off);
         assert_eq!(endpoint.model_vision_mode("other"), VisionMode::Glue);
+    }
+
+    #[test]
+    fn mimo_codex_normalize_adds_model_map_and_vision_profiles() {
+        let mut account = legacy_account(true);
+        account.provider = "mimo".into();
+        account.upstream = "https://token-plan-cn.xiaomimimo.com/v1".into();
+        account.model_map.clear();
+        account.normalize_v2();
+
+        let endpoint = account.endpoints.first().unwrap();
+        assert_eq!(endpoint.model_map["gpt-5.5"], "mimo-v2.5-pro");
+        assert_eq!(endpoint.model_map["codex-auto-review"], "mimo-v2-omni");
+        assert_eq!(endpoint.model_vision_mode("mimo-v2.5-pro"), VisionMode::Off);
+        assert_eq!(
+            endpoint.model_vision_mode("mimo-v2-omni"),
+            VisionMode::Native
+        );
+        assert_eq!(account.model_map["gpt-5.5"], "mimo-v2.5-pro");
     }
 
     #[test]

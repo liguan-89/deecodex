@@ -270,6 +270,7 @@ pub struct ChatDelta {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct DeltaToolCall {
+    #[serde(default)]
     pub index: usize,
     #[serde(default)]
     pub id: Option<String>,

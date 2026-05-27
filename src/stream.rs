@@ -108,6 +108,167 @@ fn event_with_sequence(
     Ok(Event::default().event(name).data(payload.to_string()))
 }
 
+fn reasoning_segment_events(
+    seq: &mut u32,
+    emitted_reasoning_item: &mut bool,
+    accumulated_reasoning: &mut String,
+    reasoning_item_id: &str,
+    text: &str,
+) -> Vec<Result<Event, std::convert::Infallible>> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    if !*emitted_reasoning_item {
+        events.push(event_with_sequence(
+            seq,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": { "type": "reasoning_summary", "id": reasoning_item_id, "status": "in_progress", "summary_index": 0 }
+            }),
+        ));
+        *emitted_reasoning_item = true;
+    }
+    accumulated_reasoning.push_str(text);
+    events.push(event_with_sequence(
+        seq,
+        "response.reasoning_summary_text.delta",
+        json!({
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": reasoning_item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "delta": text
+        }),
+    ));
+    events
+}
+
+fn text_segment_events(
+    seq: &mut u32,
+    emitted_message_item: &mut bool,
+    emitted_reasoning_item: bool,
+    accumulated_text: &mut String,
+    msg_item_id: &str,
+    text: &str,
+) -> Vec<Result<Event, std::convert::Infallible>> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    let output_index: usize = if emitted_reasoning_item { 1 } else { 0 };
+    if !*emitted_message_item {
+        events.push(event_with_sequence(
+            seq,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": { "type": "message", "id": msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
+            }),
+        ));
+        *emitted_message_item = true;
+    }
+    accumulated_text.push_str(text);
+    events.push(event_with_sequence(
+        seq,
+        "response.output_text.delta",
+        json!({
+            "type": "response.output_text.delta",
+            "item_id": msg_item_id,
+            "output_index": output_index,
+            "content_index": 0,
+            "delta": text
+        }),
+    ));
+    events
+}
+
+enum ContentSegment {
+    Text(String),
+    Reasoning(String),
+}
+
+struct ThinkTagParser {
+    in_think_tag: bool,
+    pending: String,
+}
+
+impl ThinkTagParser {
+    fn new() -> Self {
+        Self {
+            in_think_tag: false,
+            pending: String::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &str) -> Vec<ContentSegment> {
+        if chunk.is_empty() {
+            return Vec::new();
+        }
+        let mut input = String::new();
+        input.push_str(&self.pending);
+        input.push_str(chunk);
+        self.pending.clear();
+        self.consume(input)
+    }
+
+    fn finish(&mut self) -> Vec<ContentSegment> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let pending = std::mem::take(&mut self.pending);
+        vec![self.segment(pending)]
+    }
+
+    fn consume(&mut self, mut input: String) -> Vec<ContentSegment> {
+        let mut segments = Vec::new();
+        while !input.is_empty() {
+            let marker = if self.in_think_tag {
+                "</think>"
+            } else {
+                "<think>"
+            };
+            if let Some(pos) = input.find(marker) {
+                let before = input[..pos].to_string();
+                if !before.is_empty() {
+                    segments.push(self.segment(before));
+                }
+                self.in_think_tag = !self.in_think_tag;
+                input = input[pos + marker.len()..].to_string();
+                continue;
+            }
+
+            let keep = partial_marker_suffix_len(&input, marker);
+            let emit_len = input.len().saturating_sub(keep);
+            if emit_len > 0 {
+                segments.push(self.segment(input[..emit_len].to_string()));
+            }
+            self.pending = input[emit_len..].to_string();
+            break;
+        }
+        segments
+    }
+
+    fn segment(&self, text: String) -> ContentSegment {
+        if self.in_think_tag {
+            ContentSegment::Reasoning(text)
+        } else {
+            ContentSegment::Text(text)
+        }
+    }
+}
+
+fn partial_marker_suffix_len(input: &str, marker: &str) -> usize {
+    let max = input.len().min(marker.len().saturating_sub(1));
+    (1..=max)
+        .rev()
+        .find(|len| input.ends_with(&marker[..*len]))
+        .unwrap_or(0)
+}
+
 fn is_tool_search_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "tool_search"
@@ -488,7 +649,7 @@ pub fn translate_stream(
         let mut source = upstream.bytes_stream().eventsource();
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
-        let mut in_think_tag = false;
+        let mut think_parser = ThinkTagParser::new();
 
         while let Some(ev) = source.next().await {
             match ev {
@@ -513,158 +674,42 @@ pub fn translate_stream(
                             }
                             for choice in &chunk.choices {
                                 if let Some(rc) = reasoning_delta_text(&choice.delta) {
-                                    if !rc.is_empty() {
-                                        if !emitted_reasoning_item {
-                                            yield event_with_sequence(
-                                                &mut seq,
-                                                "response.output_item.added",
-                                                json!({
-                                                    "type": "response.output_item.added",
-                                                    "output_index": 0,
-                                                    "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
-                                                }),
-                                            );
-                                            emitted_reasoning_item = true;
-                                        }
-                                        accumulated_reasoning.push_str(&rc);
-                                        yield event_with_sequence(
-                                            &mut seq,
-                                            "response.reasoning_summary_text.delta",
-                                            json!({
-                                                "type": "response.reasoning_summary_text.delta",
-                                                "item_id": &reasoning_item_id,
-                                                "output_index": 0,
-                                                "content_index": 0,
-                                                "delta": rc
-                                            }),
-                                        );
+                                    for event in reasoning_segment_events(
+                                        &mut seq,
+                                        &mut emitted_reasoning_item,
+                                        &mut accumulated_reasoning,
+                                        &reasoning_item_id,
+                                        &rc,
+                                    ) {
+                                        yield event;
                                     }
                                 }
                                 let content = choice.delta.content.as_deref().unwrap_or("");
                                 if !content.is_empty() {
-                                    let mut remaining = content;
-                                    while !remaining.is_empty() {
-                                        if in_think_tag {
-                                            // 在 <think> 内部，找 </think> 结束标记
-                                            if let Some(end_pos) = remaining.find("</think>") {
-                                                let think_text = &remaining[..end_pos];
-                                                if !think_text.is_empty() {
-                                                    if !emitted_reasoning_item {
-                                                        yield event_with_sequence(
-                                                            &mut seq,
-                                                            "response.output_item.added",
-                                                            json!({
-                                                                "type": "response.output_item.added",
-                                                                "output_index": 0,
-                                                                "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
-                                                            }),
-                                                        );
-                                                        emitted_reasoning_item = true;
-                                                    }
-                                                    accumulated_reasoning.push_str(think_text);
-                                                    yield event_with_sequence(
-                                                        &mut seq,
-                                                        "response.reasoning_summary_text.delta",
-                                                        json!({
-                                                            "type": "response.reasoning_summary_text.delta",
-                                                            "item_id": &reasoning_item_id,
-                                                            "output_index": 0,
-                                                            "content_index": 0,
-                                                            "delta": think_text
-                                                        }),
-                                                    );
-                                                }
-                                                remaining = &remaining[end_pos + 8..];
-                                                in_think_tag = false;
-                                            } else {
-                                                // 整个 remaining 都是思考内容
-                                                if !emitted_reasoning_item {
-                                                    yield event_with_sequence(
-                                                        &mut seq,
-                                                        "response.output_item.added",
-                                                        json!({
-                                                            "type": "response.output_item.added",
-                                                            "output_index": 0,
-                                                            "item": { "type": "reasoning_summary", "id": &reasoning_item_id, "status": "in_progress", "summary_index": 0 }
-                                                        }),
-                                                    );
-                                                    emitted_reasoning_item = true;
-                                                }
-                                                accumulated_reasoning.push_str(remaining);
-                                                yield event_with_sequence(
+                                    for segment in think_parser.push(content) {
+                                        match segment {
+                                            ContentSegment::Reasoning(text) => {
+                                                for event in reasoning_segment_events(
                                                     &mut seq,
-                                                    "response.reasoning_summary_text.delta",
-                                                    json!({
-                                                        "type": "response.reasoning_summary_text.delta",
-                                                        "item_id": &reasoning_item_id,
-                                                        "output_index": 0,
-                                                        "content_index": 0,
-                                                        "delta": remaining
-                                                    }),
-                                                );
-                                                remaining = "";
+                                                    &mut emitted_reasoning_item,
+                                                    &mut accumulated_reasoning,
+                                                    &reasoning_item_id,
+                                                    &text,
+                                                ) {
+                                                    yield event;
+                                                }
                                             }
-                                        } else {
-                                            // 不在 <think> 内，找 <think> 开始标记
-                                            if let Some(start_pos) = remaining.find("<think>") {
-                                                if start_pos > 0 {
-                                                    let text_before = &remaining[..start_pos];
-                                                    if !emitted_message_item {
-                                                        let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
-                                                        yield event_with_sequence(
-                                                            &mut seq,
-                                                            "response.output_item.added",
-                                                            json!({
-                                                                "type": "response.output_item.added",
-                                                                "output_index": msg_oi,
-                                                                "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
-                                                            }),
-                                                        );
-                                                        emitted_message_item = true;
-                                                    }
-                                                    accumulated_text.push_str(text_before);
-                                                    yield event_with_sequence(
-                                                        &mut seq,
-                                                        "response.output_text.delta",
-                                                        json!({
-                                                            "type": "response.output_text.delta",
-                                                            "item_id": &msg_item_id,
-                                                            "output_index": if emitted_reasoning_item { 1 } else { 0 },
-                                                            "content_index": 0,
-                                                            "delta": text_before
-                                                        }),
-                                                    );
-                                                }
-                                                remaining = &remaining[start_pos + 7..];
-                                                in_think_tag = true;
-                                            } else {
-                                                // 无 <think>，整个 remaining 是普通文本
-                                                if !emitted_message_item {
-                                                    let msg_oi: usize = if emitted_reasoning_item { 1 } else { 0 };
-                                                    yield event_with_sequence(
-                                                        &mut seq,
-                                                        "response.output_item.added",
-                                                        json!({
-                                                            "type": "response.output_item.added",
-                                                            "output_index": msg_oi,
-                                                            "item": { "type": "message", "id": &msg_item_id, "role": "assistant", "content": [], "status": "in_progress" }
-                                                        }),
-                                                    );
-                                                    emitted_message_item = true;
-                                                }
-                                                accumulated_text.push_str(remaining);
-                                                yield event_with_sequence(
+                                            ContentSegment::Text(text) => {
+                                                for event in text_segment_events(
                                                     &mut seq,
-                                                    "response.output_text.delta",
-                                                    json!({
-                                                        "type": "response.output_text.delta",
-                                                        "item_id": &msg_item_id,
-                                                        "output_index": if emitted_reasoning_item { 1 } else { 0 },
-                                                        "content_index": 0,
-                                                        "delta": remaining
-                                                    }),
-                                                );
-                                                remaining = "";
+                                                    &mut emitted_message_item,
+                                                    emitted_reasoning_item,
+                                                    &mut accumulated_text,
+                                                    &msg_item_id,
+                                                    &text,
+                                                ) {
+                                                    yield event;
+                                                }
                                             }
                                         }
                                     }
@@ -764,6 +809,34 @@ pub fn translate_stream(
                     false,
                 )).await;
                 return;
+            }
+        }
+
+        for segment in think_parser.finish() {
+            match segment {
+                ContentSegment::Reasoning(text) => {
+                    for event in reasoning_segment_events(
+                        &mut seq,
+                        &mut emitted_reasoning_item,
+                        &mut accumulated_reasoning,
+                        &reasoning_item_id,
+                        &text,
+                    ) {
+                        yield event;
+                    }
+                }
+                ContentSegment::Text(text) => {
+                    for event in text_segment_events(
+                        &mut seq,
+                        &mut emitted_message_item,
+                        emitted_reasoning_item,
+                        &mut accumulated_text,
+                        &msg_item_id,
+                        &text,
+                    ) {
+                        yield event;
+                    }
+                }
             }
         }
 
@@ -1394,6 +1467,39 @@ mod tests {
         usage.prompt_tokens_details = None;
         usage.prompt_cache_hit_tokens = Some(1);
         assert!(chat_usage_cache_hit(&usage));
+    }
+
+    #[test]
+    fn think_tag_parser_handles_split_markers() {
+        let mut parser = ThinkTagParser::new();
+        let mut segments = Vec::new();
+        segments.extend(parser.push("<thi"));
+        segments.extend(parser.push("nk>先"));
+        segments.extend(parser.push("分析</thi"));
+        segments.extend(parser.push("nk>答案"));
+        segments.extend(parser.finish());
+
+        let mut reasoning = String::new();
+        let mut text = String::new();
+        for segment in segments {
+            match segment {
+                ContentSegment::Reasoning(chunk) => reasoning.push_str(&chunk),
+                ContentSegment::Text(chunk) => text.push_str(&chunk),
+            }
+        }
+        assert_eq!(reasoning, "先分析");
+        assert_eq!(text, "答案");
+    }
+
+    #[test]
+    fn think_tag_parser_does_not_panic_on_non_ascii_suffix() {
+        let mut parser = ThinkTagParser::new();
+        let segments = parser.push("答案");
+        assert_eq!(segments.len(), 1);
+        match &segments[0] {
+            ContentSegment::Text(text) => assert_eq!(text, "答案"),
+            ContentSegment::Reasoning(_) => panic!("expected text segment"),
+        }
     }
 
     #[tokio::test]

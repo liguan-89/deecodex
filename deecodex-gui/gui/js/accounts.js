@@ -1,4 +1,7 @@
 const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'codex-auto-review'];
+const MIMO_CODING_MODEL = 'mimo-v2.5-pro';
+const MIMO_VISION_MODEL = 'mimo-v2-omni';
+const MIMO_CHAT_MODELS = [MIMO_VISION_MODEL, 'mimo-v2-pro', 'mimo-v2.5', MIMO_CODING_MODEL];
 const CLIENT_KIND_LABELS = {
   codex: 'Codex',
   claude_code: 'Claude',
@@ -1170,6 +1173,33 @@ function createEndpointFromTemplate(template, account) {
   };
 }
 
+function applyProviderSpecificEndpointDefaults(account) {
+  if (!account || accountClientKind(account) !== 'codex') return account;
+  if (String(account.provider || '').toLowerCase() !== 'mimo') return account;
+  (account.endpoints || []).forEach(endpoint => {
+    if (!endpointKindUsesModelMapping(endpoint.kind)) return;
+    endpoint.vision = {
+      ...(endpoint.vision || {}),
+      mode: 'off',
+      unsupported_image_policy: 'reject',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: '',
+      api_key: '',
+      model: '',
+      path: 'v1/coding_plan/vlm',
+    };
+    endpoint.model_profiles = {
+      ...(endpoint.model_profiles || {}),
+      [MIMO_VISION_MODEL]: { vision_mode: 'native' },
+      [MIMO_CODING_MODEL]: { vision_mode: 'off' },
+      'mimo-v2.5': { vision_mode: 'off' },
+      'mimo-v2-pro': { vision_mode: 'off' },
+    };
+  });
+  return account;
+}
+
 function ensureAccountEndpoints(a) {
   if (!a) return [];
   if (!Array.isArray(a.endpoints)) a.endpoints = [];
@@ -1538,8 +1568,8 @@ function clientProviderDefaults(kind, provider, preset = null) {
   if (normalized === 'claude_code' && provider === 'mimo') {
     return {
       upstream: 'https://token-plan-cn.xiaomimimo.com/anthropic',
-      default_model: 'mimo-v2.5-pro',
-      known_models: ['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-pro'],
+      default_model: MIMO_CODING_MODEL,
+      known_models: MIMO_CHAT_MODELS,
       api_key_env: 'ANTHROPIC_API_KEY',
     };
   }
@@ -1548,11 +1578,11 @@ function clientProviderDefaults(kind, provider, preset = null) {
       upstream: 'https://api.longcat.chat/anthropic',
       default_model: 'LongCat-Flash-Chat',
       known_models: [
+        'LongCat-2.0-Preview',
+        'LongCat-Flash-Lite',
         'LongCat-Flash-Chat',
         'LongCat-Flash-Thinking-2601',
-        'LongCat-Flash-Thinking',
-        'LongCat-Flash-Lite',
-        'LongCat-2.0-Preview',
+        'LongCat-Flash-Omni-2603',
       ],
       api_key_env: 'ANTHROPIC_AUTH_TOKEN',
     };
@@ -2281,11 +2311,25 @@ function getProviderKnownModels(provider) {
 }
 
 function codexProviderModelMap(provider) {
-  if (provider !== 'deepseek') return {};
-  return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
-    model,
-    model === 'gpt-5.5' ? 'deepseek-v4-pro' : 'deepseek-v4-flash',
-  ]));
+  if (provider === 'deepseek') {
+    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
+      model,
+      model === 'gpt-5.5' ? 'deepseek-v4-pro' : 'deepseek-v4-flash',
+    ]));
+  }
+  if (provider === 'longcat') {
+    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
+      model,
+      'LongCat-Flash-Chat',
+    ]));
+  }
+  if (provider === 'mimo') {
+    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
+      model,
+      model === 'codex-auto-review' ? MIMO_VISION_MODEL : MIMO_CODING_MODEL,
+    ]));
+  }
+  return {};
 }
 
 function defaultApiKeyEnvForClient(account) {
@@ -2904,6 +2948,7 @@ function addAccount(provider, clientKind, clientSurface) {
   };
   if (kind === 'codex') {
     editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
+    applyProviderSpecificEndpointDefaults(editingAccount);
     editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
     normalizeResponsesDirectAccount(editingAccount);
   } else {

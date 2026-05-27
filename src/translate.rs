@@ -1080,8 +1080,14 @@ pub fn from_chat_response(
             },
         });
 
-    let reasoning_content = choice.message.reasoning_content.clone().unwrap_or_default();
-    let text = choice.message.content.clone().unwrap_or_default();
+    let raw_reasoning_content = choice.message.reasoning_content.clone().unwrap_or_default();
+    let raw_text = chat_message_content_text(choice.message.content.as_ref());
+    let (tagged_reasoning_content, text_out) = split_tagged_reasoning(&raw_text);
+    let reasoning_content = if raw_reasoning_content.is_empty() {
+        tagged_reasoning_content
+    } else {
+        raw_reasoning_content
+    };
     let tool_calls = choice.message.tool_calls.clone().unwrap_or_default();
     let usage = chat.usage.unwrap_or(ChatUsage {
         prompt_tokens: 0,
@@ -1116,7 +1122,6 @@ pub fn from_chat_response(
         });
     }
 
-    let text_out = text.as_str().unwrap_or("").to_string();
     if !text_out.is_empty() || tool_calls.is_empty() {
         let item_id = response_output_item_id("msg", &id, output.len());
         output.push(ResponsesOutputItem {
@@ -1144,10 +1149,7 @@ pub fn from_chat_response(
             .and_then(Value::as_str)
             .map(normalize_tool_search_name)
             .unwrap_or_default();
-        let arguments = function
-            .get("arguments")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let arguments = function.get("arguments").map(tool_arguments_string);
         let is_computer_call = name == "local_computer";
         let call_id = tool_call
             .get("id")
@@ -1257,6 +1259,77 @@ fn parse_local_mcp_arguments(raw: &str) -> Option<LocalMcpCall> {
 
 fn response_output_item_id(prefix: &str, response_id: &str, index: usize) -> String {
     format!("{}_{}_{}", prefix, response_id, index)
+}
+
+fn tool_arguments_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn chat_message_content_text(content: Option<&Value>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    let mut chunks = Vec::new();
+    collect_chat_content_text(content, &mut chunks);
+    if chunks.is_empty() {
+        if content.is_null() {
+            String::new()
+        } else {
+            content.as_str().map(str::to_string).unwrap_or_default()
+        }
+    } else {
+        chunks.join("")
+    }
+}
+
+fn collect_chat_content_text(value: &Value, chunks: &mut Vec<String>) {
+    match value {
+        Value::String(text) => chunks.push(text.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_chat_content_text(item, chunks);
+            }
+        }
+        Value::Object(map) => {
+            for key in ["text", "output_text", "input_text", "refusal"] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    chunks.push(text.to_string());
+                    return;
+                }
+            }
+            if let Some(content) = map.get("content") {
+                collect_chat_content_text(content, chunks);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn split_tagged_reasoning(text: &str) -> (String, String) {
+    let mut reasoning = String::new();
+    let mut visible = String::new();
+    let mut rest = text;
+
+    while let Some(start) = rest.find("<think>") {
+        visible.push_str(&rest[..start]);
+        rest = &rest[start + "<think>".len()..];
+        match rest.find("</think>") {
+            Some(end) => {
+                reasoning.push_str(&rest[..end]);
+                rest = &rest[end + "</think>".len()..];
+            }
+            None => {
+                reasoning.push_str(rest);
+                return (reasoning, visible);
+            }
+        }
+    }
+
+    visible.push_str(rest);
+    (reasoning, visible)
 }
 
 /// Collapse a Responses API content value to plain text + has_images flag.
@@ -1646,6 +1719,63 @@ mod tests {
         assert_eq!(
             resp.output[0].arguments.as_deref(),
             Some("{\"cmd\":\"pwd\"}")
+        );
+    }
+
+    #[test]
+    fn test_blocking_think_tags_are_returned_as_reasoning() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: Some(Value::String("<think>先分析</think>最终答案".into())),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_think".into(), "test", chat_resp);
+
+        assert_eq!(resp.output.len(), 2);
+        assert_eq!(resp.output[0].kind, "reasoning");
+        assert_eq!(resp.output[0].content[0].text.as_deref(), Some("先分析"));
+        assert_eq!(resp.output[1].kind, "message");
+        assert_eq!(resp.output[1].content[0].text.as_deref(), Some("最终答案"));
+    }
+
+    #[test]
+    fn test_blocking_tool_call_arguments_accept_object() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_obj",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": {"path": "/tmp/a.txt"}
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_args".into(), "test", chat_resp);
+
+        assert_eq!(resp.output[0].kind, "function_call");
+        assert_eq!(
+            resp.output[0].arguments.as_deref(),
+            Some(r#"{"path":"/tmp/a.txt"}"#)
         );
     }
 

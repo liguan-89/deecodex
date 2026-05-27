@@ -211,6 +211,9 @@
       if (base.endpoints[0]) {
         base.endpoints[0].model_map = { ...base.model_map };
       }
+      if (typeof applyProviderSpecificEndpointDefaults === 'function') {
+        applyProviderSpecificEndpointDefaults(base);
+      }
       return base;
     }
 

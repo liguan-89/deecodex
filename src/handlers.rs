@@ -150,6 +150,7 @@ struct AnthropicArgs<'a> {
     url: String,
     model: String,
     api_key: String,
+    auth_scheme: providers::AuthScheme,
     custom_headers: HashMap<String, String>,
     request_timeout_secs: Option<u64>,
     max_retries: Option<u32>,
@@ -5761,6 +5762,7 @@ async fn handle_responses_inner(
             url,
             model: mapped_model,
             api_key: account.api_key.clone(),
+            auth_scheme: providers::profile_for_account(&account).auth_scheme,
             custom_headers: endpoint.custom_headers.clone(),
             request_timeout_secs: endpoint.request_timeout_secs,
             max_retries: endpoint.max_retries,
@@ -6653,6 +6655,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
         url,
         model,
         api_key,
+        auth_scheme,
         custom_headers,
         request_timeout_secs,
         max_retries,
@@ -6673,8 +6676,10 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
         .header("Content-Type", "application/json")
         .header("anthropic-version", "2023-06-01");
 
-    if !api_key.is_empty() {
-        builder = builder.header("x-api-key", api_key.as_str());
+    let mut auth_profile = providers::profile_by_slug("custom");
+    auth_profile.auth_scheme = auth_scheme;
+    for (name, value) in providers::request_headers(&auth_profile, &api_key) {
+        builder = builder.header(name, value);
     }
     for (k, v) in &custom_headers {
         if let (Ok(name), Ok(value)) = (

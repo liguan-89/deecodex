@@ -6304,13 +6304,14 @@ fn model_probe_request(
     if api_key.is_empty() {
         return req;
     }
+    let is_longcat = url.to_ascii_lowercase().contains("longcat.chat");
     let is_anthropic = endpoint_kind
         .map(|kind| {
             let kind = kind.to_ascii_lowercase();
             kind.contains("anthropic")
         })
         .unwrap_or_else(|| url.to_ascii_lowercase().contains("anthropic.com"));
-    if is_anthropic {
+    if is_anthropic && !is_longcat {
         req = req
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01");

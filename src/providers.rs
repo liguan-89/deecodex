@@ -255,11 +255,12 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "MiMo",
             "小米 MiMo，支持 Anthropic 兼容接口与 OpenAI 兼容接口",
             "https://token-plan-cn.xiaomimimo.com/v1",
-            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"],
+            vec!["mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro"],
             "MIMO_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
-                reasoning: ReasoningMode::None,
+                reasoning: ReasoningMode::DeepSeek,
+                vision_input: true,
                 ..Default::default()
             },
         ),
@@ -267,13 +268,13 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "longcat",
             "LongCat",
             "美团 LongCat，支持 Anthropic 格式与 OpenAI 兼容接口",
-            "https://api.longcat.chat/v1",
+            "https://api.longcat.chat/openai",
             vec![
+                "LongCat-2.0-Preview",
+                "LongCat-Flash-Lite",
                 "LongCat-Flash-Chat",
                 "LongCat-Flash-Thinking-2601",
-                "LongCat-Flash-Thinking",
-                "LongCat-Flash-Lite",
-                "LongCat-2.0-Preview",
+                "LongCat-Flash-Omni-2603",
             ],
             "LONGCAT_API_KEY",
             ProviderCapabilities {
@@ -549,6 +550,9 @@ pub fn capability_labels(profile: &ProviderProfile) -> Vec<&'static str> {
     if profile.capabilities.web_search_options {
         labels.push("联网扩展");
     }
+    if profile.capabilities.vision_input {
+        labels.push("原生多模态");
+    }
     if profile.capabilities.allow_missing_done {
         labels.push("流式容错");
     }
@@ -607,7 +611,7 @@ pub fn request_headers(profile: &ProviderProfile, api_key: &str) -> Vec<(&'stati
 }
 
 pub fn parse_models_response(profile: &ProviderProfile, body: &serde_json::Value) -> Vec<String> {
-    match profile.model_discovery.response_shape {
+    let models: Vec<String> = match profile.model_discovery.response_shape {
         ModelsResponseShape::OpenAiDataId | ModelsResponseShape::AnthropicDataId => body["data"]
             .as_array()
             .map(|arr| {
@@ -625,7 +629,14 @@ pub fn parse_models_response(profile: &ProviderProfile, body: &serde_json::Value
                     .collect()
             })
             .unwrap_or_default(),
+    };
+    if profile.slug == "mimo" {
+        return models
+            .into_iter()
+            .filter(|model| !model.to_ascii_lowercase().contains("tts"))
+            .collect();
     }
+    models
 }
 
 #[cfg(test)]
@@ -664,12 +675,18 @@ mod tests {
     }
 
     #[test]
-    fn mimo_profile_uses_xiaomi_url_and_strips_reasoning_fields() {
+    fn mimo_profile_uses_xiaomi_url_and_keeps_supported_reasoning_fields() {
         let mimo = profile_by_slug("mimo");
         assert_eq!(
             mimo.default_upstream,
             "https://token-plan-cn.xiaomimimo.com/v1"
         );
+        assert_eq!(
+            mimo.known_models,
+            vec!["mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro"]
+        );
+        assert_eq!(mimo.capabilities.reasoning, ReasoningMode::DeepSeek);
+        assert!(mimo.capabilities.vision_input);
 
         let mut req = ChatRequest {
             model: "mimo-v2.5-pro".into(),
@@ -695,8 +712,8 @@ mod tests {
 
         adapt_chat_request(&mimo, &mut req);
 
-        assert_eq!(req.reasoning_effort, None);
-        assert_eq!(req.thinking, None);
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
         assert_eq!(req.parallel_tool_calls, None);
         assert_eq!(req.web_search_options, None);
         assert!(!req.tools.is_empty());
@@ -777,6 +794,28 @@ mod tests {
         );
         let models = parse_models_response(&kimi, &json!({"data":[{"id":"moonshot-v1-8k"}]}));
         assert_eq!(models, vec!["moonshot-v1-8k"]);
+
+        let mimo = profile_by_slug("mimo");
+        let models = parse_models_response(
+            &mimo,
+            &json!({"data":[
+                {"id":"mimo-v2-omni"},
+                {"id":"mimo-v2.5-pro"},
+                {"id":"mimo-v2.5-tts"},
+                {"id":"mimo-v2.5-tts-voiceclone"}
+            ]}),
+        );
+        assert_eq!(models, vec!["mimo-v2-omni", "mimo-v2.5-pro"]);
+
+        let longcat = profile_by_slug("longcat");
+        assert_eq!(
+            model_discovery_url(&longcat, "https://api.longcat.chat/openai", "ak").unwrap(),
+            "https://api.longcat.chat/openai/models"
+        );
+        assert_eq!(
+            request_headers(&longcat, "ak"),
+            vec![("authorization", "Bearer ak".to_string())]
+        );
     }
 
     #[test]
