@@ -254,7 +254,7 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "mimo",
             "MiMo",
             "小米 MiMo，支持 Anthropic 兼容接口与 OpenAI 兼容接口",
-            "https://api.mimo-v2.com/v1",
+            "https://token-plan-cn.xiaomimimo.com/v1",
             vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"],
             "MIMO_API_KEY",
             ProviderCapabilities {
@@ -444,7 +444,7 @@ pub fn guess_provider(upstream: &str) -> &str {
         "kimi"
     } else if upstream.contains("minimax") {
         "minimax"
-    } else if upstream.contains("mimo-v2.com") {
+    } else if upstream.contains("xiaomimimo.com") || upstream.contains("mimo-v2.com") {
         "mimo"
     } else if upstream.contains("longcat.chat") {
         "longcat"
@@ -639,6 +639,11 @@ mod tests {
         assert_eq!(guess_provider("https://api.moonshot.ai/v1"), "kimi");
         assert_eq!(guess_provider("https://api.minimaxi.com/v1"), "minimax");
         assert_eq!(
+            guess_provider("https://token-plan-cn.xiaomimimo.com/v1"),
+            "mimo"
+        );
+        assert_eq!(guess_provider("https://api.mimo-v2.com/v1"), "mimo");
+        assert_eq!(
             guess_provider("https://open.bigmodel.cn/api/paas/v4"),
             "glm"
         );
@@ -653,8 +658,48 @@ mod tests {
         assert!(!profile_by_slug("deepseek").capabilities.allow_missing_done);
         assert!(!profile_by_slug("kimi").capabilities.allow_missing_done);
         assert!(profile_by_slug("minimax").capabilities.allow_missing_done);
+        assert!(!profile_by_slug("mimo").capabilities.allow_missing_done);
         assert!(!profile_by_slug("glm").capabilities.allow_missing_done);
         assert!(!profile_by_slug("custom").capabilities.allow_missing_done);
+    }
+
+    #[test]
+    fn mimo_profile_uses_xiaomi_url_and_strips_reasoning_fields() {
+        let mimo = profile_by_slug("mimo");
+        assert_eq!(
+            mimo.default_upstream,
+            "https://token-plan-cn.xiaomimimo.com/v1"
+        );
+
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![],
+            tools: vec![
+                json!({"type":"function","function":{"name":"x","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: Some("high".into()),
+            thinking: Some(json!({"type":"enabled"})),
+            tool_choice: None,
+            parallel_tool_calls: Some(true),
+            response_format: Some(json!({"type":"json_object"})),
+            user: None,
+            stream_options: Some(crate::types::StreamOptions {
+                include_usage: true,
+            }),
+            web_search_options: Some(json!({"search_context": {}})),
+        };
+
+        adapt_chat_request(&mimo, &mut req);
+
+        assert_eq!(req.reasoning_effort, None);
+        assert_eq!(req.thinking, None);
+        assert_eq!(req.parallel_tool_calls, None);
+        assert_eq!(req.web_search_options, None);
+        assert!(!req.tools.is_empty());
     }
 
     #[test]

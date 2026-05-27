@@ -11804,6 +11804,11 @@ body {
   box-shadow: none !important;
 }
 
+.config-field .pass-group.has-copy input,
+[data-theme="light"] .config-field .pass-group.has-copy input {
+  padding-right: 76px !important;
+}
+
 .config-field .pass-group button,
 [data-theme="light"] .config-field .pass-group button {
   position: absolute;
@@ -11820,6 +11825,11 @@ body {
   background: transparent !important;
   box-shadow: none !important;
   color: var(--text-secondary);
+}
+
+.config-field .pass-group .secret-copy-btn,
+[data-theme="light"] .config-field .pass-group .secret-copy-btn {
+  right: 38px;
 }
 
 [data-theme="light"] .config-field .pass-group {
@@ -11842,9 +11852,15 @@ body {
   color: var(--text-secondary) !important;
 }
 
-.pass-toggle svg {
+.pass-toggle svg,
+.secret-copy-btn svg {
   width: 18px;
   height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .config-field .pass-group input:focus,

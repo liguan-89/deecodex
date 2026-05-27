@@ -485,6 +485,7 @@ pub fn run() {
             commands::get_active_account,
             commands::get_dex_assistant_account,
             commands::set_dex_assistant_account,
+            commands::copy_account_secret,
             commands::add_account,
             commands::update_account,
             commands::start_oauth_account_login,

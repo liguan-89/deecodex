@@ -5478,19 +5478,6 @@ async fn handle_responses_inner(
                 .save_conversation_items(id.to_string(), items);
         }
     }
-    let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
-    let (mut reasoning_effort, mut thinking) = map_effort(effort);
-
-    if let Some(ref forced) = endpoint.reasoning_effort_override {
-        reasoning_effort = Some(forced.clone());
-        thinking = Some(serde_json::json!({"type": "enabled"}));
-    }
-    if let Some(budget) = endpoint.thinking_tokens {
-        if let Some(ref mut t) = thinking {
-            t["budget_tokens"] = serde_json::json!(budget);
-        }
-    }
-
     let msg_count = match &req.input {
         ResponsesInput::Messages(ref items) => items.len(),
         _ => 1,
@@ -5574,6 +5561,15 @@ async fn handle_responses_inner(
         state.chinese_thinking,
     );
     let mut chat_req = translated.chat;
+    if let Some(ref forced) = endpoint.reasoning_effort_override {
+        chat_req.reasoning_effort = Some(forced.clone());
+        chat_req.thinking = Some(serde_json::json!({"type": "enabled"}));
+    }
+    if let Some(budget) = endpoint.thinking_tokens {
+        if let Some(ref mut thinking) = chat_req.thinking {
+            thinking["budget_tokens"] = serde_json::json!(budget);
+        }
+    }
 
     let capability_observation = build_capability_observation(&state, &req, &raw_body).await;
 
@@ -5713,6 +5709,8 @@ async fn handle_responses_inner(
 
     let vision_label = if use_vision_transport { " 📷" } else { "" };
     providers::adapt_chat_request(&providers::profile_for_account(&account), &mut chat_req);
+    let adapted_reasoning_effort = chat_req.reasoning_effort.clone();
+    let adapted_thinking = chat_req.thinking.clone();
     let tool_names: Vec<&str> = chat_req
         .tools
         .iter()
@@ -5725,8 +5723,8 @@ async fn handle_responses_inner(
     info!(
         "→ {} effort={} thinking={} msgs={} tools={} names=[{}]{}",
         mapped_model,
-        fmt_effort(&reasoning_effort),
-        fmt_thinking(&thinking),
+        fmt_effort(&adapted_reasoning_effort),
+        fmt_thinking(&adapted_thinking),
         msg_count,
         chat_req.tools.len(),
         tool_names.join(", "),
@@ -5872,7 +5870,7 @@ async fn handle_responses_inner(
         let response_id = state.sessions.new_id();
         chat_req.stream = true;
         let request_messages = chat_req.messages.clone();
-        let thinking_enabled = thinking
+        let thinking_enabled = adapted_thinking
             .as_ref()
             .is_some_and(|t| t.get("type").and_then(serde_json::Value::as_str) != Some("disabled"));
 

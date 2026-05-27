@@ -25,6 +25,7 @@ pub use plugins::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
 
 use clap::Parser;
@@ -640,6 +641,121 @@ fn secret_override(value: Option<String>) -> Option<String> {
         let value = value.trim();
         !value.is_empty() && !secret_is_redacted(value)
     })
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("打开 macOS 剪贴板失败: {e}"))?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "剪贴板写入通道不可用".to_string())?
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+        let status = child
+            .wait()
+            .map_err(|e| format!("等待剪贴板写入失败: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("剪贴板写入失败: pbcopy 退出状态 {status}"))
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Set-Clipboard"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("打开 Windows 剪贴板失败: {e}"))?;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "剪贴板写入通道不可用".to_string())?
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+        let status = child
+            .wait()
+            .map_err(|e| format!("等待剪贴板写入失败: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("剪贴板写入失败: Set-Clipboard 退出状态 {status}"))
+        }
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        for command in ["wl-copy", "xclip", "xsel"] {
+            let args: &[&str] = match command {
+                "xclip" => &["-selection", "clipboard"],
+                "xsel" => &["--clipboard", "--input"],
+                _ => &[],
+            };
+            let spawn = Command::new(command)
+                .args(args)
+                .stdin(Stdio::piped())
+                .spawn();
+            let Ok(mut child) = spawn else {
+                continue;
+            };
+            child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| "剪贴板写入通道不可用".to_string())?
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+            let status = child
+                .wait()
+                .map_err(|e| format!("等待剪贴板写入失败: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+        Err("当前系统没有可用剪贴板命令 wl-copy/xclip/xsel".into())
+    }
+}
+
+#[tauri::command]
+pub async fn copy_account_secret(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    secret_kind: String,
+    endpoint_id: Option<String>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .ok_or_else(|| "账号不存在".to_string())?;
+
+    let secret = match secret_kind.as_str() {
+        "api_key" | "primary" => account.api_key.as_str(),
+        "vision_api_key" | "vision" => {
+            let endpoint_secret = endpoint_id
+                .as_deref()
+                .and_then(|id| account.endpoints.iter().find(|endpoint| endpoint.id == id))
+                .or_else(|| account.endpoints.first())
+                .map(|endpoint| endpoint.vision.api_key.as_str())
+                .filter(|value| !value.trim().is_empty());
+            endpoint_secret.unwrap_or(account.vision_api_key.as_str())
+        }
+        _ => return Err("不支持复制的密钥类型".into()),
+    };
+
+    if secret.trim().is_empty() {
+        return Err("这个账号没有已保存的密钥".into());
+    }
+
+    copy_text_to_clipboard(secret.trim())?;
+    Ok(json!({"ok": true}))
 }
 
 fn mask_secret(value: &str) -> String {

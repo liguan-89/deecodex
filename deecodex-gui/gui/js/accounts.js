@@ -691,8 +691,9 @@ function renderClientAccountDetail() {
         </div>
         <div class="config-field">
           <label>API Key</label>
-          <div class="pass-group">
-            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+          <div class="pass-group ${hasStoredPrimaryApiKey(a) ? 'has-copy' : ''}">
+            <input type="password" id="edit_api_key" value="${escAttr(displayStoredSecret(a.api_key, hasStoredPrimaryApiKey(a)))}" placeholder="输入 API 密钥" autocomplete="off">
+            ${hasStoredPrimaryApiKey(a) ? secretCopyButton('api_key') : ''}
             <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
             </button>
@@ -1538,7 +1539,7 @@ function clientProviderDefaults(kind, provider, preset = null) {
   }
   if (normalized === 'claude_code' && provider === 'mimo') {
     return {
-      upstream: 'https://api.mimo-v2.com/anthropic',
+      upstream: 'https://token-plan-cn.xiaomimimo.com/anthropic',
       default_model: 'mimo-v2.5-pro',
       known_models: ['mimo-v2.5-pro', 'mimo-v2.5', 'mimo-v2-pro'],
       api_key_env: 'ANTHROPIC_API_KEY',
@@ -1695,8 +1696,9 @@ function renderAccountDetail() {
           </div>
           <div class="config-field">
             <label>视觉 API Key</label>
-            <div class="pass-group">
-              <input type="password" id="edit_vision_api_key" value="${escAttr(ep.vision?.api_key || a.vision_api_key || '')}" placeholder="视觉模型密钥" autocomplete="off">
+            <div class="pass-group ${hasStoredVisionApiKey(a, ep) ? 'has-copy' : ''}">
+              <input type="password" id="edit_vision_api_key" value="${escAttr(displayStoredSecret(ep.vision?.api_key || a.vision_api_key, hasStoredVisionApiKey(a, ep)))}" placeholder="视觉模型密钥" autocomplete="off">
+              ${hasStoredVisionApiKey(a, ep) ? secretCopyButton('vision_api_key') : ''}
               <button type="button" class="pass-toggle" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏视觉 API Key" aria-label="显示或隐藏视觉 API Key">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
               </button>
@@ -1928,8 +1930,9 @@ function renderAccountDetail() {
         </div>
         <div class="config-field account-key-field">
           <label>API Key</label>
-          <div class="pass-group">
-            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+          <div class="pass-group ${hasStoredPrimaryApiKey(a) ? 'has-copy' : ''}">
+            <input type="password" id="edit_api_key" value="${escAttr(displayStoredSecret(a.api_key, hasStoredPrimaryApiKey(a)))}" placeholder="输入 API 密钥" autocomplete="off">
+            ${hasStoredPrimaryApiKey(a) ? secretCopyButton('api_key') : ''}
             <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
             </button>
@@ -2364,7 +2367,10 @@ function syncEditingDraftFromForm(options = {}) {
   const nameInput = document.getElementById('edit_name');
   if (nameInput) a.name = nameInput.value.trim() || a.name;
   const keyInput = document.getElementById('edit_api_key');
-  if (keyInput) a.api_key = keyInput.value.trim();
+  if (keyInput) {
+    const nextKey = keyInput.value.trim();
+    if (nextKey || !hasStoredPrimaryApiKey(a)) a.api_key = nextKey;
+  }
 
   if (!isCodexAccount(a)) {
     const provider = document.getElementById('edit_client_provider');
@@ -2458,7 +2464,13 @@ function syncEditingDraftFromForm(options = {}) {
   const visionUpstream = document.getElementById('edit_vision_upstream');
   if (visionUpstream) { ep.vision.base_url = visionUpstream.value.trim(); a.vision_upstream = ep.vision.base_url; }
   const visionKey = document.getElementById('edit_vision_api_key');
-  if (visionKey) { ep.vision.api_key = visionKey.value.trim(); a.vision_api_key = ep.vision.api_key; }
+  if (visionKey) {
+    const nextVisionKey = visionKey.value.trim();
+    if (nextVisionKey || !hasStoredVisionApiKey(a, ep)) {
+      ep.vision.api_key = nextVisionKey;
+      a.vision_api_key = ep.vision.api_key;
+    }
+  }
   const visionModel = document.getElementById('edit_vision_model');
   if (visionModel) { ep.vision.model = visionModel.value.trim(); a.vision_model = ep.vision.model; }
   const visionPath = document.getElementById('edit_vision_endpoint');
@@ -3169,6 +3181,13 @@ function renderClientReport(report) {
   </div>`;
 }
 
+function secretCopyButton(secretKind) {
+  const label = secretKind === 'vision_api_key' ? '复制已保存视觉 API Key' : '复制已保存 API Key';
+  return `<button type="button" class="secret-copy-btn" onclick="copyEditingAccountSecret('${escAttr(secretKind)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path></svg>
+  </button>`;
+}
+
 function showClientApplyConfirm(report) {
   return new Promise(resolve => {
     const existing = document.getElementById('clientApplyConfirmModal');
@@ -3635,9 +3654,52 @@ function isRedactedSecret(value) {
   return typeof value === 'string' && value.includes('****');
 }
 
+function displayStoredSecret(value, hasStored) {
+  if (!hasStored) return '';
+  const text = String(value || '').trim();
+  if (!text) return '****';
+  return isRedactedSecret(text) ? text : maskKey(text);
+}
+
+function hasStoredPrimaryApiKey(account = editingAccount) {
+  return Boolean(
+    account?.id
+    && (account.api_key_present || isRedactedSecret(account.api_key || ''))
+  );
+}
+
+function hasStoredVisionApiKey(account = editingAccount, endpoint = currentEndpoint(account)) {
+  return Boolean(
+    account?.id
+    && (
+      account.vision_api_key_present
+      || isRedactedSecret(account.vision_api_key || '')
+      || isRedactedSecret(endpoint?.vision?.api_key || '')
+    )
+  );
+}
+
+async function copyEditingAccountSecret(secretKind) {
+  if (!editingAccount?.id) {
+    showToast('请先保存账号后再复制密钥', 'error');
+    return;
+  }
+  try {
+    const endpoint = currentEndpoint(editingAccount);
+    await invoke('copy_account_secret', {
+      accountId: editingAccount.id,
+      secretKind,
+      endpointId: endpoint?.id || null,
+    });
+    showToast(secretKind === 'vision_api_key' ? '视觉 API Key 已复制' : 'API Key 已复制', 'success');
+  } catch (e) {
+    showToast('复制密钥失败: ' + e, 'error');
+  }
+}
+
 function buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind, options = {}) {
   const args = { upstream, endpointKind };
-  if (editingAccount?.id && (options.forceStored || isRedactedSecret(apiKey))) {
+  if (editingAccount?.id && (options.forceStored || isRedactedSecret(apiKey) || (!apiKey && hasStoredPrimaryApiKey(editingAccount)))) {
     args.accountId = editingAccount.id;
   } else {
     args.apiKey = apiKey || '';
@@ -3647,7 +3709,7 @@ function buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind, options =
 
 function buildEditingVisionProbeArgs(upstream, apiKey, visionPath, adapterId) {
   const args = { upstream, visionPath, adapterId };
-  if (editingAccount?.id && isRedactedSecret(apiKey)) {
+  if (editingAccount?.id && (isRedactedSecret(apiKey) || (!apiKey && hasStoredVisionApiKey(editingAccount)))) {
     args.accountId = editingAccount.id;
     const endpointId = currentEndpoint(editingAccount)?.id;
     if (endpointId) args.endpointId = endpointId;

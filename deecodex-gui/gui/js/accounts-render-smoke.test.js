@@ -18,6 +18,7 @@ const context = {
         client_kind: 'codex',
         upstream: 'https://api.deepseek.com/v1',
         api_key: 'sk-test123456',
+        api_key_present: true,
         model_map: { 'gpt-5': 'deepseek-chat' },
         endpoints: [
           {
@@ -37,6 +38,7 @@ const context = {
         auth_mode: 'oauth',
         upstream: 'https://chatgpt.com/backend-api/codex',
         api_key: 'sk-oauth',
+        api_key_present: true,
         routing: { enabled: true, pool: 'codex-official', priority: 20, weight: 2 },
         client_options: {
           oauth: {
@@ -93,6 +95,7 @@ const context = {
         client_kind: 'hermes',
         upstream: 'https://api.minimaxi.com/v1',
         api_key: 'sk-test123456',
+        api_key_present: true,
         default_model: 'MiniMax-M2.7',
         client_options: { api_key_env: 'MINIMAX_API_KEY', model_map: { default: 'MiniMax-M2.7' } },
         last_check: { ok: false, message: 'Hermes 密钥为空' },
@@ -104,6 +107,7 @@ const context = {
         client_kind: 'hermes',
         upstream: 'https://api.anthropic.com',
         api_key: 'sk-old',
+        api_key_present: true,
         default_model: 'claude-sonnet-4-5',
         client_options: { api_key_env: 'ANTHROPIC_API_KEY', model_map: { default: 'claude-sonnet-4-5' } },
         last_applied_at: 100,
@@ -180,7 +184,7 @@ const context = {
       slug: 'mimo',
       label: 'MiMo',
       description: 'MiMo',
-      default_upstream: 'https://api.mimo-v2.com/v1',
+      default_upstream: 'https://token-plan-cn.xiaomimimo.com/v1',
       known_models: ['mimo-v2.5-pro'],
     },
     {
@@ -271,6 +275,10 @@ assert(hermesActiveList.indexOf('Hermes MiniMax') < hermesActiveList.indexOf('He
 context.accountsView = 'edit';
 const detail = context.renderClientAccountDetail();
 assert(detail.includes('Hermes .env Key'));
+assert(!detail.includes('value="sk-test123456"'));
+assert(detail.includes('value="sk-t****3456"'));
+assert(detail.includes('secret-copy-btn'));
+assert(detail.includes("copyEditingAccountSecret('api_key')"));
 assert(detail.includes('最近备份'));
 assert(!detail.includes('account-section-desc'));
 assert(!detail.includes('只记录外部客户端配置操作'));
@@ -684,7 +692,7 @@ context.document = {
     mainContent,
     edit_endpoint_kind: endpointKindControl,
     edit_name: { value: context.editingAccount.name },
-    edit_api_key: { value: context.editingAccount.api_key },
+    edit_api_key: { value: '' },
     edit_upstream: { value: context.editingAccount.upstream },
     edit_balance_url: { value: '' },
   }[id] || null),
@@ -711,6 +719,41 @@ assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
 assert.strictEqual(context.editingAccount.capability_enabled, true);
 assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
 
+context.editingAccount = {
+  id: 'hidden-key',
+  name: '隐藏密钥',
+  provider: 'deepseek',
+  client_kind: 'codex',
+  upstream: 'https://api.deepseek.com/v1',
+  api_key: 'sk-t****3456',
+  api_key_present: true,
+  model_map: {},
+  endpoints: [{
+    id: 'ep-hidden',
+    kind: 'open_ai_chat',
+    base_url: 'https://api.deepseek.com/v1',
+    model_map: {},
+    vision: { mode: 'off' },
+  }],
+};
+context.document = {
+  getElementById: id => ({
+    edit_name: { value: context.editingAccount.name },
+    edit_api_key: { value: '' },
+  }[id] || null),
+};
+context.syncEditingDraftFromForm();
+assert.strictEqual(context.editingAccount.api_key, 'sk-t****3456');
+context.document = {
+  getElementById: id => ({
+    edit_name: { value: context.editingAccount.name },
+    edit_api_key: { value: 'sk-new-secret' },
+  }[id] || null),
+};
+context.syncEditingDraftFromForm();
+assert.strictEqual(context.editingAccount.api_key, 'sk-new-secret');
+context.document = originalDocument;
+
 context.selectedClientSurface = 'desktop';
 context.addAccount('anthropic', 'claude_code');
 assert.strictEqual(context.editingAccount.client_surface, 'desktop');
@@ -734,7 +777,7 @@ assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').upstrea
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').default_model, 'kimi-k2.5');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').upstream, 'https://api.minimaxi.com/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').api_key_env, 'ANTHROPIC_API_KEY');
-assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://api.mimo-v2.com/anthropic');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://token-plan-cn.xiaomimimo.com/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').upstream, 'https://api.longcat.chat/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').default_model, 'LongCat-Flash-Chat');
