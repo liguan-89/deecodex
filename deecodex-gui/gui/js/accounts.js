@@ -1051,16 +1051,19 @@ function activeSelectionFor(kind, surface) {
 }
 
 function activeSelectionForAccount(a) {
-  if (!a || accountClientKind(a) !== 'codex') {
+  const kind = accountClientKind(a);
+  if (!a || !clientKindSupportsSurface(kind)) {
     return null;
   }
-  return activeSelectionFor('codex', accountClientSurface(a));
+  return activeSelectionFor(kind, accountClientSurface(a));
 }
 
 function activeAccountIdForSelection(kind, surface) {
+  const normalizedKind = normalizeClientKind(kind);
   const active = activeSelectionFor(kind, surface);
   if (active?.account_id) return active.account_id;
-  return accountsData.active_account_id || accountsData.active_id;
+  if (normalizedKind === 'codex') return accountsData.active_account_id || accountsData.active_id;
+  return null;
 }
 
 function providerDefaultTemplate(provider) {
@@ -1273,10 +1276,11 @@ function renderClientAccountCard(a) {
   const surface = accountClientSurface(a);
   const profile = getClientProfile(kind);
   const statusId = `client-status-${escAttr(a.id)}`;
+  const active = activeSelectionForAccount(a)?.account_id === a.id;
   const applied = clientAccountApplied(a);
   const statusReport = clientAccountStatusReport(a);
   const statusHtml = renderClientCardStatusSummary(statusReport, applied);
-  return `<div class="account-card client-account-card${applied ? ' active' : ''}">
+  return `<div class="account-card client-account-card${active ? ' active' : ''}">
     <div class="account-card-mainline">
       <div class="account-card-primary">
         <div class="account-card-info">
@@ -1284,7 +1288,7 @@ function renderClientAccountCard(a) {
             <div class="account-card-titlebar">
               <span class="client-kind-badge">${clientIcon(kind)}${esc(clientSurfaceTitle(kind, surface))}</span>
               ${renderProviderBadge(a.provider)}
-              ${applied ? '<span class="active-badge">已写入</span>' : ''}
+              ${active ? '<span class="active-badge">活跃</span>' : (applied ? '<span class="active-badge">已写入</span>' : '')}
               ${accountRuntimeBadge(a)}
             </div>
           </div>
@@ -1298,7 +1302,7 @@ function renderClientAccountCard(a) {
       <div class="account-card-side">
         <div class="card-balance client-status-box" id="${statusId}">${statusHtml}</div>
         <div class="card-actions-row">
-          ${renderAccountIconAction(applied ? '重新写入配置' : '写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, applied ? 'account-apply account-applied' : 'account-apply')}
+          ${renderAccountIconAction(applied ? '重新写入配置' : '写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, active ? 'account-apply account-applied' : 'account-apply')}
           ${renderAccountIconAction('刷新状态', 'refresh', `refreshClientAccountStatus('${escAttr(a.id)}')`, 'account-refresh')}
           ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', '${escAttr(kind)}')`)}
           ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}

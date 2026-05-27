@@ -526,19 +526,35 @@ fn activate_codex_surface_account(
     if !account.client_kind.is_codex() {
         return;
     }
+    activate_client_surface_account(store, account, endpoint_id, sync_legacy_global);
+}
+
+fn activate_client_surface_account(
+    store: &mut AccountStore,
+    account: &deecodex::accounts::Account,
+    endpoint_id: Option<String>,
+    sync_legacy_global: bool,
+) {
+    if !account.client_kind.supports_desktop_surface() {
+        return;
+    }
     let endpoint_id = endpoint_id.or_else(|| {
-        account
-            .endpoints
-            .first()
-            .map(|endpoint| endpoint.id.clone())
+        if account.client_kind.is_codex() {
+            account
+                .endpoints
+                .first()
+                .map(|endpoint| endpoint.id.clone())
+        } else {
+            None
+        }
     });
     store.set_active_for_surface(
-        &AccountClientKind::Codex,
+        &account.client_kind,
         &account.client_surface,
         account.id.clone(),
         endpoint_id.clone(),
     );
-    if sync_legacy_global {
+    if account.client_kind.is_codex() && sync_legacy_global {
         store.active_id = Some(account.id.clone());
         store.active_account_id = Some(account.id.clone());
         store.active_endpoint_id = endpoint_id;
@@ -2695,6 +2711,7 @@ pub async fn dex_quick_configure_client(
     account.normalize_v2();
 
     let mut report = None;
+    let mut client_apply_ok = false;
     if account.client_kind.is_codex() {
         account.translate_enabled = true;
         if account.endpoints.is_empty() {
@@ -2706,6 +2723,7 @@ pub async fn dex_quick_configure_client(
         ensure_client_proxy_options(&mut account, &host, port);
         let apply_report = deecodex::client_integrations::apply(&mut account, false)
             .map_err(|e| format!("写入客户端配置失败: {e}"))?;
+        client_apply_ok = apply_report.ok;
         report = Some(serde_json::to_value(&apply_report).unwrap_or_default());
         append_account_event(
             &data_dir,
@@ -2738,6 +2756,8 @@ pub async fn dex_quick_configure_client(
                     .map(|endpoint| endpoint.id.clone());
                 let sync_legacy_global = should_sync_legacy_global(store, &account);
                 activate_codex_surface_account(store, &account, endpoint_id, sync_legacy_global);
+            } else if client_apply_ok && account.client_kind.supports_desktop_surface() {
+                activate_client_surface_account(store, &account, None, false);
             }
             store.accounts.push(account.clone());
             Ok((account.clone(), became_active))
@@ -2889,12 +2909,9 @@ pub async fn delete_account(
 
             let was_global_active = store.active_id.as_deref() == Some(&id)
                 || store.active_account_id.as_deref() == Some(&id);
-            let was_surface_active = deleting.client_kind.is_codex()
+            let was_surface_active = deleting.client_kind.supports_desktop_surface()
                 && store
-                    .active_selection_for_surface(
-                        &AccountClientKind::Codex,
-                        &deleting.client_surface,
-                    )
+                    .active_selection_for_surface(&deleting.client_kind, &deleting.client_surface)
                     .and_then(|selection| selection.account_id.as_deref())
                     == Some(id.as_str());
 
@@ -2911,12 +2928,12 @@ pub async fn delete_account(
                     .accounts
                     .iter()
                     .find(|account| {
-                        account.client_kind.is_codex()
+                        account.client_kind == deleting.client_kind
                             && account.client_surface == deleting.client_surface
                     })
                     .cloned()
                 {
-                    activate_codex_surface_account(
+                    activate_client_surface_account(
                         store,
                         &next_surface_account,
                         next_surface_account
@@ -4135,6 +4152,9 @@ pub async fn apply_client_account(
                 details: serde_json::to_value(&report).unwrap_or_default(),
             });
             let client_kind = account.client_kind.clone();
+            if !dry_run && report.ok && account.client_kind.supports_desktop_surface() {
+                activate_client_surface_account(store, &account, None, false);
+            }
             store.accounts[pos] = account;
             Ok((report, client_kind))
         })?;
@@ -4197,7 +4217,7 @@ pub async fn import_client_accounts(manager: State<'_, ServerManager>) -> Result
                     name: candidate.name.clone(),
                     provider: candidate.provider.clone(),
                     client_kind: candidate.client_kind.clone(),
-                    client_surface: Default::default(),
+                    client_surface: candidate.client_surface.clone(),
                     wire_protocol: Default::default(),
                     upstream: candidate.upstream.clone(),
                     api_key: candidate.api_key.clone(),
@@ -4249,6 +4269,7 @@ pub async fn import_client_accounts(manager: State<'_, ServerManager>) -> Result
                     account.client_kind.clone(),
                     json!({
                         "source_path": candidate.source_path,
+                        "client_surface": candidate.client_surface,
                         "warnings": candidate.warnings,
                     }),
                 ));
@@ -4303,7 +4324,7 @@ fn same_client_account(
     if account.client_kind != candidate.client_kind {
         return false;
     }
-    if account.client_surface != AccountClientSurface::Cli {
+    if account.client_surface != candidate.client_surface {
         return false;
     }
     let existing_path = account
@@ -6238,6 +6259,51 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn activate_client_surface_account_scopes_claude_without_global_switch() {
+        let mut cli = test_account("claude-cli");
+        cli.client_kind = AccountClientKind::ClaudeCode;
+        cli.client_surface = AccountClientSurface::Cli;
+        cli.translate_enabled = false;
+
+        let mut desktop = test_account("claude-desktop");
+        desktop.client_kind = AccountClientKind::ClaudeCode;
+        desktop.client_surface = AccountClientSurface::Desktop;
+        desktop.translate_enabled = false;
+
+        let mut store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![cli.clone(), desktop.clone()],
+            active_id: Some("codex-global".into()),
+            active_account_id: Some("codex-global".into()),
+            active_endpoint_id: Some("codex-endpoint".into()),
+            active_by_surface: HashMap::new(),
+        };
+
+        activate_client_surface_account(&mut store, &cli, None, true);
+        activate_client_surface_account(&mut store, &desktop, None, true);
+
+        assert_eq!(store.active_account_id.as_deref(), Some("codex-global"));
+        assert_eq!(
+            store
+                .active_selection_for_surface(
+                    &AccountClientKind::ClaudeCode,
+                    &AccountClientSurface::Cli
+                )
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("claude-cli")
+        );
+        assert_eq!(
+            store
+                .active_selection_for_surface(
+                    &AccountClientKind::ClaudeCode,
+                    &AccountClientSurface::Desktop
+                )
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("claude-desktop")
+        );
+    }
+
     fn test_account(id: &str) -> deecodex::accounts::Account {
         deecodex::accounts::Account {
             id: id.into(),
@@ -6657,6 +6723,7 @@ mod tests {
 
         let mut candidate = deecodex::client_integrations::ClientImportCandidate {
             client_kind: AccountClientKind::Hermes,
+            client_surface: AccountClientSurface::Cli,
             name: "Hermes".into(),
             provider: "anthropic".into(),
             upstream: "https://api.anthropic.com".into(),
@@ -6673,6 +6740,10 @@ mod tests {
         candidate.upstream = account.upstream.clone();
         candidate.default_model = account.default_model.clone();
         assert!(same_client_account(&account, &candidate));
+
+        candidate.client_surface = AccountClientSurface::Desktop;
+        assert!(!same_client_account(&account, &candidate));
+        candidate.client_surface = AccountClientSurface::Cli;
 
         candidate.client_kind = AccountClientKind::ClaudeCode;
         assert!(!same_client_account(&account, &candidate));

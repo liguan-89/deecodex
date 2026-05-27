@@ -81,6 +81,8 @@ pub struct ClientDiagnostic {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientImportCandidate {
     pub client_kind: AccountClientKind,
+    #[serde(default)]
+    pub client_surface: AccountClientSurface,
     pub name: String,
     pub provider: String,
     pub upstream: String,
@@ -298,8 +300,10 @@ pub fn profile_for_kind(kind: &AccountClientKind) -> ClientProfile {
 
 pub fn discover_client_accounts() -> Vec<ClientImportCandidate> {
     let mut out = Vec::new();
-    if let Some(candidate) = discover_claude_account() {
-        out.push(candidate);
+    for surface in [AccountClientSurface::Cli, AccountClientSurface::Desktop] {
+        if let Some(candidate) = discover_claude_account(surface) {
+            out.push(candidate);
+        }
     }
     if let Some(candidate) = discover_openclaw_account() {
         out.push(candidate);
@@ -1023,8 +1027,18 @@ fn resolve_paths(account: &Account) -> (Option<PathBuf>, Option<PathBuf>) {
     }
 }
 
-fn discover_claude_account() -> Option<ClientImportCandidate> {
-    let config_path = home_path(&[".claude", "settings.json"]);
+fn discover_claude_account(surface: AccountClientSurface) -> Option<ClientImportCandidate> {
+    let config_path = match surface {
+        AccountClientSurface::Cli => home_path(&[".claude", "settings.json"]),
+        AccountClientSurface::Desktop => home_path(&[".claude", "claude_desktop_config.json"]),
+    };
+    discover_claude_account_at(config_path, surface)
+}
+
+fn discover_claude_account_at(
+    config_path: PathBuf,
+    surface: AccountClientSurface,
+) -> Option<ClientImportCandidate> {
     let config = read_json_object(&config_path).ok()?;
     let env = config.get("env").and_then(Value::as_object)?;
     let (api_key, auth_env) = env_string(env, "ANTHROPIC_API_KEY")
@@ -1060,9 +1074,15 @@ fn discover_claude_account() -> Option<ClientImportCandidate> {
         }
     }
     client_options.insert("model_map".into(), Value::Object(model_map));
+    let surface_label = if surface == AccountClientSurface::Desktop {
+        "Claude 桌面版"
+    } else {
+        "Claude Code"
+    };
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::ClaudeCode,
-        name: "Claude Code · Anthropic".into(),
+        client_surface: surface,
+        name: format!("{surface_label} · Anthropic"),
         provider: "anthropic".into(),
         upstream,
         api_key,
@@ -1088,6 +1108,7 @@ fn discover_openclaw_account() -> Option<ClientImportCandidate> {
         );
         return Some(ClientImportCandidate {
             client_kind: AccountClientKind::Openclaw,
+            client_surface: AccountClientSurface::Cli,
             name: "OpenClaw · 新建配置".into(),
             provider: "openrouter".into(),
             upstream: "https://openrouter.ai/api/v1".into(),
@@ -1173,6 +1194,7 @@ fn discover_openclaw_account() -> Option<ClientImportCandidate> {
     }
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::Openclaw,
+        client_surface: AccountClientSurface::Cli,
         name: "OpenClaw · deecodex".into(),
         provider,
         upstream,
@@ -1241,6 +1263,7 @@ fn discover_hermes_account() -> Option<ClientImportCandidate> {
     client_options.insert("model_map".into(), Value::Object(model_map));
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::Hermes,
+        client_surface: AccountClientSurface::Cli,
         name: format!("Hermes · {provider}"),
         provider,
         upstream,
@@ -1283,6 +1306,7 @@ fn discover_generic_client_account() -> Option<ClientImportCandidate> {
     client_options.insert("model_map".into(), Value::Object(model_map));
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::GenericClient,
+        client_surface: AccountClientSurface::Cli,
         name: "通用客户端 · OpenAI compatible".into(),
         provider: crate::providers::guess_provider(&upstream).to_string(),
         upstream,
@@ -2496,6 +2520,71 @@ mod tests {
         assert_eq!(
             written["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
             "claude-haiku-4-5"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_discovery_preserves_cli_and_desktop_surfaces() {
+        let dir = temp_dir("claude-discovery-surfaces");
+        let cli_path = dir.join("settings.json");
+        let desktop_path = dir.join("claude_desktop_config.json");
+        fs::write(
+            &cli_path,
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "sk-cli",
+                    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-5"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            &desktop_path,
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token-desktop",
+                    "ANTHROPIC_BASE_URL": "https://desktop.example",
+                    "ANTHROPIC_MODEL": "claude-opus-4-5"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let cli = discover_claude_account_at(cli_path.clone(), AccountClientSurface::Cli).unwrap();
+        let desktop =
+            discover_claude_account_at(desktop_path.clone(), AccountClientSurface::Desktop)
+                .unwrap();
+        let cli_path_text = cli_path.to_string_lossy().to_string();
+        let desktop_path_text = desktop_path.to_string_lossy().to_string();
+
+        assert_eq!(cli.client_surface, AccountClientSurface::Cli);
+        assert_eq!(desktop.client_surface, AccountClientSurface::Desktop);
+        assert_eq!(cli.api_key, "sk-cli");
+        assert_eq!(desktop.api_key, "token-desktop");
+        assert_eq!(
+            desktop
+                .client_options
+                .get("auth_env")
+                .and_then(Value::as_str),
+            Some("ANTHROPIC_AUTH_TOKEN")
+        );
+        assert_eq!(
+            cli.client_options
+                .get("config_path")
+                .and_then(Value::as_str),
+            Some(cli_path_text.as_str())
+        );
+        assert_eq!(
+            desktop
+                .client_options
+                .get("config_path")
+                .and_then(Value::as_str),
+            Some(desktop_path_text.as_str())
         );
 
         let _ = fs::remove_dir_all(dir);

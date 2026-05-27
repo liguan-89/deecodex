@@ -1012,9 +1012,6 @@ impl AccountStore {
                 .and_then(|account| account.endpoints.first())
                 .map(|endpoint| endpoint.id.clone());
         }
-        self.repair_codex_surface_active();
-        self.repair_dex_assistant_active();
-
         let active_account_id = self.active_account_id.clone();
         let active_endpoint_id = self.active_endpoint_id.clone();
         for account in &mut self.accounts {
@@ -1034,11 +1031,22 @@ impl AccountStore {
                 account.sync_legacy_from_endpoint(&endpoint);
             }
         }
+        self.repair_surface_active();
+        self.repair_dex_assistant_active();
     }
 
-    fn repair_codex_surface_active(&mut self) {
+    fn repair_surface_active(&mut self) {
+        for kind in [AccountClientKind::Codex, AccountClientKind::ClaudeCode] {
+            self.repair_surface_active_for_kind(kind);
+        }
+    }
+
+    fn repair_surface_active_for_kind(&mut self, kind: AccountClientKind) {
+        if !kind.supports_desktop_surface() {
+            return;
+        }
         for surface in [AccountClientSurface::Cli, AccountClientSurface::Desktop] {
-            let key = surface_active_key(&AccountClientKind::Codex, &surface);
+            let key = surface_active_key(&kind, &surface);
             let selected_account_id = self
                 .active_by_surface
                 .get(&key)
@@ -1046,16 +1054,20 @@ impl AccountStore {
                 .filter(|account_id| {
                     self.accounts.iter().any(|account| {
                         &account.id == *account_id
-                            && account.client_kind.is_codex()
+                            && account.client_kind == kind
                             && account.client_surface == surface
                     })
                 })
                 .cloned()
                 .or_else(|| {
+                    self.recently_applied_surface_account(&kind, &surface)
+                        .map(|account| account.id.clone())
+                })
+                .or_else(|| {
                     self.accounts
                         .iter()
                         .find(|account| {
-                            account.client_kind.is_codex() && account.client_surface == surface
+                            account.client_kind == kind && account.client_surface == surface
                         })
                         .map(|account| account.id.clone())
                 });
@@ -1097,6 +1109,21 @@ impl AccountStore {
                 },
             );
         }
+    }
+
+    fn recently_applied_surface_account(
+        &self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+    ) -> Option<&Account> {
+        if kind.is_codex() {
+            return None;
+        }
+        self.accounts
+            .iter()
+            .filter(|account| &account.client_kind == kind && &account.client_surface == surface)
+            .filter(|account| account.last_applied_at.is_some())
+            .max_by_key(|account| account.last_applied_at.unwrap_or_default())
     }
 
     fn repair_dex_assistant_active(&mut self) {
@@ -1244,19 +1271,27 @@ impl AccountStore {
     }
 
     pub fn active_account_for_surface(&self, surface: &AccountClientSurface) -> Option<&Account> {
-        let selection = self.active_selection_for_surface(&AccountClientKind::Codex, surface);
+        self.active_account_for_kind_surface(&AccountClientKind::Codex, surface)
+    }
+
+    pub fn active_account_for_kind_surface(
+        &self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+    ) -> Option<&Account> {
+        let selection = self.active_selection_for_surface(kind, surface);
         selection
             .and_then(|selection| selection.account_id.as_ref())
             .and_then(|id| {
                 self.accounts.iter().find(|account| {
                     &account.id == id
-                        && account.client_kind.is_codex()
+                        && &account.client_kind == kind
                         && &account.client_surface == surface
                 })
             })
             .or_else(|| {
                 self.accounts.iter().find(|account| {
-                    account.client_kind.is_codex() && &account.client_surface == surface
+                    &account.client_kind == kind && &account.client_surface == surface
                 })
             })
     }
@@ -1293,8 +1328,17 @@ impl AccountStore {
         &self,
         surface: &AccountClientSurface,
     ) -> Option<&EndpointConfig> {
-        let endpoint_id = self.active_endpoint_id_for_surface(&AccountClientKind::Codex, surface);
-        self.active_account_for_surface(surface)
+        self.active_endpoint_for_kind_surface(&AccountClientKind::Codex, surface)
+    }
+
+    #[allow(dead_code)]
+    pub fn active_endpoint_for_kind_surface(
+        &self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+    ) -> Option<&EndpointConfig> {
+        let endpoint_id = self.active_endpoint_id_for_surface(kind, surface);
+        self.active_account_for_kind_surface(kind, surface)
             .and_then(|account| account.active_endpoint(endpoint_id))
     }
 
@@ -2615,6 +2659,82 @@ mod tests {
             ),
             Some("desktop-endpoint")
         );
+    }
+
+    #[test]
+    fn store_normalize_repairs_claude_surface_active_independently() {
+        let mut cli = legacy_account(false);
+        cli.id = "claude-cli".into();
+        cli.client_kind = AccountClientKind::ClaudeCode;
+        cli.client_surface = AccountClientSurface::Cli;
+        cli.provider = "anthropic".into();
+        cli.normalize_v2();
+        cli.last_applied_at = Some(20);
+
+        let mut old_cli = cli.clone();
+        old_cli.id = "claude-cli-old".into();
+        old_cli.last_applied_at = Some(1);
+
+        let mut desktop = legacy_account(false);
+        desktop.id = "claude-desktop".into();
+        desktop.client_kind = AccountClientKind::ClaudeCode;
+        desktop.client_surface = AccountClientSurface::Desktop;
+        desktop.provider = "anthropic".into();
+        desktop.normalize_v2();
+
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![old_cli, cli, desktop],
+            active_id: None,
+            active_account_id: None,
+            active_endpoint_id: None,
+            active_by_surface: HashMap::from([(
+                surface_active_key(
+                    &AccountClientKind::ClaudeCode,
+                    &AccountClientSurface::Desktop,
+                ),
+                SurfaceActiveSelection {
+                    account_id: Some("claude-desktop".into()),
+                    endpoint_id: Some("stale-endpoint".into()),
+                },
+            )]),
+        };
+
+        store.normalize_v2();
+
+        assert_eq!(
+            store
+                .active_account_for_kind_surface(
+                    &AccountClientKind::ClaudeCode,
+                    &AccountClientSurface::Cli
+                )
+                .map(|account| account.id.as_str()),
+            Some("claude-cli")
+        );
+        assert_eq!(
+            store.active_endpoint_id_for_surface(
+                &AccountClientKind::ClaudeCode,
+                &AccountClientSurface::Cli
+            ),
+            None
+        );
+        assert_eq!(
+            store
+                .active_account_for_kind_surface(
+                    &AccountClientKind::ClaudeCode,
+                    &AccountClientSurface::Desktop
+                )
+                .map(|account| account.id.as_str()),
+            Some("claude-desktop")
+        );
+        assert_eq!(
+            store.active_endpoint_id_for_surface(
+                &AccountClientKind::ClaudeCode,
+                &AccountClientSurface::Desktop
+            ),
+            None
+        );
+        assert!(store.active_account_id.is_none());
     }
 
     #[test]
