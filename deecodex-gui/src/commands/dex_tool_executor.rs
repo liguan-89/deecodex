@@ -50,7 +50,10 @@ fn parse_gui_config(value: &Value) -> Result<crate::commands::GuiConfig, String>
 
 fn active_account_id(manager_data_dir: &std::path::Path) -> Option<String> {
     let store = deecodex::accounts::load_accounts(manager_data_dir);
-    store.active_id
+    store
+        .active_selection_for_dex_assistant()
+        .and_then(|selection| selection.account_id.clone())
+        .or(store.active_id)
 }
 
 pub(super) async fn dex_execute_tool_impl(
@@ -137,7 +140,7 @@ pub(super) async fn dex_execute_tool_impl(
                 crate::commands::run_full_diagnostics(cfg).await?
             }
             "list_accounts" => crate::commands::list_accounts(manager).await?,
-            "get_active_account" => crate::commands::get_active_account(manager).await?,
+            "get_active_account" => crate::commands::get_dex_assistant_account(manager).await?,
             "add_account" => {
                 crate::commands::add_account(
                     manager,
@@ -155,7 +158,12 @@ pub(super) async fn dex_execute_tool_impl(
                 crate::commands::delete_account(manager, req_string(&args, "id")?).await?
             }
             "switch_account" => {
-                crate::commands::switch_account_inner(&manager, req_string(&args, "id")?).await?
+                crate::commands::set_dex_assistant_account_inner(
+                    &manager,
+                    req_string(&args, "id")?,
+                    opt_string_any(&args, &["endpoint_id", "endpointId"]),
+                )
+                .await?
             }
             "import_codex_config" => crate::commands::import_codex_config(manager).await?,
             "get_provider_presets" => crate::commands::get_provider_presets()?,

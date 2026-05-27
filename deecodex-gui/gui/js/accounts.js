@@ -1033,10 +1033,34 @@ function setVisionMode(mode) {
 function selectedEndpointId(a) {
   if (!a) return null;
   if (a._editing_endpoint_id) return a._editing_endpoint_id;
-  if (a.id === (accountsData.active_account_id || accountsData.active_id) && accountsData.active_endpoint_id) {
-    return accountsData.active_endpoint_id;
+  const active = activeSelectionForAccount(a);
+  if (active && active.account_id === a.id && active.endpoint_id) {
+    return active.endpoint_id;
   }
   return Array.isArray(a.endpoints) && a.endpoints[0] ? a.endpoints[0].id : null;
+}
+
+function activeSelectionKey(kind, surface) {
+  const normalizedKind = kind === 'codex' ? 'codex' : kind;
+  return `${normalizedKind}:${surface || 'cli'}`;
+}
+
+function activeSelectionFor(kind, surface) {
+  const bySurface = accountsData?.active_by_surface || {};
+  return bySurface[activeSelectionKey(kind, surface)] || null;
+}
+
+function activeSelectionForAccount(a) {
+  if (!a || accountClientKind(a) !== 'codex') {
+    return null;
+  }
+  return activeSelectionFor('codex', accountClientSurface(a));
+}
+
+function activeAccountIdForSelection(kind, surface) {
+  const active = activeSelectionFor(kind, surface);
+  if (active?.account_id) return active.account_id;
+  return accountsData.active_account_id || accountsData.active_id;
 }
 
 function providerDefaultTemplate(provider) {
@@ -1166,8 +1190,8 @@ function renderAccountsFormPage(html, className = '') {
 
 function renderAccountList() {
   const list = accountsData.accounts || [];
-  const activeId = accountsData.active_account_id || accountsData.active_id;
   const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const activeId = activeAccountIdForSelection(selectedClientKind, activeSurface);
   const filtered = list
     .filter(a => accountClientKind(a) === selectedClientKind)
     .filter(a => accountClientSurface(a) === activeSurface)
@@ -2128,11 +2152,13 @@ function renderModelVisionSegments(model, value) {
 let accountsListRenderSignature = '';
 
 function accountListRenderSignature(data) {
-  const activeId = data?.active_account_id || data?.active_id || '';
-  const activeEndpointId = data?.active_endpoint_id || '';
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const activeSelection = (data?.active_by_surface || {})[activeSelectionKey(selectedClientKind, activeSurface)] || {};
+  const activeId = activeSelection.account_id || data?.active_account_id || data?.active_id || '';
+  const activeEndpointId = activeSelection.endpoint_id || data?.active_endpoint_id || '';
   const accounts = (data?.accounts || [])
     .filter(a => accountClientKind(a) === selectedClientKind)
-    .filter(a => accountClientSurface(a) === selectedSurfaceForKind(selectedClientKind))
+    .filter(a => accountClientSurface(a) === activeSurface)
     .map(a => {
       const routing = accountRouting(a);
       const runtime = a?.runtime_state || {};

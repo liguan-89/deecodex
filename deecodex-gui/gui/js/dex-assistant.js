@@ -12,6 +12,7 @@ function renderDexAssistant() {
     dexLoadDynamicContext().then(function () {
       dexUpdateTokenCount();
     });
+    dexLoadAccounts();
     dexLoadModels();
 
     var history = window.dexAgent.loadHistory();
@@ -79,6 +80,7 @@ function renderDexAssistant() {
     + '<div class="dex-chat-panel"><div class="dex-chat-header"><div class="dex-header-title">'
     + '<div class="dex-title-row"><h3 title="DEX助手">DEX助手</h3></div>'
     + '</div><div class="dex-header-actions">'
+    + '<div class="dex-model-drop dex-account-drop" id="dexAccountDrop"><button class="dex-model-btn dex-account-btn" id="dexAccountBtn" onclick="dexToggleAccountMenu(event)">账号<span class="dex-model-caret"></span></button><div class="dex-model-menu dex-account-menu" id="dexAccountMenu" style="display:none"></div></div>'
     + '<div class="dex-model-drop" id="dexModelDrop"><button class="dex-model-btn" id="dexModelBtn" onclick="dexToggleModelMenu(event)">模型<span class="dex-model-caret"></span></button><div class="dex-model-menu" id="dexModelMenu" style="display:none"></div></div>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn dex-icon-search" id="dexSearchBtn" onclick="dexToggleSearch()" title="搜索对话" aria-label="搜索对话"><span class="dex-sr-only">搜索对话</span></button>'
     + '<button class="btn btn-ghost btn-sm dex-icon-btn dex-icon-new" onclick="dexNewChat()" title="新对话" aria-label="新对话"><span class="dex-sr-only">新对话</span></button>'

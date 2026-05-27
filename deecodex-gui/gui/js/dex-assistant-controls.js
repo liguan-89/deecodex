@@ -29,6 +29,14 @@ function dexRefreshChat() {
 }
 
 window.dexAgent.selectedModel = 'auto';
+window.dexAgent.selectedAccountId = null;
+
+function dexToggleAccountMenu(e) {
+  e.stopPropagation();
+  var m = document.getElementById('dexAccountMenu');
+  if (m) m.style.display = m.style.display === 'none' ? '' : 'none';
+}
+
 function dexToggleModelMenu(e) {
   e.stopPropagation();
   var m = document.getElementById('dexModelMenu');
@@ -44,10 +52,67 @@ function dexSelectModel(v, label) {
 
 function dexChangeModel() {}
 
+function dexAccountSurfaceLabel(account) {
+  var surface = String(account && account.client_surface || 'cli').toLowerCase();
+  return surface === 'desktop' ? '桌面' : 'CLI';
+}
+
+function dexAccountLabel(account) {
+  if (!account) return '账号';
+  var name = account.name || account.provider || account.id || '账号';
+  return dexAccountSurfaceLabel(account) + ' · ' + name;
+}
+
+function dexSetAccountButton(account) {
+  var btn = document.getElementById('dexAccountBtn');
+  if (!btn) return;
+  btn.innerHTML = esc(dexAccountLabel(account)) + '<span class="dex-model-caret"></span>';
+  window.dexAgent.selectedAccountId = account && account.id ? account.id : null;
+}
+
+function dexLoadAccounts() {
+  var menu = document.getElementById('dexAccountMenu');
+  if (!menu) return;
+  DeeCodexTauri.invoke('list_accounts', {}).then(function(data) {
+    var accounts = (data && data.accounts || []).filter(function(account) {
+      return String(account.client_kind || account.target || '').toLowerCase() === 'codex';
+    });
+    var selection = data && data.active_by_surface && data.active_by_surface['dex:assistant'];
+    var activeId = selection && selection.account_id || data && (data.active_account_id || data.active_id) || '';
+    var active = accounts.find(function(account) { return account.id === activeId; }) || accounts[0] || null;
+    dexSetAccountButton(active);
+    if (!accounts.length) {
+      menu.innerHTML = '<div class="dex-model-item dex-model-empty">暂无账号</div>';
+      return;
+    }
+    menu.innerHTML = accounts.map(function(account) {
+      var activeClass = account.id === (active && active.id) ? ' active' : '';
+      return '<div class="dex-model-item dex-account-item' + activeClass + '" onclick="dexSelectAccount(\'' + escAttr(account.id) + '\')">'
+        + esc(dexAccountLabel(account)) + '</div>';
+    }).join('');
+  }).catch(function(e) {
+    console.warn('[dexAgent] 加载账号列表失败:', e);
+  });
+}
+
+function dexSelectAccount(id) {
+  DeeCodexTauri.invoke('set_dex_assistant_account', { accountId: id }).then(function(account) {
+    dexSetAccountButton(account);
+    var menu = document.getElementById('dexAccountMenu');
+    if (menu) menu.style.display = 'none';
+    dexLoadAccounts();
+    dexLoadModels();
+    dexRefreshStatus();
+    showToast('DEX 助手账号已切换', 'success');
+  }).catch(function(e) {
+    showToast('切换 DEX 助手账号失败: ' + (e.message || e), 'error');
+  });
+}
+
 function dexLoadModels() {
   var menu = document.getElementById('dexModelMenu');
   if (!menu) return;
-  DeeCodexTauri.invoke('get_active_account', {}).then(function(account) {
+  DeeCodexTauri.invoke('get_dex_assistant_account', {}).then(function(account) {
     if (!account || !account.model_map) return;
     var mm = account.model_map;
     if (typeof mm === 'string') { try { mm = JSON.parse(mm); } catch(e) { return; } }
@@ -67,6 +132,8 @@ function dexLoadModels() {
 document.addEventListener('click', function() {
   var m = document.getElementById('dexModelMenu');
   if (m) m.style.display = 'none';
+  var a = document.getElementById('dexAccountMenu');
+  if (a) a.style.display = 'none';
 });
 
 function dexShowStopButton() {
@@ -155,6 +222,8 @@ function dexAfterMutate(fnName) {
     }
     if (fnName.indexOf('account') >= 0 && typeof loadAccountsData === 'function') {
       loadAccountsData();
+      if (typeof dexLoadAccounts === 'function') dexLoadAccounts();
+      if (typeof dexLoadModels === 'function') dexLoadModels();
     }
     if (fnName.indexOf('plugin') >= 0 && typeof loadPluginsData === 'function') {
       loadPluginsData();

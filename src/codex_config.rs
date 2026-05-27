@@ -219,12 +219,21 @@ fn do_inject(
             toml_edit::Item::Table(toml_edit::Table::new()),
         );
     }
-    doc["model_providers"]["deecodex"]["base_url"] =
-        toml_edit::value(format!("http://{}:{}/v1", url_host, port));
-    doc["model_providers"]["deecodex"]["name"] = toml_edit::value("deecodex");
-    doc["model_providers"]["deecodex"]["requires_openai_auth"] = toml_edit::value(false);
-    doc["model_providers"]["deecodex"]["api_key"] = toml_edit::value("");
-    doc["model_providers"]["deecodex"]["wire_api"] = toml_edit::value("responses");
+    write_deecodex_provider(doc.as_table_mut(), "deecodex", url_host, port, "/v1");
+    write_deecodex_provider(
+        doc.as_table_mut(),
+        "deecodex_cli",
+        url_host,
+        port,
+        "/codex-cli/v1",
+    );
+    write_deecodex_provider(
+        doc.as_table_mut(),
+        "deecodex_desktop",
+        url_host,
+        port,
+        "/codex-desktop/v1",
+    );
 
     if let Some(catalog_path) = catalog_path {
         doc["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().to_string());
@@ -249,6 +258,21 @@ fn do_inject(
 
     std::fs::write(path, doc.to_string())?;
     Ok(!already_exists)
+}
+
+fn write_deecodex_provider(
+    doc: &mut toml_edit::Table,
+    provider: &str,
+    url_host: &str,
+    port: u16,
+    route_prefix: &str,
+) {
+    doc["model_providers"][provider]["base_url"] =
+        toml_edit::value(format!("http://{}:{}{}", url_host, port, route_prefix));
+    doc["model_providers"][provider]["name"] = toml_edit::value(provider);
+    doc["model_providers"][provider]["requires_openai_auth"] = toml_edit::value(false);
+    doc["model_providers"][provider]["api_key"] = toml_edit::value("");
+    doc["model_providers"][provider]["wire_api"] = toml_edit::value("responses");
 }
 
 fn do_remove(path: &std::path::Path) -> Result<bool> {
@@ -279,12 +303,16 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
         // 检查是否是 inline table
         let mut found = false;
         if let Some(inline) = providers.as_inline_table_mut() {
-            found = inline.remove("deecodex").is_some();
+            found |= inline.remove("deecodex").is_some();
+            found |= inline.remove("deecodex_cli").is_some();
+            found |= inline.remove("deecodex_desktop").is_some();
             if inline.is_empty() {
                 doc.remove("model_providers");
             }
         } else if let Some(table) = providers.as_table_mut() {
-            found = table.remove("deecodex").is_some();
+            found |= table.remove("deecodex").is_some();
+            found |= table.remove("deecodex_cli").is_some();
+            found |= table.remove("deecodex_desktop").is_some();
             if table.is_empty() {
                 doc.remove("model_providers");
             }

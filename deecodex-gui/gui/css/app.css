@@ -7603,6 +7603,7 @@ body {
   font-family: 'SF Mono',monospace; letter-spacing: 0.03em; transition: all 0.15s;
 }
 .dex-model-btn:hover { border-color: #00c8e8; color: #00c8e8; }
+.dex-account-btn { max-width: 190px; }
 .dex-model-menu {
   position: absolute; top: 100%; left: 0; z-index: 100; min-width: 150px; max-width: min(260px, calc(100vw - var(--sidebar-w) - 80px)); max-height: 200px;
   overflow-y: auto; border: 1px solid rgba(26,42,69,0.8); border-radius: 4px;
@@ -7614,6 +7615,19 @@ body {
   font-family: 'SF Mono',monospace; transition: all 0.1s;
 }
 .dex-model-item:hover { background: rgba(0,200,232,0.1); color: #00c8e8; }
+.dex-account-menu { min-width: 190px; }
+.dex-account-item.active {
+  color: #00c8e8;
+  background: rgba(0,200,232,0.08);
+}
+.dex-model-empty {
+  cursor: default;
+  color: #6b7fa8;
+}
+.dex-model-empty:hover {
+  background: transparent;
+  color: #6b7fa8;
+}
 
 /* ── 输入区 ── */
 .dex-input-area {

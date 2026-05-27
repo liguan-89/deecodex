@@ -483,6 +483,8 @@ pub fn run() {
             commands::stop_codex_cdp,
             commands::list_accounts,
             commands::get_active_account,
+            commands::get_dex_assistant_account,
+            commands::set_dex_assistant_account,
             commands::add_account,
             commands::update_account,
             commands::start_oauth_account_login,

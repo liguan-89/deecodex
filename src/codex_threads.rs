@@ -2209,7 +2209,7 @@ mod tests {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn create_test_threads_db_with_rows(
         path: &Path,
         threads: &[(&str, &str, &str, &str, &str, &str, &str, i32)],

@@ -672,6 +672,7 @@ async fn main() -> Result<()> {
             active_id: Some(default_account.id.clone()),
             active_account_id: Some(default_account.id.clone()),
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         })),
         active_account: Arc::new(tokio::sync::RwLock::new(default_account)),
         reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),

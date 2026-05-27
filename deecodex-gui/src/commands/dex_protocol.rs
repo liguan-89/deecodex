@@ -18,18 +18,10 @@ pub(super) type DexAccountInfo = (
 
 pub(super) fn get_active_account_info(data_dir: &Path) -> Option<DexAccountInfo> {
     let store = deecodex::accounts::load_accounts(data_dir);
-    let active_id = store
-        .active_account_id
-        .as_ref()
-        .or(store.active_id.as_ref())?;
-    let mut active = store
-        .accounts
-        .iter()
-        .find(|account| &account.id == active_id)
-        .cloned()?;
+    let mut active = store.active_account_for_dex_assistant().cloned()?;
     active.normalize_v2();
     let endpoint = active
-        .active_endpoint(store.active_endpoint_id.as_deref())
+        .active_endpoint(store.active_endpoint_id_for_dex_assistant())
         .cloned()
         .or_else(|| active.endpoints.first().cloned())?;
     active.sync_legacy_from_endpoint(&endpoint);
@@ -90,7 +82,7 @@ pub(super) async fn dex_responses_request_target(
         let port = *manager.port.lock().await;
         let url_host = deecodex::config::client_url_host(&host);
         return Ok((
-            format!("http://{url_host}:{port}/v1/responses"),
+            format!("http://{url_host}:{port}/dex-assistant/v1/responses"),
             body,
             false,
         ));
@@ -418,6 +410,84 @@ mod tests {
         assert_eq!(provider, "minimax");
         assert_eq!(profile.slug, "minimax");
         assert!(profile.capabilities.allow_missing_done);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn dex_account_info_uses_dex_assistant_selection() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "deecodex-dex-account-selection-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let path = deecodex::accounts::accounts_file_path(&data_dir);
+        std::fs::write(
+            &path,
+            json!({
+                "version": deecodex::accounts::ACCOUNT_STORE_VERSION,
+                "active_id": "global",
+                "active_account_id": "global",
+                "active_endpoint_id": "global-ep",
+                "active_by_surface": {
+                    "dex:assistant": {
+                        "account_id": "assistant",
+                        "endpoint_id": "assistant-ep"
+                    }
+                },
+                "accounts": [
+                    {
+                        "id": "global",
+                        "name": "Global",
+                        "provider": "openrouter",
+                        "client_kind": "codex",
+                        "client_surface": "cli",
+                        "upstream": "https://global.example/v1",
+                        "api_key": "sk-global",
+                        "model_map": {"gpt-5.5": "global-model"},
+                        "endpoints": [{
+                            "id": "global-ep",
+                            "name": "Global",
+                            "kind": "open_ai_chat",
+                            "base_url": "https://global.example/v1",
+                            "model_map": {"gpt-5.5": "global-model"}
+                        }]
+                    },
+                    {
+                        "id": "assistant",
+                        "name": "Assistant",
+                        "provider": "custom",
+                        "client_kind": "codex",
+                        "client_surface": "desktop",
+                        "upstream": "https://assistant.example/v1",
+                        "api_key": "sk-assistant",
+                        "model_map": {"gpt-5.5": "assistant-model"},
+                        "endpoints": [{
+                            "id": "assistant-ep",
+                            "name": "Assistant",
+                            "kind": "open_ai_chat",
+                            "base_url": "https://assistant.example/v1",
+                            "model_map": {"gpt-5.5": "assistant-model"}
+                        }]
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (upstream, api_key, model_map, _, _, _, _) =
+            get_active_account_info(&data_dir).unwrap();
+
+        assert_eq!(upstream, "https://assistant.example/v1");
+        assert_eq!(api_key, "sk-assistant");
+        assert_eq!(
+            model_map.get("gpt-5.5").map(String::as_str),
+            Some("assistant-model")
+        );
 
         let _ = std::fs::remove_dir_all(data_dir);
     }

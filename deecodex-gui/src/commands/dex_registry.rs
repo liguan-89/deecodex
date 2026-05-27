@@ -207,7 +207,7 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             tauri_cmd: "get_active_account",
             level: 0,
             confirm: None,
-            description: "获取当前活跃账号信息",
+            description: "获取 DEX 助手当前使用的账号信息",
             capability: "core.system",
             parameters: empty_params(),
         },
@@ -257,7 +257,7 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             tauri_cmd: "switch_account",
             level: 2,
             confirm: None,
-            description: "切换活跃账号",
+            description: "切换 DEX 助手使用的账号",
             capability: "core.system",
             parameters: params(
                 json!({"id":{"type":"string","description":"目标账号 ID"}}),

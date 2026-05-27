@@ -101,6 +101,7 @@ assert.strictEqual(typeof context.dexBuildSystemPrompt, 'function');
 assert.strictEqual(typeof context.dexLoadDynamicContext, 'function');
 assert.strictEqual(typeof context.dexAppendMessage, 'function');
 assert.strictEqual(typeof context.dexShowInlineConfirm, 'function');
+assert.strictEqual(typeof context.dexLoadAccounts, 'function');
 assert.strictEqual(typeof context.dexLoadModels, 'function');
 assert.strictEqual(typeof context.dexUpdateTokenCount, 'function');
 assert.strictEqual(typeof context.dexAttachLastFile, 'function');
@@ -111,6 +112,7 @@ const dexHtml = context.renderDexAssistant();
 assert(dexHtml.includes('primary-page-shell-dex-assistant'));
 assert(dexHtml.includes('id="dexMessages"'));
 assert(dexHtml.includes('id="dexInput"'));
+assert(dexHtml.includes('id="dexAccountMenu"'));
 assert(dexHtml.includes('onclick="dexSendMessage()"'));
 assert(dexHtml.includes('onclick="dexAttachLastFile(event)"'));
 

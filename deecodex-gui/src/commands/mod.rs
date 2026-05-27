@@ -504,14 +504,109 @@ fn same_oauth_account(
     !token.access_token.trim().is_empty() && account.api_key == token.access_token
 }
 
-fn store_has_active_codex_official(store: &deecodex::accounts::AccountStore) -> bool {
-    let Some(active) = store.active_account() else {
+fn surface_has_active_codex_official(
+    store: &deecodex::accounts::AccountStore,
+    surface: &AccountClientSurface,
+) -> bool {
+    let Some(active) = store.active_account_for_surface(surface) else {
         return false;
     };
     active
-        .active_endpoint(store.active_endpoint_id.as_deref())
+        .active_endpoint(store.active_endpoint_id_for_surface(&AccountClientKind::Codex, surface))
         .or_else(|| active.endpoints.first())
         .is_some_and(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial)
+}
+
+fn activate_codex_surface_account(
+    store: &mut AccountStore,
+    account: &deecodex::accounts::Account,
+    endpoint_id: Option<String>,
+    sync_legacy_global: bool,
+) {
+    if !account.client_kind.is_codex() {
+        return;
+    }
+    let endpoint_id = endpoint_id.or_else(|| {
+        account
+            .endpoints
+            .first()
+            .map(|endpoint| endpoint.id.clone())
+    });
+    store.set_active_for_surface(
+        &AccountClientKind::Codex,
+        &account.client_surface,
+        account.id.clone(),
+        endpoint_id.clone(),
+    );
+    if sync_legacy_global {
+        store.active_id = Some(account.id.clone());
+        store.active_account_id = Some(account.id.clone());
+        store.active_endpoint_id = endpoint_id;
+    }
+}
+
+fn should_sync_legacy_global(store: &AccountStore, account: &deecodex::accounts::Account) -> bool {
+    account.client_surface == AccountClientSurface::Cli || store.active_account_id.is_none()
+}
+
+fn dex_assistant_endpoint_for_account<'a>(
+    store: &deecodex::accounts::AccountStore,
+    account: &'a deecodex::accounts::Account,
+) -> Option<&'a deecodex::accounts::EndpointConfig> {
+    let selection = store.active_selection_for_dex_assistant();
+    let selected_endpoint_id = selection
+        .and_then(|selection| {
+            if selection.account_id.as_deref() == Some(account.id.as_str()) {
+                selection.endpoint_id.as_deref()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            store.active_endpoint_id_for_surface(&AccountClientKind::Codex, &account.client_surface)
+        });
+    account
+        .active_endpoint(selected_endpoint_id)
+        .or_else(|| account.endpoints.first())
+}
+
+pub(crate) async fn set_dex_assistant_account_inner(
+    manager: &ServerManager,
+    account_id: String,
+    endpoint_id: Option<String>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (store, (account, endpoint)) =
+        mutate_account_store(&data_dir, "保存 DEX 助手账号失败", |store| {
+            let mut account = store
+                .accounts
+                .iter()
+                .find(|account| account.id == account_id)
+                .cloned()
+                .ok_or_else(|| format!("账号不存在: {account_id}"))?;
+            if !account.client_kind.is_codex() {
+                return Err("DEX 助手只能使用 Codex 代理账号".into());
+            }
+            account.normalize_v2();
+            let endpoint = account
+                .active_endpoint(endpoint_id.as_deref())
+                .cloned()
+                .or_else(|| {
+                    store
+                        .active_endpoint_id_for_surface(
+                            &AccountClientKind::Codex,
+                            &account.client_surface,
+                        )
+                        .and_then(|endpoint_id| account.active_endpoint(Some(endpoint_id)).cloned())
+                })
+                .or_else(|| account.endpoints.first().cloned())
+                .ok_or_else(|| "目标账号没有可用端点".to_string())?;
+            validate_endpoint_runtime_urls(&endpoint)?;
+            store.set_active_for_dex_assistant(account.id.clone(), Some(endpoint.id.clone()));
+            Ok((account, endpoint))
+        })?;
+    sync_account_store_to_running_state(manager, &store).await;
+    Ok(account_to_value_with_endpoint(&account, Some(&endpoint)))
 }
 
 fn secret_is_redacted(value: &str) -> bool {
@@ -1100,17 +1195,28 @@ async fn create_oauth_account(
             }
 
             if became_active {
-                store.active_id = Some(saved_account.id.clone());
-                store.active_account_id = Some(saved_account.id.clone());
-                store.active_endpoint_id = saved_account
+                let endpoint_id = saved_account
                     .endpoints
                     .first()
                     .map(|endpoint| endpoint.id.clone());
+                let sync_legacy_global = should_sync_legacy_global(store, &saved_account);
+                activate_codex_surface_account(
+                    store,
+                    &saved_account,
+                    endpoint_id,
+                    sync_legacy_global,
+                );
             }
             Ok((saved_account, became_active))
         })?;
     if became_active {
-        sync_active_account_to_running_state(manager, &store, &account).await?;
+        if account.client_surface == AccountClientSurface::Cli
+            || store.active_account_id.as_deref() == Some(&account.id)
+        {
+            sync_active_account_to_running_state(manager, &store, &account).await?;
+        } else {
+            sync_account_store_to_running_state(manager, &store).await;
+        }
     } else {
         sync_account_store_to_running_state(manager, &store).await;
     }
@@ -1522,6 +1628,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
         active_id: Some(accounts[0].id.clone()),
         active_account_id: Some(accounts[0].id.clone()),
         active_endpoint_id: None,
+        active_by_surface: HashMap::new(),
         accounts,
     };
     store.normalize_v2();
@@ -2372,6 +2479,7 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
         "active_id": store.active_id,
         "active_account_id": store.active_account_id,
         "active_endpoint_id": store.active_endpoint_id,
+        "active_by_surface": store.active_by_surface,
         "client_counts": client_counts,
     }))
 }
@@ -2388,6 +2496,26 @@ pub async fn get_active_account(manager: State<'_, ServerManager>) -> Result<Val
         Some(a) => Ok(account_to_value_for_store(a, &store)),
         None => Err("没有活跃账号".to_string()),
     }
+}
+
+#[tauri::command]
+pub async fn get_dex_assistant_account(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let store = deecodex::accounts::load_accounts(&data_dir);
+    let account = store
+        .active_account_for_dex_assistant()
+        .ok_or_else(|| "没有 DEX 助手活跃账号".to_string())?;
+    let endpoint = dex_assistant_endpoint_for_account(&store, account);
+    Ok(account_to_value_with_endpoint(account, endpoint))
+}
+
+#[tauri::command]
+pub async fn set_dex_assistant_account(
+    manager: State<'_, ServerManager>,
+    account_id: String,
+    endpoint_id: Option<String>,
+) -> Result<Value, String> {
+    set_dex_assistant_account_inner(&manager, account_id, endpoint_id).await
 }
 
 /// 创建新账号（支持传入完整 account_json，用于前端先编辑后保存的流程）
@@ -2511,16 +2639,23 @@ pub async fn add_account(
                 if let Some(endpoint) = new_account.endpoints.first() {
                     validate_endpoint_runtime_urls(endpoint)?;
                 }
-                store.active_id = Some(new_account.id.clone());
-                store.active_account_id = Some(new_account.id.clone());
-                store.active_endpoint_id = new_account.endpoints.first().map(|e| e.id.clone());
+                let sync_legacy_global = should_sync_legacy_global(store, &new_account);
+                activate_codex_surface_account(
+                    store,
+                    &new_account,
+                    new_account.endpoints.first().map(|e| e.id.clone()),
+                    sync_legacy_global,
+                );
             }
 
             store.accounts.push(new_account.clone());
             Ok((new_account.clone(), became_active))
         })?;
 
-    if became_active {
+    if became_active
+        && (new_account.client_surface == AccountClientSurface::Cli
+            || store.active_account_id.as_deref() == Some(&new_account.id))
+    {
         sync_active_account_to_running_state(&manager, &store, &new_account).await?;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
@@ -2601,15 +2736,17 @@ pub async fn dex_quick_configure_client(
                     .endpoints
                     .first()
                     .map(|endpoint| endpoint.id.clone());
-                store.active_id = Some(account.id.clone());
-                store.active_account_id = Some(account.id.clone());
-                store.active_endpoint_id = endpoint_id;
+                let sync_legacy_global = should_sync_legacy_global(store, &account);
+                activate_codex_surface_account(store, &account, endpoint_id, sync_legacy_global);
             }
             store.accounts.push(account.clone());
             Ok((account.clone(), became_active))
         })?;
 
-    if became_active {
+    if became_active
+        && (account.client_surface == AccountClientSurface::Cli
+            || store.active_account_id.as_deref() == Some(&account.id))
+    {
         sync_active_account_to_running_state(&manager, &store, &account).await?;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
@@ -2658,7 +2795,23 @@ pub async fn update_account(
                 ensure_client_proxy_options(&mut account, &host, port);
             }
             account.normalize_v2();
-            let endpoint_for_legacy = if store.active_account_id.as_ref() == Some(&account.id)
+            let surface_active = account.client_kind.is_codex()
+                && store
+                    .active_selection_for_surface(
+                        &AccountClientKind::Codex,
+                        &account.client_surface,
+                    )
+                    .and_then(|selection| selection.account_id.as_deref())
+                    == Some(account.id.as_str());
+            let surface_endpoint_id = store
+                .active_endpoint_id_for_surface(&AccountClientKind::Codex, &account.client_surface)
+                .map(str::to_string);
+            let endpoint_for_legacy = if surface_active {
+                account
+                    .active_endpoint(surface_endpoint_id.as_deref())
+                    .cloned()
+                    .or_else(|| account.endpoints.first().cloned())
+            } else if store.active_account_id.as_ref() == Some(&account.id)
                 || store.active_id.as_ref() == Some(&account.id)
             {
                 account
@@ -2674,7 +2827,8 @@ pub async fn update_account(
             account.updated_at = now_secs();
 
             let is_active = account.client_kind.is_codex()
-                && (store.active_account_id.as_ref() == Some(&account.id)
+                && (surface_active
+                    || store.active_account_id.as_ref() == Some(&account.id)
                     || store.active_id.as_ref() == Some(&account.id));
             if is_active {
                 if let Some(endpoint) = endpoint_for_legacy.as_ref() {
@@ -2688,7 +2842,10 @@ pub async fn update_account(
         })?;
 
     // 如果保存的是活跃账号，立即热更新运行中的服务状态。
-    if is_active {
+    if is_active
+        && (account.client_surface == AccountClientSurface::Cli
+            || store.active_account_id.as_deref() == Some(&account.id))
+    {
         sync_active_account_to_running_state(&manager, &store, &account).await?;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
@@ -2714,6 +2871,7 @@ pub async fn delete_account(
                 .accounts
                 .iter()
                 .find(|account| account.id == id)
+                .cloned()
                 .ok_or_else(|| format!("账号不存在: {id}"))?;
             if deleting.client_kind.is_codex()
                 && store
@@ -2729,8 +2887,16 @@ pub async fn delete_account(
                 );
             }
 
-            let was_active = store.active_id.as_deref() == Some(&id)
+            let was_global_active = store.active_id.as_deref() == Some(&id)
                 || store.active_account_id.as_deref() == Some(&id);
+            let was_surface_active = deleting.client_kind.is_codex()
+                && store
+                    .active_selection_for_surface(
+                        &AccountClientKind::Codex,
+                        &deleting.client_surface,
+                    )
+                    .and_then(|selection| selection.account_id.as_deref())
+                    == Some(id.as_str());
 
             store.accounts.retain(|a| a.id != id);
             for account in &mut store.accounts {
@@ -2740,18 +2906,49 @@ pub async fn delete_account(
                 }
             }
 
-            let next_active_id = if was_active {
+            if was_surface_active {
+                if let Some(next_surface_account) = store
+                    .accounts
+                    .iter()
+                    .find(|account| {
+                        account.client_kind.is_codex()
+                            && account.client_surface == deleting.client_surface
+                    })
+                    .cloned()
+                {
+                    activate_codex_surface_account(
+                        store,
+                        &next_surface_account,
+                        next_surface_account
+                            .endpoints
+                            .first()
+                            .map(|endpoint| endpoint.id.clone()),
+                        false,
+                    );
+                }
+            }
+
+            let next_active_id = if was_global_active {
                 store
                     .accounts
                     .iter()
-                    .find(|account| account.client_kind.is_codex())
+                    .find(|account| {
+                        account.client_kind.is_codex()
+                            && account.client_surface == AccountClientSurface::Cli
+                    })
+                    .or_else(|| {
+                        store
+                            .accounts
+                            .iter()
+                            .find(|account| account.client_kind.is_codex())
+                    })
                     .map(|account| account.id.clone())
             } else {
                 None
             };
 
             // 如果删除的是活跃账号，只切到剩余的 Codex 代理账号；外部客户端不参与代理热切换。
-            if was_active {
+            if was_global_active {
                 store.active_id = next_active_id.clone();
                 store.active_account_id = store.active_id.clone();
                 store.active_endpoint_id = next_active_id.as_ref().and_then(|next_id| {
@@ -2804,8 +3001,11 @@ pub(crate) async fn switch_account_inner(
                 return Err("非 Codex 客户端账号不参与 deecodex 代理切换，请使用写入配置".into());
             }
             target.normalize_v2();
+            let surface_endpoint_id = store
+                .active_endpoint_id_for_surface(&AccountClientKind::Codex, &target.client_surface)
+                .map(str::to_string);
             let target_endpoint = target
-                .active_endpoint(store.active_endpoint_id.as_deref())
+                .active_endpoint(surface_endpoint_id.as_deref())
                 .cloned()
                 .or_else(|| target.endpoints.first().cloned())
                 .ok_or_else(|| "目标账号没有可用端点".to_string())?;
@@ -2815,13 +3015,23 @@ pub(crate) async fn switch_account_inner(
             deecodex::accounts::validate_capability_links(store).map_err(|e| e.to_string())?;
             deecodex::accounts::validate_dev_pipeline_links(store).map_err(|e| e.to_string())?;
 
-            store.active_id = Some(id.clone());
-            store.active_account_id = Some(id.clone());
-            store.active_endpoint_id = Some(target_endpoint.id.clone());
+            let sync_legacy_global = should_sync_legacy_global(store, &target);
+            activate_codex_surface_account(
+                store,
+                &target,
+                Some(target_endpoint.id.clone()),
+                sync_legacy_global,
+            );
             Ok((target, target_endpoint))
         })?;
 
-    sync_active_account_to_running_state(manager, &store, &target).await?;
+    if target.client_surface == AccountClientSurface::Cli
+        || store.active_account_id.as_deref() == Some(&target.id)
+    {
+        sync_active_account_to_running_state(manager, &store, &target).await?;
+    } else {
+        sync_account_store_to_running_state(manager, &store).await;
+    }
 
     Ok(account_to_value_with_endpoint(
         &target,
@@ -3007,17 +3217,27 @@ pub async fn import_auth_json_accounts(
 
             let imported_count = imported_events.len();
             let mut activated = false;
-            if imported_count > 0 && !store_has_active_codex_official(store) {
+            if imported_count > 0 && !surface_has_active_codex_official(store, &target_surface) {
                 if let Some(account_id) = first_imported_id.clone() {
-                    store.active_id = Some(account_id.clone());
-                    store.active_account_id = Some(account_id.clone());
-                    store.active_endpoint_id = store
+                    let account = store
                         .accounts
                         .iter()
                         .find(|account| account.id == account_id)
-                        .and_then(|account| account.endpoints.first())
-                        .map(|endpoint| endpoint.id.clone());
-                    activated = true;
+                        .cloned();
+                    if let Some(account) = account {
+                        let endpoint_id = account
+                            .endpoints
+                            .first()
+                            .map(|endpoint| endpoint.id.clone());
+                        let sync_legacy_global = should_sync_legacy_global(store, &account);
+                        activate_codex_surface_account(
+                            store,
+                            &account,
+                            endpoint_id,
+                            sync_legacy_global,
+                        );
+                        activated = true;
+                    }
                 }
             }
             Ok((
@@ -3034,13 +3254,11 @@ pub async fn import_auth_json_accounts(
     if imported_count > 0 {
         sync_account_store_to_running_state(&manager, &store).await;
         if activated {
-            if let Some(account_id) = store.active_account_id.clone() {
-                if let Some(account) = store
-                    .accounts
-                    .iter()
-                    .find(|account| account.id == account_id)
+            if let Some(account) = store.active_account_for_surface(&target_surface).cloned() {
+                if account.client_surface == AccountClientSurface::Cli
+                    || store.active_account_id.as_deref() == Some(&account.id)
                 {
-                    sync_active_account_to_running_state(&manager, &store, account).await?;
+                    sync_active_account_to_running_state(&manager, &store, &account).await?;
                 }
             }
         }
@@ -3117,12 +3335,15 @@ pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Va
 
         // 如果没有活跃账号，自动设为活跃
         if store.active_id.is_none() {
-            store.active_id = Some(imported.id.clone());
-            store.active_account_id = Some(imported.id.clone());
-            store.active_endpoint_id = imported
-                .endpoints
-                .first()
-                .map(|endpoint| endpoint.id.clone());
+            activate_codex_surface_account(
+                store,
+                &imported,
+                imported
+                    .endpoints
+                    .first()
+                    .map(|endpoint| endpoint.id.clone()),
+                true,
+            );
         }
 
         store.accounts.push(imported.clone());
@@ -4132,13 +4353,18 @@ pub async fn switch_endpoint(
                 .ok_or_else(|| format!("端点不存在: {endpoint_id}"))?;
             validate_endpoint_runtime_urls(&endpoint)?;
 
-            store.active_id = Some(account_id.clone());
-            store.active_account_id = Some(account_id.clone());
-            store.active_endpoint_id = Some(endpoint_id);
+            let sync_legacy_global = should_sync_legacy_global(store, &account);
+            activate_codex_surface_account(store, &account, Some(endpoint_id), sync_legacy_global);
             Ok((account, endpoint))
         })?;
 
-    sync_active_account_to_running_state(&manager, &store, &account).await?;
+    if account.client_surface == AccountClientSurface::Cli
+        || store.active_account_id.as_deref() == Some(&account.id)
+    {
+        sync_active_account_to_running_state(&manager, &store, &account).await?;
+    } else {
+        sync_account_store_to_running_state(&manager, &store).await;
+    }
     Ok(json!({
         "account": account_to_value_with_endpoint(&account, Some(&endpoint)),
         "endpoint": endpoint,
@@ -5287,10 +5513,15 @@ fn endpoint_for_account_in_store<'a>(
     if !account.client_kind.is_codex() {
         return None;
     }
-    if store.active_account_id.as_deref() == Some(&account.id)
-        || store.active_id.as_deref() == Some(&account.id)
+    if store
+        .active_selection_for_surface(&AccountClientKind::Codex, &account.client_surface)
+        .and_then(|selection| selection.account_id.as_deref())
+        == Some(account.id.as_str())
     {
-        account.active_endpoint(store.active_endpoint_id.as_deref())
+        account.active_endpoint(
+            store
+                .active_endpoint_id_for_surface(&AccountClientKind::Codex, &account.client_surface),
+        )
     } else {
         account.endpoints.first()
     }
@@ -6319,6 +6550,16 @@ mod tests {
             active_id: Some(active.id.clone()),
             active_account_id: Some(active.id.clone()),
             active_endpoint_id: Some("shared_endpoint_id".into()),
+            active_by_surface: HashMap::from([(
+                deecodex::accounts::surface_active_key(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Cli,
+                ),
+                deecodex::accounts::SurfaceActiveSelection {
+                    account_id: Some(active.id.clone()),
+                    endpoint_id: Some("shared_endpoint_id".into()),
+                },
+            )]),
         };
 
         let active_endpoint = endpoint_for_account_in_store(&active, &store).unwrap();
@@ -6514,6 +6755,7 @@ mod tests {
             active_id: Some("active".into()),
             active_account_id: Some("active".into()),
             active_endpoint_id: Some("selected".into()),
+            active_by_surface: HashMap::new(),
         };
         deecodex::accounts::save_accounts(&data_dir, &store).unwrap();
 

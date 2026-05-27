@@ -59,6 +59,41 @@ pub enum AccountClientSurface {
     Desktop,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SurfaceActiveSelection {
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub endpoint_id: Option<String>,
+}
+
+pub fn account_client_kind_key(kind: &AccountClientKind) -> &'static str {
+    match kind {
+        AccountClientKind::Codex => "codex",
+        AccountClientKind::ClaudeCode => "claude_code",
+        AccountClientKind::Openclaw => "openclaw",
+        AccountClientKind::Hermes => "hermes",
+        AccountClientKind::GenericClient => "generic_client",
+    }
+}
+
+pub fn account_client_surface_key(surface: &AccountClientSurface) -> &'static str {
+    match surface {
+        AccountClientSurface::Cli => "cli",
+        AccountClientSurface::Desktop => "desktop",
+    }
+}
+
+pub fn surface_active_key(kind: &AccountClientKind, surface: &AccountClientSurface) -> String {
+    format!(
+        "{}:{}",
+        account_client_kind_key(kind),
+        account_client_surface_key(surface)
+    )
+}
+
+pub const DEX_ASSISTANT_ACTIVE_KEY: &str = "dex:assistant";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientCheckRecord {
     #[serde(default)]
@@ -907,6 +942,8 @@ pub struct AccountStore {
     pub active_account_id: Option<String>,
     #[serde(default)]
     pub active_endpoint_id: Option<String>,
+    #[serde(default)]
+    pub active_by_surface: HashMap<String, SurfaceActiveSelection>,
 }
 
 fn default_account_store_version() -> u32 {
@@ -921,6 +958,7 @@ impl Default for AccountStore {
             active_id: None,
             active_account_id: None,
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         }
     }
 }
@@ -974,6 +1012,8 @@ impl AccountStore {
                 .and_then(|account| account.endpoints.first())
                 .map(|endpoint| endpoint.id.clone());
         }
+        self.repair_codex_surface_active();
+        self.repair_dex_assistant_active();
 
         let active_account_id = self.active_account_id.clone();
         let active_endpoint_id = self.active_endpoint_id.clone();
@@ -994,6 +1034,268 @@ impl AccountStore {
                 account.sync_legacy_from_endpoint(&endpoint);
             }
         }
+    }
+
+    fn repair_codex_surface_active(&mut self) {
+        for surface in [AccountClientSurface::Cli, AccountClientSurface::Desktop] {
+            let key = surface_active_key(&AccountClientKind::Codex, &surface);
+            let selected_account_id = self
+                .active_by_surface
+                .get(&key)
+                .and_then(|selection| selection.account_id.as_ref())
+                .filter(|account_id| {
+                    self.accounts.iter().any(|account| {
+                        &account.id == *account_id
+                            && account.client_kind.is_codex()
+                            && account.client_surface == surface
+                    })
+                })
+                .cloned()
+                .or_else(|| {
+                    self.accounts
+                        .iter()
+                        .find(|account| {
+                            account.client_kind.is_codex() && account.client_surface == surface
+                        })
+                        .map(|account| account.id.clone())
+                });
+
+            let Some(account_id) = selected_account_id else {
+                self.active_by_surface.remove(&key);
+                continue;
+            };
+
+            let endpoint_id = self
+                .active_by_surface
+                .get(&key)
+                .and_then(|selection| selection.endpoint_id.as_ref())
+                .filter(|endpoint_id| {
+                    self.accounts
+                        .iter()
+                        .find(|account| account.id == account_id)
+                        .is_some_and(|account| {
+                            account
+                                .endpoints
+                                .iter()
+                                .any(|endpoint| &endpoint.id == *endpoint_id)
+                        })
+                })
+                .cloned()
+                .or_else(|| {
+                    self.accounts
+                        .iter()
+                        .find(|account| account.id == account_id)
+                        .and_then(|account| account.endpoints.first())
+                        .map(|endpoint| endpoint.id.clone())
+                });
+
+            self.active_by_surface.insert(
+                key,
+                SurfaceActiveSelection {
+                    account_id: Some(account_id),
+                    endpoint_id,
+                },
+            );
+        }
+    }
+
+    fn repair_dex_assistant_active(&mut self) {
+        let selected_account_id = self
+            .active_by_surface
+            .get(DEX_ASSISTANT_ACTIVE_KEY)
+            .and_then(|selection| selection.account_id.as_ref())
+            .filter(|account_id| {
+                self.accounts
+                    .iter()
+                    .any(|account| &account.id == *account_id && account.client_kind.is_codex())
+            })
+            .cloned()
+            .or_else(|| {
+                self.active_account_id
+                    .as_ref()
+                    .filter(|account_id| {
+                        self.accounts.iter().any(|account| {
+                            &account.id == *account_id && account.client_kind.is_codex()
+                        })
+                    })
+                    .cloned()
+            })
+            .or_else(|| {
+                self.active_account_for_surface(&AccountClientSurface::Cli)
+                    .map(|account| account.id.clone())
+            })
+            .or_else(|| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.client_kind.is_codex())
+                    .map(|account| account.id.clone())
+            });
+
+        let Some(account_id) = selected_account_id else {
+            self.active_by_surface.remove(DEX_ASSISTANT_ACTIVE_KEY);
+            return;
+        };
+
+        let endpoint_id = self
+            .active_by_surface
+            .get(DEX_ASSISTANT_ACTIVE_KEY)
+            .and_then(|selection| selection.endpoint_id.as_ref())
+            .filter(|endpoint_id| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                    .is_some_and(|account| {
+                        account
+                            .endpoints
+                            .iter()
+                            .any(|endpoint| &endpoint.id == *endpoint_id)
+                    })
+            })
+            .cloned()
+            .or_else(|| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                    .and_then(|account| {
+                        if self.active_account_id.as_deref() == Some(account.id.as_str()) {
+                            account.active_endpoint(self.active_endpoint_id.as_deref())
+                        } else {
+                            None
+                        }
+                        .or_else(|| {
+                            self.active_endpoint_id_for_surface(
+                                &AccountClientKind::Codex,
+                                &account.client_surface,
+                            )
+                            .and_then(|endpoint_id| account.active_endpoint(Some(endpoint_id)))
+                        })
+                        .or_else(|| account.endpoints.first())
+                    })
+                    .map(|endpoint| endpoint.id.clone())
+            });
+
+        self.active_by_surface.insert(
+            DEX_ASSISTANT_ACTIVE_KEY.into(),
+            SurfaceActiveSelection {
+                account_id: Some(account_id),
+                endpoint_id,
+            },
+        );
+    }
+
+    #[allow(dead_code)]
+    pub fn set_active_for_surface(
+        &mut self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+        account_id: String,
+        endpoint_id: Option<String>,
+    ) {
+        let key = surface_active_key(kind, surface);
+        self.active_by_surface.insert(
+            key,
+            SurfaceActiveSelection {
+                account_id: Some(account_id),
+                endpoint_id,
+            },
+        );
+    }
+
+    pub fn active_selection_for_surface(
+        &self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+    ) -> Option<&SurfaceActiveSelection> {
+        self.active_by_surface
+            .get(&surface_active_key(kind, surface))
+    }
+
+    pub fn active_endpoint_id_for_surface(
+        &self,
+        kind: &AccountClientKind,
+        surface: &AccountClientSurface,
+    ) -> Option<&str> {
+        self.active_selection_for_surface(kind, surface)
+            .and_then(|selection| selection.endpoint_id.as_deref())
+    }
+
+    #[allow(dead_code)]
+    pub fn set_active_for_dex_assistant(
+        &mut self,
+        account_id: String,
+        endpoint_id: Option<String>,
+    ) {
+        self.active_by_surface.insert(
+            DEX_ASSISTANT_ACTIVE_KEY.into(),
+            SurfaceActiveSelection {
+                account_id: Some(account_id),
+                endpoint_id,
+            },
+        );
+    }
+
+    pub fn active_selection_for_dex_assistant(&self) -> Option<&SurfaceActiveSelection> {
+        self.active_by_surface.get(DEX_ASSISTANT_ACTIVE_KEY)
+    }
+
+    pub fn active_endpoint_id_for_dex_assistant(&self) -> Option<&str> {
+        self.active_selection_for_dex_assistant()
+            .and_then(|selection| selection.endpoint_id.as_deref())
+    }
+
+    pub fn active_account_for_surface(&self, surface: &AccountClientSurface) -> Option<&Account> {
+        let selection = self.active_selection_for_surface(&AccountClientKind::Codex, surface);
+        selection
+            .and_then(|selection| selection.account_id.as_ref())
+            .and_then(|id| {
+                self.accounts.iter().find(|account| {
+                    &account.id == id
+                        && account.client_kind.is_codex()
+                        && &account.client_surface == surface
+                })
+            })
+            .or_else(|| {
+                self.accounts.iter().find(|account| {
+                    account.client_kind.is_codex() && &account.client_surface == surface
+                })
+            })
+    }
+
+    pub fn active_account_for_dex_assistant(&self) -> Option<&Account> {
+        self.active_selection_for_dex_assistant()
+            .and_then(|selection| selection.account_id.as_ref())
+            .and_then(|id| {
+                self.accounts
+                    .iter()
+                    .find(|account| &account.id == id && account.client_kind.is_codex())
+            })
+            .or_else(|| {
+                self.active_account()
+                    .filter(|account| account.client_kind.is_codex())
+            })
+            .or_else(|| self.active_account_for_surface(&AccountClientSurface::Cli))
+            .or_else(|| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.client_kind.is_codex())
+            })
+    }
+
+    #[allow(dead_code)]
+    pub fn active_endpoint_for_dex_assistant(&self) -> Option<&EndpointConfig> {
+        let endpoint_id = self.active_endpoint_id_for_dex_assistant();
+        self.active_account_for_dex_assistant()
+            .and_then(|account| account.active_endpoint(endpoint_id))
+    }
+
+    #[allow(dead_code)]
+    pub fn active_endpoint_for_surface(
+        &self,
+        surface: &AccountClientSurface,
+    ) -> Option<&EndpointConfig> {
+        let endpoint_id = self.active_endpoint_id_for_surface(&AccountClientKind::Codex, surface);
+        self.active_account_for_surface(surface)
+            .and_then(|account| account.active_endpoint(endpoint_id))
     }
 
     fn repair_duplicate_account_ids(&mut self) {
@@ -1384,6 +1686,7 @@ pub fn parse_account_store(content: &str) -> Result<AccountStore> {
                 active_id: accounts.first().map(|account| account.id.clone()),
                 active_account_id: accounts.first().map(|account| account.id.clone()),
                 active_endpoint_id: None,
+                active_by_surface: HashMap::new(),
                 accounts,
             }),
             Err(_) => Err(store_err.into()),
@@ -1961,6 +2264,7 @@ mod capability_tests {
             active_id: Some("a1".into()),
             active_account_id: Some("a1".into()),
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         };
 
         assert!(validate_capability_links(&store).is_err());
@@ -1978,6 +2282,7 @@ mod capability_tests {
             active_id: Some("a1".into()),
             active_account_id: Some("a1".into()),
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         };
 
         assert!(validate_capability_links(&store).is_ok());
@@ -2018,6 +2323,7 @@ mod capability_tests {
             active_id: Some("a1".into()),
             active_account_id: Some("a1".into()),
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         };
 
         assert!(validate_dev_pipeline_links(&store).is_err());
@@ -2037,6 +2343,7 @@ mod capability_tests {
             active_id: Some("a1".into()),
             active_account_id: Some("a1".into()),
             active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
         };
 
         assert!(validate_dev_pipeline_links(&store).is_ok());
@@ -2231,6 +2538,7 @@ mod tests {
             active_id: Some("missing_account".into()),
             active_account_id: Some("missing_account".into()),
             active_endpoint_id: Some("missing_endpoint".into()),
+            active_by_surface: HashMap::new(),
         };
 
         store.normalize_v2();
@@ -2251,6 +2559,109 @@ mod tests {
     }
 
     #[test]
+    fn store_normalize_repairs_codex_surface_active_independently() {
+        let mut cli = legacy_account(true);
+        cli.id = "cli".into();
+        cli.client_surface = AccountClientSurface::Cli;
+        cli.normalize_v2();
+        cli.endpoints[0].id = "cli-endpoint".into();
+
+        let mut desktop = legacy_account(true);
+        desktop.id = "desktop".into();
+        desktop.client_surface = AccountClientSurface::Desktop;
+        desktop.normalize_v2();
+        desktop.endpoints[0].id = "desktop-endpoint".into();
+
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![cli, desktop],
+            active_id: Some("cli".into()),
+            active_account_id: Some("cli".into()),
+            active_endpoint_id: Some("cli-endpoint".into()),
+            active_by_surface: HashMap::from([(
+                surface_active_key(&AccountClientKind::Codex, &AccountClientSurface::Desktop),
+                SurfaceActiveSelection {
+                    account_id: Some("desktop".into()),
+                    endpoint_id: Some("missing-endpoint".into()),
+                },
+            )]),
+        };
+
+        store.normalize_v2();
+
+        assert_eq!(
+            store
+                .active_account_for_surface(&AccountClientSurface::Cli)
+                .map(|account| account.id.as_str()),
+            Some("cli")
+        );
+        assert_eq!(
+            store.active_endpoint_id_for_surface(
+                &AccountClientKind::Codex,
+                &AccountClientSurface::Cli
+            ),
+            Some("cli-endpoint")
+        );
+        assert_eq!(
+            store
+                .active_account_for_surface(&AccountClientSurface::Desktop)
+                .map(|account| account.id.as_str()),
+            Some("desktop")
+        );
+        assert_eq!(
+            store.active_endpoint_id_for_surface(
+                &AccountClientKind::Codex,
+                &AccountClientSurface::Desktop
+            ),
+            Some("desktop-endpoint")
+        );
+    }
+
+    #[test]
+    fn store_normalize_repairs_dex_assistant_active_independently() {
+        let mut cli = legacy_account(true);
+        cli.id = "cli".into();
+        cli.client_surface = AccountClientSurface::Cli;
+        cli.normalize_v2();
+        cli.endpoints[0].id = "cli-endpoint".into();
+
+        let mut assistant = legacy_account(true);
+        assistant.id = "assistant".into();
+        assistant.client_surface = AccountClientSurface::Desktop;
+        assistant.normalize_v2();
+        assistant.endpoints[0].id = "assistant-endpoint".into();
+
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![cli, assistant],
+            active_id: Some("cli".into()),
+            active_account_id: Some("cli".into()),
+            active_endpoint_id: Some("cli-endpoint".into()),
+            active_by_surface: HashMap::from([(
+                DEX_ASSISTANT_ACTIVE_KEY.into(),
+                SurfaceActiveSelection {
+                    account_id: Some("assistant".into()),
+                    endpoint_id: Some("missing-endpoint".into()),
+                },
+            )]),
+        };
+
+        store.normalize_v2();
+
+        assert_eq!(
+            store
+                .active_account_for_dex_assistant()
+                .map(|account| account.id.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            store.active_endpoint_id_for_dex_assistant(),
+            Some("assistant-endpoint")
+        );
+        assert_eq!(store.active_account_id.as_deref(), Some("cli"));
+    }
+
+    #[test]
     fn store_normalize_repairs_duplicate_account_ids() {
         let mut first = legacy_account(true);
         first.normalize_v2();
@@ -2265,6 +2676,7 @@ mod tests {
             active_id: Some("duplicate".into()),
             active_account_id: Some("duplicate".into()),
             active_endpoint_id: Some("endpoint_duplicate".into()),
+            active_by_surface: HashMap::new(),
         };
 
         store.normalize_v2();
@@ -2308,6 +2720,7 @@ mod tests {
             active_account_id: Some(first.id.clone()),
             active_endpoint_id: None,
             accounts: vec![first],
+            active_by_surface: HashMap::new(),
         };
         save_accounts(&dir, &first_store).unwrap();
 
@@ -2319,6 +2732,7 @@ mod tests {
             active_account_id: Some(second.id.clone()),
             active_endpoint_id: None,
             accounts: vec![second],
+            active_by_surface: HashMap::new(),
         };
         save_accounts(&dir, &second_store).unwrap();
 
@@ -2342,6 +2756,7 @@ mod tests {
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: None,
             accounts: vec![account],
+            active_by_surface: HashMap::new(),
         };
         std::fs::write(
             accounts_backup_file_path(&dir),
@@ -2379,6 +2794,7 @@ mod tests {
             active_id: Some("acc_1".into()),
             active_account_id: Some("acc_1".into()),
             active_endpoint_id: Some(second.id.clone()),
+            active_by_surface: HashMap::new(),
         };
 
         store.normalize_v2();
@@ -2386,7 +2802,7 @@ mod tests {
         let active = store.active_account().unwrap();
         assert_eq!(active.upstream, "https://api.openai.com/v1");
         assert!(!active.translate_enabled);
-        assert_eq!(active.model_map["gpt-5"], "gpt-5");
+        assert!(active.model_map.is_empty());
     }
 
     #[test]

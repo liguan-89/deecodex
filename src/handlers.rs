@@ -189,6 +189,75 @@ struct DevPipelineResponseArgs<'a> {
     start: Instant,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccountRouteSurface {
+    Global,
+    CodexCli,
+    CodexDesktop,
+    DexAssistant,
+}
+
+impl AccountRouteSurface {
+    fn explicit_surface(self) -> Option<AccountClientSurface> {
+        match self {
+            AccountRouteSurface::Global => None,
+            AccountRouteSurface::CodexCli => Some(AccountClientSurface::Cli),
+            AccountRouteSurface::CodexDesktop => Some(AccountClientSurface::Desktop),
+            AccountRouteSurface::DexAssistant => None,
+        }
+    }
+
+    fn responses_path(self) -> &'static str {
+        match self {
+            AccountRouteSurface::Global => "/v1/responses",
+            AccountRouteSurface::CodexCli => "/codex-cli/v1/responses",
+            AccountRouteSurface::CodexDesktop => "/codex-desktop/v1/responses",
+            AccountRouteSurface::DexAssistant => "/dex-assistant/v1/responses",
+        }
+    }
+}
+
+fn infer_account_route_surface(headers: &HeaderMap) -> AccountRouteSurface {
+    if let Some(surface) = headers
+        .get("x-deecodex-client-surface")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        if surface.contains("dex") || surface.contains("assistant") {
+            return AccountRouteSurface::DexAssistant;
+        }
+        if surface.contains("desktop") {
+            return AccountRouteSurface::CodexDesktop;
+        }
+        if surface.contains("cli") {
+            return AccountRouteSurface::CodexCli;
+        }
+    }
+
+    let marker = ["user-agent", "originator", "x-codex-client"]
+        .iter()
+        .filter_map(|name| headers.get(*name))
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    if marker.contains("codex_desktop")
+        || marker.contains("codex desktop")
+        || marker.contains("codex-desktop")
+    {
+        return AccountRouteSurface::CodexDesktop;
+    }
+    if marker.contains("codex_cli")
+        || marker.contains("codex cli")
+        || marker.contains("codex-cli")
+        || marker.contains("codex_cli_rs")
+    {
+        return AccountRouteSurface::CodexCli;
+    }
+    AccountRouteSurface::Global
+}
+
 async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) {
     let (mut account, mut endpoint) = active_account_endpoint_without_hot_overrides(state).await;
     // AppState 的热字段仍是运行时真值；测试和托盘切换都会直接更新它。
@@ -201,16 +270,58 @@ async fn active_account_endpoint_without_hot_overrides(
     state: &AppState,
 ) -> (Account, EndpointConfig) {
     let mut account = state.active_account.read().await.clone();
-    account.normalize_v2();
+    if account.endpoints.is_empty() {
+        account.normalize_v2();
+    }
     let endpoint_id = state.account_store.read().await.active_endpoint_id.clone();
     account_endpoint_or_fallback(account, endpoint_id.as_deref())
+}
+
+async fn active_account_endpoint_for_route(
+    state: &AppState,
+    route_surface: AccountRouteSurface,
+) -> (Account, EndpointConfig) {
+    if route_surface == AccountRouteSurface::DexAssistant {
+        let store = state.account_store.read().await;
+        if let Some(account) = store.active_account_for_dex_assistant().cloned() {
+            let endpoint_id = store
+                .active_endpoint_id_for_dex_assistant()
+                .map(str::to_string);
+            return account_endpoint_or_fallback(account, endpoint_id.as_deref());
+        }
+        drop(store);
+
+        warn!("未找到 DEX 助手对应的活跃账号，回退到全局活跃账号");
+        return active_account_endpoint(state).await;
+    }
+
+    let Some(surface) = route_surface.explicit_surface() else {
+        return active_account_endpoint(state).await;
+    };
+
+    let store = state.account_store.read().await;
+    if let Some(account) = store.active_account_for_surface(&surface).cloned() {
+        let endpoint_id = store
+            .active_endpoint_id_for_surface(&AccountClientKind::Codex, &surface)
+            .map(str::to_string);
+        return account_endpoint_or_fallback(account, endpoint_id.as_deref());
+    }
+    drop(store);
+
+    warn!(
+        "未找到 {:?} 对应的 Codex 活跃账号，回退到全局活跃账号",
+        surface
+    );
+    active_account_endpoint(state).await
 }
 
 fn account_endpoint_or_fallback(
     mut account: Account,
     active_endpoint_id: Option<&str>,
 ) -> (Account, EndpointConfig) {
-    account.normalize_v2();
+    if account.endpoints.is_empty() {
+        account.normalize_v2();
+    }
     let endpoint = account
         .active_endpoint(active_endpoint_id)
         .cloned()
@@ -248,6 +359,7 @@ fn account_endpoint_or_fallback(
 async fn codex_official_account_endpoint(
     state: &AppState,
     requested_model: &str,
+    route_surface: AccountRouteSurface,
 ) -> Option<(Account, EndpointConfig)> {
     let store = state.account_store.read().await.clone();
     let cursor = CODEX_OFFICIAL_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
@@ -256,6 +368,7 @@ async fn codex_official_account_endpoint(
         requested_model,
         crate::accounts::now_secs(),
         cursor,
+        route_surface,
     )
 }
 
@@ -278,9 +391,17 @@ fn select_codex_official_account_endpoint(
     requested_model: &str,
     now: u64,
     cursor: u64,
+    route_surface: AccountRouteSurface,
 ) -> Option<(Account, EndpointConfig)> {
-    let active_account = store.active_account()?;
-    let active_endpoint = active_official_endpoint(store, active_account)?;
+    let active_account = match route_surface {
+        AccountRouteSurface::DexAssistant => store.active_account_for_dex_assistant()?,
+        _ => match route_surface.explicit_surface() {
+            Some(surface) => store.active_account_for_surface(&surface)?,
+            None => store.active_account()?,
+        },
+    };
+    let active_endpoint_id = active_endpoint_id_for_route(store, route_surface);
+    let active_endpoint = active_official_endpoint(active_account, active_endpoint_id.as_deref())?;
     if active_endpoint.kind != EndpointKind::CodexOfficial {
         return None;
     }
@@ -297,7 +418,7 @@ fn select_codex_official_account_endpoint(
             if !routing.effective_enabled() || routing.pool != active_pool {
                 return None;
             }
-            let endpoint = official_endpoint_for_account(store, account)?;
+            let endpoint = official_endpoint_for_account(store, account, route_surface)?;
             let mapped_model = resolve_model(requested_model, &endpoint.model_map);
             if !account_runtime_ready(account, &mapped_model, now) {
                 return None;
@@ -338,9 +459,49 @@ fn select_codex_official_account_endpoint(
     None
 }
 
-fn active_official_endpoint(store: &AccountStore, account: &Account) -> Option<EndpointConfig> {
+fn active_endpoint_id_for_route(
+    store: &AccountStore,
+    route_surface: AccountRouteSurface,
+) -> Option<String> {
+    match route_surface {
+        AccountRouteSurface::DexAssistant => store
+            .active_endpoint_id_for_dex_assistant()
+            .map(str::to_string),
+        _ => match route_surface.explicit_surface() {
+            Some(surface) => store
+                .active_endpoint_id_for_surface(&AccountClientKind::Codex, &surface)
+                .map(str::to_string),
+            None => store.active_endpoint_id.clone(),
+        },
+    }
+}
+
+fn active_account_id_for_route(
+    store: &AccountStore,
+    route_surface: AccountRouteSurface,
+) -> Option<String> {
+    match route_surface {
+        AccountRouteSurface::DexAssistant => store
+            .active_selection_for_dex_assistant()
+            .and_then(|selection| selection.account_id.clone()),
+        _ => match route_surface.explicit_surface() {
+            Some(surface) => store
+                .active_selection_for_surface(&AccountClientKind::Codex, &surface)
+                .and_then(|selection| selection.account_id.clone()),
+            None => store
+                .active_account_id
+                .clone()
+                .or_else(|| store.active_id.clone()),
+        },
+    }
+}
+
+fn active_official_endpoint(
+    account: &Account,
+    active_endpoint_id: Option<&str>,
+) -> Option<EndpointConfig> {
     account
-        .active_endpoint(store.active_endpoint_id.as_deref())
+        .active_endpoint(active_endpoint_id)
         .filter(|endpoint| endpoint.kind == EndpointKind::CodexOfficial)
         .cloned()
 }
@@ -348,11 +509,11 @@ fn active_official_endpoint(store: &AccountStore, account: &Account) -> Option<E
 fn official_endpoint_for_account(
     store: &AccountStore,
     account: &Account,
+    route_surface: AccountRouteSurface,
 ) -> Option<EndpointConfig> {
-    if store.active_account_id.as_deref() == Some(&account.id)
-        || store.active_id.as_deref() == Some(&account.id)
-    {
-        if let Some(endpoint) = active_official_endpoint(store, account) {
+    if active_account_id_for_route(store, route_surface).as_deref() == Some(&account.id) {
+        let active_endpoint_id = active_endpoint_id_for_route(store, route_surface);
+        if let Some(endpoint) = active_official_endpoint(account, active_endpoint_id.as_deref()) {
             return Some(endpoint);
         }
     }
@@ -1083,6 +1244,15 @@ async fn forward_client_proxy_request(
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/responses", post(handle_responses))
+        .route("/codex-cli/v1/responses", post(handle_responses_codex_cli))
+        .route(
+            "/codex-desktop/v1/responses",
+            post(handle_responses_codex_desktop),
+        )
+        .route(
+            "/dex-assistant/v1/responses",
+            post(handle_responses_dex_assistant),
+        )
         .route("/v1/chat/completions", post(handle_client_chat_completions))
         .route("/v1/images/generations", post(handle_images_generations))
         .route("/v1/images/edits", post(handle_images_edits))
@@ -1091,7 +1261,31 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/responses/compact", post(handle_compact_response))
         .route("/v1/responses/input_tokens", post(handle_input_tokens))
         .route(
+            "/codex-cli/v1/responses/compact",
+            post(handle_compact_response),
+        )
+        .route(
+            "/codex-cli/v1/responses/input_tokens",
+            post(handle_input_tokens),
+        )
+        .route(
+            "/codex-desktop/v1/responses/compact",
+            post(handle_compact_response),
+        )
+        .route(
+            "/codex-desktop/v1/responses/input_tokens",
+            post(handle_input_tokens),
+        )
+        .route(
             "/v1/responses/:response_id",
+            get(handle_get_response).delete(handle_delete_response),
+        )
+        .route(
+            "/codex-cli/v1/responses/:response_id",
+            get(handle_get_response).delete(handle_delete_response),
+        )
+        .route(
+            "/codex-desktop/v1/responses/:response_id",
             get(handle_get_response).delete(handle_delete_response),
         )
         .route(
@@ -1099,7 +1293,23 @@ pub fn build_router(state: AppState) -> Router {
             post(handle_cancel_response),
         )
         .route(
+            "/codex-cli/v1/responses/:response_id/cancel",
+            post(handle_cancel_response),
+        )
+        .route(
+            "/codex-desktop/v1/responses/:response_id/cancel",
+            post(handle_cancel_response),
+        )
+        .route(
             "/v1/responses/:response_id/input_items",
+            get(handle_input_items),
+        )
+        .route(
+            "/codex-cli/v1/responses/:response_id/input_items",
+            get(handle_input_items),
+        )
+        .route(
+            "/codex-desktop/v1/responses/:response_id/input_items",
             get(handle_input_items),
         )
         .route("/v1/prompts", get(handle_list_prompts))
@@ -1152,8 +1362,12 @@ pub fn build_router(state: AppState) -> Router {
             get(handle_conversation_items),
         )
         .route("/v1/models", get(handle_models))
+        .route("/codex-cli/v1/models", get(handle_models))
+        .route("/codex-desktop/v1/models", get(handle_models))
         .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
+        .route("/codex-cli/v1", get(handle_v1))
+        .route("/codex-desktop/v1", get(handle_v1))
         .route("/metrics", get(handle_metrics))
         // Codex 线程聚合（跨 provider）
         .route("/api/threads", get(handle_list_threads_api))
@@ -1921,8 +2135,12 @@ async fn handle_images_api(
     if endpoint.kind == EndpointKind::CodexOfficial
         || upstream_is_codex_official_endpoint(&endpoint)
     {
-        let Some((account, endpoint)) =
-            codex_official_account_endpoint(&state, DEFAULT_IMAGE_TOOL_MODEL).await
+        let Some((account, endpoint)) = codex_official_account_endpoint(
+            &state,
+            DEFAULT_IMAGE_TOOL_MODEL,
+            AccountRouteSurface::Global,
+        )
+        .await
         else {
             return codex_official_pool_unavailable_response();
         };
@@ -3191,7 +3409,40 @@ async fn handle_fallback(req: Request) -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
+async fn handle_responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_responses_for_route(state, body, infer_account_route_surface(&headers)).await
+}
+
+async fn handle_responses_codex_cli(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_responses_for_route(state, body, AccountRouteSurface::CodexCli).await
+}
+
+async fn handle_responses_codex_desktop(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_responses_for_route(state, body, AccountRouteSurface::CodexDesktop).await
+}
+
+async fn handle_responses_dex_assistant(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Response {
+    handle_responses_for_route(state, body, AccountRouteSurface::DexAssistant).await
+}
+
+async fn handle_responses_for_route(
+    state: AppState,
+    body: axum::body::Bytes,
+    route_surface: AccountRouteSurface,
+) -> Response {
     let _start = std::time::Instant::now();
     let mut req: ResponsesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -3208,7 +3459,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         }
     };
     let model = req.model.clone();
-    let (_account, endpoint) = active_account_endpoint(&state).await;
+    let (_account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
     let mode = match endpoint.kind {
         EndpointKind::OpenAiChat | EndpointKind::CustomChat => "translate",
         EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => "bypass",
@@ -3226,10 +3477,10 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
 
     // 直连模式：仅做模型映射，其他全部透传
     if endpoint.kind.is_responses_like() {
-        return handle_responses_bypass(state, req, body).await;
+        return handle_responses_bypass(state, req, body, route_surface).await;
     }
     if endpoint.kind == EndpointKind::CodexOfficial {
-        return handle_codex_official(state, req, body).await;
+        return handle_codex_official(state, req, body, route_surface).await;
     }
 
     // ── 以下仅翻译/代理模式生效 ──
@@ -3326,6 +3577,7 @@ async fn handle_responses(State(state): State<AppState>, body: axum::body::Bytes
         body.clone(),
         local_file_search_output_items,
         local_file_search_input_items,
+        route_surface,
     )
     .await;
     tracing::info!(
@@ -3911,6 +4163,7 @@ async fn handle_responses_bypass(
     state: AppState,
     mut req: ResponsesRequest,
     body: axum::body::Bytes,
+    route_surface: AccountRouteSurface,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -3929,8 +4182,8 @@ async fn handle_responses_bypass(
 
     // Responses 直连用于转发 Codex 原生请求，默认保留请求体里的模型名。
     // Chat 兼容端点才需要 Responses -> Chat 的模型映射。
-    let (account, endpoint) = active_account_endpoint(&state).await;
-    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
+    let (account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
+    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
     let fast_service_tier_status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
     match fast_service_tier_status {
         FastServiceTierStatus::Injected => tracing::info!(
@@ -4169,14 +4422,15 @@ async fn handle_codex_official(
     state: AppState,
     mut req: ResponsesRequest,
     mut body: axum::body::Bytes,
+    route_surface: AccountRouteSurface,
 ) -> Response {
     let original_model = req.model.clone();
     let Some((mut account, endpoint)) =
-        codex_official_account_endpoint(&state, &original_model).await
+        codex_official_account_endpoint(&state, &original_model, route_surface).await
     else {
         return codex_official_pool_unavailable_response();
     };
-    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
+    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
     let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
     req.model = mapped_model.clone();
@@ -5085,6 +5339,7 @@ async fn handle_responses_inner(
     raw_body: axum::body::Bytes,
     local_output_prefix_items: Vec<Value>,
     local_input_suffix_items: Vec<Value>,
+    route_surface: AccountRouteSurface,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -5107,8 +5362,8 @@ async fn handle_responses_inner(
     let original_model = req.model.clone();
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
-    let (account, endpoint) = active_account_endpoint(&state).await;
-    let history_context = history_context_for(&account, &endpoint, "/v1/responses");
+    let (account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
+    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
     let model_map = endpoint.model_map.clone();
     let mapped_model = resolve_model(&original_model, &model_map);
     let store_response = req.store.unwrap_or(true);
@@ -5684,7 +5939,9 @@ async fn build_capability_observation(
 
     let helper_context = if let Some(helper) = helper_account.as_ref() {
         let mut normalized_helper = helper.clone();
-        normalized_helper.normalize_v2();
+        if normalized_helper.endpoints.is_empty() {
+            normalized_helper.normalize_v2();
+        }
         let Some(helper_endpoint) = normalized_helper
             .active_endpoint(None)
             .cloned()
@@ -7321,6 +7578,7 @@ mod tests {
             active_id: Some(active_id.into()),
             active_account_id: Some(active_id.into()),
             active_endpoint_id: Some(format!("ep-{active_id}")),
+            active_by_surface: HashMap::new(),
         }
     }
 
@@ -7379,8 +7637,14 @@ mod tests {
         let ready = official_codex_account("ready", 10, 1);
         let store = official_store(vec![cooled, ready], "cooled");
 
-        let (account, _) =
-            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+        let (account, _) = select_codex_official_account_endpoint(
+            &store,
+            "gpt-5",
+            1_000,
+            0,
+            AccountRouteSurface::Global,
+        )
+        .unwrap();
 
         assert_eq!(account.id, "ready");
     }
@@ -7391,8 +7655,14 @@ mod tests {
         let high = official_codex_account("high", 10, 1);
         let store = official_store(vec![low, high], "low");
 
-        let (account, _) =
-            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+        let (account, _) = select_codex_official_account_endpoint(
+            &store,
+            "gpt-5",
+            1_000,
+            0,
+            AccountRouteSurface::Global,
+        )
+        .unwrap();
 
         assert_eq!(account.id, "high");
     }
@@ -7410,10 +7680,43 @@ mod tests {
             "active-desktop",
         );
 
-        let (account, _) =
-            select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0).unwrap();
+        let (account, _) = select_codex_official_account_endpoint(
+            &store,
+            "gpt-5",
+            1_000,
+            0,
+            AccountRouteSurface::Global,
+        )
+        .unwrap();
 
         assert_eq!(account.id, "desktop-peer");
+        assert_eq!(account.client_surface, AccountClientSurface::Desktop);
+    }
+
+    #[test]
+    fn codex_official_selector_uses_requested_route_surface_anchor() {
+        let mut cli = official_codex_account("cli", 100, 1);
+        cli.client_surface = AccountClientSurface::Cli;
+        let mut desktop = official_codex_account("desktop", 10, 1);
+        desktop.client_surface = AccountClientSurface::Desktop;
+        let mut store = official_store(vec![cli, desktop], "cli");
+        store.set_active_for_surface(
+            &AccountClientKind::Codex,
+            &AccountClientSurface::Desktop,
+            "desktop".into(),
+            Some("ep-desktop".into()),
+        );
+
+        let (account, _) = select_codex_official_account_endpoint(
+            &store,
+            "gpt-5",
+            1_000,
+            0,
+            AccountRouteSurface::CodexDesktop,
+        )
+        .unwrap();
+
+        assert_eq!(account.id, "desktop");
         assert_eq!(account.client_surface, AccountClientSurface::Desktop);
     }
 
@@ -7439,7 +7742,13 @@ mod tests {
         );
         let store = official_store(vec![active, other], "active");
 
-        let selected = select_codex_official_account_endpoint(&store, "gpt-5", 1_000, 0);
+        let selected = select_codex_official_account_endpoint(
+            &store,
+            "gpt-5",
+            1_000,
+            0,
+            AccountRouteSurface::Global,
+        );
 
         assert!(selected.is_none());
     }

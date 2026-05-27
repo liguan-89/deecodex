@@ -8,9 +8,9 @@ use axum::{
 };
 use deecodex::{
     accounts::{
-        Account, AccountClientKind, AccountStore, DevPipelineToolMode, DevPipelineTriggerMode,
-        EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode, UnsupportedImagePolicy,
-        VisionMode,
+        Account, AccountClientKind, AccountClientSurface, AccountStore, DevPipelineToolMode,
+        DevPipelineTriggerMode, EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode,
+        UnsupportedImagePolicy, VisionMode,
     },
     cache::RequestCache,
     handlers::{build_router, AppState},
@@ -117,6 +117,7 @@ fn test_state() -> AppState {
             active_id: Some("test-account".into()),
             active_account_id: Some("test-account".into()),
             active_endpoint_id: None,
+            active_by_surface: std::collections::HashMap::new(),
         })),
         active_account: Arc::new(tokio::sync::RwLock::new(Account {
             id: "test-account".into(),
@@ -362,15 +363,16 @@ async fn client_proxy_chat_records_usage_and_account_context() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["usage"]["prompt_tokens"], 11);
 
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].path, "/v1/chat/completions");
-    assert_eq!(
-        captured[0].authorization.as_deref(),
-        Some("Bearer sk-upstream")
-    );
-    assert!(captured[0].body.contains("\"gpt-proxy\""));
-    drop(captured);
+    {
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/v1/chat/completions");
+        assert_eq!(
+            captured[0].authorization.as_deref(),
+            Some("Bearer sk-upstream")
+        );
+        assert!(captured[0].body.contains("\"gpt-proxy\""));
+    }
 
     let entries = state
         .request_history
@@ -426,27 +428,28 @@ async fn client_proxy_claude_oauth_uses_bearer_token_without_x_api_key() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(
-        captured[0].authorization.as_deref(),
-        Some("Bearer sk-ant-oat-upstream")
-    );
-    assert!(captured[0].x_api_key.is_none());
-    assert_eq!(captured[0].anthropic_version.as_deref(), Some("2023-06-01"));
-    assert!(captured[0]
-        .anthropic_beta
-        .as_deref()
-        .is_some_and(|value| value.contains("oauth-2025-04-20")));
-    assert!(captured[0]
-        .anthropic_beta
-        .as_deref()
-        .is_some_and(|value| value.contains("fine-grained-tool-streaming-2025-05-14")));
-    assert_eq!(
-        captured[0].user_agent.as_deref(),
-        Some("claude-cli/2.1.63 (external, cli)")
-    );
-    drop(captured);
+    {
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].authorization.as_deref(),
+            Some("Bearer sk-ant-oat-upstream")
+        );
+        assert!(captured[0].x_api_key.is_none());
+        assert_eq!(captured[0].anthropic_version.as_deref(), Some("2023-06-01"));
+        assert!(captured[0]
+            .anthropic_beta
+            .as_deref()
+            .is_some_and(|value| value.contains("oauth-2025-04-20")));
+        assert!(captured[0]
+            .anthropic_beta
+            .as_deref()
+            .is_some_and(|value| value.contains("fine-grained-tool-streaming-2025-05-14")));
+        assert_eq!(
+            captured[0].user_agent.as_deref(),
+            Some("claude-cli/2.1.63 (external, cli)")
+        );
+    }
 
     let store = state.account_store.read().await;
     let account = store
@@ -537,16 +540,17 @@ async fn client_proxy_anthropic_message_paths_record_usage() {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured.len(), 2);
-    assert!(captured.iter().all(|req| req.path == "/v1/messages"));
-    assert!(captured
-        .iter()
-        .all(|req| req.authorization.as_deref() == Some("Bearer sk-upstream")));
-    assert!(captured
-        .iter()
-        .all(|req| req.x_api_key.as_deref().is_none()));
-    drop(captured);
+    {
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(captured.iter().all(|req| req.path == "/v1/messages"));
+        assert!(captured
+            .iter()
+            .all(|req| req.authorization.as_deref() == Some("Bearer sk-upstream")));
+        assert!(captured
+            .iter()
+            .all(|req| req.x_api_key.as_deref().is_none()));
+    }
 
     let entries = state
         .request_history
@@ -2580,6 +2584,7 @@ async fn test_chat_strip_policy_removes_image_and_continues() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2647,6 +2652,7 @@ async fn test_model_profile_native_vision_overrides_endpoint_off() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2714,6 +2720,7 @@ async fn test_caption_then_main_routes_final_answer_to_main_endpoint() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2796,6 +2803,7 @@ async fn test_glue_final_answer_uses_vision_endpoint_only() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2870,6 +2878,7 @@ async fn test_model_profile_glue_vision_overrides_endpoint_off() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2931,6 +2940,7 @@ async fn test_chat_glue_vision_requires_configured_vision_endpoint() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -2991,6 +3001,7 @@ async fn test_chat_glue_vision_rejects_invalid_vision_url() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -3054,6 +3065,7 @@ async fn test_chat_glue_vision_rejects_reserved_adapter() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -3107,6 +3119,7 @@ async fn test_responses_bypass_rejects_image_when_vision_off() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -3142,6 +3155,144 @@ async fn test_responses_bypass_rejects_image_when_vision_off() {
 }
 
 #[tokio::test]
+async fn codex_cli_and_desktop_response_routes_use_separate_active_accounts() {
+    let (cli_upstream, cli_captured) =
+        capture_any_json_upstream(r#"{"id":"resp_cli","status":"completed","output":[]}"#).await;
+    let (desktop_upstream, desktop_captured) =
+        capture_any_json_upstream(r#"{"id":"resp_desktop","status":"completed","output":[]}"#)
+            .await;
+    let state = test_state();
+
+    let mut cli_account = state.active_account.read().await.clone();
+    cli_account.id = "codex-cli-account".into();
+    cli_account.name = "Codex CLI".into();
+    cli_account.client_surface = AccountClientSurface::Cli;
+    cli_account.normalize_v2();
+    cli_account.endpoints[0].id = "cli-responses".into();
+    cli_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+    cli_account.endpoints[0].base_url = cli_upstream.to_string();
+    cli_account.endpoints[0].path = "responses".into();
+
+    let mut desktop_account = cli_account.clone();
+    desktop_account.id = "codex-desktop-account".into();
+    desktop_account.name = "Codex Desktop".into();
+    desktop_account.client_surface = AccountClientSurface::Desktop;
+    desktop_account.endpoints[0].id = "desktop-responses".into();
+    desktop_account.endpoints[0].base_url = desktop_upstream.to_string();
+
+    *state.active_account.write().await = cli_account.clone();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![cli_account.clone(), desktop_account.clone()];
+        store.active_id = Some(cli_account.id.clone());
+        store.active_account_id = Some(cli_account.id.clone());
+        store.active_endpoint_id = Some("cli-responses".into());
+        store.set_active_for_surface(
+            &AccountClientKind::Codex,
+            &AccountClientSurface::Cli,
+            cli_account.id.clone(),
+            Some("cli-responses".into()),
+        );
+        store.set_active_for_surface(
+            &AccountClientKind::Codex,
+            &AccountClientSurface::Desktop,
+            desktop_account.id.clone(),
+            Some("desktop-responses".into()),
+        );
+    }
+
+    let app = build_router(state);
+    for (path, text) in [
+        ("/codex-cli/v1/responses", "from-cli"),
+        ("/codex-desktop/v1/responses", "from-desktop"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .method(Method::POST)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"model": "gpt-5", "input": text}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let cli_requests = cli_captured.lock().unwrap();
+    let desktop_requests = desktop_captured.lock().unwrap();
+    assert_eq!(cli_requests.len(), 1);
+    assert_eq!(desktop_requests.len(), 1);
+    assert_eq!(cli_requests[0].path, "/responses");
+    assert_eq!(desktop_requests[0].path, "/responses");
+    assert_eq!(cli_requests[0].body["input"], "from-cli");
+    assert_eq!(desktop_requests[0].body["input"], "from-desktop");
+}
+
+#[tokio::test]
+async fn dex_assistant_response_route_uses_dex_assistant_active_account() {
+    let (global_upstream, global_captured) =
+        capture_any_json_upstream(r#"{"id":"resp_global","status":"completed","output":[]}"#).await;
+    let (dex_upstream, dex_captured) =
+        capture_any_json_upstream(r#"{"id":"resp_dex","status":"completed","output":[]}"#).await;
+    let state = test_state();
+
+    let mut global_account = state.active_account.read().await.clone();
+    global_account.id = "codex-global-account".into();
+    global_account.name = "Codex Global".into();
+    global_account.client_surface = AccountClientSurface::Cli;
+    global_account.normalize_v2();
+    global_account.endpoints[0].id = "global-responses".into();
+    global_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
+    global_account.endpoints[0].base_url = global_upstream.to_string();
+    global_account.endpoints[0].path = "responses".into();
+
+    let mut dex_account = global_account.clone();
+    dex_account.id = "dex-assistant-account".into();
+    dex_account.name = "DEX Assistant".into();
+    dex_account.client_surface = AccountClientSurface::Desktop;
+    dex_account.endpoints[0].id = "dex-responses".into();
+    dex_account.endpoints[0].base_url = dex_upstream.to_string();
+
+    *state.active_account.write().await = global_account.clone();
+    {
+        let mut store = state.account_store.write().await;
+        store.accounts = vec![global_account.clone(), dex_account.clone()];
+        store.active_id = Some(global_account.id.clone());
+        store.active_account_id = Some(global_account.id.clone());
+        store.active_endpoint_id = Some("global-responses".into());
+        store.set_active_for_dex_assistant(dex_account.id.clone(), Some("dex-responses".into()));
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/dex-assistant/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"model": "gpt-5", "input": "from-dex"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let global_requests = global_captured.lock().unwrap();
+    let dex_requests = dex_captured.lock().unwrap();
+    assert!(global_requests.is_empty());
+    assert_eq!(dex_requests.len(), 1);
+    assert_eq!(dex_requests[0].path, "/responses");
+    assert_eq!(dex_requests[0].body["input"], "from-dex");
+}
+
+#[tokio::test]
 async fn test_responses_bypass_strip_policy_removes_image_and_continues() {
     let (upstream, captured) = capture_any_json_upstream(r#"{"id":"resp_upstream"}"#).await;
     let mut state = test_state();
@@ -3160,6 +3311,7 @@ async fn test_responses_bypass_strip_policy_removes_image_and_continues() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -3223,6 +3375,7 @@ async fn test_responses_bypass_caption_then_main_patches_responses_body() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
 
@@ -3297,6 +3450,7 @@ async fn test_anthropic_messages_endpoint_builds_messages_request() {
             active_id: Some(account.id.clone()),
             active_account_id: Some(account.id.clone()),
             active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
         };
     }
     let app = build_router(state);
@@ -3831,6 +3985,7 @@ async fn configure_dev_pipeline_accounts(state: &mut AppState, upstream: &reqwes
         active_id: Some("active-main".into()),
         active_account_id: Some("active-main".into()),
         active_endpoint_id: None,
+        active_by_surface: std::collections::HashMap::new(),
     };
 }
 
