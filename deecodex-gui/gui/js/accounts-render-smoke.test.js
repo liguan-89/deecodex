@@ -366,10 +366,12 @@ context.selectedClientSurface = 'cli';
 const claudeAddPanel = context.renderAccountsPanel();
 assert(claudeAddPanel.includes('官方 Claude CLI 登录'));
 assert(claudeAddPanel.includes("startOAuthAccountLogin('claude', 'browser')"));
+assert(!claudeAddPanel.includes('official-login-grid'));
 
 context.selectedClientSurface = 'desktop';
 const claudeDesktopAddPanel = context.renderAccountsPanel();
 assert(claudeDesktopAddPanel.includes('官方 Claude 桌面版 登录'));
+assert(!claudeDesktopAddPanel.includes('official-login-grid'));
 
 context.oauthLoginState = {
   state: 'oauth-state',

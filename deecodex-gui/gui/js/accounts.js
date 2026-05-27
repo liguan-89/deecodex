@@ -1433,9 +1433,7 @@ function renderOfficialOAuthCards(kind) {
     </div>`;
   }
   if (normalized === 'claude_code') {
-    return `<div class="official-login-grid">
-      ${renderOfficialOAuthCard('claude', 'browser', `官方 ${surfaceTitle} 登录`, '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com')}
-    </div>`;
+    return renderOfficialOAuthCard('claude', 'browser', `官方 ${surfaceTitle} 登录`, '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com');
   }
   return '';
 }
