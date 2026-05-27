@@ -3,6 +3,9 @@ use tauri::State;
 
 use crate::ServerManager;
 
+const DEFAULT_REQUEST_HISTORY_LIMIT: usize = 3_000;
+const MAX_REQUEST_HISTORY_LIMIT: usize = 50_000;
+
 fn request_history_filter(
     client_kind: Option<String>,
     account_id: Option<String>,
@@ -13,6 +16,12 @@ fn request_history_filter(
     }
 }
 
+fn request_history_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_REQUEST_HISTORY_LIMIT)
+        .clamp(1, MAX_REQUEST_HISTORY_LIMIT)
+}
+
 pub async fn list_request_history_impl(
     manager: State<'_, ServerManager>,
     limit: Option<usize>,
@@ -20,18 +29,16 @@ pub async fn list_request_history_impl(
     account_id: Option<String>,
 ) -> Result<Value, String> {
     let filter = request_history_filter(client_kind, account_id);
+    let limit = request_history_limit(limit);
     let rh = manager.request_history.lock().await;
     if let Some(store) = rh.as_ref() {
-        let entries = store.list(limit.unwrap_or(3000), &filter).await;
+        let entries = store.list(limit, &filter).await;
         return Ok(serde_json::to_value(entries).unwrap_or_default());
     }
     drop(rh);
     let guard = manager.app_state.lock().await;
     let state = guard.as_ref().ok_or("服务未启动")?;
-    let entries = state
-        .request_history
-        .list(limit.unwrap_or(100), &filter)
-        .await;
+    let entries = state.request_history.list(limit, &filter).await;
     Ok(serde_json::to_value(entries).unwrap_or_default())
 }
 

@@ -18,6 +18,7 @@ let _historyAllEntries = [];
 let _historyOffline = false;
 let _historyReconnectTimer = null;
 const HISTORY_CACHE_KEY = 'deecodex.history.cache';
+const HISTORY_LIST_LIMIT = 20000;
 
 		function syncHistoryAutoRefreshUi() {
 		  const toggle = document.getElementById('historyAutoToggle');
@@ -384,11 +385,11 @@ const HISTORY_CACHE_KEY = 'deecodex.history.cache';
 		  const barsEl = document.getElementById('historyChartBars');
 		  const cardsEl = document.getElementById('historyCardsContainer');
 		  try {
-		    const listArgs = historyFilterArgs({ limit: 3000 });
+		    const listArgs = historyFilterArgs({ limit: HISTORY_LIST_LIMIT });
 		    const shouldLoadAllEntries = Boolean(listArgs.clientKind || listArgs.accountId);
 		    const [entries, allEntries, monthlyStats, todayStats, accountsPayload] = await Promise.all([
 		      invoke('list_request_history', listArgs),
-		      shouldLoadAllEntries ? invoke('list_request_history', { limit: 3000 }).catch(() => null) : Promise.resolve(null),
+		      shouldLoadAllEntries ? invoke('list_request_history', { limit: HISTORY_LIST_LIMIT }).catch(() => null) : Promise.resolve(null),
 		      invoke('get_monthly_stats', historyFilterArgs({ limit: 60 })),
 		      invoke('get_request_stats_since', historyFilterArgs({ since: todayStartUnixSecs() })),
 		      invoke('list_accounts', {}),

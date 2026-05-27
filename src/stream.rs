@@ -24,6 +24,16 @@ use crate::{
     utils::merge_response_extra,
 };
 
+fn chat_usage_cache_hit(usage: &ChatUsage) -> bool {
+    let prompt_cache_hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
+    let prompt_cached = usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|details| details.cached_tokens)
+        .unwrap_or(0);
+    prompt_cache_hit > 0 || prompt_cached > 0
+}
+
 pub struct StreamArgs {
     pub client: reqwest::Client,
     pub url: String,
@@ -773,6 +783,7 @@ pub fn translate_stream(
 
         // Clone for cache before moving into completion_usage
         let cache_usage = final_usage.clone();
+        let history_cache_hit = cache_usage.as_ref().is_some_and(chat_usage_cache_hit);
 
         // Build usage for response.completed
         let completion_usage = final_usage.map(|u| json!({
@@ -1104,7 +1115,7 @@ pub fn translate_stream(
             start.elapsed().as_millis() as u64,
             upstream_url,
             String::new(),
-            false,
+            history_cache_hit,
         )).await;
     };
 
@@ -1325,6 +1336,7 @@ pub fn translate_cached(
 mod tests {
     use super::*;
     use crate::cache::CachedUsage;
+    use crate::types::CachedTokenDetails;
     use axum::response::IntoResponse;
 
     fn parse_sse_events(body: &[u8]) -> Vec<(String, serde_json::Value)> {
@@ -1359,6 +1371,29 @@ mod tests {
             );
             last = seq;
         }
+    }
+
+    #[test]
+    fn detects_stream_usage_cache_hit() {
+        let mut usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        assert!(!chat_usage_cache_hit(&usage));
+
+        usage.prompt_tokens_details = Some(CachedTokenDetails {
+            cached_tokens: Some(12),
+        });
+        assert!(chat_usage_cache_hit(&usage));
+
+        usage.prompt_tokens_details = None;
+        usage.prompt_cache_hit_tokens = Some(1);
+        assert!(chat_usage_cache_hit(&usage));
     }
 
     #[tokio::test]

@@ -36,7 +36,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures_util::TryStreamExt;
+use bytes::Bytes;
+use futures_util::StreamExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
@@ -615,6 +616,73 @@ fn record_from_context(
     )
 }
 
+struct SseHistoryBodyContext {
+    request_history: Arc<crate::request_history::RequestHistoryStore>,
+    history_context: HistoryContext,
+    response_id: String,
+    model: String,
+    start: Instant,
+    upstream_url: String,
+    http_status: StatusCode,
+}
+
+fn history_recording_sse_body<S>(
+    upstream_stream: S,
+    context: SseHistoryBodyContext,
+) -> axum::body::Body
+where
+    S: futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+{
+    let body_stream = async_stream::stream! {
+        let mut source = Box::pin(upstream_stream);
+        let mut usage = SseUsageObservation::default();
+        let mut stream_error: Option<String> = None;
+        while let Some(item) = source.next().await {
+            match item {
+                Ok(bytes) => {
+                    usage.ingest(&bytes);
+                    yield Ok::<Bytes, std::io::Error>(bytes);
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    stream_error = Some(message.clone());
+                    yield Err(std::io::Error::other(message));
+                    break;
+                }
+            }
+        }
+        usage.finish();
+        let error_msg = stream_error.unwrap_or_else(|| {
+            if context.http_status.is_success() {
+                String::new()
+            } else {
+                format!("HTTP {}", context.http_status.as_u16())
+            }
+        });
+        let status = if context.http_status.is_success() && error_msg.is_empty() {
+            "completed"
+        } else {
+            "failed"
+        };
+        let _ = context
+            .request_history
+            .record(record_from_context(
+                &context.history_context,
+                context.response_id,
+                context.model,
+                status.into(),
+                usage.input_tokens,
+                usage.output_tokens,
+                context.start.elapsed().as_millis() as u64,
+                context.upstream_url,
+                error_msg,
+                usage.cache_hit,
+            ))
+            .await;
+    };
+    axum::body::Body::from_stream(body_stream)
+}
+
 fn client_proxy_enabled(account: &Account) -> bool {
     account
         .client_options
@@ -925,6 +993,54 @@ fn usage_from_value(value: &Value) -> (Option<u32>, Option<u32>, bool) {
         }
     }
     (None, None, false)
+}
+
+#[derive(Default)]
+struct SseUsageObservation {
+    line_buffer: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_hit: bool,
+}
+
+impl SseUsageObservation {
+    fn ingest(&mut self, bytes: &Bytes) {
+        self.line_buffer.push_str(&String::from_utf8_lossy(bytes));
+        while let Some(pos) = self.line_buffer.find('\n') {
+            let line: String = self.line_buffer.drain(..=pos).collect();
+            self.observe_line(line.trim_end_matches(['\r', '\n']));
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.line_buffer.is_empty() {
+            return;
+        }
+        let line = std::mem::take(&mut self.line_buffer);
+        self.observe_line(line.trim_end_matches(['\r', '\n']));
+    }
+
+    fn observe_line(&mut self, line: &str) {
+        let data = line
+            .strip_prefix("data:")
+            .map(str::trim_start)
+            .unwrap_or(line)
+            .trim();
+        if data.is_empty() || data == "[DONE]" {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        let (input, output, hit) = usage_from_value(&value);
+        if let Some(input) = input {
+            self.input_tokens = input;
+        }
+        if let Some(output) = output {
+            self.output_tokens = output;
+        }
+        self.cache_hit |= hit;
+    }
 }
 
 fn extract_proxy_response_usage(bytes: &[u8]) -> (u32, u32, bool) {
@@ -4590,34 +4706,22 @@ async fn handle_codex_official(
             retry_after,
         )
         .await;
-        let stream = upstream_resp.bytes_stream().map_err(std::io::Error::other);
-        state
-            .request_history
-            .record(record_from_context(
-                &history_context,
+        let body = history_recording_sse_body(
+            upstream_resp.bytes_stream(),
+            SseHistoryBodyContext {
+                request_history: state.request_history.clone(),
+                history_context,
                 response_id,
-                mapped_model,
-                if status.is_success() {
-                    "completed".into()
-                } else {
-                    "failed".into()
-                },
-                0,
-                0,
-                start.elapsed().as_millis() as u64,
-                url,
-                if status.is_success() {
-                    String::new()
-                } else {
-                    format!("HTTP {}", status.as_u16())
-                },
-                false,
-            ))
-            .await;
+                model: mapped_model,
+                start,
+                upstream_url: url,
+                http_status: status,
+            },
+        );
         return Response::builder()
             .status(status)
             .header("Content-Type", content_type)
-            .body(axum::body::Body::from_stream(stream))
+            .body(body)
             .unwrap();
     }
 
@@ -5057,27 +5161,21 @@ async fn bypass_stream_forward(
         tracing::warn!(
             model = %model,
             requested_service_tier = %requested_service_tier.as_deref().unwrap_or(""),
-            "Responses 直连流式透传不再等待完整响应，无法在代理层解析 service_tier/usage"
+            "Responses 直连流式透传将在流结束后记录 usage/cache_hit"
         );
     }
-    let _ = state
-        .request_history
-        .record(record_from_context(
-            &history_context,
+    let body_stream = history_recording_sse_body(
+        resp.bytes_stream(),
+        SseHistoryBodyContext {
+            request_history: state.request_history.clone(),
+            history_context,
             response_id,
             model,
-            "completed".into(),
-            0,
-            0,
-            start.elapsed().as_millis() as u64,
-            url,
-            String::new(),
-            false,
-        ))
-        .await;
-
-    let body_stream =
-        axum::body::Body::from_stream(resp.bytes_stream().map_err(std::io::Error::other));
+            start,
+            upstream_url: url,
+            http_status: status,
+        },
+    );
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
@@ -8213,6 +8311,26 @@ data: [DONE]
 "#;
         let (input, output, cache_hit) = extract_proxy_response_usage(body);
         assert_eq!((input, output, cache_hit), (9, 3, false));
+    }
+
+    #[test]
+    fn test_sse_usage_observation_reads_chunked_cache_hit() {
+        let mut observation = SseUsageObservation::default();
+        observation.ingest(&Bytes::from_static(
+            br#"event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":"#,
+        ));
+        observation.ingest(&Bytes::from_static(
+            br#"90},"output_tokens":8,"total_tokens":128}}}
+
+data: [DONE]
+"#,
+        ));
+        observation.finish();
+
+        assert_eq!(observation.input_tokens, 120);
+        assert_eq!(observation.output_tokens, 8);
+        assert!(observation.cache_hit);
     }
 
     #[test]
