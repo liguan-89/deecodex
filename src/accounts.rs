@@ -559,6 +559,85 @@ impl Account {
         format!("{}****{}", prefix, suffix)
     }
 
+    fn is_openai_native_responses(&self) -> bool {
+        self.client_kind.is_codex() && self.provider.eq_ignore_ascii_case("openai")
+    }
+
+    fn is_responses_direct_account(&self) -> bool {
+        self.is_openai_native_responses()
+            || self.endpoints.iter().any(|endpoint| {
+                endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial
+            })
+    }
+
+    fn normalize_responses_direct(&mut self) {
+        let force_openai_responses = self.is_openai_native_responses();
+        if !self.is_responses_direct_account() {
+            return;
+        }
+
+        self.translate_enabled = false;
+        self.model_map.clear();
+        self.context_window_override = None;
+        self.reasoning_effort_override = None;
+        self.thinking_tokens = None;
+        self.vision_enabled = false;
+        self.vision_upstream.clear();
+        self.vision_api_key.clear();
+        self.vision_model.clear();
+        self.vision_endpoint = default_minimax_vlm_path();
+        self.capability_enabled = false;
+        self.capability_account_id = None;
+        self.dev_pipeline_enabled = false;
+        self.dev_pipeline_trigger_mode = DevPipelineTriggerMode::Manual;
+        self.dev_pipeline_command = default_dev_pipeline_command();
+        self.dev_pipeline_architect_account_id = None;
+        self.dev_pipeline_implementer_account_id = None;
+        self.dev_pipeline_reviewer_account_id = None;
+        self.dev_pipeline_tool_mode = DevPipelineToolMode::ControlledTools;
+        self.dev_pipeline_max_iterations = default_dev_pipeline_max_iterations();
+        self.dev_pipeline_show_trace = false;
+        self.dev_pipeline_architect_instruction.clear();
+        self.dev_pipeline_implementer_instruction.clear();
+        self.dev_pipeline_reviewer_instruction.clear();
+
+        for endpoint in &mut self.endpoints {
+            if !force_openai_responses
+                && !endpoint.kind.is_responses_like()
+                && endpoint.kind != EndpointKind::CodexOfficial
+            {
+                continue;
+            }
+            if force_openai_responses {
+                endpoint.kind = EndpointKind::OpenAiResponses;
+            }
+            endpoint.name = endpoint.kind.label().into();
+            endpoint.template_id = match endpoint.kind {
+                EndpointKind::CodexOfficial => "codex_official".into(),
+                EndpointKind::CustomResponses => {
+                    if endpoint.template_id.trim().is_empty() {
+                        "custom_responses".into()
+                    } else {
+                        endpoint.template_id.clone()
+                    }
+                }
+                _ => "responses_direct".into(),
+            };
+            if endpoint.kind != EndpointKind::CustomResponses {
+                endpoint.path.clear();
+            }
+            endpoint.model_map.clear();
+            endpoint.model_profiles.clear();
+            endpoint.vision = VisionConfig {
+                mode: VisionMode::Native,
+                ..VisionConfig::default()
+            };
+            endpoint.context_window_override = None;
+            endpoint.reasoning_effort_override = None;
+            endpoint.thinking_tokens = None;
+        }
+    }
+
     pub fn normalize_v2(&mut self) {
         if !self.client_kind.supports_desktop_surface() {
             self.client_surface = AccountClientSurface::Cli;
@@ -571,6 +650,7 @@ impl Account {
         if self.endpoints.is_empty() {
             self.endpoints.push(endpoint_from_legacy_account(self));
         }
+        self.normalize_responses_direct();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -1592,6 +1672,209 @@ mod provider_tests {
         assert!(store.active_id.is_none());
         assert!(store.active_account().is_none());
         assert!(store.active_endpoint_id.is_none());
+    }
+
+    #[test]
+    fn openai_codex_account_is_normalized_to_native_responses() {
+        let raw = json!({
+            "version": 3,
+            "accounts": [{
+                "id": "openai-1",
+                "name": "OpenAI",
+                "provider": "openai",
+                "client_kind": "codex",
+                "upstream": "https://api.openai.com/v1",
+                "api_key": "sk-test",
+                "model_map": {"gpt-5.5": "other-model"},
+                "vision_enabled": true,
+                "vision_upstream": "https://vision.example.com",
+                "context_window_override": 1000000,
+                "reasoning_effort_override": "high",
+                "thinking_tokens": 16000,
+                "translate_enabled": true,
+                "capability_enabled": true,
+                "capability_account_id": "helper",
+                "dev_pipeline_enabled": true,
+                "dev_pipeline_architect_account_id": "helper",
+                "endpoints": [{
+                    "id": "endpoint_openai",
+                    "name": "Chat",
+                    "kind": "open_ai_chat",
+                    "base_url": "https://api.openai.com/v1",
+                    "path": "chat/completions",
+                    "model_map": {"gpt-5.5": "other-model"},
+                    "model_profiles": {"other-model": {"vision_mode": "glue"}},
+                    "vision": {
+                        "mode": "glue",
+                        "base_url": "https://vision.example.com",
+                        "api_key": "sk-vision",
+                        "model": "vision-model"
+                    },
+                    "context_window_override": 1000000,
+                    "reasoning_effort_override": "high",
+                    "thinking_tokens": 16000,
+                    "fast_mode_enabled": true,
+                    "request_timeout_secs": 42,
+                    "max_retries": 4
+                }]
+            }],
+            "active_id": "openai-1"
+        });
+        let mut store: AccountStore = serde_json::from_value(raw).unwrap();
+        store.normalize_v2();
+        let account = &store.accounts[0];
+        let endpoint = &account.endpoints[0];
+
+        assert!(!account.translate_enabled);
+        assert!(account.model_map.is_empty());
+        assert!(!account.vision_enabled);
+        assert!(account.vision_upstream.is_empty());
+        assert_eq!(account.context_window_override, None);
+        assert_eq!(account.reasoning_effort_override, None);
+        assert_eq!(account.thinking_tokens, None);
+        assert!(!account.capability_enabled);
+        assert_eq!(account.capability_account_id, None);
+        assert!(!account.dev_pipeline_enabled);
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+        assert!(endpoint.path.is_empty());
+        assert!(endpoint.model_map.is_empty());
+        assert!(endpoint.model_profiles.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+        assert!(endpoint.vision.base_url.is_empty());
+        assert_eq!(endpoint.context_window_override, None);
+        assert_eq!(endpoint.reasoning_effort_override, None);
+        assert_eq!(endpoint.thinking_tokens, None);
+        assert!(endpoint.fast_mode_enabled);
+        assert_eq!(endpoint.request_timeout_secs, Some(42));
+        assert_eq!(endpoint.max_retries, Some(4));
+    }
+
+    #[test]
+    fn custom_responses_endpoint_is_normalized_without_losing_custom_path() {
+        let raw = json!({
+            "version": 3,
+            "accounts": [{
+                "id": "responses-1",
+                "name": "Responses Direct",
+                "provider": "custom",
+                "client_kind": "codex",
+                "upstream": "https://gateway.example.com",
+                "api_key": "sk-test",
+                "translate_enabled": true,
+                "capability_enabled": true,
+                "dev_pipeline_enabled": true,
+                "context_window_override": 1000000,
+                "reasoning_effort_override": "high",
+                "thinking_tokens": 16000,
+                "model_map": {"gpt-5.5": "mapped-model"},
+                "endpoints": [{
+                    "id": "endpoint_custom_responses",
+                    "name": "Custom Responses",
+                    "kind": "custom_responses",
+                    "base_url": "https://gateway.example.com",
+                    "path": "v2/responses",
+                    "model_map": {"gpt-5.5": "mapped-model"},
+                    "model_profiles": {"mapped-model": {"vision_mode": "glue"}},
+                    "vision": {
+                        "mode": "glue",
+                        "base_url": "https://vision.example.com",
+                        "api_key": "sk-vision",
+                        "model": "vision-model"
+                    },
+                    "context_window_override": 1000000,
+                    "reasoning_effort_override": "high",
+                    "thinking_tokens": 16000
+                }]
+            }],
+            "active_id": "responses-1"
+        });
+        let mut store: AccountStore = serde_json::from_value(raw).unwrap();
+        store.normalize_v2();
+        let account = &store.accounts[0];
+        let endpoint = &account.endpoints[0];
+
+        assert!(!account.translate_enabled);
+        assert!(!account.capability_enabled);
+        assert!(!account.dev_pipeline_enabled);
+        assert_eq!(account.context_window_override, None);
+        assert_eq!(account.reasoning_effort_override, None);
+        assert_eq!(account.thinking_tokens, None);
+        assert!(account.model_map.is_empty());
+        assert_eq!(endpoint.kind, EndpointKind::CustomResponses);
+        assert_eq!(endpoint.path, "v2/responses");
+        assert!(endpoint.model_map.is_empty());
+        assert!(endpoint.model_profiles.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+        assert!(endpoint.vision.base_url.is_empty());
+        assert_eq!(endpoint.context_window_override, None);
+        assert_eq!(endpoint.reasoning_effort_override, None);
+        assert_eq!(endpoint.thinking_tokens, None);
+    }
+
+    #[test]
+    fn codex_official_endpoint_is_normalized_like_native_responses() {
+        let raw = json!({
+            "version": 3,
+            "accounts": [{
+                "id": "official-1",
+                "name": "Codex 官方",
+                "provider": "codex",
+                "client_kind": "codex",
+                "upstream": "https://chatgpt.com/backend-api/codex",
+                "api_key": "sk-oauth",
+                "translate_enabled": true,
+                "capability_enabled": true,
+                "capability_account_id": "helper",
+                "dev_pipeline_enabled": true,
+                "dev_pipeline_architect_account_id": "helper",
+                "context_window_override": 1000000,
+                "reasoning_effort_override": "high",
+                "thinking_tokens": 16000,
+                "model_map": {"gpt-5": "gpt-5"},
+                "endpoints": [{
+                    "id": "endpoint_official",
+                    "name": "Codex 官方",
+                    "kind": "codex_official",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "path": "responses",
+                    "template_id": "codex_official",
+                    "model_map": {"gpt-5": "gpt-5"},
+                    "model_profiles": {"gpt-5": {"vision_mode": "glue"}},
+                    "vision": {
+                        "mode": "glue",
+                        "base_url": "https://vision.example.com",
+                        "api_key": "sk-vision",
+                        "model": "vision-model"
+                    },
+                    "context_window_override": 1000000,
+                    "reasoning_effort_override": "high",
+                    "thinking_tokens": 16000
+                }]
+            }],
+            "active_id": "official-1"
+        });
+        let mut store: AccountStore = serde_json::from_value(raw).unwrap();
+        store.normalize_v2();
+        let account = &store.accounts[0];
+        let endpoint = &account.endpoints[0];
+
+        assert!(!account.translate_enabled);
+        assert!(!account.capability_enabled);
+        assert!(!account.dev_pipeline_enabled);
+        assert_eq!(account.context_window_override, None);
+        assert_eq!(account.reasoning_effort_override, None);
+        assert_eq!(account.thinking_tokens, None);
+        assert!(account.model_map.is_empty());
+        assert_eq!(endpoint.kind, EndpointKind::CodexOfficial);
+        assert!(endpoint.path.is_empty());
+        assert_eq!(endpoint.template_id, "codex_official");
+        assert!(endpoint.model_map.is_empty());
+        assert!(endpoint.model_profiles.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+        assert!(endpoint.vision.base_url.is_empty());
+        assert_eq!(endpoint.context_window_override, None);
+        assert_eq!(endpoint.reasoning_effort_override, None);
+        assert_eq!(endpoint.thinking_tokens, None);
     }
 }
 

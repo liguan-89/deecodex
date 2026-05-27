@@ -917,6 +917,91 @@ function endpointKindUsesModelMapping(kind) {
     || kind === 'AnthropicMessages';
 }
 
+function isOpenAiNativeResponsesAccount(account) {
+  return isCodexAccount(account) && String(account?.provider || '').toLowerCase() === 'openai';
+}
+
+function endpointKindIsCustomResponses(kind) {
+  return kind === 'custom_responses' || kind === 'CustomResponses';
+}
+
+function normalizeResponsesKind(kind) {
+  if (kind === 'OpenAiResponses') return 'open_ai_responses';
+  if (kind === 'CustomResponses') return 'custom_responses';
+  if (kind === 'CodexOfficial') return 'codex_official';
+  return kind;
+}
+
+function isResponsesDirectFormAccount(account, endpoint = currentEndpoint(account)) {
+  return isCodexAccount(account)
+    && (isOpenAiNativeResponsesAccount(account)
+      || endpointKindIsResponsesDirect(endpoint?.kind)
+      || endpointIsCodexOfficial(endpoint));
+}
+
+function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(account)) {
+  if (!isCodexAccount(account)) return account;
+  const forceOpenAiResponses = isOpenAiNativeResponsesAccount(account);
+  if (!forceOpenAiResponses && !endpointKindIsResponsesDirect(endpoint?.kind) && !endpointIsCodexOfficial(endpoint)) return account;
+  if (!Array.isArray(account.endpoints)) account.endpoints = [];
+  if (account.endpoints.length === 0) {
+    account.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(forceOpenAiResponses ? 'openai' : account.provider), account));
+  }
+  const targetEndpointId = endpoint?.id || currentEndpoint(account)?.id || account.endpoints[0]?.id;
+  const endpoints = account.endpoints;
+  endpoints.forEach(endpoint => {
+    if (!forceOpenAiResponses && endpoint.id !== targetEndpointId) return;
+    if (!forceOpenAiResponses && !endpointKindIsResponsesDirect(endpoint.kind) && !endpointIsCodexOfficial(endpoint)) return;
+    endpoint.kind = forceOpenAiResponses ? 'open_ai_responses' : normalizeResponsesKind(endpoint.kind);
+    endpoint.name = endpointKindLabel(endpoint.kind);
+    endpoint.template_id = endpointIsCodexOfficial(endpoint)
+      ? 'codex_official'
+      : (endpointKindIsCustomResponses(endpoint.kind) ? (endpoint.template_id || 'custom_responses') : 'responses_direct');
+    if (!endpointKindIsCustomResponses(endpoint.kind)) endpoint.path = '';
+    endpoint.model_map = {};
+    endpoint.model_profiles = {};
+    endpoint.vision = {
+      ...(endpoint.vision || {}),
+      mode: 'native',
+      unsupported_image_policy: 'reject',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: '',
+      api_key: '',
+      model: '',
+      path: 'v1/coding_plan/vlm',
+    };
+    endpoint.context_window_override = null;
+    endpoint.reasoning_effort_override = null;
+    endpoint.thinking_tokens = null;
+  });
+  account.model_map = {};
+  account.vision_enabled = false;
+  account.vision_upstream = '';
+  account.vision_api_key = '';
+  account.vision_model = '';
+  account.vision_endpoint = 'v1/coding_plan/vlm';
+  account.context_window_override = null;
+  account.reasoning_effort_override = null;
+  account.thinking_tokens = null;
+  account.capability_enabled = false;
+  account.capability_account_id = null;
+  account.dev_pipeline_enabled = false;
+  account.dev_pipeline_trigger_mode = 'manual';
+  account.dev_pipeline_command = '/dev-pipeline';
+  account.dev_pipeline_architect_account_id = null;
+  account.dev_pipeline_implementer_account_id = null;
+  account.dev_pipeline_reviewer_account_id = null;
+  account.dev_pipeline_tool_mode = 'controlled_tools';
+  account.dev_pipeline_max_iterations = 3;
+  account.dev_pipeline_show_trace = false;
+  account.dev_pipeline_architect_instruction = '';
+  account.dev_pipeline_implementer_instruction = '';
+  account.dev_pipeline_reviewer_instruction = '';
+  account.translate_enabled = false;
+  return account;
+}
+
 function visionModeLabel(mode) {
   const labels = {
     off: '视觉关闭',
@@ -1446,6 +1531,9 @@ function renderAccountDetail() {
   const a = editingAccount;
   if (!isCodexAccount(a)) return renderClientAccountDetail();
   ensureAccountEndpoints(a);
+  const initialEndpoint = currentEndpoint(a) || {};
+  const responsesDirectForm = isResponsesDirectFormAccount(a, initialEndpoint);
+  if (responsesDirectForm) normalizeResponsesDirectAccount(a, initialEndpoint);
   const ep = currentEndpoint(a) || {};
   const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'native');
   const contextWindow = ep.context_window_override ?? null;
@@ -1458,7 +1546,20 @@ function renderAccountDetail() {
   const maxRetries = ep.max_retries ?? a.max_retries;
   const knownModels = getProviderKnownModels(a.provider);
   const responsesDirect = endpointKindIsResponsesDirect(ep.kind);
-  const usesModelMapping = endpointKindUsesModelMapping(ep.kind);
+  const usesModelMapping = !responsesDirectForm && endpointKindUsesModelMapping(ep.kind);
+  const endpointKindControl = responsesDirectForm
+    ? `<input type="hidden" id="edit_endpoint_kind" value="${escAttr(normalizeResponsesKind(ep.kind) || 'open_ai_responses')}">
+          <input type="text" value="${escAttr(endpointKindLabel(ep.kind))}" disabled aria-label="上游 API 类型">
+          <span class="hint">原生端点固定使用对应的官方协议。</span>`
+    : `<select id="edit_endpoint_kind">
+            ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? '<option value="custom_chat" selected hidden>OpenAI Chat 兼容（自定义路径）</option>' : ''}
+            ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? '<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>' : ''}
+            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
+            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
+            <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
+            <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>
+          </select>
+          <span class="hint">DeepSeek、OpenRouter 这类一般选 OpenAI Chat 兼容；只有上游原生支持 Responses API 时才选直连。</span>`;
   const modelSection = usesModelMapping ? `
     <section class="account-edit-section">
       <div class="account-section-head">
@@ -1486,83 +1587,7 @@ function renderAccountDetail() {
     : (ep.kind === 'codex_official' || ep.kind === 'CodexOfficial')
       ? 'Codex 官方账号使用官方模型名；这里仅设置图片输入处理策略。'
     : '模型映射行优先生效；这里处理临时模型或未列出的模型。';
-
-  return `<div class="breadcrumb account-detail-breadcrumb">
-    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
-      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
-    </button>
-  </div>
-  <div class="page-header account-detail-header">
-    <div class="account-detail-title">
-      <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
-      <div>
-        <div class="account-detail-heading">
-          <h2>${esc(accountDisplayTitle(a))}</h2>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="account-form">
-    <section class="account-edit-section">
-      <div class="account-section-head">
-        <div class="section-sub-label">账号凭据</div>
-      </div>
-      <div class="config-fields">
-        <div class="config-field account-name-field">
-          <label>账号名称</label>
-          <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
-        </div>
-        <div class="config-field account-key-field">
-          <label>API Key</label>
-          <div class="pass-group">
-            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
-            <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
-            </button>
-          </div>
-        </div>
-        <div class="config-field wide">
-          <label>上游 URL</label>
-          <div class="upstream-test-group">
-            <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
-            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
-          </div>
-          <div class="inline-test-result">
-            <span id="connectivityResult"></span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="account-edit-section">
-      <div class="account-section-head">
-        <div class="section-sub-label">上游</div>
-      </div>
-      <div class="config-fields">
-        <div class="config-field">
-          <label>上游 API 类型</label>
-          <select id="edit_endpoint_kind">
-            ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? '<option value="custom_chat" selected hidden>OpenAI Chat 兼容（自定义路径）</option>' : ''}
-            ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? '<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>' : ''}
-            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
-            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
-            <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
-            <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>
-          </select>
-          <span class="hint">DeepSeek、OpenRouter 这类一般选 OpenAI Chat 兼容；只有上游原生支持 Responses API 时才选直连。</span>
-        </div>
-        <div class="config-field">
-          <label>余额查询 URL <span class="optional-label">可选</span></label>
-          <input type="text" id="edit_balance_url" value="${escAttr(ep.balance_url || '')}" placeholder="留空则自动探测">
-        </div>
-      </div>
-    </section>
-
-    ${renderCodexOfficialRuntimePanel(a)}
-
-    ${modelSection}
-
+  const visionSection = responsesDirectForm ? '' : `
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">${visionSectionTitle}</div>
@@ -1630,8 +1655,30 @@ function renderAccountDetail() {
           </div>
         </div>
       </div>
-    </section>
-
+    </section>`;
+  const runtimeSection = responsesDirectForm ? `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">运行参数</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_fast_enabled" ${fastEnabled ? 'checked' : ''} onchange="toggleFastFields()">
+            GPT Fast 服务层
+          </label>
+          <span class="hint">OpenAI Responses 直连端点生效；仅注入 service_tier。</span>
+        </div>
+      </div>
+      <div id="fastFields" style="${fastEnabled ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>service_tier</label>
+            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="priority">
+          </div>
+        </div>
+      </div>
+    </section>` : `
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">运行参数</div>
@@ -1692,8 +1739,8 @@ function renderAccountDetail() {
           </div>
         </div>
       </div>
-    </section>
-
+    </section>`;
+  const capabilitySection = responsesDirectForm ? '' : `
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">能力补全</div>
@@ -1711,8 +1758,8 @@ function renderAccountDetail() {
           <select id="edit_capability_account_id">${renderCapabilityAccountOptions(a)}</select>
         </div>
       </div>
-    </section>
-
+    </section>`;
+  const devPipelineSection = responsesDirectForm ? '' : `
     <section class="account-edit-section">
       <div class="account-section-head">
         <div class="section-sub-label">开发协作编排</div>
@@ -1784,7 +1831,85 @@ function renderAccountDetail() {
           </div>
         </div>
       </div>
+    </section>`;
+  const endpointPathField = responsesDirectForm && !endpointKindIsCustomResponses(ep.kind) ? '' : `
+        <div class="config-field">
+          <label>请求路径 <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空自动使用所选 API 类型">
+          <span class="hint">私有代理或非标准网关才需要填写，例如 /v1/chat/completions。</span>
+        </div>`;
+
+  return `<div class="breadcrumb account-detail-breadcrumb">
+    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
+  </div>
+  <div class="page-header account-detail-header">
+    <div class="account-detail-title">
+      <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
+      <div>
+        <div class="account-detail-heading">
+          <h2>${esc(accountDisplayTitle(a))}</h2>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="account-form">
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">账号凭据</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field account-name-field">
+          <label>账号名称</label>
+          <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+        </div>
+        <div class="config-field account-key-field">
+          <label>API Key</label>
+          <div class="pass-group">
+            <input type="password" id="edit_api_key" value="${escAttr(a.api_key)}" placeholder="输入 API 密钥" autocomplete="off">
+            <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+            </button>
+          </div>
+        </div>
+        <div class="config-field wide">
+          <label>上游 URL</label>
+          <div class="upstream-test-group">
+            <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
+            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
+          </div>
+          <div class="inline-test-result">
+            <span id="connectivityResult"></span>
+          </div>
+        </div>
+      </div>
     </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">上游</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>上游 API 类型</label>
+          ${endpointKindControl}
+        </div>
+        <div class="config-field">
+          <label>余额查询 URL <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_balance_url" value="${escAttr(ep.balance_url || '')}" placeholder="留空则自动探测">
+        </div>
+      </div>
+    </section>
+
+    ${renderCodexOfficialRuntimePanel(a)}
+
+    ${modelSection}
+    ${visionSection}
+    ${runtimeSection}
+    ${capabilitySection}
+    ${devPipelineSection}
 
   <div class="collapsible-section">
     <button class="collapsible-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
@@ -1792,11 +1917,7 @@ function renderAccountDetail() {
     </button>
     <div class="collapsible-content">
       <div class="config-fields nested-fields">
-        <div class="config-field">
-          <label>请求路径 <span class="optional-label">可选</span></label>
-          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空自动使用所选 API 类型">
-          <span class="hint">私有代理或非标准网关才需要填写，例如 /v1/chat/completions。</span>
-        </div>
+        ${endpointPathField}
         <div class="config-field">
           <label>自定义 HTTP 头 <span class="optional-label">可选</span></label>
           <textarea class="mono-textarea" id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123">${escAttr(Object.entries(customHeaders).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
@@ -2347,6 +2468,7 @@ function syncEditingDraftFromForm() {
     ep.max_retries = parseOptionalInteger(retriesInput.value);
     a.max_retries = ep.max_retries;
   }
+  if (isResponsesDirectFormAccount(a, ep)) normalizeResponsesDirectAccount(a, ep);
   a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
 }
 
@@ -2705,6 +2827,7 @@ function addAccount(provider, clientKind, clientSurface) {
   if (kind === 'codex') {
     editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
     editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
+    normalizeResponsesDirectAccount(editingAccount);
   } else {
     editingAccount.translate_enabled = false;
     editingAccount.endpoints = [];

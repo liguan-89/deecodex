@@ -371,22 +371,100 @@ context.editingAccount = {
   upstream: 'https://dex.jinpai.lat/v1',
   api_key: 'sk-responses',
   model_map: { 'gpt-5.5': 'other-model' },
+  context_window_override: 1000000,
+  reasoning_effort_override: 'high',
+  thinking_tokens: 16000,
+  capability_enabled: true,
+  capability_account_id: 'c1',
+  dev_pipeline_enabled: true,
+  dev_pipeline_architect_account_id: 'c1',
   endpoints: [{
     id: 'ep-responses',
-    kind: 'open_ai_responses',
+    kind: 'open_ai_chat',
     base_url: 'https://dex.jinpai.lat/v1',
+    path: 'chat/completions',
     model_map: { 'gpt-5.5': 'other-model' },
-    vision: { mode: 'native' },
+    model_profiles: { 'other-model': { vision_mode: 'glue' } },
+    vision: { mode: 'glue', base_url: 'https://vision.example.com', api_key: 'sk-vision', model: 'vision-model' },
+    context_window_override: 1000000,
+    reasoning_effort_override: 'high',
+    thinking_tokens: 16000,
   }],
 };
 const responsesDirectDetail = context.renderAccountsPanel();
 assert(!responsesDirectDetail.includes('model-map-table'));
 assert(!responsesDirectDetail.includes('fetchAndPopulateModels()'));
 assert(!responsesDirectDetail.includes('+ 添加模型映射'));
-assert(responsesDirectDetail.includes('Responses 直连保留 Codex 原始模型名'));
-assert(responsesDirectDetail.includes('<div class="section-sub-label">图片处理</div>'));
+assert(!responsesDirectDetail.includes('Responses 直连保留 Codex 原始模型名'));
+assert(!responsesDirectDetail.includes('<div class="section-sub-label">图片处理</div>'));
+assert(!responsesDirectDetail.includes('能力补全'));
+assert(!responsesDirectDetail.includes('开发协作编排'));
+assert(!responsesDirectDetail.includes('上下文窗口覆盖'));
+assert(!responsesDirectDetail.includes('推理强度覆盖'));
+assert(!responsesDirectDetail.includes('<select id="edit_endpoint_kind">'));
+assert(responsesDirectDetail.includes('id="edit_endpoint_kind" value="open_ai_responses"'));
+assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_responses');
+assert.strictEqual(context.editingAccount.endpoints[0].path, '');
+assert.strictEqual(JSON.stringify(context.editingAccount.model_map), '{}');
+assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
+assert.strictEqual(context.editingAccount.context_window_override, null);
+assert.strictEqual(context.editingAccount.endpoints[0].reasoning_effort_override, null);
+assert.strictEqual(context.editingAccount.capability_enabled, false);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, false);
+
+context.editingAccount = {
+  id: 'r2',
+  name: 'Custom Responses',
+  provider: 'custom',
+  client_kind: 'codex',
+  upstream: 'https://gateway.example.com',
+  api_key: 'sk-responses',
+  model_map: { 'gpt-5.5': 'other-model' },
+  context_window_override: 1000000,
+  reasoning_effort_override: 'high',
+  capability_enabled: true,
+  dev_pipeline_enabled: true,
+  endpoints: [{
+    id: 'ep-custom-responses',
+    kind: 'custom_responses',
+    base_url: 'https://gateway.example.com',
+    path: 'v2/responses',
+    model_map: { 'gpt-5.5': 'other-model' },
+    model_profiles: { 'other-model': { vision_mode: 'glue' } },
+    vision: { mode: 'glue', base_url: 'https://vision.example.com', api_key: 'sk-vision', model: 'vision-model' },
+    context_window_override: 1000000,
+    reasoning_effort_override: 'high',
+  }],
+};
+const customResponsesDetail = context.renderAccountsPanel();
+assert(!customResponsesDetail.includes('model-map-table'));
+assert(!customResponsesDetail.includes('<div class="section-sub-label">图片处理</div>'));
+assert(!customResponsesDetail.includes('能力补全'));
+assert(!customResponsesDetail.includes('开发协作编排'));
+assert(!customResponsesDetail.includes('上下文窗口覆盖'));
+assert(!customResponsesDetail.includes('推理强度覆盖'));
+assert(!customResponsesDetail.includes('<select id="edit_endpoint_kind">'));
+assert(customResponsesDetail.includes('id="edit_endpoint_kind" value="custom_responses"'));
+assert(customResponsesDetail.includes('id="edit_endpoint_path" value="v2/responses"'));
+assert.strictEqual(context.editingAccount.endpoints[0].kind, 'custom_responses');
+assert.strictEqual(context.editingAccount.endpoints[0].path, 'v2/responses');
+assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
+assert.strictEqual(context.editingAccount.capability_enabled, false);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, false);
 
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c2');
+context.editingAccount.context_window_override = 1000000;
+context.editingAccount.reasoning_effort_override = 'high';
+context.editingAccount.capability_enabled = true;
+context.editingAccount.capability_account_id = 'c1';
+context.editingAccount.dev_pipeline_enabled = true;
+context.editingAccount.dev_pipeline_architect_account_id = 'c1';
+context.editingAccount.endpoints[0].model_map = { 'gpt-5': 'gpt-5' };
+context.editingAccount.endpoints[0].vision = { mode: 'glue', base_url: 'https://vision.example.com' };
+context.editingAccount.endpoints[0].context_window_override = 1000000;
+context.editingAccount.endpoints[0].reasoning_effort_override = 'high';
 context.accountsView = 'edit';
 const officialDetail = context.renderAccountsPanel();
 assert(officialDetail.includes('官方账号池'));
@@ -406,7 +484,21 @@ assert(officialDetail.includes('runtime-model-row'));
 assert(officialDetail.includes('HTTP 429'));
 assert(!officialDetail.includes('model-map-table'));
 assert(!officialDetail.includes('fetchAndPopulateModels()'));
-assert(officialDetail.includes('Codex 官方账号使用官方模型名'));
+assert(!officialDetail.includes('Codex 官方账号使用官方模型名'));
+assert(!officialDetail.includes('<div class="section-sub-label">图片处理</div>'));
+assert(!officialDetail.includes('能力补全'));
+assert(!officialDetail.includes('开发协作编排'));
+assert(!officialDetail.includes('上下文窗口覆盖'));
+assert(!officialDetail.includes('推理强度覆盖'));
+assert(!officialDetail.includes('<select id="edit_endpoint_kind">'));
+assert(officialDetail.includes('id="edit_endpoint_kind" value="codex_official"'));
+assert.strictEqual(context.editingAccount.endpoints[0].kind, 'codex_official');
+assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
+assert.strictEqual(context.editingAccount.context_window_override, null);
+assert.strictEqual(context.editingAccount.endpoints[0].reasoning_effort_override, null);
+assert.strictEqual(context.editingAccount.capability_enabled, false);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, false);
 
 context.selectedClientKind = 'hermes';
 const hermesList = context.renderAccountList();
