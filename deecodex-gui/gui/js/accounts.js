@@ -639,7 +639,7 @@ function renderClientAccountDetail() {
   const profile = getClientProfile(kind) || {};
   const configPath = a.client_options?.config_path || '';
   const configHint = kind === 'claude_code' && surface === 'desktop'
-    ? '~/.claude/claude_desktop_config.json'
+    ? '~/Library/Application Support/Claude-3p/configLibrary/<id>.json'
     : (profile.config_path_hint || '');
   const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
   const authEnv = a.client_options?.auth_env || apiKeyEnv;
@@ -3214,6 +3214,7 @@ function accountEventActionLabel(action) {
     client_account_restore: '恢复备份',
     client_config_open: '编辑配置',
     client_config_save: '保存配置',
+    claude_desktop_developer_mode: '开发者模式',
   };
   return labels[action] || action || '配置事件';
 }
@@ -3318,6 +3319,97 @@ async function refreshClientAccountStatus(id) {
     fetchClientEventsForDetail(id);
   } catch (e) {
     showToast('刷新客户端状态失败: ' + e, 'error');
+  }
+}
+
+async function refreshClaudeDesktopDeveloperMode(id) {
+  const input = document.getElementById('claudeDesktopDevModeSwitch');
+  const label = document.getElementById('claudeDesktopDevModeLabel');
+  const hint = document.getElementById('claudeDesktopDevModeHint');
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (!input) return;
+  input.disabled = true;
+  if (label) label.textContent = '读取中...';
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    const state = await invoke('get_claude_desktop_developer_mode');
+    const enabled = Boolean(state.enabled);
+    input.checked = enabled;
+    input.disabled = false;
+    const restartRequired = Boolean(state.restart_required);
+    if (label) label.textContent = enabled
+      ? (restartRequired ? '已开启（重启后确认）' : '已开启')
+      : (restartRequired ? '已关闭（需重启）' : '已关闭');
+    if (restartBtn) restartBtn.disabled = !restartRequired;
+    if (hint) {
+      const entries = Array.isArray(state.entries) ? state.entries.filter(item => item.exists) : [];
+      const paths = entries.map(item => item.path).filter(Boolean);
+      const runtimeDirs = Array.isArray(state.runtime?.user_data_dirs) ? state.runtime.user_data_dirs : [];
+      hint.textContent = restartRequired
+        ? `设置已落盘，Claude 正在运行，重启后生效${runtimeDirs.length ? ` · ${runtimeDirs.join(' · ')}` : ''}`
+        : paths.length
+        ? `同步 ${state.enabled_count || 0}/${paths.length} 个 Claude 设置文件`
+        : '未找到现有设置文件，开启时会创建 Claude 默认配置';
+      hint.title = paths.join('\n');
+    }
+  } catch (e) {
+    input.disabled = true;
+    if (label) label.textContent = '读取失败';
+    if (hint) hint.textContent = String(e);
+  }
+}
+
+async function toggleClaudeDesktopDeveloperMode(id, enabled) {
+  const input = document.getElementById('claudeDesktopDevModeSwitch');
+  const label = document.getElementById('claudeDesktopDevModeLabel');
+  const hint = document.getElementById('claudeDesktopDevModeHint');
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (!input) return;
+  input.disabled = true;
+  if (label) label.textContent = enabled ? '开启中...' : '关闭中...';
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    const args = { enabled };
+    if (id) args.accountId = id;
+    const result = await invoke('set_claude_desktop_developer_mode', args);
+    input.checked = Boolean(result.enabled);
+    input.disabled = false;
+    const restartRequired = Boolean(result.restart_required);
+    if (label) label.textContent = result.enabled
+      ? (restartRequired ? '已开启（重启后确认）' : '已开启')
+      : (restartRequired ? '已关闭（需重启）' : '已关闭');
+    if (restartBtn) restartBtn.disabled = !restartRequired;
+    if (hint) {
+      const paths = Array.isArray(result.changed_files) ? result.changed_files : [];
+      const runtimeDirs = Array.isArray(result.runtime?.user_data_dirs) ? result.runtime.user_data_dirs : [];
+      hint.textContent = restartRequired
+        ? `已写入 ${paths.length || 0} 个设置文件，Claude 正在运行，重启后生效${runtimeDirs.length ? ` · ${runtimeDirs.join(' · ')}` : ''}`
+        : (paths.length ? `已写入 ${paths.length} 个 Claude 设置文件` : '设置已保存');
+      hint.title = paths.join('\n');
+    }
+    showToast(
+      restartRequired ? `${result.message || 'Claude 开发者模式已更新'}，重启 Claude 后生效` : (result.message || 'Claude 开发者模式已更新'),
+      restartRequired ? 'info' : 'success'
+    );
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('更新 Claude 开发者模式失败: ' + e, 'error');
+    refreshClaudeDesktopDeveloperMode();
+  }
+}
+
+async function restartClaudeDesktopForDevMode() {
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    await invoke('dex_toggle_desktop_client', { kind: 'claude_desktop', running: true });
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    await invoke('dex_toggle_desktop_client', { kind: 'claude_desktop', running: false });
+    showToast('Claude 已重启，请稍后确认开发者模式状态', 'success');
+    setTimeout(() => refreshClaudeDesktopDeveloperMode(), 1500);
+  } catch (e) {
+    showToast('重启 Claude 失败: ' + e, 'error');
+    if (restartBtn) restartBtn.disabled = false;
   }
 }
 

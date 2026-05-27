@@ -451,6 +451,17 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     let command = command_status_for_account(account);
     let config_path = claude_config_path(account);
     let current = read_json_object(&config_path)?;
+    if client_surface(account) == AccountClientSurface::Desktop
+        && is_claude_desktop_config_library(account, &config_path, &current)
+    {
+        return apply_claude_desktop_config_library(
+            account,
+            dry_run,
+            command,
+            config_path,
+            current,
+        );
+    }
     let mut next = current.clone();
     let env = ensure_json_object_path(&mut next, &["env"]);
     let auth_env = claude_auth_env_name(account);
@@ -510,6 +521,66 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
         ReportDraft {
             dry_run,
             message: format!("{} 配置已准备", claude_client_label(account)),
+            command,
+            config_path: Some(config_path),
+            env_path: None,
+            backup_path,
+            diff,
+            diagnostics,
+        },
+    ))
+}
+
+fn apply_claude_desktop_config_library(
+    account: &Account,
+    dry_run: bool,
+    command: ClientCommandStatus,
+    config_path: PathBuf,
+    current: Value,
+) -> Result<ClientOperationReport> {
+    let mut next = current.clone();
+    if !next.is_object() {
+        next = json!({});
+    }
+    if let Some(obj) = next.as_object_mut() {
+        obj.insert("inferenceProvider".into(), Value::String("gateway".into()));
+        obj.insert(
+            "inferenceGatewayBaseUrl".into(),
+            Value::String(client_config_base_url(account)),
+        );
+        obj.insert(
+            "inferenceGatewayApiKey".into(),
+            Value::String(client_config_api_key(account)),
+        );
+        obj.insert(
+            "inferenceModels".into(),
+            Value::Array(claude_desktop_inference_models(account, &current)),
+        );
+    }
+
+    let diff = diff_json(&current, &next);
+    let mut backup_path = None;
+    if !dry_run {
+        backup_path = write_json_file_with_backup(&config_path, &next)?;
+        ensure_claude_desktop_config_library_meta(&config_path)?;
+    }
+
+    let mut diagnostics = base_diagnostics(account, &command, Some(&config_path));
+    if client_config_api_key(account).trim().is_empty() {
+        diagnostics.push(error(
+            "empty_key",
+            "Claude 桌面版 inferenceGatewayApiKey 为空",
+        ));
+    }
+    diagnostics.push(info(
+        "secret_source",
+        "Claude 桌面版将写入 configLibrary inferenceGatewayApiKey",
+    ));
+    Ok(report(
+        account,
+        ReportDraft {
+            dry_run,
+            message: "Claude 桌面版配置已准备".into(),
             command,
             config_path: Some(config_path),
             env_path: None,
@@ -995,7 +1066,7 @@ fn claude_config_file_label(account: &Account) -> &'static str {
 fn claude_config_path(account: &Account) -> PathBuf {
     configured_path(account, "config_path").unwrap_or_else(|| {
         if client_surface(account) == AccountClientSurface::Desktop {
-            home_path(&[".claude", "claude_desktop_config.json"])
+            claude_desktop_default_config_path()
         } else {
             home_path(&[".claude", "settings.json"])
         }
@@ -1028,11 +1099,15 @@ fn resolve_paths(account: &Account) -> (Option<PathBuf>, Option<PathBuf>) {
 }
 
 fn discover_claude_account(surface: AccountClientSurface) -> Option<ClientImportCandidate> {
-    let config_path = match surface {
-        AccountClientSurface::Cli => home_path(&[".claude", "settings.json"]),
-        AccountClientSurface::Desktop => home_path(&[".claude", "claude_desktop_config.json"]),
-    };
-    discover_claude_account_at(config_path, surface)
+    if surface == AccountClientSurface::Desktop {
+        for config_path in claude_desktop_config_candidate_paths() {
+            if let Some(candidate) = discover_claude_account_at(config_path, surface.clone()) {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+    discover_claude_account_at(home_path(&[".claude", "settings.json"]), surface)
 }
 
 fn discover_claude_account_at(
@@ -1040,6 +1115,13 @@ fn discover_claude_account_at(
     surface: AccountClientSurface,
 ) -> Option<ClientImportCandidate> {
     let config = read_json_object(&config_path).ok()?;
+    if surface == AccountClientSurface::Desktop {
+        if let Some(candidate) =
+            discover_claude_desktop_config_library_account_at(&config_path, &config)
+        {
+            return Some(candidate);
+        }
+    }
     let env = config.get("env").and_then(Value::as_object)?;
     let (api_key, auth_env) = env_string(env, "ANTHROPIC_API_KEY")
         .map(|value| (value, "ANTHROPIC_API_KEY".to_string()))
@@ -1079,11 +1161,81 @@ fn discover_claude_account_at(
     } else {
         "Claude Code"
     };
+    let provider = crate::providers::guess_provider(&upstream).to_string();
+    let provider_label = crate::providers::profile_by_slug(&provider).label;
     Some(ClientImportCandidate {
         client_kind: AccountClientKind::ClaudeCode,
         client_surface: surface,
-        name: format!("{surface_label} · Anthropic"),
-        provider: "anthropic".into(),
+        name: format!("{surface_label} · {provider_label}"),
+        provider,
+        upstream,
+        api_key,
+        default_model,
+        client_options,
+        source_path: Some(config_path.to_string_lossy().to_string()),
+        warnings: Vec::new(),
+    })
+}
+
+fn discover_claude_desktop_config_library_account_at(
+    config_path: &Path,
+    config: &Value,
+) -> Option<ClientImportCandidate> {
+    let upstream = config
+        .get("inferenceGatewayBaseUrl")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+    let api_key = config
+        .get("inferenceGatewayApiKey")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let models = config
+        .get("inferenceModels")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let default_model = models
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "claude-sonnet-4-5".into());
+    let mut client_options = HashMap::new();
+    client_options.insert(
+        "config_path".into(),
+        Value::String(config_path.to_string_lossy().to_string()),
+    );
+    client_options.insert(
+        "config_schema".into(),
+        Value::String("claude_desktop_config_library".into()),
+    );
+    client_options.insert("api_key_env".into(), Value::String("IN_FILE".into()));
+    client_options.insert("auth_env".into(), Value::String("IN_FILE".into()));
+    let mut model_map = serde_json::Map::new();
+    model_map.insert("default".into(), Value::String(default_model.clone()));
+    for (idx, slot) in ["sonnet", "opus", "haiku"].iter().enumerate() {
+        if let Some(model) = models.get(idx) {
+            model_map.insert((*slot).into(), Value::String(model.clone()));
+        }
+    }
+    client_options.insert("model_map".into(), Value::Object(model_map));
+    let provider = crate::providers::guess_provider(&upstream).to_string();
+    Some(ClientImportCandidate {
+        client_kind: AccountClientKind::ClaudeCode,
+        client_surface: AccountClientSurface::Desktop,
+        name: format!("Claude 桌面版 · {}", provider),
+        provider,
         upstream,
         api_key,
         default_model,
@@ -1569,6 +1721,51 @@ fn client_model_values(account: &Account) -> Vec<String> {
     out
 }
 
+fn claude_desktop_inference_models(account: &Account, current: &Value) -> Vec<Value> {
+    let existing_supports_1m: HashMap<String, bool> = current
+        .get("inferenceModels")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item.get("name").and_then(Value::as_str)?.to_string();
+                    let supports = item
+                        .get("supports1m")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    Some((name, supports))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut models = client_model_values(account);
+    if models.is_empty() {
+        models.push("claude-sonnet-4-5".into());
+    }
+    models
+        .into_iter()
+        .map(|name| {
+            let supports_1m = existing_supports_1m.get(&name).copied().unwrap_or(true);
+            json!({
+                "name": name,
+                "supports1m": supports_1m,
+            })
+        })
+        .collect()
+}
+
+fn is_claude_desktop_config_library(account: &Account, path: &Path, current: &Value) -> bool {
+    client_option_string(account, "config_schema").as_deref()
+        == Some("claude_desktop_config_library")
+        || path
+            .components()
+            .any(|component| component.as_os_str().to_str() == Some("configLibrary"))
+        || current.get("inferenceGatewayBaseUrl").is_some()
+        || current.get("inferenceGatewayApiKey").is_some()
+        || current.get("inferenceModels").is_some()
+}
+
 fn claude_auth_env_name(account: &Account) -> String {
     client_option_string(account, "auth_env")
         .or_else(|| client_option_string(account, "api_key_env"))
@@ -1579,11 +1776,20 @@ fn claude_auth_env_name(account: &Account) -> String {
 fn secret_source_for(account: &Account) -> Option<String> {
     match account.client_kind {
         AccountClientKind::Codex => None,
-        AccountClientKind::ClaudeCode => Some(format!(
-            "{} env.{}",
-            claude_config_file_label(account),
-            claude_auth_env_name(account)
-        )),
+        AccountClientKind::ClaudeCode => {
+            if account.client_surface == AccountClientSurface::Desktop
+                && client_option_string(account, "config_schema").as_deref()
+                    == Some("claude_desktop_config_library")
+            {
+                Some("configLibrary inferenceGatewayApiKey".into())
+            } else {
+                Some(format!(
+                    "{} env.{}",
+                    claude_config_file_label(account),
+                    claude_auth_env_name(account)
+                ))
+            }
+        }
         AccountClientKind::Openclaw => Some(format!(
             "SecretRef env.{}",
             client_option_string(account, "api_key_env").unwrap_or_else(|| "OPENAI_API_KEY".into())
@@ -1668,6 +1874,160 @@ fn expand_tilde(value: &str) -> PathBuf {
             .join(rest);
     }
     PathBuf::from(value)
+}
+
+fn claude_desktop_default_config_path() -> PathBuf {
+    claude_desktop_applied_config_library_path().unwrap_or_else(|| {
+        claude_desktop_user_data_dirs()[0]
+            .join("configLibrary")
+            .join("deecodex.json")
+    })
+}
+
+fn claude_desktop_config_candidate_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = claude_desktop_applied_config_library_path() {
+        push_unique_path(&mut paths, path);
+    }
+    for user_data_dir in claude_desktop_user_data_dirs() {
+        let library_dir = user_data_dir.join("configLibrary");
+        if let Ok(entries) = fs::read_dir(&library_dir) {
+            let mut files = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                        && path.file_name().and_then(|name| name.to_str()) != Some("_meta.json")
+                })
+                .collect::<Vec<_>>();
+            files.sort();
+            for path in files {
+                push_unique_path(&mut paths, path);
+            }
+        }
+        push_unique_path(&mut paths, user_data_dir.join("claude_desktop_config.json"));
+    }
+    push_unique_path(
+        &mut paths,
+        home_path(&[".claude", "claude_desktop_config.json"]),
+    );
+    paths
+}
+
+fn claude_desktop_applied_config_library_path() -> Option<PathBuf> {
+    for user_data_dir in claude_desktop_user_data_dirs() {
+        let meta_path = user_data_dir.join("configLibrary").join("_meta.json");
+        let Ok(meta) = read_json_object(&meta_path) else {
+            continue;
+        };
+        let Some(applied_id) = meta
+            .get("appliedId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let path = user_data_dir
+            .join("configLibrary")
+            .join(format!("{applied_id}.json"));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn claude_desktop_user_data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for path in claude_desktop_runtime_user_data_dirs() {
+        push_unique_path(&mut dirs, path);
+    }
+    if let Some(home) = crate::config::home_dir() {
+        let app_support = home.join("Library").join("Application Support");
+        push_unique_path(&mut dirs, app_support.join("Claude-3p"));
+        push_unique_path(&mut dirs, app_support.join("Claude"));
+    }
+    if dirs.is_empty() {
+        dirs.push(home_path(&["Library", "Application Support", "Claude-3p"]));
+    }
+    dirs
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_runtime_user_data_dirs() -> Vec<PathBuf> {
+    let output = match Command::new("ps").args(["ax", "-o", "command="]).output() {
+        Ok(output) => output,
+        Err(_) => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            line.contains("/Claude.app/Contents/") || line.contains("/Claude Helper.app/Contents/")
+        })
+        .filter_map(|line| extract_command_arg_value(line, "--user-data-dir="))
+        .map(PathBuf::from)
+        .fold(Vec::new(), |mut acc, path| {
+            push_unique_path(&mut acc, path);
+            acc
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_desktop_runtime_user_data_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn extract_command_arg_value(line: &str, prefix: &str) -> Option<String> {
+    let start = line.find(prefix)? + prefix.len();
+    let rest = &line[start..];
+    let end = rest.find(" --").unwrap_or(rest.len());
+    let value = rest[..end].trim().trim_matches('"').trim_matches('\'');
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn ensure_claude_desktop_config_library_meta(config_path: &Path) -> Result<()> {
+    let Some(file_name) = config_path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let Some(id) = file_name.strip_suffix(".json") else {
+        return Ok(());
+    };
+    let Some(library_dir) = config_path.parent() else {
+        return Ok(());
+    };
+    if library_dir.file_name().and_then(|name| name.to_str()) != Some("configLibrary") {
+        return Ok(());
+    }
+    let meta_path = library_dir.join("_meta.json");
+    let current = read_json_object(&meta_path).unwrap_or_else(|_| json!({}));
+    let mut next = current.clone();
+    if !next.is_object() {
+        next = json!({});
+    }
+    if let Some(obj) = next.as_object_mut() {
+        obj.insert("appliedId".into(), Value::String(id.to_string()));
+        let entries = obj.entry("entries").or_insert_with(|| json!([]));
+        if !entries.is_array() {
+            *entries = json!([]);
+        }
+        if let Some(items) = entries.as_array_mut() {
+            let exists = items
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some(id));
+            if !exists {
+                items.push(json!({"id": id, "name": "DEX AI"}));
+            }
+        }
+    }
+    write_json_file_with_backup(&meta_path, &next)?;
+    Ok(())
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn openclaw_config_path() -> Option<PathBuf> {
@@ -2382,6 +2742,15 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn command_arg_parser_keeps_user_data_dir_with_spaces() {
+        let line = "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=renderer --user-data-dir=/Users/test/Library/Application Support/Claude-3p --lang=zh-CN";
+        assert_eq!(
+            extract_command_arg_value(line, "--user-data-dir=").as_deref(),
+            Some("/Users/test/Library/Application Support/Claude-3p")
+        );
+    }
+
     fn client_account(kind: AccountClientKind) -> Account {
         serde_json::from_value(json!({
             "id": "client",
@@ -2586,6 +2955,129 @@ mod tests {
                 .and_then(Value::as_str),
             Some(desktop_path_text.as_str())
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_legacy_discovery_guesses_provider_from_upstream() {
+        let dir = temp_dir("claude-discovery-provider");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            json!({
+                "env": {
+                    "ANTHROPIC_API_KEY": "sk-deepseek",
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                    "ANTHROPIC_MODEL": "deepseek-v4-pro"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let cli = discover_claude_account_at(path, AccountClientSurface::Cli).unwrap();
+        assert_eq!(cli.provider, "deepseek");
+        assert_eq!(cli.name, "Claude Code · DeepSeek");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_desktop_discovery_reads_config_library() {
+        let dir = temp_dir("claude-desktop-config-library");
+        let path = dir.join("configLibrary").join("active.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            json!({
+                "inferenceProvider": "gateway",
+                "inferenceGatewayBaseUrl": "https://api.deepseek.com/anthropic",
+                "inferenceGatewayApiKey": "sk-deepseek",
+                "inferenceModels": [
+                    {"name": "deepseek-v4-flash", "supports1m": true},
+                    {"name": "deepseek-v4-pro", "supports1m": true}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let desktop =
+            discover_claude_account_at(path.clone(), AccountClientSurface::Desktop).unwrap();
+        assert_eq!(desktop.client_surface, AccountClientSurface::Desktop);
+        assert_eq!(desktop.provider, "deepseek");
+        assert_eq!(desktop.upstream, "https://api.deepseek.com/anthropic");
+        assert_eq!(desktop.api_key, "sk-deepseek");
+        assert_eq!(desktop.default_model, "deepseek-v4-flash");
+        assert_eq!(
+            desktop
+                .client_options
+                .get("config_schema")
+                .and_then(Value::as_str),
+            Some("claude_desktop_config_library")
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_desktop_writer_updates_config_library_schema() {
+        let dir = temp_dir("claude-desktop-config-library-writer");
+        let path = dir.join("configLibrary").join("active.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            json!({
+                "coworkEgressAllowedHosts": ["*"],
+                "inferenceProvider": "gateway",
+                "inferenceGatewayBaseUrl": "https://old.example/anthropic",
+                "inferenceGatewayApiKey": "old-key",
+                "inferenceModels": [
+                    {"name": "old-model", "supports1m": false}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut account = client_account(AccountClientKind::ClaudeCode);
+        account.client_surface = AccountClientSurface::Desktop;
+        account.provider = "deepseek".into();
+        account.upstream = "https://api.deepseek.com/anthropic".into();
+        account.api_key = "sk-new".into();
+        account.default_model = "deepseek-v4-pro".into();
+        account.client_options.insert(
+            "config_path".into(),
+            Value::String(path.display().to_string()),
+        );
+        account.client_options.insert(
+            "config_schema".into(),
+            Value::String("claude_desktop_config_library".into()),
+        );
+        account.client_options.insert(
+            "model_map".into(),
+            json!({
+                "default": "deepseek-v4-pro",
+                "sonnet": "deepseek-v4-flash"
+            }),
+        );
+
+        let report = apply_claude(&account, false).unwrap();
+        assert!(report.ok);
+        let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["inferenceProvider"], "gateway");
+        assert_eq!(
+            written["inferenceGatewayBaseUrl"],
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(written["inferenceGatewayApiKey"], "sk-new");
+        assert_eq!(written["inferenceModels"][0]["name"], "deepseek-v4-pro");
+        assert_eq!(written["inferenceModels"][1]["name"], "deepseek-v4-flash");
+        assert_eq!(written["coworkEgressAllowedHosts"][0], "*");
+        let meta_path = dir.join("configLibrary").join("_meta.json");
+        let meta: Value = serde_json::from_str(&fs::read_to_string(meta_path).unwrap()).unwrap();
+        assert_eq!(meta["appliedId"], "active");
 
         let _ = fs::remove_dir_all(dir);
     }

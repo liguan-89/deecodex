@@ -3651,6 +3651,40 @@ pub async fn save_account_config_file(
     }))
 }
 
+#[tauri::command]
+pub async fn get_claude_desktop_developer_mode() -> Result<Value, String> {
+    Ok(read_claude_desktop_developer_mode()?)
+}
+
+#[tauri::command]
+pub async fn set_claude_desktop_developer_mode(
+    manager: State<'_, ServerManager>,
+    account_id: Option<String>,
+    enabled: bool,
+) -> Result<Value, String> {
+    let result = write_claude_desktop_developer_mode(enabled)?;
+    if let Some(account_id) = account_id.filter(|id| !id.trim().is_empty()) {
+        let data_dir = manager.data_dir.lock().await.clone();
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        if let Some(account) = store.accounts.iter().find(|a| a.id == account_id) {
+            append_account_event(
+                &data_dir,
+                &account_id,
+                &account.client_kind,
+                "claude_desktop_developer_mode",
+                true,
+                if enabled {
+                    "Claude 桌面版开发者模式已开启"
+                } else {
+                    "Claude 桌面版开发者模式已关闭"
+                },
+                result.clone(),
+            );
+        }
+    }
+    Ok(result)
+}
+
 struct ConfigEditorTarget {
     path: PathBuf,
     format: &'static str,
@@ -3679,7 +3713,7 @@ fn account_config_target(
     let (format, label) = match account.client_kind {
         AccountClientKind::ClaudeCode => {
             if account.client_surface == AccountClientSurface::Desktop {
-                ("json", "Claude 桌面版 claude_desktop_config.json")
+                ("json", "Claude 桌面版 configLibrary")
             } else {
                 ("json", "Claude Code settings.json")
             }
@@ -3859,6 +3893,283 @@ fn backup_config_file_for_editor(path: &Path) -> std::io::Result<Option<PathBuf>
     ));
     std::fs::copy(path, &backup)?;
     Ok(Some(backup))
+}
+
+fn read_claude_desktop_developer_mode() -> Result<Value, String> {
+    let candidates = claude_desktop_developer_settings_paths()?;
+    let mut entries = Vec::new();
+    let mut enabled_count = 0usize;
+    let mut existing_count = 0usize;
+    for path in &candidates {
+        let exists = path.exists();
+        if exists {
+            existing_count += 1;
+        }
+        let settings = read_json_object_for_editor(&path)?;
+        let enabled = settings
+            .get("allowDevTools")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if enabled {
+            enabled_count += 1;
+        }
+        entries.push(json!({
+            "path": path.to_string_lossy(),
+            "exists": exists,
+            "enabled": enabled,
+        }));
+    }
+    let runtime = claude_desktop_runtime_info();
+    let restart_required = claude_desktop_restart_required(&candidates, &runtime);
+    Ok(json!({
+        "ok": true,
+        "enabled": enabled_count > 0,
+        "enabled_count": enabled_count,
+        "existing_count": existing_count,
+        "entries": entries,
+        "runtime": runtime,
+        "restart_required": restart_required,
+    }))
+}
+
+fn write_claude_desktop_developer_mode(enabled: bool) -> Result<Value, String> {
+    let candidates = claude_desktop_developer_settings_paths()?;
+    let mut targets: Vec<PathBuf> = candidates
+        .iter()
+        .filter(|path| {
+            path.exists() || path.parent().map(|parent| parent.exists()).unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    if targets.is_empty() {
+        if let Some(primary) = candidates.first() {
+            targets.push(primary.clone());
+        }
+    }
+
+    let mut changed_files = Vec::new();
+    let mut backup_paths = Vec::new();
+    for path in targets {
+        let mut settings = read_json_object_for_editor(&path)?;
+        settings["allowDevTools"] = Value::Bool(enabled);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建 Claude 设置目录失败: {e}"))?;
+        }
+        if let Some(backup) = backup_config_file_for_editor(&path)
+            .map_err(|e| format!("备份 Claude 设置失败: {e}"))?
+        {
+            backup_paths.push(backup.to_string_lossy().to_string());
+        }
+        let content = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("序列化 Claude 设置失败: {e}"))?
+            + "\n";
+        std::fs::write(&path, content).map_err(|e| format!("写入 Claude 设置失败: {e}"))?;
+        changed_files.push(path.to_string_lossy().to_string());
+    }
+    let runtime = claude_desktop_runtime_info();
+    let restart_required = claude_desktop_restart_required(&candidates, &runtime);
+
+    Ok(json!({
+        "ok": true,
+        "enabled": enabled,
+        "message": if enabled {
+            "Claude 桌面版开发者模式已开启"
+        } else {
+            "Claude 桌面版开发者模式已关闭"
+        },
+        "changed_files": changed_files,
+        "backup_paths": backup_paths,
+        "runtime": runtime,
+        "restart_required": restart_required,
+    }))
+}
+
+fn claude_desktop_developer_settings_paths() -> Result<Vec<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let home =
+            deecodex::config::home_dir().ok_or_else(|| "无法定位用户 HOME 目录".to_string())?;
+        let app_support = home.join("Library").join("Application Support");
+        let mut paths = vec![
+            app_support.join("Claude").join("developer_settings.json"),
+            app_support
+                .join("Claude-3p")
+                .join("developer_settings.json"),
+        ];
+        for user_data_dir in claude_desktop_runtime_user_data_dirs() {
+            push_unique_path(&mut paths, user_data_dir.join("developer_settings.json"));
+        }
+        Ok(paths)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Claude 桌面版开发者模式当前仅支持 macOS 配置路径".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_runtime_info() -> Value {
+    let user_data_dirs = claude_desktop_runtime_user_data_dirs();
+    let pids = claude_desktop_process_ids();
+    let oldest_started_at = claude_desktop_oldest_started_at();
+    json!({
+        "running": !pids.is_empty(),
+        "pids": pids,
+        "oldest_started_at": oldest_started_at,
+        "user_data_dirs": user_data_dirs
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_desktop_runtime_info() -> Value {
+    json!({
+        "running": false,
+        "pids": [],
+        "oldest_started_at": null,
+        "user_data_dirs": [],
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_runtime_user_data_dirs() -> Vec<PathBuf> {
+    claude_desktop_process_lines()
+        .into_iter()
+        .filter_map(|line| extract_command_arg_value(&line, "--user-data-dir="))
+        .map(PathBuf::from)
+        .fold(Vec::new(), |mut acc, path| {
+            push_unique_path(&mut acc, path);
+            acc
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_process_ids() -> Vec<u32> {
+    claude_desktop_process_lines()
+        .into_iter()
+        .filter_map(|line| line.split_whitespace().next()?.parse::<u32>().ok())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_oldest_started_at() -> Option<u64> {
+    let now = unix_timestamp_secs();
+    claude_desktop_process_lines()
+        .into_iter()
+        .filter_map(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(parse_ps_elapsed_secs)
+        })
+        .map(|elapsed| now.saturating_sub(elapsed))
+        .min()
+}
+
+#[cfg(target_os = "macos")]
+fn claude_desktop_process_lines() -> Vec<String> {
+    let output = match std::process::Command::new("ps")
+        .args(["ax", "-o", "pid=,etime=,command="])
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            tracing::warn!("探测 Claude Desktop 进程失败: {err}");
+            return Vec::new();
+        }
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("/Claude.app/Contents/")
+                || line.contains("/Claude Helper.app/Contents/")
+                || line.ends_with("/Claude")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn extract_command_arg_value(line: &str, prefix: &str) -> Option<String> {
+    let start = line.find(prefix)? + prefix.len();
+    let rest = &line[start..];
+    let end = rest.find(" --").unwrap_or(rest.len());
+    let value = rest[..end].trim().trim_matches('"').trim_matches('\'');
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn claude_desktop_restart_required(paths: &[PathBuf], runtime: &Value) -> bool {
+    if runtime.get("running").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    let Some(started_at) = runtime.get("oldest_started_at").and_then(Value::as_u64) else {
+        return true;
+    };
+    paths
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .filter_map(|meta| meta.modified().ok())
+        .filter_map(|mtime| {
+            mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs())
+        })
+        .max()
+        .map(|latest_mtime| latest_mtime > started_at)
+        .unwrap_or(false)
+}
+
+fn parse_ps_elapsed_secs(value: &str) -> Option<u64> {
+    let (day_part, time_part) = value
+        .split_once('-')
+        .map_or((None, value), |(days, time)| (Some(days), time));
+    let days = day_part
+        .and_then(|days| days.parse::<u64>().ok())
+        .unwrap_or(0);
+    let parts: Vec<u64> = time_part
+        .split(':')
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect();
+    let seconds = match parts.as_slice() {
+        [minutes, seconds] => minutes * 60 + seconds,
+        [hours, minutes, seconds] => hours * 3600 + minutes * 60 + seconds,
+        _ => return None,
+    };
+    Some(days * 86_400 + seconds)
+}
+
+fn unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn read_json_object_for_editor(path: &Path) -> Result<Value, String> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let content = read_text_file_lossy(path).map_err(|e| format!("读取 JSON 配置失败: {e}"))?;
+    if content.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    let value: Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析 JSON 配置失败: {e}"))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err("JSON 配置根节点必须是对象".into())
+    }
 }
 
 fn validate_config_text_for_editor(format: &str, content: &str) -> Value {
@@ -6708,6 +7019,16 @@ mod tests {
         assert_eq!(events[0]["action"], "new");
 
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_process_arg_parser_keeps_user_data_dir_with_spaces() {
+        let line = "123 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=renderer --user-data-dir=/Users/test/Library/Application Support/Claude-3p --lang=zh-CN";
+        assert_eq!(
+            extract_command_arg_value(line, "--user-data-dir=").as_deref(),
+            Some("/Users/test/Library/Application Support/Claude-3p")
+        );
     }
 
     #[test]

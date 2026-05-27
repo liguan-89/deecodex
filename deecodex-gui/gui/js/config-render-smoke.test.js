@@ -17,7 +17,7 @@ const context = {
     setItem(key, value) { this.data[key] = String(value); },
   },
   accountsData: {
-    client_counts: { codex: 1, claude_code: 1, openclaw: 1, hermes: 1, generic_client: 1 },
+    client_counts: { codex: 1, claude_code: 2, openclaw: 1, hermes: 1, generic_client: 1 },
     active_id: 'cx1',
     active_account_id: 'cx1',
     active_endpoint_id: 'ep_chat',
@@ -28,6 +28,7 @@ const context = {
         { id: 'ep_messages', name: 'Anthropic Messages', kind: 'anthropic_messages', base_url: 'https://api.anthropic.com' },
       ] },
       { id: 'cc1', name: 'Claude DeepSeek', client_kind: 'claude_code', provider: 'anthropic', upstream: 'https://api.deepseek.com/anthropic', default_model: 'deepseek-v4-pro', client_options: { auth_env: 'ANTHROPIC_AUTH_TOKEN', model_map: { default: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash' }, env: { ENABLE_TOOL_SEARCH: 'true' }, claude_custom_filter_enabled: true, claude_custom_filter_rules: ['x-custom-cache-noise:'] }, last_check: { ok: true, message: 'Claude Code 配置已准备' } },
+      { id: 'ccd1', name: 'Claude Desktop', client_kind: 'claude_code', client_surface: 'desktop', provider: 'anthropic', upstream: 'https://api.anthropic.com', default_model: 'claude-sonnet-4-5', client_options: { client_surface: 'desktop', auth_env: 'ANTHROPIC_AUTH_TOKEN' }, last_check: { ok: true, message: 'Claude 桌面版配置已准备' } },
       { id: 'oc1', name: 'OpenClaw OpenRouter', client_kind: 'openclaw', provider: 'openrouter', upstream: 'https://openrouter.ai/api/v1', default_model: 'anthropic/claude-sonnet-4.5', client_options: { api_key_env: 'OPENROUTER_API_KEY', model_map: { default: 'anthropic/claude-sonnet-4.5', image: 'openai/gpt-4o-mini' } } },
       { id: 'hm1', name: 'Hermes MiniMax', client_kind: 'hermes', provider: 'minimax', upstream: 'https://api.minimaxi.com/v1', default_model: 'MiniMax-M2.7', client_options: { config_path: '~/.hermes/config.yaml', env_path: '~/.hermes/.env', api_key_env: 'MINIMAX_API_KEY', model_map: { default: 'MiniMax-M2.7', vision: 'MiniMax-M2.7' } }, last_check: { ok: false, message: 'Hermes 密钥为空' } },
       { id: 'gc1', name: '通用 Env', client_kind: 'generic_client', provider: 'custom', upstream: 'https://api.example.com/v1', default_model: 'gpt-5', client_options: { config_path: '~/.deecodex/client-env', api_key_env: 'OPENAI_API_KEY', model_map: { default: 'gpt-5', fast: 'gpt-5.4-mini' } } },
@@ -193,6 +194,8 @@ assert(html.includes('MCP 服务器'));
 assert(html.includes('自定义过滤'));
 assert(html.includes('id="claudeCchFilterEnabled" checked'));
 assert(html.includes('启用 cch 过滤'));
+assert(html.includes('CLI / 桌面版'));
+assert(html.includes('同步 2 个 Claude 代理账号'));
 assert(html.includes('config-filter-example'));
 assert(html.includes('aria-label="Claude 自定义过滤规则"'));
 assert(!html.includes('placeholder="每行一个匹配片段'));

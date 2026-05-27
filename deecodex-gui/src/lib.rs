@@ -508,6 +508,8 @@ pub fn run() {
             commands::get_account_config_file,
             commands::validate_account_config_file,
             commands::save_account_config_file,
+            commands::get_claude_desktop_developer_mode,
+            commands::set_claude_desktop_developer_mode,
             commands::test_client_account,
             commands::apply_client_account,
             commands::get_account_events,

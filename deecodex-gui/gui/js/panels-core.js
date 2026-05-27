@@ -605,31 +605,60 @@ function configClientAdvancedCommands(kind) {
   ];
 }
 
-function claudeCustomFilterState(account) {
-  const opts = account?.client_options || {};
+function claudeFilterAccounts() {
+  return configClientAccounts('claude_code').filter(account => account?.id);
+}
+
+function claudeAccountSurface(account) {
+  const raw = String(account?.client_surface || account?.client_options?.client_surface || 'cli').toLowerCase();
+  return raw === 'desktop' ? 'desktop' : 'cli';
+}
+
+function claudeSurfaceSummary(accounts) {
+  const surfaces = new Set((accounts || []).map(claudeAccountSurface));
+  if (surfaces.has('cli') && surfaces.has('desktop')) return 'CLI / 桌面版';
+  if (surfaces.has('desktop')) return '桌面版';
+  if (surfaces.has('cli')) return 'CLI';
+  return '未接入';
+}
+
+function claudeCustomFilterState(accountsOrAccount) {
+  const accounts = Array.isArray(accountsOrAccount)
+    ? accountsOrAccount
+    : (accountsOrAccount ? [accountsOrAccount] : []);
+  const source = accounts.find(account => {
+    const opts = account?.client_options || {};
+    return Boolean(opts.claude_custom_filter_enabled)
+      || Array.isArray(opts.claude_custom_filter_rules)
+      || Object.prototype.hasOwnProperty.call(opts, 'claude_cch_filter_enabled');
+  }) || accounts[0] || null;
+  const opts = source?.client_options || {};
   const rules = Array.isArray(opts.claude_custom_filter_rules)
     ? opts.claude_custom_filter_rules
         .map(rule => String(rule || '').trim())
         .filter(Boolean)
     : [];
   return {
-    cchEnabled: opts.claude_cch_filter_enabled !== false,
-    enabled: Boolean(opts.claude_custom_filter_enabled),
+    cchEnabled: accounts.length
+      ? accounts.every(account => (account?.client_options || {}).claude_cch_filter_enabled !== false)
+      : true,
+    enabled: accounts.some(account => Boolean((account?.client_options || {}).claude_custom_filter_enabled)),
     rules,
   };
 }
 
-function renderClaudeCustomFilterSection(account) {
-  const state = claudeCustomFilterState(account);
-  const disabled = account ? '' : ' disabled';
+function renderClaudeCustomFilterSection(accounts) {
+  const targets = Array.isArray(accounts) ? accounts : (accounts ? [accounts] : []);
+  const state = claudeCustomFilterState(targets);
+  const disabled = targets.length ? '' : ' disabled';
   const ruleText = state.rules.join('\n');
   return `<section class="config-client-section">
     <div class="config-section-header">
       <span class="section-icon">⌬</span>
       <h3>自定义过滤</h3>
-      <span class="section-desc">Anthropic system 行过滤</span>
+      <span class="section-desc">${esc(claudeSurfaceSummary(targets))} · Anthropic system 行过滤</span>
     </div>
-    <div class="config-filter-panel${account ? '' : ' disabled'}">
+    <div class="config-filter-panel${targets.length ? '' : ' disabled'}">
       <div class="config-filter-head">
         <label class="config-filter-toggle">
           <input type="checkbox" id="claudeCchFilterEnabled" ${state.cchEnabled ? 'checked' : ''}${disabled}>
@@ -649,15 +678,44 @@ function renderClaudeCustomFilterSection(account) {
         <code>session_fingerprint:</code>
       </div>
       <textarea id="claudeCustomFilterRules" spellcheck="false" aria-label="Claude 自定义过滤规则"${disabled}>${esc(ruleText)}</textarea>
-      <p>仅作用于 Claude Code 通过 Anthropic Messages 端口发送的顶层 <code>system</code> 文本；命中的整行会在转发前移除。内置已处理 <code>x-anthropic-billing-header</code> + <code>cch=</code>。</p>
-      ${account ? '' : '<div class="config-client-empty">暂无 Claude 账号。请先在账号管理中添加或扫描 Claude Code 账号，再保存过滤规则。</div>'}
+      <p>作用于 Claude CLI 和 Claude 桌面版通过 Anthropic Messages 代理发送的顶层 <code>system</code> 文本；命中的整行会在转发前移除。内置已处理 <code>x-anthropic-billing-header</code> + <code>cch=</code>。</p>
+      ${targets.length ? `<div class="config-filter-example"><span>同步 ${targets.length} 个 Claude 代理账号</span></div>` : '<div class="config-client-empty">暂无 Claude 账号。请先在账号管理中添加或扫描 Claude CLI / 桌面版账号，再保存过滤规则。</div>'}
+    </div>
+  </section>`;
+}
+
+function configClaudeDesktopAccount() {
+  return configClientAccounts('claude_code').find(account => {
+    const surface = String(account?.client_surface || account?.client_options?.client_surface || 'cli').toLowerCase();
+    return surface === 'desktop';
+  }) || null;
+}
+
+function renderClaudeDesktopDeveloperModeSection() {
+  const account = configClaudeDesktopAccount();
+  return `<section class="config-client-section claude-dev-mode-section">
+    <div class="config-section-header">
+      <span class="section-icon">⌘</span>
+      <h3>桌面开发者模式</h3>
+      <span class="section-desc">Claude Desktop</span>
+    </div>
+    <div class="config-filter-panel">
+      <div class="config-filter-head">
+        <label class="config-filter-toggle claude-dev-mode-toggle">
+          <input type="checkbox" id="claudeDesktopDevModeSwitch" onchange="toggleClaudeDesktopDeveloperMode('${escAttr(account?.id || '')}', this.checked)">
+          <span id="claudeDesktopDevModeLabel">读取中...</span>
+        </label>
+        <button type="button" class="btn btn-ghost" onclick="refreshClaudeDesktopDeveloperMode()">刷新</button>
+        <button type="button" class="btn btn-ghost" id="claudeDesktopRestartBtn" onclick="restartClaudeDesktopForDevMode()" disabled>重启 Claude</button>
+      </div>
+      <p id="claudeDesktopDevModeHint">写入 Claude Desktop 的 <code>developer_settings.json</code>，只修改 <code>allowDevTools</code>。</p>
     </div>
   </section>`;
 }
 
 async function saveClaudeCustomFilters() {
-  const account = configPrimaryClientAccount('claude_code');
-  if (!account) {
+  const accounts = claudeFilterAccounts();
+  if (!accounts.length) {
     showToast('请先添加 Claude 账号', 'error');
     return;
   }
@@ -667,19 +725,22 @@ async function saveClaudeCustomFilters() {
     .split(/\r?\n/)
     .map(rule => rule.trim())
     .filter(Boolean);
-  const next = JSON.parse(JSON.stringify(account));
-  next.client_options = next.client_options || {};
-  next.client_options.claude_cch_filter_enabled = cchEnabled;
-  next.client_options.claude_custom_filter_enabled = enabled;
-  if (rules.length) {
-    next.client_options.claude_custom_filter_rules = rules;
-  } else {
-    delete next.client_options.claude_custom_filter_rules;
-  }
-  delete next._client_status_report;
+  const updates = accounts.map(account => {
+    const next = JSON.parse(JSON.stringify(account));
+    next.client_options = next.client_options || {};
+    next.client_options.claude_cch_filter_enabled = cchEnabled;
+    next.client_options.claude_custom_filter_enabled = enabled;
+    if (rules.length) {
+      next.client_options.claude_custom_filter_rules = rules;
+    } else {
+      delete next.client_options.claude_custom_filter_rules;
+    }
+    delete next._client_status_report;
+    return next;
+  });
   try {
-    await invoke('update_account', { accountJson: JSON.stringify(next) });
-    showToast('Claude 自定义过滤已保存', 'success');
+    await Promise.all(updates.map(account => invoke('update_account', { accountJson: JSON.stringify(account) })));
+    showToast(`Claude 自定义过滤已同步 ${updates.length} 个账号`, 'success');
     await loadAccountsData();
     renderPanel('config');
   } catch (err) {
@@ -791,6 +852,7 @@ function renderClientConfigOverview(kind) {
   const profile = configClientProfiles().find(item => normalizeConfigClientKind(item.slug || item.kind) === kind) || {};
   const accounts = configClientAccounts(kind);
   const account = configPrimaryClientAccount(kind);
+  const claudeAccounts = kind === 'claude_code' ? claudeFilterAccounts() : [];
   const spec = configClientAdvancedSpec(kind);
   return `
     <section class="config-client-overview">
@@ -805,8 +867,16 @@ function renderClientConfigOverview(kind) {
       ${accounts.length ? '' : `<div class="config-client-empty">暂无${esc(configClientLabel(kind, profile))}账号。账号、密钥、模型和端点请在账号管理中维护。</div>`}
     </section>
     ${renderConfigClientFocusRows(spec)}
-    ${kind === 'claude_code' ? renderClaudeCustomFilterSection(account) : ''}
+    ${kind === 'claude_code' ? renderClaudeDesktopDeveloperModeSection() : ''}
+    ${kind === 'claude_code' ? renderClaudeCustomFilterSection(claudeAccounts) : ''}
     ${renderConfigCommandStrip(kind)}`;
+}
+
+function afterRenderConfigPanel() {
+  if (selectedConfigClientKind !== 'claude_code') return;
+  if (typeof refreshClaudeDesktopDeveloperMode === 'function') {
+    refreshClaudeDesktopDeveloperMode();
+  }
 }
 
 async function refreshConfigClientAdvanced(kind) {

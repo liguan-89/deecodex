@@ -166,7 +166,10 @@ function renderPanel(panelId) {
   if (container) container.classList.toggle('accounts-form-main', panelId === 'accounts' && accountsView !== 'list');
   switch (panelId) {
     case 'status': container.innerHTML = renderStatus(); break;
-    case 'config': container.innerHTML = wrapPrimaryPanel(panelId, renderConfig()); break;
+    case 'config':
+      container.innerHTML = wrapPrimaryPanel(panelId, renderConfig());
+      if (typeof afterRenderConfigPanel === 'function') afterRenderConfigPanel();
+      break;
     case 'diagnostics': container.innerHTML = wrapPrimaryPanel(panelId, renderDiagnostics()); break;
     case 'help': container.innerHTML = wrapPrimaryPanel(panelId, renderHelp()); break;
     case 'sessions': container.innerHTML = wrapPrimaryPanel(panelId, renderHistory()); refreshHistory(); break;
