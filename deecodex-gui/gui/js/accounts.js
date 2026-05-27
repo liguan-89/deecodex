@@ -939,6 +939,11 @@ function isResponsesDirectFormAccount(account, endpoint = currentEndpoint(accoun
       || endpointIsCodexOfficial(endpoint));
 }
 
+function endpointKindIsLockedForForm(account, endpoint = currentEndpoint(account)) {
+  return isCodexAccount(account)
+    && (isOpenAiNativeResponsesAccount(account) || endpointIsCodexOfficial(endpoint));
+}
+
 function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(account)) {
   if (!isCodexAccount(account)) return account;
   const forceOpenAiResponses = isOpenAiNativeResponsesAccount(account);
@@ -1028,6 +1033,29 @@ function setVisionMode(mode) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
   toggleVisionFields();
+}
+
+function handleEndpointKindChange(value) {
+  if (!editingAccount || !isCodexAccount(editingAccount)) return;
+  const ep = currentEndpoint(editingAccount);
+  const previousKind = ep?.kind || 'open_ai_chat';
+  const kindControl = document.getElementById('edit_endpoint_kind');
+  if (kindControl) kindControl.value = previousKind;
+  syncEditingDraftFromForm({ preserveHiddenResponses: true });
+  const current = currentEndpoint(editingAccount);
+  if (current && value) {
+    current.kind = value;
+    current.name = endpointKindLabel(value);
+    if (endpointKindIsResponsesDirect(value) && !endpointKindIsCustomResponses(value)) {
+      current.path = '';
+      current.template_id = 'responses_direct';
+    } else if (endpointKindUsesModelMapping(value) && current.template_id === 'responses_direct') {
+      current.template_id = value === 'anthropic_messages' ? 'anthropic_messages' : 'chat_compatible';
+    }
+  }
+  if (kindControl) kindControl.value = value;
+  upstreamModels = [];
+  renderMainContent();
 }
 
 function selectedEndpointId(a) {
@@ -1561,7 +1589,9 @@ function renderAccountDetail() {
   ensureAccountEndpoints(a);
   const initialEndpoint = currentEndpoint(a) || {};
   const responsesDirectForm = isResponsesDirectFormAccount(a, initialEndpoint);
-  if (responsesDirectForm) normalizeResponsesDirectAccount(a, initialEndpoint);
+  if (responsesDirectForm && endpointKindIsLockedForForm(a, initialEndpoint)) {
+    normalizeResponsesDirectAccount(a, initialEndpoint);
+  }
   const ep = currentEndpoint(a) || {};
   const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'native');
   const contextWindow = ep.context_window_override ?? null;
@@ -1575,11 +1605,12 @@ function renderAccountDetail() {
   const knownModels = getProviderKnownModels(a.provider);
   const responsesDirect = endpointKindIsResponsesDirect(ep.kind);
   const usesModelMapping = !responsesDirectForm && endpointKindUsesModelMapping(ep.kind);
-  const endpointKindControl = responsesDirectForm
+  const lockEndpointKind = endpointKindIsLockedForForm(a, ep);
+  const endpointKindControl = lockEndpointKind
     ? `<input type="hidden" id="edit_endpoint_kind" value="${escAttr(normalizeResponsesKind(ep.kind) || 'open_ai_responses')}">
           <input type="text" value="${escAttr(endpointKindLabel(ep.kind))}" disabled aria-label="上游 API 类型">
           <span class="hint">原生端点固定使用对应的官方协议。</span>`
-    : `<select id="edit_endpoint_kind">
+    : `<select id="edit_endpoint_kind" onchange="handleEndpointKindChange(this.value)">
             ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? '<option value="custom_chat" selected hidden>OpenAI Chat 兼容（自定义路径）</option>' : ''}
             ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? '<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>' : ''}
             <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
@@ -2322,7 +2353,7 @@ function removeModelMapRow(btn) {
   row.remove();
 }
 
-function syncEditingDraftFromForm() {
+function syncEditingDraftFromForm(options = {}) {
   if (!editingAccount) return;
   const a = editingAccount;
   a.client_surface = accountClientSurface(a);
@@ -2434,12 +2465,15 @@ function syncEditingDraftFromForm() {
   ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
   ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'reject';
 
-  if (!endpointKindUsesModelMapping(ep.kind)) {
+  if (!endpointKindUsesModelMapping(ep.kind) && !options.preserveHiddenResponses) {
     ep.model_map = {};
     ep.model_profiles = {};
-  } else {
-    ep.model_map = collectModelMap();
-    ep.model_profiles = collectModelProfiles();
+  } else if (endpointKindUsesModelMapping(ep.kind)) {
+    const modelMapRows = document.getElementById('modelMapRows');
+    if (modelMapRows) {
+      ep.model_map = collectModelMap();
+      ep.model_profiles = collectModelProfiles();
+    }
   }
   a.model_map = ep.model_map;
 
@@ -2498,7 +2532,9 @@ function syncEditingDraftFromForm() {
     ep.max_retries = parseOptionalInteger(retriesInput.value);
     a.max_retries = ep.max_retries;
   }
-  if (isResponsesDirectFormAccount(a, ep)) normalizeResponsesDirectAccount(a, ep);
+  if (isResponsesDirectFormAccount(a, ep) && !options.preserveHiddenResponses) {
+    normalizeResponsesDirectAccount(a, ep);
+  }
   a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
 }
 

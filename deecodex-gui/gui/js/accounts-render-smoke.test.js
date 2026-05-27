@@ -444,15 +444,15 @@ assert(!customResponsesDetail.includes('能力补全'));
 assert(!customResponsesDetail.includes('开发协作编排'));
 assert(!customResponsesDetail.includes('上下文窗口覆盖'));
 assert(!customResponsesDetail.includes('推理强度覆盖'));
-assert(!customResponsesDetail.includes('<select id="edit_endpoint_kind">'));
-assert(customResponsesDetail.includes('id="edit_endpoint_kind" value="custom_responses"'));
+assert(customResponsesDetail.includes('<select id="edit_endpoint_kind" onchange="handleEndpointKindChange(this.value)">'));
+assert(customResponsesDetail.includes('<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>'));
 assert(customResponsesDetail.includes('id="edit_endpoint_path" value="v2/responses"'));
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'custom_responses');
 assert.strictEqual(context.editingAccount.endpoints[0].path, 'v2/responses');
-assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
-assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
-assert.strictEqual(context.editingAccount.capability_enabled, false);
-assert.strictEqual(context.editingAccount.dev_pipeline_enabled, false);
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.5'], 'other-model');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
+assert.strictEqual(context.editingAccount.capability_enabled, true);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
 
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'c2');
 context.editingAccount.context_window_override = 1000000;
@@ -627,6 +627,59 @@ const codexDefaultVisionDetail = context.renderAccountsPanel();
 assert(codexDefaultVisionDetail.includes('data-mode="native"'));
 assert(!codexDefaultVisionDetail.includes('collapsible-toggle open'));
 assert(!codexDefaultVisionDetail.includes('collapsible-content open'));
+assert(codexDefaultVisionDetail.includes('onchange="handleEndpointKindChange(this.value)"'));
+
+context.editingAccount.context_window_override = 1000000;
+context.editingAccount.reasoning_effort_override = 'high';
+context.editingAccount.capability_enabled = true;
+context.editingAccount.dev_pipeline_enabled = true;
+context.editingAccount.endpoints[0].model_map = { 'gpt-5': 'deepseek-chat' };
+context.editingAccount.endpoints[0].model_profiles = { 'deepseek-chat': { vision_mode: 'glue' } };
+context.editingAccount.endpoints[0].vision = { mode: 'glue', base_url: 'https://vision.example.com' };
+context.editingAccount.endpoints[0].context_window_override = 1000000;
+context.editingAccount.endpoints[0].reasoning_effort_override = 'high';
+const mainContent = {
+  classList: { toggle: () => {} },
+  innerHTML: '',
+};
+let endpointKindValue = 'open_ai_responses';
+const endpointKindControl = {
+  get value() { return endpointKindValue; },
+  set value(next) { endpointKindValue = next; },
+};
+const originalDocument = context.document;
+context.document = {
+  querySelectorAll: () => [],
+  getElementById: id => ({
+    mainContent,
+    edit_endpoint_kind: endpointKindControl,
+    edit_name: { value: context.editingAccount.name },
+    edit_api_key: { value: context.editingAccount.api_key },
+    edit_upstream: { value: context.editingAccount.upstream },
+    edit_balance_url: { value: '' },
+  }[id] || null),
+};
+context.handleEndpointKindChange('open_ai_responses');
+assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_responses');
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5'], 'deepseek-chat');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
+assert.strictEqual(context.editingAccount.capability_enabled, true);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
+assert(!mainContent.innerHTML.includes('model-map-table'));
+assert(!mainContent.innerHTML.includes('能力补全'));
+assert(!mainContent.innerHTML.includes('开发协作编排'));
+assert(mainContent.innerHTML.includes('<select id="edit_endpoint_kind" onchange="handleEndpointKindChange(this.value)">'));
+assert(mainContent.innerHTML.includes('<option value="open_ai_responses" selected>OpenAI Responses 直连</option>'));
+endpointKindValue = 'open_ai_chat';
+context.handleEndpointKindChange('open_ai_chat');
+context.document = originalDocument;
+assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_chat');
+assert(mainContent.innerHTML.includes('model-map-table'));
+assert(mainContent.innerHTML.includes('能力补全'));
+assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5'], 'deepseek-chat');
+assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
+assert.strictEqual(context.editingAccount.capability_enabled, true);
+assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
 
 context.selectedClientSurface = 'desktop';
 context.addAccount('anthropic', 'claude_code');
