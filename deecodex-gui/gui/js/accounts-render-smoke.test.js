@@ -6,7 +6,10 @@ const vm = require('vm');
 const context = {
   console,
   accountsData: {
-    client_counts: { codex: 1, hermes: 1 },
+    client_counts: { codex: 1, hermes: 2 },
+    active_by_surface: {
+      'hermes:cli': { account_id: 'h1' },
+    },
     accounts: [
       {
         id: 'c1',
@@ -93,6 +96,22 @@ const context = {
         default_model: 'MiniMax-M2.7',
         client_options: { api_key_env: 'MINIMAX_API_KEY', model_map: { default: 'MiniMax-M2.7' } },
         last_check: { ok: false, message: 'Hermes 密钥为空' },
+      },
+      {
+        id: 'h2',
+        name: 'Hermes 旧账号',
+        provider: 'anthropic',
+        client_kind: 'hermes',
+        upstream: 'https://api.anthropic.com',
+        api_key: 'sk-old',
+        default_model: 'claude-sonnet-4-5',
+        client_options: { api_key_env: 'ANTHROPIC_API_KEY', model_map: { default: 'claude-sonnet-4-5' } },
+        last_applied_at: 100,
+        last_check: {
+          ok: true,
+          message: 'Hermes 配置正常',
+          details: { ok: true, message: 'Hermes 配置正常', applied_at: 100 },
+        },
       },
     ],
   },
@@ -239,6 +258,17 @@ const switcher = context.renderClientSwitcher(context.accountsData.accounts);
 assert(switcher.includes('client-tab active has-issues'));
 assert(switcher.includes('Hermes'));
 
+context.accountsView = 'list';
+context.selectedClientKind = 'hermes';
+context.selectedClientSurface = 'cli';
+const hermesActiveList = context.renderAccountList();
+assert(hermesActiveList.includes('Hermes MiniMax'));
+assert(hermesActiveList.includes('Hermes 旧账号'));
+assert(hermesActiveList.includes('<span class="active-badge">活跃</span>'));
+assert(!hermesActiveList.includes('<span class="active-badge">已写入</span>'));
+assert(hermesActiveList.indexOf('Hermes MiniMax') < hermesActiveList.indexOf('Hermes 旧账号'));
+
+context.accountsView = 'edit';
 const detail = context.renderClientAccountDetail();
 assert(detail.includes('Hermes .env Key'));
 assert(detail.includes('最近备份'));

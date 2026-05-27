@@ -535,7 +535,9 @@ fn activate_client_surface_account(
     endpoint_id: Option<String>,
     sync_legacy_global: bool,
 ) {
-    if !account.client_kind.supports_desktop_surface() {
+    if !account.client_kind.supports_desktop_surface()
+        && account.client_surface != AccountClientSurface::Cli
+    {
         return;
     }
     let endpoint_id = endpoint_id.or_else(|| {
@@ -2756,7 +2758,7 @@ pub async fn dex_quick_configure_client(
                     .map(|endpoint| endpoint.id.clone());
                 let sync_legacy_global = should_sync_legacy_global(store, &account);
                 activate_codex_surface_account(store, &account, endpoint_id, sync_legacy_global);
-            } else if client_apply_ok && account.client_kind.supports_desktop_surface() {
+            } else if client_apply_ok {
                 activate_client_surface_account(store, &account, None, false);
             }
             store.accounts.push(account.clone());
@@ -2909,11 +2911,10 @@ pub async fn delete_account(
 
             let was_global_active = store.active_id.as_deref() == Some(&id)
                 || store.active_account_id.as_deref() == Some(&id);
-            let was_surface_active = deleting.client_kind.supports_desktop_surface()
-                && store
-                    .active_selection_for_surface(&deleting.client_kind, &deleting.client_surface)
-                    .and_then(|selection| selection.account_id.as_deref())
-                    == Some(id.as_str());
+            let was_surface_active = store
+                .active_selection_for_surface(&deleting.client_kind, &deleting.client_surface)
+                .and_then(|selection| selection.account_id.as_deref())
+                == Some(id.as_str());
 
             store.accounts.retain(|a| a.id != id);
             for account in &mut store.accounts {
@@ -3653,7 +3654,7 @@ pub async fn save_account_config_file(
 
 #[tauri::command]
 pub async fn get_claude_desktop_developer_mode() -> Result<Value, String> {
-    Ok(read_claude_desktop_developer_mode()?)
+    read_claude_desktop_developer_mode()
 }
 
 #[tauri::command]
@@ -3905,7 +3906,7 @@ fn read_claude_desktop_developer_mode() -> Result<Value, String> {
         if exists {
             existing_count += 1;
         }
-        let settings = read_json_object_for_editor(&path)?;
+        let settings = read_json_object_for_editor(path)?;
         let enabled = settings
             .get("allowDevTools")
             .and_then(Value::as_bool)
@@ -4463,7 +4464,7 @@ pub async fn apply_client_account(
                 details: serde_json::to_value(&report).unwrap_or_default(),
             });
             let client_kind = account.client_kind.clone();
-            if !dry_run && report.ok && account.client_kind.supports_desktop_surface() {
+            if !dry_run && report.ok {
                 activate_client_surface_account(store, &account, None, false);
             }
             store.accounts[pos] = account;
@@ -6582,9 +6583,14 @@ mod tests {
         desktop.client_surface = AccountClientSurface::Desktop;
         desktop.translate_enabled = false;
 
+        let mut hermes = test_account("hermes");
+        hermes.client_kind = AccountClientKind::Hermes;
+        hermes.client_surface = AccountClientSurface::Cli;
+        hermes.translate_enabled = false;
+
         let mut store = AccountStore {
             version: deecodex::accounts::ACCOUNT_STORE_VERSION,
-            accounts: vec![cli.clone(), desktop.clone()],
+            accounts: vec![cli.clone(), desktop.clone(), hermes.clone()],
             active_id: Some("codex-global".into()),
             active_account_id: Some("codex-global".into()),
             active_endpoint_id: Some("codex-endpoint".into()),
@@ -6593,6 +6599,7 @@ mod tests {
 
         activate_client_surface_account(&mut store, &cli, None, true);
         activate_client_surface_account(&mut store, &desktop, None, true);
+        activate_client_surface_account(&mut store, &hermes, None, true);
 
         assert_eq!(store.active_account_id.as_deref(), Some("codex-global"));
         assert_eq!(
@@ -6612,6 +6619,15 @@ mod tests {
                 )
                 .and_then(|selection| selection.account_id.as_deref()),
             Some("claude-desktop")
+        );
+        assert_eq!(
+            store
+                .active_selection_for_surface(
+                    &AccountClientKind::Hermes,
+                    &AccountClientSurface::Cli
+                )
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("hermes")
         );
     }
 

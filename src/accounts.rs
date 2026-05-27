@@ -49,6 +49,14 @@ impl AccountClientKind {
     pub fn supports_desktop_surface(&self) -> bool {
         matches!(self, Self::Codex | Self::ClaudeCode)
     }
+
+    pub fn active_surfaces(&self) -> Vec<AccountClientSurface> {
+        if self.supports_desktop_surface() {
+            vec![AccountClientSurface::Cli, AccountClientSurface::Desktop]
+        } else {
+            vec![AccountClientSurface::Cli]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -942,12 +950,20 @@ pub struct AccountStore {
     pub active_account_id: Option<String>,
     #[serde(default)]
     pub active_endpoint_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     pub active_by_surface: HashMap<String, SurfaceActiveSelection>,
 }
 
 fn default_account_store_version() -> u32 {
     ACCOUNT_STORE_VERSION
+}
+
+fn deserialize_default_on_null<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl Default for AccountStore {
@@ -1036,16 +1052,19 @@ impl AccountStore {
     }
 
     fn repair_surface_active(&mut self) {
-        for kind in [AccountClientKind::Codex, AccountClientKind::ClaudeCode] {
+        for kind in [
+            AccountClientKind::Codex,
+            AccountClientKind::ClaudeCode,
+            AccountClientKind::Openclaw,
+            AccountClientKind::Hermes,
+            AccountClientKind::GenericClient,
+        ] {
             self.repair_surface_active_for_kind(kind);
         }
     }
 
     fn repair_surface_active_for_kind(&mut self, kind: AccountClientKind) {
-        if !kind.supports_desktop_surface() {
-            return;
-        }
-        for surface in [AccountClientSurface::Cli, AccountClientSurface::Desktop] {
+        for surface in kind.active_surfaces() {
             let key = surface_active_key(&kind, &surface);
             let selected_account_id = self
                 .active_by_surface
@@ -1064,12 +1083,16 @@ impl AccountStore {
                         .map(|account| account.id.clone())
                 })
                 .or_else(|| {
-                    self.accounts
-                        .iter()
-                        .find(|account| {
-                            account.client_kind == kind && account.client_surface == surface
-                        })
-                        .map(|account| account.id.clone())
+                    if kind.is_codex() || kind.supports_desktop_surface() {
+                        self.accounts
+                            .iter()
+                            .find(|account| {
+                                account.client_kind == kind && account.client_surface == surface
+                            })
+                            .map(|account| account.id.clone())
+                    } else {
+                        None
+                    }
                 });
 
             let Some(account_id) = selected_account_id else {
@@ -1290,9 +1313,13 @@ impl AccountStore {
                 })
             })
             .or_else(|| {
-                self.accounts.iter().find(|account| {
-                    &account.client_kind == kind && &account.client_surface == surface
-                })
+                if kind.is_codex() || kind.supports_desktop_surface() {
+                    self.accounts.iter().find(|account| {
+                        &account.client_kind == kind && &account.client_surface == surface
+                    })
+                } else {
+                    None
+                }
             })
     }
 
@@ -2478,6 +2505,23 @@ mod tests {
     }
 
     #[test]
+    fn store_deserializes_null_active_by_surface_as_empty() {
+        let content = r#"{
+            "version": 3,
+            "accounts": [],
+            "active_id": null,
+            "active_account_id": null,
+            "active_endpoint_id": null,
+            "active_by_surface": null
+        }"#;
+
+        let mut store = parse_account_store(content).unwrap();
+        store.normalize_v2();
+
+        assert!(store.active_by_surface.is_empty());
+    }
+
+    #[test]
     fn legacy_responses_account_gets_responses_endpoint() {
         let mut account = legacy_account(false);
         account.normalize_v2();
@@ -2735,6 +2779,88 @@ mod tests {
             None
         );
         assert!(store.active_account_id.is_none());
+    }
+
+    #[test]
+    fn store_normalize_repairs_cli_client_active_from_last_applied() {
+        let mut old_hermes = legacy_account(false);
+        old_hermes.id = "hermes-old".into();
+        old_hermes.client_kind = AccountClientKind::Hermes;
+        old_hermes.client_surface = AccountClientSurface::Cli;
+        old_hermes.provider = "minimax".into();
+        old_hermes.last_applied_at = Some(1);
+        old_hermes.normalize_v2();
+
+        let mut hermes = old_hermes.clone();
+        hermes.id = "hermes-new".into();
+        hermes.last_applied_at = Some(20);
+
+        let mut openclaw = legacy_account(false);
+        openclaw.id = "openclaw-active".into();
+        openclaw.client_kind = AccountClientKind::Openclaw;
+        openclaw.client_surface = AccountClientSurface::Cli;
+        openclaw.provider = "openclaw".into();
+        openclaw.last_applied_at = Some(10);
+        openclaw.normalize_v2();
+
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![old_hermes, hermes, openclaw],
+            active_id: None,
+            active_account_id: None,
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+
+        store.normalize_v2();
+
+        assert_eq!(
+            store
+                .active_account_for_kind_surface(
+                    &AccountClientKind::Hermes,
+                    &AccountClientSurface::Cli
+                )
+                .map(|account| account.id.as_str()),
+            Some("hermes-new")
+        );
+        assert_eq!(
+            store
+                .active_account_for_kind_surface(
+                    &AccountClientKind::Openclaw,
+                    &AccountClientSurface::Cli
+                )
+                .map(|account| account.id.as_str()),
+            Some("openclaw-active")
+        );
+        assert!(store.active_account_id.is_none());
+    }
+
+    #[test]
+    fn store_normalize_does_not_guess_unapplied_cli_client_active() {
+        let mut hermes = legacy_account(false);
+        hermes.id = "hermes-unapplied".into();
+        hermes.client_kind = AccountClientKind::Hermes;
+        hermes.client_surface = AccountClientSurface::Cli;
+        hermes.provider = "minimax".into();
+        hermes.normalize_v2();
+
+        let mut store = AccountStore {
+            version: 2,
+            accounts: vec![hermes],
+            active_id: None,
+            active_account_id: None,
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+
+        store.normalize_v2();
+
+        assert!(store
+            .active_selection_for_surface(&AccountClientKind::Hermes, &AccountClientSurface::Cli)
+            .is_none());
+        assert!(store
+            .active_account_for_kind_surface(&AccountClientKind::Hermes, &AccountClientSurface::Cli)
+            .is_none());
     }
 
     #[test]

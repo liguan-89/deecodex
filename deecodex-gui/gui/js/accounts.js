@@ -452,9 +452,7 @@ function clientAccountStatusReport(a) {
 }
 
 function clientAccountApplied(a) {
-  if (!a || isCodexAccount(a)) return false;
-  const report = clientAccountStatusReport(a);
-  return Boolean(a.last_applied_at || report?.applied_at);
+  return clientAccountActive(a);
 }
 
 function renderClientCardStatusSummary(report, applied) {
@@ -1080,10 +1078,14 @@ function activeSelectionFor(kind, surface) {
 
 function activeSelectionForAccount(a) {
   const kind = accountClientKind(a);
-  if (!a || !clientKindSupportsSurface(kind)) {
+  if (!a) {
     return null;
   }
   return activeSelectionFor(kind, accountClientSurface(a));
+}
+
+function clientAccountActive(a) {
+  return activeSelectionForAccount(a)?.account_id === a?.id;
 }
 
 function activeAccountIdForSelection(kind, surface) {
