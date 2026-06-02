@@ -794,25 +794,36 @@ impl Account {
             if !endpoint.kind.is_chat_like() {
                 continue;
             }
-            endpoint
-                .model_profiles
-                .entry("mimo-v2.5".into())
-                .or_insert(ModelProfile {
-                    vision_mode: ModelVisionMode::Native,
-                });
-            endpoint
-                .model_profiles
-                .entry("mimo-v2-omni".into())
-                .or_insert(ModelProfile {
-                    vision_mode: ModelVisionMode::Native,
-                });
+            for model in ["mimo-v2.5", "mimo-v2-omni"] {
+                endpoint.model_profiles.insert(
+                    model.into(),
+                    ModelProfile {
+                        vision_mode: ModelVisionMode::Native,
+                    },
+                );
+            }
             for model in ["mimo-v2.5-pro", "mimo-v2-pro"] {
-                endpoint
-                    .model_profiles
-                    .entry(model.into())
-                    .or_insert(ModelProfile {
+                endpoint.model_profiles.insert(
+                    model.into(),
+                    ModelProfile {
                         vision_mode: ModelVisionMode::Off,
-                    });
+                    },
+                );
+            }
+        }
+    }
+
+    fn normalize_runtime_image_capability_failures(&mut self) {
+        if runtime_message_is_image_capability_error(&self.runtime_state.status_message) {
+            self.runtime_state.status = AccountRuntimeStatus::Active;
+            self.runtime_state.next_retry_after = None;
+            self.runtime_state.quota = AccountQuotaState::default();
+        }
+        for state in self.runtime_state.model_states.values_mut() {
+            if runtime_message_is_image_capability_error(&state.status_message) {
+                state.status = AccountRuntimeStatus::Active;
+                state.next_retry_after = None;
+                state.quota = AccountQuotaState::default();
             }
         }
     }
@@ -841,6 +852,7 @@ impl Account {
         self.retire_codex_model_map();
         self.normalize_mimo_codex_model_profiles();
         self.normalize_unsupported_image_policy_default();
+        self.normalize_runtime_image_capability_failures();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -901,6 +913,25 @@ impl Account {
         self.runtime_state.failed = self.runtime_state.failed.saturating_add(1);
 
         let model_key = model.trim().to_string();
+        if runtime_message_is_image_capability_error(&message) {
+            self.runtime_state.status = AccountRuntimeStatus::Active;
+            self.runtime_state.status_message = message.clone();
+            self.runtime_state.next_retry_after = None;
+            self.runtime_state.quota = AccountQuotaState::default();
+            if !model_key.is_empty() {
+                self.runtime_state.model_states.insert(
+                    model_key,
+                    AccountModelRuntimeState {
+                        status: AccountRuntimeStatus::Active,
+                        status_message: message,
+                        next_retry_after: None,
+                        quota: AccountQuotaState::default(),
+                        updated_at: now,
+                    },
+                );
+            }
+            return;
+        }
         let previous_backoff = if model_key.is_empty() {
             self.runtime_state.quota.backoff_level
         } else {
@@ -1056,6 +1087,19 @@ pub fn runtime_cooldown_for_status(
         next_retry_after,
         quota,
     }
+}
+
+fn runtime_message_is_image_capability_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "no endpoints found that support image input",
+        "unsupported_image",
+        "vision_disabled",
+        "image input",
+        "images are not supported",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn next_quota_backoff(previous_level: u32) -> (u64, u32) {
@@ -2789,6 +2833,30 @@ mod tests {
     }
 
     #[test]
+    fn image_capability_failure_does_not_cool_down_account() {
+        let mut account = legacy_account(true);
+        account.normalize_v2();
+
+        account.record_runtime_failure(
+            "mimo-v2.5-pro",
+            404,
+            r#"{"error":{"message":"No endpoints found that support image input"}}"#.into(),
+            None,
+            1_000,
+        );
+
+        assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Active);
+        assert!(account.runtime_state.next_retry_after.is_none());
+        let model = account
+            .runtime_state
+            .model_states
+            .get("mimo-v2.5-pro")
+            .unwrap();
+        assert_eq!(model.status, AccountRuntimeStatus::Active);
+        assert!(model.next_retry_after.is_none());
+    }
+
+    #[test]
     fn model_profile_overrides_endpoint_vision_mode() {
         let mut account = legacy_account(true);
         account.normalize_v2();
@@ -2825,6 +2893,14 @@ mod tests {
         account.provider = "mimo".into();
         account.upstream = "https://token-plan-cn.xiaomimimo.com/v1".into();
         account.model_map = HashMap::from([("gpt-5.5".into(), "old-mapped-model".into())]);
+        account.normalize_v2();
+        account.endpoints[0].model_profiles.insert(
+            "mimo-v2.5-pro".into(),
+            ModelProfile {
+                vision_mode: ModelVisionMode::Native,
+            },
+        );
+
         account.normalize_v2();
 
         let endpoint = account.endpoints.first().unwrap();
