@@ -796,11 +796,17 @@ impl Account {
             }
             endpoint
                 .model_profiles
+                .entry("mimo-v2.5".into())
+                .or_insert(ModelProfile {
+                    vision_mode: ModelVisionMode::Native,
+                });
+            endpoint
+                .model_profiles
                 .entry("mimo-v2-omni".into())
                 .or_insert(ModelProfile {
                     vision_mode: ModelVisionMode::Native,
                 });
-            for model in ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro"] {
+            for model in ["mimo-v2.5-pro", "mimo-v2-pro"] {
                 endpoint
                     .model_profiles
                     .entry(model.into())
@@ -2802,6 +2808,7 @@ mod tests {
         assert!(endpoint.model_map.is_empty());
         assert_eq!(endpoint.known_models, vec!["old-mapped-model"]);
         assert_eq!(endpoint.model_vision_mode("mimo-v2.5-pro"), VisionMode::Off);
+        assert_eq!(endpoint.model_vision_mode("mimo-v2.5"), VisionMode::Native);
         assert_eq!(
             endpoint.model_vision_mode("mimo-v2-omni"),
             VisionMode::Native

@@ -1,7 +1,7 @@
 const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'codex-auto-review'];
 const MIMO_CODING_MODEL = 'mimo-v2.5-pro';
-const MIMO_VISION_MODEL = 'mimo-v2-omni';
-const MIMO_CHAT_MODELS = [MIMO_VISION_MODEL, 'mimo-v2-pro', 'mimo-v2.5', MIMO_CODING_MODEL];
+const MIMO_VISION_MODEL = 'mimo-v2.5';
+const MIMO_CHAT_MODELS = [MIMO_CODING_MODEL, MIMO_VISION_MODEL, 'mimo-v2-omni', 'mimo-v2-pro'];
 const CLIENT_KIND_LABELS = {
   codex: 'Codex',
   claude_code: 'Claude',
@@ -1470,8 +1470,8 @@ function applyProviderSpecificEndpointDefaults(account) {
     endpoint.model_profiles = {
       ...(endpoint.model_profiles || {}),
       [MIMO_VISION_MODEL]: { vision_mode: 'native' },
+      'mimo-v2-omni': { vision_mode: 'native' },
       [MIMO_CODING_MODEL]: { vision_mode: 'off' },
-      'mimo-v2.5': { vision_mode: 'off' },
       'mimo-v2-pro': { vision_mode: 'off' },
     };
   });

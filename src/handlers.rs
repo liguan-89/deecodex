@@ -1823,7 +1823,16 @@ fn dex_router_capability_summary(
         endpoint.kind,
         EndpointKind::OpenAiResponses | EndpointKind::CustomResponses | EndpointKind::CodexOfficial
     );
-    let supports_web = native_responses || provider_caps.web_search_options;
+    let web_mode = if native_responses {
+        "native"
+    } else if provider_caps.web_search_tool {
+        "tool"
+    } else if provider_caps.web_search_options {
+        "options"
+    } else {
+        "none"
+    };
+    let supports_web = web_mode != "none";
     let supports_image_generation = endpoint.effective_image_generation_enabled(account);
 
     json!({
@@ -1831,6 +1840,7 @@ fn dex_router_capability_summary(
         "tool_mode": tool_mode,
         "tools": tool_mode != "none",
         "web": supports_web,
+        "web_mode": web_mode,
         "vision": vision,
         "reasoning": reasoning,
         "image_generation": supports_image_generation,
@@ -2366,6 +2376,10 @@ fn dex_router_tool_decisions(
         .get("tool_mode")
         .and_then(Value::as_str)
         .unwrap_or("none");
+    let web_mode = capabilities
+        .get("web_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
     let native_tools = tool_mode == "native";
     let translated_tools = tool_mode == "translated";
     let anthropic_tools = tool_mode == "anthropic";
@@ -2390,7 +2404,11 @@ fn dex_router_tool_decisions(
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            translated.push("web_search_options");
+            translated.push(match web_mode {
+                "tool" => "web_search_tool",
+                "options" => "web_search_options",
+                _ => "web_search",
+            });
         }
     }
     if requirements.has_file_search {
@@ -9166,6 +9184,15 @@ fn dev_pipeline_stream_response(value: Value) -> Response {
 }
 
 async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
+    enum BlockingUpstreamResponse {
+        Success(reqwest::Response),
+        Error {
+            status: StatusCode,
+            retry_after: Option<u64>,
+            body: String,
+        },
+    }
+
     let BlockingArgs {
         state,
         chat_req,
@@ -9209,6 +9236,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
     let max_retries = max_retries.unwrap_or(3) as usize;
     let mut attempt: usize = 0;
     let mut delay_ms: u64 = 500;
+    let mut disable_web_search_retry = false;
     let result = loop {
         let Some(request) = builder.try_clone() else {
             return upstream_failure_response(UpstreamFailureArgs {
@@ -9229,7 +9257,14 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             })
             .await;
         };
-        match request.json(&chat_req).send().await {
+        let req_to_send = if disable_web_search_retry {
+            let mut fallback_req = chat_req.clone();
+            providers::strip_web_search_tool(&mut fallback_req);
+            fallback_req
+        } else {
+            chat_req.clone()
+        };
+        match request.json(&req_to_send).send().await {
             Err(e) => {
                 if attempt < max_retries {
                     attempt += 1;
@@ -9240,7 +9275,34 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 }
                 break Err(e);
             }
-            Ok(r) => break Ok(r),
+            Ok(r) if !r.status().is_success() => {
+                let status = r.status();
+                let retry_after = retry_after_secs(r.headers());
+                let body = r.text().await.unwrap_or_default();
+                let web_search_disabled_error =
+                    providers::is_mimo_web_search_disabled_error(status.as_u16(), &body);
+                if web_search_disabled_error
+                    && !disable_web_search_retry
+                    && providers::has_web_search_tool(&chat_req)
+                    && attempt < max_retries
+                {
+                    attempt += 1;
+                    disable_web_search_retry = true;
+                    warn!(
+                        "upstream {} rejected MiMo web_search, retrying without web_search tool in {delay_ms}ms",
+                        status.as_u16()
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+                    continue;
+                }
+                break Ok(BlockingUpstreamResponse::Error {
+                    status,
+                    retry_after,
+                    body,
+                });
+            }
+            Ok(r) => break Ok(BlockingUpstreamResponse::Success(r)),
         }
     };
 
@@ -9302,10 +9364,11 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             )
                 .into_response()
         }
-        Ok(r) if !r.status().is_success() => {
-            let status = r.status();
-            let retry_after = retry_after_secs(r.headers());
-            let body = r.text().await.unwrap_or_default();
+        Ok(BlockingUpstreamResponse::Error {
+            status,
+            retry_after,
+            body,
+        }) => {
             error!("upstream {}: {}", status.as_u16(), body);
             runtime_feedback
                 .failure(&model, status.as_u16(), body.clone(), retry_after)
@@ -9363,7 +9426,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             )
                 .into_response()
         }
-        Ok(r) => match r.json::<ChatResponse>().await {
+        Ok(BlockingUpstreamResponse::Success(r)) => match r.json::<ChatResponse>().await {
             Err(e) => {
                 error!("parse error: {e}");
                 runtime_feedback
@@ -11192,6 +11255,12 @@ mod tests {
     fn dex_router_status_reports_capability_matrix() {
         let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
         let responses = router_responses_account("responses", "pool-a", 20, 1);
+        let mut mimo = router_chat_account("mimo", "pool-a", 5, 1, Some("mimo-v2.5-pro"));
+        mimo.provider = "mimo".into();
+        mimo.upstream = "https://token-plan-cn.xiaomimimo.com/v1".into();
+        mimo.endpoints[0].base_url = "https://token-plan-cn.xiaomimimo.com/v1".into();
+        let mimo_capabilities =
+            dex_router_capability_summary(&mimo, &mimo.endpoints[0], "mimo-v2.5-pro");
         let mut custom = router_responses_account("custom", "pool-a", 15, 1);
         custom.provider = "custom".into();
         custom.endpoints[0].kind = EndpointKind::CustomResponses;
@@ -11216,13 +11285,47 @@ mod tests {
             .iter()
             .find(|candidate| candidate["account_id"] == "custom-enabled")
             .unwrap();
-
         assert_eq!(responses["capabilities"]["protocol"], "responses_direct");
         assert_eq!(responses["capabilities"]["tool_mode"], "native");
         assert_eq!(responses["capabilities"]["image_generation"], true);
         assert_eq!(responses["capabilities"]["vision"], "off");
+        assert_eq!(mimo_capabilities["protocol"], "chat_translate");
+        assert_eq!(mimo_capabilities["web"], true);
+        assert_eq!(mimo_capabilities["web_mode"], "tool");
         assert_eq!(custom["capabilities"]["image_generation"], false);
         assert_eq!(custom_enabled["capabilities"]["image_generation"], true);
+    }
+
+    #[test]
+    fn dex_router_tool_decisions_name_provider_web_adapter() {
+        let requirements =
+            router_tool_requirements_for_tools(&[json!({"type": "web_search_preview"})], None);
+
+        let mimo = dex_router_tool_decisions(
+            &json!({
+                "protocol": "chat_translate",
+                "tool_mode": "translated",
+                "tools": true,
+                "web": true,
+                "web_mode": "tool",
+                "image_generation": false
+            }),
+            Some(&requirements),
+        );
+        let deepseek = dex_router_tool_decisions(
+            &json!({
+                "protocol": "chat_translate",
+                "tool_mode": "translated",
+                "tools": true,
+                "web": true,
+                "web_mode": "options",
+                "image_generation": false
+            }),
+            Some(&requirements),
+        );
+
+        assert_eq!(mimo["translated"][0], "web_search_tool");
+        assert_eq!(deepseek["translated"][0], "web_search_options");
     }
 
     #[test]

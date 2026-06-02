@@ -379,6 +379,7 @@ pub fn to_chat_request(
             stream: req.stream,
             reasoning_effort,
             thinking,
+            reasoning_split: None,
             tool_choice: req.tool_choice.clone(),
             parallel_tool_calls: req.parallel_tool_calls,
             response_format: response_format_from_text(req.text.as_ref()),
@@ -2018,6 +2019,27 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap()
             .contains("computer-use"));
+    }
+
+    #[test]
+    fn test_web_search_preview_becomes_provider_web_marker() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("搜索今天的新闻".into()));
+        req.tools = vec![
+            json!({"type": "web_search_preview"}),
+            json!({"type": "function", "name": "safe_tool", "parameters": {"type": "object"}}),
+        ];
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+
+        assert!(chat.web_search_options.is_some());
+        assert!(!chat.tools.iter().any(|tool| {
+            tool.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|typ| typ == "web_search" || typ == "web_search_preview")
+        }));
+        assert_eq!(chat.tools.len(), 1);
+        assert_eq!(chat.tools[0]["function"]["name"], "safe_tool");
     }
 
     #[test]

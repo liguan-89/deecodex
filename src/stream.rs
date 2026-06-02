@@ -17,6 +17,7 @@ use crate::{
         McpToolOutput,
     },
     metrics::Metrics,
+    providers,
     request_history::{HistoryContext, RequestHistoryStore},
     runtime_feedback::RuntimeFeedbackSink,
     session::SessionStore,
@@ -533,6 +534,7 @@ pub fn translate_stream(
         let mut attempt = 0;
         let mut delay_ms: u64 = 500;
         let mut disable_thinking_retry = false;
+        let mut disable_web_search_retry = false;
         let upstream = loop {
             let mut builder = client.post(&url).header("Content-Type", "application/json");
             if !api_key.is_empty() {
@@ -552,10 +554,15 @@ pub fn translate_stream(
                 builder = builder.timeout(std::time::Duration::from_secs(secs));
             }
 
-            let req_to_send = if disable_thinking_retry {
+            let req_to_send = if disable_thinking_retry || disable_web_search_retry {
                 let mut fallback_req = chat_req.clone();
+                if disable_web_search_retry {
+                    providers::strip_web_search_tool(&mut fallback_req);
+                }
+                if disable_thinking_retry {
                 fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
                 fallback_req.reasoning_effort = None;
+                }
                 fallback_req
             } else {
                 chat_req.clone()
@@ -571,13 +578,21 @@ pub fn translate_stream(
 
                     let reasoning_content_error =
                         status_code == 400 && body.contains("reasoning_content");
+                    let web_search_disabled_error =
+                        providers::is_mimo_web_search_disabled_error(status_code, &body);
                     let retryable = matches!(status_code, 401 | 429 | 502 | 503)
-                        || (reasoning_content_error && !disable_thinking_retry);
+                        || (reasoning_content_error && !disable_thinking_retry)
+                        || (web_search_disabled_error
+                            && !disable_web_search_retry
+                            && providers::has_web_search_tool(&chat_req));
 
                     if retryable && attempt < max_retries {
                         attempt += 1;
                         if reasoning_content_error {
                             disable_thinking_retry = true;
+                        }
+                        if web_search_disabled_error {
+                            disable_web_search_retry = true;
                         }
                         warn!("upstream {status_code} (attempt {attempt}/{max_retries}), retrying in {delay_ms}ms");
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;

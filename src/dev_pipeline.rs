@@ -237,6 +237,7 @@ async fn call_chat_stage(
                 "budget_tokens": budget
             })
         }),
+        reasoning_split: None,
         tool_choice: None,
         parallel_tool_calls: None,
         response_format: None,
@@ -282,6 +283,7 @@ async fn call_anthropic_stage(
         stream: false,
         reasoning_effort: endpoint.reasoning_effort_override.clone(),
         thinking: None,
+        reasoning_split: None,
         tool_choice: None,
         parallel_tool_calls: None,
         response_format: None,

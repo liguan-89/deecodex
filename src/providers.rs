@@ -90,6 +90,8 @@ pub struct ProviderCapabilities {
     pub stream_usage: StreamUsageMode,
     pub reasoning: ReasoningMode,
     pub web_search_options: bool,
+    #[serde(default)]
+    pub web_search_tool: bool,
     pub vision_input: bool,
     pub allow_missing_done: bool,
 }
@@ -103,6 +105,7 @@ impl Default for ProviderCapabilities {
             stream_usage: StreamUsageMode::FinalChunk,
             reasoning: ReasoningMode::None,
             web_search_options: false,
+            web_search_tool: false,
             vision_input: false,
             allow_missing_done: false,
         }
@@ -258,11 +261,12 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "MiMo",
             "小米 MiMo，支持 Anthropic 兼容接口与 OpenAI 兼容接口",
             "https://token-plan-cn.xiaomimimo.com/v1",
-            vec!["mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro"],
+            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-pro"],
             "MIMO_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
                 reasoning: ReasoningMode::DeepSeek,
+                web_search_tool: true,
                 vision_input: true,
                 ..Default::default()
             },
@@ -510,14 +514,69 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
             req.thinking = None;
         }
     }
+    if profile.slug == "minimax" {
+        normalize_minimax_thinking(&mut req.thinking);
+        if minimax_model_supports_reasoning_split(&req.model) {
+            req.reasoning_split = Some(true);
+        }
+    }
 
-    if !caps.web_search_options {
+    if caps.web_search_tool {
+        adapt_web_search_tool(req);
+    } else if !caps.web_search_options {
         req.web_search_options = None;
     }
 
     if profile.system_message_policy == SystemMessagePolicy::Merge {
         merge_extra_system_messages(&mut req.messages);
     }
+}
+
+fn normalize_minimax_thinking(thinking: &mut Option<serde_json::Value>) {
+    let Some(serde_json::Value::Object(map)) = thinking else {
+        return;
+    };
+    if map.get("type").and_then(serde_json::Value::as_str) == Some("enabled") {
+        map.insert("type".into(), serde_json::Value::String("adaptive".into()));
+    }
+}
+
+fn minimax_model_supports_reasoning_split(model: &str) -> bool {
+    model.trim().eq_ignore_ascii_case("MiniMax-M3")
+}
+
+fn adapt_web_search_tool(req: &mut ChatRequest) {
+    if req.web_search_options.take().is_none() {
+        return;
+    }
+    if !has_web_search_tool(req) {
+        req.tools.push(serde_json::json!({
+            "type": "web_search",
+            "max_keyword": 3,
+            "force_search": true,
+            "limit": 1
+        }));
+    }
+}
+
+pub fn has_web_search_tool(req: &ChatRequest) -> bool {
+    req.tools.iter().any(is_web_search_tool)
+}
+
+pub fn strip_web_search_tool(req: &mut ChatRequest) -> bool {
+    let before = req.tools.len();
+    req.tools.retain(|tool| !is_web_search_tool(tool));
+    req.tools.len() != before
+}
+
+pub fn is_mimo_web_search_disabled_error(status_code: u16, body: &str) -> bool {
+    status_code == 400 && body.contains("webSearchEnabled") && body.contains("false")
+}
+
+fn is_web_search_tool(tool: &serde_json::Value) -> bool {
+    tool.get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|typ| typ == "web_search")
 }
 
 fn merge_extra_system_messages(messages: &mut Vec<crate::types::ChatMessage>) {
@@ -550,7 +609,7 @@ pub fn capability_labels(profile: &ProviderProfile) -> Vec<&'static str> {
     if profile.capabilities.reasoning != ReasoningMode::None {
         labels.push("推理字段");
     }
-    if profile.capabilities.web_search_options {
+    if profile.capabilities.web_search_options || profile.capabilities.web_search_tool {
         labels.push("联网扩展");
     }
     if profile.capabilities.vision_input {
@@ -678,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn minimax_profile_knows_m3_and_keeps_supported_reasoning_fields() {
+    fn minimax_profile_knows_m3_and_converts_thinking_to_adaptive() {
         let minimax = profile_by_slug("minimax");
         assert!(minimax
             .known_models
@@ -702,6 +761,7 @@ mod tests {
             stream: true,
             reasoning_effort: Some("high".into()),
             thinking: Some(json!({"type":"enabled"})),
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: Some(true),
             response_format: Some(json!({"type":"json_object"})),
@@ -715,7 +775,8 @@ mod tests {
         adapt_chat_request(&minimax, &mut req);
 
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
+        assert_eq!(req.thinking, Some(json!({"type":"adaptive"})));
+        assert_eq!(req.reasoning_split, Some(true));
         assert_eq!(req.parallel_tool_calls, None);
         assert_eq!(req.web_search_options, None);
         assert!(!req.tools.is_empty());
@@ -730,9 +791,11 @@ mod tests {
         );
         assert_eq!(
             mimo.known_models,
-            vec!["mimo-v2-omni", "mimo-v2-pro", "mimo-v2.5", "mimo-v2.5-pro"]
+            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-pro"]
         );
         assert_eq!(mimo.capabilities.reasoning, ReasoningMode::DeepSeek);
+        assert!(mimo.capabilities.web_search_tool);
+        assert!(!mimo.capabilities.web_search_options);
         assert!(mimo.capabilities.vision_input);
 
         let mut req = ChatRequest {
@@ -747,6 +810,7 @@ mod tests {
             stream: true,
             reasoning_effort: Some("high".into()),
             thinking: Some(json!({"type":"enabled"})),
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: Some(true),
             response_format: Some(json!({"type":"json_object"})),
@@ -761,9 +825,63 @@ mod tests {
 
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
+        assert_eq!(req.reasoning_split, None);
         assert_eq!(req.parallel_tool_calls, None);
         assert_eq!(req.web_search_options, None);
-        assert!(!req.tools.is_empty());
+        assert!(req.tools.iter().any(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+                == Some("x")
+        }));
+        let web_search = req
+            .tools
+            .iter()
+            .find(|tool| tool.get("type").and_then(serde_json::Value::as_str) == Some("web_search"))
+            .unwrap();
+        assert_eq!(web_search["max_keyword"], 3);
+        assert_eq!(web_search["force_search"], true);
+        assert_eq!(web_search["limit"], 1);
+    }
+
+    #[test]
+    fn mimo_web_search_disabled_error_can_strip_web_tool() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![],
+            tools: vec![
+                json!({"type":"web_search","max_keyword":3,"force_search":true,"limit":1}),
+                json!({"type":"function","function":{"name":"x","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        assert!(is_mimo_web_search_disabled_error(
+            400,
+            "web search tool found in the request body, but webSearchEnabled is false"
+        ));
+        assert!(has_web_search_tool(&req));
+        assert!(strip_web_search_tool(&mut req));
+        assert!(!has_web_search_tool(&req));
+        assert_eq!(
+            req.tools[0]
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str),
+            Some("x")
+        );
     }
 
     #[test]
@@ -879,6 +997,7 @@ mod tests {
             stream: true,
             reasoning_effort: Some("high".into()),
             thinking: Some(json!({"type":"enabled"})),
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: Some(true),
             response_format: Some(json!({"type":"json_object"})),
@@ -908,6 +1027,7 @@ mod tests {
             stream: true,
             reasoning_effort: Some("high".into()),
             thinking: Some(json!({"type":"enabled"})),
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: Some(true),
             response_format: None,
@@ -936,6 +1056,7 @@ mod tests {
             stream: true,
             reasoning_effort: None,
             thinking: None,
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: Some(json!({

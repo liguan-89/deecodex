@@ -747,6 +747,7 @@ assert.strictEqual(context.editingAccount.upstream, 'https://token-plan-cn.xiaom
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.model_map)), {});
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'off');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2.5'])), { vision_mode: 'native' });
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2-omni'])), { vision_mode: 'native' });
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2.5-pro'])), { vision_mode: 'off' });
 
@@ -864,10 +865,10 @@ assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').api_
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://token-plan-cn.xiaomimimo.com/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro');
 assert.deepStrictEqual(Array.from(context.clientProviderDefaults('claude_code', 'mimo').known_models), [
+  'mimo-v2.5-pro',
+  'mimo-v2.5',
   'mimo-v2-omni',
   'mimo-v2-pro',
-  'mimo-v2.5',
-  'mimo-v2.5-pro',
 ]);
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').upstream, 'https://api.longcat.chat/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').default_model, 'LongCat-Flash-Chat');
