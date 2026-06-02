@@ -897,6 +897,57 @@ fn resolve_explicit_chat_model_native_helper_selection(
     })
 }
 
+fn clean_identity_label(value: &str, fallback: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        fallback.into()
+    } else {
+        value.into()
+    }
+}
+
+fn maybe_inject_explicit_model_identity(
+    messages: &mut Vec<ChatMessage>,
+    account: &Account,
+    endpoint: &EndpointConfig,
+    explicit_model: Option<&str>,
+) {
+    let Some(model) = explicit_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return;
+    };
+    if !endpoint.kind.is_chat_like() {
+        return;
+    }
+
+    let account_name = clean_identity_label(&account.name, "未命名账号");
+    let endpoint_name = clean_identity_label(&endpoint.name, endpoint.kind.label());
+    let provider = clean_identity_label(&account.provider, "未知供应商");
+    let prompt = format!(
+        "真实模型身份说明：当前请求由 DEX AI 代理到账号「{account_name}」的端点「{endpoint_name}」，真实上游模型是「{model}」（供应商：{provider}）。DEX AI 只是本地代理层。回答身份、模型名称、供应商相关问题时，请以该真实上游模型身份为准；不要自称 Codex、GPT-5 或 OpenAI 官方模型，除非真实上游模型本身就是对应官方模型。保持 Codex 的编码、调试和项目协作行为规范，但不要伪造模型身份。"
+    );
+    let message = ChatMessage {
+        role: "system".into(),
+        content: Some(Value::String(prompt)),
+        reasoning_content: None,
+        reasoning_details: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    };
+    let insert_at = if messages
+        .first()
+        .is_some_and(|message| message.role == "system")
+    {
+        1
+    } else {
+        0
+    };
+    messages.insert(insert_at, message);
+}
+
 fn select_dex_router_native_executor_in_pool(
     store: &AccountStore,
     pool: &str,
@@ -8311,6 +8362,7 @@ async fn handle_responses_inner(
     } else {
         endpoint.model_map.clone()
     };
+    let explicit_model_for_identity = explicit_model.clone();
     let mapped_model = explicit_model.unwrap_or_else(|| {
         if route_surface.uses_codex_direct_models() {
             original_model.clone()
@@ -8475,6 +8527,13 @@ async fn handle_responses_inner(
     if !route_to_vision && !native_vision {
         strip_images_from_chat_request(&mut chat_req);
     }
+
+    maybe_inject_explicit_model_identity(
+        &mut chat_req.messages,
+        &account,
+        &endpoint,
+        explicit_model_for_identity.as_deref(),
+    );
 
     // 能力通道观察注入（在 strip_images 之后，保护多模态 content 不被剥离）
     if let Some(observation) = capability_observation.message {
@@ -11131,6 +11190,85 @@ mod tests {
 
         assert_eq!(selection.account.id, "active");
         assert_eq!(selection.explicit_model.as_deref(), Some("real-model"));
+    }
+
+    #[test]
+    fn explicit_chat_model_injects_real_model_identity() {
+        let mut account = router_chat_account("deepseek", "pool-a", 100, 1, None);
+        account.name = "DeepSeek 桌面版".into();
+        account.provider = "deepseek".into();
+        let endpoint = account.endpoints[0].clone();
+        let mut messages = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: Some(Value::String("你是 Codex。".into())),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: Some(Value::String("你是谁？".into())),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        maybe_inject_explicit_model_identity(
+            &mut messages,
+            &account,
+            &endpoint,
+            Some("deepseek-v4-pro"),
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, "system");
+        let identity = messages[1]
+            .content
+            .as_ref()
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(identity.contains("真实上游模型是「deepseek-v4-pro」"));
+        assert!(identity.contains("供应商：deepseek"));
+        assert!(identity.contains("不要自称 Codex、GPT-5 或 OpenAI 官方模型"));
+    }
+
+    #[test]
+    fn explicit_model_identity_skips_non_explicit_or_responses_endpoint() {
+        let chat = router_chat_account("chat", "pool-a", 100, 1, None);
+        let responses = router_responses_account("responses", "pool-a", 100, 1);
+        let base_message = ChatMessage {
+            role: "user".into(),
+            content: Some(Value::String("hi".into())),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        };
+        let mut non_explicit_messages = vec![base_message.clone()];
+        let mut responses_messages = vec![base_message];
+
+        maybe_inject_explicit_model_identity(
+            &mut non_explicit_messages,
+            &chat,
+            &chat.endpoints[0],
+            None,
+        );
+        maybe_inject_explicit_model_identity(
+            &mut responses_messages,
+            &responses,
+            &responses.endpoints[0],
+            Some("gpt-5.5"),
+        );
+
+        assert_eq!(non_explicit_messages.len(), 1);
+        assert_eq!(responses_messages.len(), 1);
     }
 
     #[test]
