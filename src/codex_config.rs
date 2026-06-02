@@ -692,6 +692,7 @@ fn catalog_models_for_endpoint(
     let mut models = cached_models_for(cache, &account.id, &endpoint.id);
     if native_account_owns_codex_gpt_models(account, endpoint) {
         models.extend(native_gpt_models.iter().cloned());
+        models.extend(profile.known_models.iter().cloned());
     }
     if models.is_empty() && !account.default_model.trim().is_empty() {
         models.push(account.default_model.trim().to_string());
@@ -746,6 +747,7 @@ fn build_context_catalog(
         }
     }
 
+    hide_base_catalog_models_when_account_models_exist(models, account_models);
     prepend_dex_account_catalog_models(models, account_models, context_window_override);
 
     // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
@@ -754,6 +756,22 @@ fn build_context_catalog(
         .cloned()
         .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
     Ok(serde_json::json!({ "models": models }))
+}
+
+fn hide_base_catalog_models_when_account_models_exist(
+    models: &mut Vec<Value>,
+    account_models: &[DexCatalogAccountModel],
+) {
+    if account_models.is_empty() {
+        return;
+    }
+    models.retain(|model| {
+        let slug = model.get("slug").and_then(Value::as_str).unwrap_or("");
+        !matches!(
+            slug,
+            "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex" | "gpt-5.3-codex-spark"
+        )
+    });
 }
 
 fn prepend_dex_account_catalog_models(
@@ -1462,7 +1480,7 @@ mod tests {
 
         let output = build_context_catalog(input, None, &account_models).unwrap();
         let models = output["models"].as_array().unwrap();
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 2);
         let appended = &models[0];
         assert_eq!(appended["display_name"], "GPT-5.5 Proxy");
         assert_eq!(appended["context_window"], 128_000);
@@ -1473,7 +1491,6 @@ mod tests {
             "gpt-5.5-proxy"
         );
         assert_eq!(models[1]["display_name"], "DeepSeek V4 Pro");
-        assert_eq!(models[2]["display_name"], "GPT-5.5");
     }
 
     #[test]
@@ -1515,10 +1532,9 @@ mod tests {
 
         let output = build_context_catalog(input, None, &account_models).unwrap();
         let models = output["models"].as_array().unwrap();
-        assert_eq!(models.len(), 3);
+        assert_eq!(models.len(), 2);
         assert_eq!(models[0]["display_name"], "OpenAI 桌面版 账号 / GPT-5.5");
         assert_eq!(models[1]["display_name"], "OpenAI 备用账号 / GPT-5.5");
-        assert_eq!(models[2]["display_name"], "GPT-5.5");
     }
 
     #[test]
@@ -1587,6 +1603,8 @@ mod tests {
 
         assert!(models.iter().any(|model| model == "gpt-5.5"));
         assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
+        assert!(models.iter().any(|model| model == "gpt-5"));
+        assert!(models.iter().any(|model| model == "gpt-4.1"));
     }
 
     #[test]
