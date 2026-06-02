@@ -172,7 +172,7 @@ pub struct ChatRequest {
     /// Request token usage stats in the final streaming chunk (DeepSeek)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
-    /// DeepSeek web_search activation via web_search_options (non-standard extension)
+    /// Provider-specific web search activation via web_search_options.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_search_options: Option<Value>,
 }

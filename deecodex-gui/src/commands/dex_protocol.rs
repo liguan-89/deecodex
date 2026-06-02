@@ -321,6 +321,7 @@ mod tests {
             stream: false,
             reasoning_effort: None,
             thinking: None,
+            reasoning_split: None,
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,

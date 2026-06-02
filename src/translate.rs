@@ -362,7 +362,7 @@ pub fn to_chat_request(
         })
         .collect();
 
-    // Detect web_search tool → enable DeepSeek web_search_options
+    // Detect web_search tool and attach a provider-specific web marker.
     let web_search_enabled = req.tools.iter().any(|t| {
         let typ = t.get("type").and_then(Value::as_str).unwrap_or("");
         typ == "web_search" || typ == "web_search_preview"

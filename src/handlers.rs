@@ -11312,7 +11312,7 @@ mod tests {
             }),
             Some(&requirements),
         );
-        let deepseek = dex_router_tool_decisions(
+        let options_adapter = dex_router_tool_decisions(
             &json!({
                 "protocol": "chat_translate",
                 "tool_mode": "translated",
@@ -11325,7 +11325,7 @@ mod tests {
         );
 
         assert_eq!(mimo["translated"][0], "web_search_tool");
-        assert_eq!(deepseek["translated"][0], "web_search_options");
+        assert_eq!(options_adapter["translated"][0], "web_search_options");
     }
 
     #[test]

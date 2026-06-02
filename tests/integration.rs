@@ -1197,13 +1197,13 @@ async fn codex_router_chat_then_computer_use_replays_previous_local_response_bef
 }
 
 #[tokio::test]
-async fn codex_router_routes_web_search_to_supported_chat_translation() {
+async fn codex_router_routes_web_search_to_native_responses_when_chat_lacks_web() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
-        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"web ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
+        r#"{"id":"chat_should_not_run","choices":[{"message":{"role":"assistant","content":"web ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
     )
     .await;
     let (responses_upstream, responses_captured) = capture_any_json_upstream(
-        r#"{"id":"resp_should_not_run","object":"response","status":"completed","output":[]}"#,
+        r#"{"id":"resp_router","object":"response","status":"completed","output":[]}"#,
     )
     .await;
     let state = test_state();
@@ -1242,14 +1242,14 @@ async fn codex_router_routes_web_search_to_supported_chat_translation() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(responses_captured.lock().unwrap().len(), 0);
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
     {
-        let captured = chat_captured.lock().unwrap();
+        let captured = responses_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].path, "/chat/completions");
-        assert_eq!(captured[0].body["model"], "deepseek-chat");
-        assert!(captured[0].body.get("tools").is_none());
-        assert!(captured[0].body.get("web_search_options").is_some());
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["model"], "gpt-5");
+        let tools = captured[0].body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["type"], "web_search_preview");
     }
 
     let entries = request_history
@@ -1259,15 +1259,11 @@ async fn codex_router_routes_web_search_to_supported_chat_translation() {
         .iter()
         .find(|entry| entry.request_path == "/codex-router/v1/responses")
         .unwrap();
-    assert_eq!(entry.account_id, "router-chat");
+    assert_eq!(entry.account_id, "router-responses");
     let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
-    assert_eq!(trace["selected"]["account_id"], "router-chat");
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
     assert_eq!(trace["tool_requirements"]["web_search"], true);
-    assert!(trace["tool_decisions"]["translated"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item == "web_search_options"));
+    assert_eq!(trace["tool_decisions"]["kept"][0], "web_search");
 }
 
 #[tokio::test]
@@ -1653,7 +1649,8 @@ async fn codex_router_status_api_accepts_tool_query_and_returns_scenarios() {
         .unwrap()
         .iter()
         .any(|scenario| {
-            scenario["scenario_id"] == "web" && scenario["selected"]["account_id"] == "router-chat"
+            scenario["scenario_id"] == "web"
+                && scenario["selected"]["account_id"] == "router-responses"
         }));
     assert!(json["scenarios"]
         .as_array()

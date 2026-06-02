@@ -209,7 +209,6 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "DEEPSEEK_API_KEY",
             ProviderCapabilities {
                 reasoning: ReasoningMode::DeepSeek,
-                web_search_options: true,
                 ..Default::default()
             },
         ),
@@ -1016,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_profile_keeps_reasoning_and_web_search() {
+    fn deepseek_profile_keeps_reasoning_and_drops_web_search() {
         let mut req = ChatRequest {
             model: "deepseek-reasoner".into(),
             messages: vec![],
@@ -1040,7 +1039,7 @@ mod tests {
         adapt_chat_request(&profile_by_slug("deepseek"), &mut req);
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
         assert!(req.thinking.is_some());
-        assert!(req.web_search_options.is_some());
+        assert_eq!(req.web_search_options, None);
         assert_eq!(req.parallel_tool_calls, None);
     }
 

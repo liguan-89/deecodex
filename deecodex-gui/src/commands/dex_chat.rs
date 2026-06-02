@@ -385,6 +385,7 @@ pub(super) async fn dex_chat_impl(
         stream: stream_mode,
         reasoning_effort: None,
         thinking: None,
+        reasoning_split: None,
         tool_choice: None,
         parallel_tool_calls: None,
         response_format: None,
