@@ -451,6 +451,18 @@ fn collect_reasoning_detail_text(value: &Value, chunks: &mut Vec<String>) {
     }
 }
 
+fn push_reasoning_detail_delta(accumulated: &mut Vec<Value>, value: &Value) {
+    if let Some(items) = value.as_array() {
+        accumulated.extend(items.iter().cloned());
+    } else {
+        accumulated.push(value.clone());
+    }
+}
+
+fn reasoning_details_message_value(accumulated: &[Value]) -> Option<Value> {
+    (!accumulated.is_empty()).then(|| Value::Array(accumulated.to_vec()))
+}
+
 pub fn translate_stream(
     args: StreamArgs,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
@@ -664,6 +676,7 @@ pub fn translate_stream(
 
         let mut accumulated_text = String::new();
         let mut accumulated_reasoning = String::new();
+        let mut accumulated_reasoning_details: Vec<Value> = Vec::new();
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
@@ -695,6 +708,12 @@ pub fn translate_stream(
                                 final_usage = chunk.usage;
                             }
                             for choice in &chunk.choices {
+                                if let Some(details) = &choice.delta.reasoning_details {
+                                    push_reasoning_detail_delta(
+                                        &mut accumulated_reasoning_details,
+                                        details,
+                                    );
+                                }
                                 if let Some(rc) = reasoning_delta_text(&choice.delta) {
                                     for event in reasoning_segment_events(
                                         &mut seq,
@@ -1100,6 +1119,7 @@ pub fn translate_stream(
             role: "assistant".into(),
             content: if accumulated_text.is_empty() { None } else { Some(serde_json::Value::String(accumulated_text.clone())) },
             reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
+            reasoning_details: reasoning_details_message_value(&accumulated_reasoning_details),
             tool_calls: assistant_tool_calls,
             tool_call_id: None,
             name: None,
@@ -1107,6 +1127,9 @@ pub fn translate_stream(
 
         if !accumulated_reasoning.is_empty() {
             sessions.store_turn_reasoning(&request_messages, &assistant_msg, accumulated_reasoning.clone());
+        }
+        if assistant_msg.reasoning_details.is_some() {
+            sessions.store_turn_reasoning_details(&request_messages, &assistant_msg);
         }
 
         let mut messages = request_messages.clone();
@@ -1120,6 +1143,7 @@ pub fn translate_stream(
                 role: "assistant".into(),
                 content: if accumulated_text.is_empty() { None } else { Some(serde_json::Value::String(accumulated_text.clone())) },
                 reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
+                reasoning_details: reasoning_details_message_value(&accumulated_reasoning_details),
                 tool_calls: if tool_calls.is_empty() {
                     None
                 } else {

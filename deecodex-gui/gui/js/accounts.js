@@ -1144,6 +1144,17 @@ function endpointKindIsCustomResponses(kind) {
   return kind === 'custom_responses' || kind === 'CustomResponses';
 }
 
+function defaultEndpointImageGenerationEnabled(account, endpoint) {
+  if (endpointIsCodexOfficial(endpoint)) return true;
+  const kind = normalizeResponsesKind(endpoint?.kind);
+  return kind === 'open_ai_responses' && String(account?.provider || '').toLowerCase() === 'openai';
+}
+
+function endpointImageGenerationEnabled(account, endpoint) {
+  if (typeof endpoint?.image_generation_enabled === 'boolean') return endpoint.image_generation_enabled;
+  return defaultEndpointImageGenerationEnabled(account, endpoint);
+}
+
 function normalizeResponsesKind(kind) {
   if (kind === 'OpenAiResponses') return 'open_ai_responses';
   if (kind === 'CustomResponses') return 'custom_responses';
@@ -1163,6 +1174,50 @@ function endpointKindIsLockedForForm(account, endpoint = currentEndpoint(account
     && (isOpenAiNativeResponsesAccount(account) || endpointIsCodexOfficial(endpoint));
 }
 
+function legacyModelMapValues(modelMap) {
+  const values = [];
+  const seen = new Set();
+  Object.values(modelMap || {}).forEach(value => {
+    const model = String(value || '').trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    values.push(model);
+  });
+  return values;
+}
+
+function appendKnownModels(endpoint, models) {
+  if (!endpoint) return;
+  if (!Array.isArray(endpoint.known_models)) endpoint.known_models = [];
+  const seen = new Set(
+    endpoint.known_models
+      .map(model => String(model || '').trim())
+      .filter(Boolean)
+  );
+  endpoint.known_models = endpoint.known_models
+    .map(model => String(model || '').trim())
+    .filter(Boolean);
+  (models || []).forEach(value => {
+    const model = String(value || '').trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    endpoint.known_models.push(model);
+  });
+}
+
+function retireCodexModelMapDraft(account) {
+  if (!isCodexAccount(account)) return account;
+  if (!Array.isArray(account.endpoints)) account.endpoints = [];
+  const accountModels = legacyModelMapValues(account.model_map);
+  account.endpoints.forEach(endpoint => {
+    const endpointModels = legacyModelMapValues(endpoint?.model_map);
+    appendKnownModels(endpoint, endpointModels.length ? endpointModels : accountModels);
+    endpoint.model_map = {};
+  });
+  account.model_map = {};
+  return account;
+}
+
 function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(account)) {
   if (!isCodexAccount(account)) return account;
   const forceOpenAiResponses = isOpenAiNativeResponsesAccount(account);
@@ -1171,6 +1226,7 @@ function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(acc
   if (account.endpoints.length === 0) {
     account.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(forceOpenAiResponses ? 'openai' : account.provider), account));
   }
+  retireCodexModelMapDraft(account);
   const targetEndpointId = endpoint?.id || currentEndpoint(account)?.id || account.endpoints[0]?.id;
   const endpoints = account.endpoints;
   endpoints.forEach(endpoint => {
@@ -1182,6 +1238,9 @@ function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(acc
       ? 'codex_official'
       : (endpointKindIsCustomResponses(endpoint.kind) ? (endpoint.template_id || 'custom_responses') : 'responses_direct');
     if (!endpointKindIsCustomResponses(endpoint.kind)) endpoint.path = '';
+    if (typeof endpoint.image_generation_enabled !== 'boolean') {
+      endpoint.image_generation_enabled = defaultEndpointImageGenerationEnabled(account, endpoint);
+    }
     endpoint.model_map = {};
     endpoint.model_profiles = {};
     endpoint.vision = {
@@ -1367,6 +1426,7 @@ function createEndpointFromTemplate(template, account) {
     template_id: tpl.id || '',
     template_version: 1,
     model_map: { ...(account?.model_map || {}) },
+    known_models: legacyModelMapValues(account?.model_map),
     model_profiles: {},
     vision: {
       mode: 'native',
@@ -1378,6 +1438,7 @@ function createEndpointFromTemplate(template, account) {
       model: account?.vision_model || '',
       path: account?.vision_endpoint || 'v1/coding_plan/vlm',
     },
+    image_generation_enabled: defaultEndpointImageGenerationEnabled(account, { kind }),
     custom_headers: { ...(account?.custom_headers || {}) },
     request_timeout_secs: account?.request_timeout_secs || null,
     max_retries: account?.max_retries ?? null,
@@ -1841,7 +1902,10 @@ function renderAccountDetail() {
   if (responsesDirectForm && endpointKindIsLockedForForm(a, initialEndpoint)) {
     normalizeResponsesDirectAccount(a, initialEndpoint);
   }
+  retireCodexModelMapDraft(a);
   const ep = currentEndpoint(a) || {};
+  ep.model_map = {};
+  a.model_map = {};
   const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'native');
   const contextWindow = ep.context_window_override ?? null;
   const reasoningEffort = ep.reasoning_effort_override ?? null;
@@ -1853,7 +1917,8 @@ function renderAccountDetail() {
   const maxRetries = ep.max_retries ?? a.max_retries;
   const knownModels = getProviderKnownModels(a.provider);
   const responsesDirect = endpointKindIsResponsesDirect(ep.kind);
-  const usesModelMapping = !responsesDirectForm && endpointKindUsesModelMapping(ep.kind);
+  const imageGenerationEnabled = endpointImageGenerationEnabled(a, ep);
+  const usesModelMapping = false;
   const lockEndpointKind = endpointKindIsLockedForForm(a, ep);
   const endpointKindControl = lockEndpointKind
     ? `<input type="hidden" id="edit_endpoint_kind" value="${escAttr(normalizeResponsesKind(ep.kind) || 'open_ai_responses')}">
@@ -2147,6 +2212,14 @@ function renderAccountDetail() {
           <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空自动使用所选 API 类型">
           <span class="hint">私有代理或非标准网关才需要填写，例如 /v1/chat/completions。</span>
         </div>`;
+  const imageGenerationField = responsesDirectForm ? `
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_image_generation_enabled" ${imageGenerationEnabled ? 'checked' : ''}>
+            图片生成
+          </label>
+          <span class="hint">仅端点原生支持 image_generation 时开启；第三方不支持时关闭以避免上游报错。</span>
+        </div>` : '';
 
   return `<div class="breadcrumb account-detail-breadcrumb">
     <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
@@ -2206,6 +2279,7 @@ function renderAccountDetail() {
           <label>上游 API 类型</label>
           ${endpointKindControl}
         </div>
+        ${imageGenerationField}
         <div class="config-field">
           <label>余额查询 URL <span class="optional-label">可选</span></label>
           <input type="text" id="edit_balance_url" value="${escAttr(ep.balance_url || '')}" placeholder="留空则自动探测">
@@ -2534,24 +2608,6 @@ function getProviderKnownModels(provider) {
 }
 
 function codexProviderModelMap(provider) {
-  if (provider === 'deepseek') {
-    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
-      model,
-      model === 'gpt-5.5' ? 'deepseek-v4-pro' : 'deepseek-v4-flash',
-    ]));
-  }
-  if (provider === 'longcat') {
-    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
-      model,
-      'LongCat-Flash-Chat',
-    ]));
-  }
-  if (provider === 'mimo') {
-    return Object.fromEntries(CODEX_MODEL_LIST.map(model => [
-      model,
-      model === 'codex-auto-review' ? MIMO_VISION_MODEL : MIMO_CODING_MODEL,
-    ]));
-  }
   return {};
 }
 
@@ -2682,6 +2738,7 @@ function syncEditingDraftFromForm(options = {}) {
   const endpoints = ensureAccountEndpoints(a);
   const ep = currentEndpoint(a) || endpoints[0];
   if (!ep) return;
+  retireCodexModelMapDraft(a);
 
   const endpointName = document.getElementById('edit_endpoint_name');
   if (endpointName) ep.name = endpointName.value.trim() || ep.name || '默认配置';
@@ -2694,6 +2751,8 @@ function syncEditingDraftFromForm(options = {}) {
   }
   const endpointPath = document.getElementById('edit_endpoint_path');
   if (endpointPath) ep.path = endpointPath.value.trim();
+  const imageGenerationEnabled = document.getElementById('edit_image_generation_enabled');
+  if (imageGenerationEnabled) ep.image_generation_enabled = imageGenerationEnabled.checked;
   const balanceUrl = document.getElementById('edit_balance_url');
   if (balanceUrl) {
     ep.balance_url = balanceUrl.value.trim();
@@ -2749,17 +2808,17 @@ function syncEditingDraftFromForm(options = {}) {
   ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
   ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'reject';
 
+  ep.model_map = {};
   if (!endpointKindUsesModelMapping(ep.kind) && !options.preserveHiddenResponses) {
     ep.model_map = {};
     ep.model_profiles = {};
   } else if (endpointKindUsesModelMapping(ep.kind)) {
     const modelMapRows = document.getElementById('modelMapRows');
     if (modelMapRows) {
-      ep.model_map = collectModelMap();
       ep.model_profiles = collectModelProfiles();
     }
   }
-  a.model_map = ep.model_map;
+  a.model_map = {};
 
   const cwEnabled = document.getElementById('edit_cw_enabled');
   if (cwEnabled) {
@@ -2819,6 +2878,7 @@ function syncEditingDraftFromForm(options = {}) {
   if (isResponsesDirectFormAccount(a, ep) && !options.preserveHiddenResponses) {
     normalizeResponsesDirectAccount(a, ep);
   }
+  retireCodexModelMapDraft(a);
   a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
 }
 
@@ -3297,7 +3357,8 @@ async function saveAccount(options = {}) {
     ep.name = endpointKindLabel(ep.kind);
     a.upstream = ep.base_url || a.upstream;
     a.balance_url = ep.balance_url || '';
-    a.model_map = ep.model_map || {};
+    ep.model_map = {};
+    a.model_map = {};
     a.context_window_override = ep.context_window_override ?? null;
     a.reasoning_effort_override = ep.reasoning_effort_override ?? null;
     a.thinking_tokens = ep.thinking_tokens ?? null;

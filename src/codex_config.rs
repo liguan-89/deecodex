@@ -673,39 +673,20 @@ fn catalog_models_for_endpoint(
     cache: &Value,
     native_gpt_models: &[String],
 ) -> Vec<String> {
-    if matches!(
-        endpoint.kind,
-        crate::accounts::EndpointKind::OpenAiChat
-            | crate::accounts::EndpointKind::CustomChat
-            | crate::accounts::EndpointKind::AnthropicMessages
-    ) && !endpoint.model_map.is_empty()
-    {
-        return endpoint
-            .model_map
-            .values()
-            .map(|model| model.trim())
-            .filter(|model| !model.is_empty())
-            .map(ToString::to_string)
-            .collect();
+    if native_account_owns_codex_gpt_models(account, endpoint) {
+        let mut models = native_gpt_models.to_vec();
+        if models.is_empty() && !account.default_model.trim().is_empty() {
+            models.push(account.default_model.trim().to_string());
+        }
+        return models;
     }
 
     let mut models = cached_models_for(cache, &account.id, &endpoint.id);
-    if native_account_owns_codex_gpt_models(account, endpoint) {
-        models.extend(native_gpt_models.iter().cloned());
-        models.extend(profile.known_models.iter().cloned());
+    if models.is_empty() {
+        models.extend(endpoint.known_models.iter().cloned());
     }
     if models.is_empty() && !account.default_model.trim().is_empty() {
         models.push(account.default_model.trim().to_string());
-    }
-    if models.is_empty() {
-        models.extend(
-            endpoint
-                .model_map
-                .values()
-                .map(|model| model.trim())
-                .filter(|model| !model.is_empty())
-                .map(ToString::to_string),
-        );
     }
     if models.is_empty() {
         models.extend(profile.known_models.iter().cloned());
@@ -878,8 +859,7 @@ fn friendly_upstream_model_name(provider: &str, model: &str) -> String {
     let normalized = if let Some(rest) = model.strip_prefix("gpt-") {
         format!(
             "GPT-{}",
-            rest.replace('_', " ")
-                .replace('-', " ")
+            rest.replace(['_', '-'], " ")
                 .split_whitespace()
                 .map(friendly_model_word)
                 .collect::<Vec<_>>()
@@ -888,8 +868,7 @@ fn friendly_upstream_model_name(provider: &str, model: &str) -> String {
     } else {
         model
             .trim()
-            .replace('_', " ")
-            .replace('-', " ")
+            .replace(['_', '-'], " ")
             .split_whitespace()
             .map(friendly_model_word)
             .collect::<Vec<_>>()
@@ -926,11 +905,7 @@ fn friendly_model_word(word: &str) -> String {
         "lite" => "Lite".into(),
         "preview" => "Preview".into(),
         _ if lower.starts_with('v')
-            && lower
-                .chars()
-                .skip(1)
-                .next()
-                .is_some_and(|ch| ch.is_ascii_digit()) =>
+            && lower.chars().nth(1).is_some_and(|ch| ch.is_ascii_digit()) =>
         {
             lower.to_ascii_uppercase()
         }
@@ -1538,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_catalog_models_use_real_upstream_models_not_mapping_keys() {
+    fn chat_catalog_models_ignore_retired_model_map_values() {
         let account: crate::accounts::Account = serde_json::from_value(serde_json::json!({
             "id": "deepseek_1",
             "name": "DeepSeek 桌面版账号",
@@ -1552,10 +1527,10 @@ mod tests {
                 "name": "Chat",
                 "kind": "open_ai_chat",
                 "base_url": "https://api.deepseek.com/v1",
-                "model_map": {
-                    "gpt-5.5": "deepseek-v4-pro",
-                    "gpt-5.4-mini": "deepseek-v4-flash"
-                }
+                    "model_map": {
+                        "gpt-5.5": "legacy-mapped-model",
+                        "gpt-5.4-mini": "legacy-flash-model"
+                    }
             }]
         }))
         .unwrap();
@@ -1570,6 +1545,54 @@ mod tests {
 
         assert!(models.iter().any(|model| model == "deepseek-v4-pro"));
         assert!(models.iter().any(|model| model == "deepseek-v4-flash"));
+        assert!(!models.iter().any(|model| model == "legacy-mapped-model"));
+        assert!(!models.iter().any(|model| model == "legacy-flash-model"));
+        assert!(!models.iter().any(|model| model == "gpt-5.5"));
+        assert!(!models.iter().any(|model| model == "gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn chat_catalog_models_include_migrated_known_models() {
+        let mut account: crate::accounts::Account = serde_json::from_value(serde_json::json!({
+            "id": "deepseek_1",
+            "name": "DeepSeek 桌面版账号",
+            "provider": "deepseek",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://api.deepseek.com/v1",
+            "api_key": "token",
+            "endpoints": [{
+                "id": "ep_deepseek",
+                "name": "Chat",
+                "kind": "open_ai_chat",
+                "base_url": "https://api.deepseek.com/v1",
+                "model_map": {
+                    "gpt-5.5": "legacy-mapped-model",
+                    "gpt-5.4-mini": "legacy-flash-model"
+                }
+            }]
+        }))
+        .unwrap();
+        account.normalize_v2();
+        let endpoint = &account.endpoints[0];
+        assert!(account.model_map.is_empty());
+        assert!(endpoint.model_map.is_empty());
+        assert!(endpoint
+            .known_models
+            .iter()
+            .any(|model| model == "legacy-mapped-model"));
+
+        let profile = crate::providers::profile_for_account(&account);
+        let models = catalog_models_for_endpoint(
+            &account,
+            endpoint,
+            &profile,
+            &serde_json::json!({}),
+            &["gpt-5.5".into(), "gpt-5.4-mini".into()],
+        );
+
+        assert!(models.iter().any(|model| model == "legacy-mapped-model"));
+        assert!(models.iter().any(|model| model == "legacy-flash-model"));
         assert!(!models.iter().any(|model| model == "gpt-5.5"));
         assert!(!models.iter().any(|model| model == "gpt-5.4-mini"));
     }
@@ -1603,8 +1626,8 @@ mod tests {
 
         assert!(models.iter().any(|model| model == "gpt-5.5"));
         assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
-        assert!(models.iter().any(|model| model == "gpt-5"));
-        assert!(models.iter().any(|model| model == "gpt-4.1"));
+        assert!(!models.iter().any(|model| model == "gpt-5"));
+        assert!(!models.iter().any(|model| model == "gpt-4.1"));
     }
 
     #[test]

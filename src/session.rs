@@ -47,12 +47,17 @@ pub struct SessionStore {
     conversations: Arc<DashMap<String, Vec<ChatMessage>>>,
     conversation_items: Arc<DashMap<String, Vec<Value>>>,
     reasoning: Arc<DashMap<String, String>>,
+    reasoning_details: Arc<DashMap<String, Value>>,
     /// fingerprint → reasoning_content for turn-level recovery
     turn_reasoning: Arc<DashMap<u64, String>>,
+    /// fingerprint → raw reasoning_details for turn-level recovery
+    turn_reasoning_details: Arc<DashMap<u64, Value>>,
     response_order: Arc<Mutex<VecDeque<String>>>,
     conversation_order: Arc<Mutex<VecDeque<String>>>,
     reasoning_order: Arc<Mutex<VecDeque<String>>>,
+    reasoning_details_order: Arc<Mutex<VecDeque<String>>>,
     turn_reasoning_order: Arc<Mutex<VecDeque<u64>>>,
+    turn_reasoning_details_order: Arc<Mutex<VecDeque<u64>>>,
 }
 
 impl SessionStore {
@@ -64,11 +69,15 @@ impl SessionStore {
             conversations: Arc::new(DashMap::new()),
             conversation_items: Arc::new(DashMap::new()),
             reasoning: Arc::new(DashMap::new()),
+            reasoning_details: Arc::new(DashMap::new()),
             turn_reasoning: Arc::new(DashMap::new()),
+            turn_reasoning_details: Arc::new(DashMap::new()),
             response_order: Arc::new(Mutex::new(VecDeque::new())),
             conversation_order: Arc::new(Mutex::new(VecDeque::new())),
             reasoning_order: Arc::new(Mutex::new(VecDeque::new())),
+            reasoning_details_order: Arc::new(Mutex::new(VecDeque::new())),
             turn_reasoning_order: Arc::new(Mutex::new(VecDeque::new())),
+            turn_reasoning_details_order: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -88,6 +97,30 @@ impl SessionStore {
 
     pub fn get_reasoning(&self, call_id: &str) -> Option<String> {
         self.reasoning.get(call_id).map(|v| v.clone())
+    }
+
+    pub fn store_reasoning_details(&self, call_id: String, details: Value) {
+        if !details.is_null() {
+            let is_new = self
+                .reasoning_details
+                .insert(call_id.clone(), details)
+                .is_none();
+            if is_new {
+                self.reasoning_details_order
+                    .lock()
+                    .unwrap()
+                    .push_back(call_id);
+            }
+            if self.reasoning_details.len() >= MAX_REASONING {
+                if let Some(oldest) = self.reasoning_details_order.lock().unwrap().pop_front() {
+                    self.reasoning_details.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    pub fn get_reasoning_details(&self, call_id: &str) -> Option<Value> {
+        self.reasoning_details.get(call_id).map(|v| v.clone())
     }
 
     /// Store turn-level reasoning. Uses a combined fingerprint of:
@@ -177,6 +210,83 @@ impl SessionStore {
         None
     }
 
+    pub fn store_turn_reasoning_details(&self, _prior: &[ChatMessage], assistant: &ChatMessage) {
+        let Some(details) = assistant.reasoning_details.clone() else {
+            return;
+        };
+        if self.turn_reasoning_details.len() >= MAX_TURN_REASONING {
+            if let Some(oldest) = self
+                .turn_reasoning_details_order
+                .lock()
+                .unwrap()
+                .pop_front()
+            {
+                self.turn_reasoning_details.remove(&oldest);
+            }
+        }
+        let combined_key = Self::turn_key(assistant);
+        if self
+            .turn_reasoning_details
+            .insert(combined_key, details.clone())
+            .is_none()
+        {
+            self.turn_reasoning_details_order
+                .lock()
+                .unwrap()
+                .push_back(combined_key);
+        }
+        let content = assistant
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !content.is_empty() {
+            let content_key = Self::content_key(content);
+            if self
+                .turn_reasoning_details
+                .insert(content_key, details.clone())
+                .is_none()
+            {
+                self.turn_reasoning_details_order
+                    .lock()
+                    .unwrap()
+                    .push_back(content_key);
+            }
+        }
+        if let Some(tcs) = &assistant.tool_calls {
+            for tc in tcs {
+                if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                    if !id.is_empty() {
+                        self.store_reasoning_details(id.to_string(), details.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_turn_reasoning_details(
+        &self,
+        _prior: &[ChatMessage],
+        assistant: &ChatMessage,
+    ) -> Option<Value> {
+        let key = Self::turn_key(assistant);
+        if let Some(v) = self.turn_reasoning_details.get(&key) {
+            return Some(v.clone());
+        }
+        let content = assistant
+            .content
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !content.is_empty() {
+            let content_key = Self::content_key(content);
+            if let Some(v) = self.turn_reasoning_details.get(&content_key) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
     /// Combined fingerprint: text content + sorted tool call IDs.
     fn turn_key(assistant: &ChatMessage) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -233,6 +343,35 @@ impl SessionStore {
                         .all(|id| tool_call_ids.iter().any(|tid| tid == id))
                 {
                     return msg.reasoning_content.clone();
+                }
+            }
+        }
+        None
+    }
+
+    pub fn scan_history_reasoning_details(
+        &self,
+        messages: &[ChatMessage],
+        tool_call_ids: &[String],
+    ) -> Option<Value> {
+        if tool_call_ids.is_empty() {
+            return None;
+        }
+        for msg in messages.iter().rev() {
+            if msg.role != "assistant" {
+                continue;
+            }
+            if let Some(ref tcs) = msg.tool_calls {
+                let msg_ids: Vec<&str> = tcs
+                    .iter()
+                    .filter_map(|tc| tc.get("id").and_then(|v| v.as_str()))
+                    .collect();
+                if msg_ids.len() == tool_call_ids.len()
+                    && msg_ids
+                        .iter()
+                        .all(|id| tool_call_ids.iter().any(|tid| tid == id))
+                {
+                    return msg.reasoning_details.clone();
                 }
             }
         }
@@ -494,6 +633,7 @@ mod tests {
             role: role.into(),
             content: content.map(|s| serde_json::Value::String(s.to_string())),
             reasoning_content: None,
+            reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,

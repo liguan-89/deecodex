@@ -193,23 +193,12 @@
     };
 
     if (accountKind === 'codex') {
-      base.model_map = typeof codexProviderModelMap === 'function' ? codexProviderModelMap(values.provider) : {};
-      if (model && !Object.keys(base.model_map).length) {
-        base.model_map = {
-          'gpt-5.5': model,
-          'gpt-5.4': model,
-          'gpt-5.4-mini': model,
-          'gpt-5.3-codex': model,
-          'gpt-5.3-codex-spark': model,
-          'gpt-5.2': model,
-          'codex-auto-review': model,
-        };
-      }
+      base.model_map = {};
       if (typeof providerDefaultTemplate === 'function' && typeof createEndpointFromTemplate === 'function') {
         base.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(values.provider), base)];
       }
       if (base.endpoints[0]) {
-        base.endpoints[0].model_map = { ...base.model_map };
+        base.endpoints[0].model_map = {};
       }
       if (typeof applyProviderSpecificEndpointDefaults === 'function') {
         applyProviderSpecificEndpointDefaults(base);

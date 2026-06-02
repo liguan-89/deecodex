@@ -462,10 +462,10 @@ assert(!codexDetail.includes('account-section-desc'));
 assert(codexDetail.includes('<h2>DeepSeek</h2>'));
 assert(!codexDetail.includes('<h2>DeepSeek 账号</h2>'));
 assert(!codexDetail.includes('badge-provider badge-deepseek'));
-assert(codexDetail.includes('model-map-table'));
-assert(codexDetail.includes('model-map-row'));
-assert(codexDetail.includes('model-upstream-cell'));
-assert(codexDetail.includes('model-vision-cell'));
+assert(!codexDetail.includes('model-map-table'));
+assert(!codexDetail.includes('model-map-row'));
+assert(!codexDetail.includes('model-upstream-cell'));
+assert(!codexDetail.includes('model-vision-cell'));
 assert(!codexDetail.includes('model-remove-placeholder'));
 
 context.editingAccount = {
@@ -508,10 +508,13 @@ assert(!responsesDirectDetail.includes('上下文窗口覆盖'));
 assert(!responsesDirectDetail.includes('推理强度覆盖'));
 assert(!responsesDirectDetail.includes('<select id="edit_endpoint_kind">'));
 assert(responsesDirectDetail.includes('id="edit_endpoint_kind" value="open_ai_responses"'));
+assert(responsesDirectDetail.includes('id="edit_image_generation_enabled" checked'));
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_responses');
 assert.strictEqual(context.editingAccount.endpoints[0].path, '');
+assert.strictEqual(context.editingAccount.endpoints[0].image_generation_enabled, true);
 assert.strictEqual(JSON.stringify(context.editingAccount.model_map), '{}');
 assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
+assert.deepStrictEqual(Array.from(context.editingAccount.endpoints[0].known_models || []), ['other-model']);
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
 assert.strictEqual(context.editingAccount.context_window_override, null);
 assert.strictEqual(context.editingAccount.endpoints[0].reasoning_effort_override, null);
@@ -552,9 +555,12 @@ assert(!customResponsesDetail.includes('推理强度覆盖'));
 assert(customResponsesDetail.includes('<select id="edit_endpoint_kind" onchange="handleEndpointKindChange(this.value)">'));
 assert(customResponsesDetail.includes('<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>'));
 assert(customResponsesDetail.includes('id="edit_endpoint_path" value="v2/responses"'));
+assert(customResponsesDetail.includes('id="edit_image_generation_enabled" '));
+assert(!customResponsesDetail.includes('id="edit_image_generation_enabled" checked'));
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'custom_responses');
 assert.strictEqual(context.editingAccount.endpoints[0].path, 'v2/responses');
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.5'], 'other-model');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
+assert.deepStrictEqual(Array.from(context.editingAccount.endpoints[0].known_models || []), ['other-model']);
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
 assert.strictEqual(context.editingAccount.capability_enabled, true);
 assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
@@ -602,6 +608,7 @@ assert(!officialDetail.includes('<select id="edit_endpoint_kind">'));
 assert(officialDetail.includes('id="edit_endpoint_kind" value="codex_official"'));
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'codex_official');
 assert.strictEqual(JSON.stringify(context.editingAccount.endpoints[0].model_map), '{}');
+assert.deepStrictEqual(Array.from(context.editingAccount.endpoints[0].known_models || []), ['gpt-5']);
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
 assert.strictEqual(context.editingAccount.context_window_override, null);
 assert.strictEqual(context.editingAccount.endpoints[0].reasoning_effort_override, null);
@@ -715,38 +722,13 @@ assert(claudeProviders.includes('glm'));
 assert(claudeProviders.includes('qwen'));
 const hermesProviders = context.providersForClientKind('hermes').map(provider => provider.slug);
 assert(hermesProviders.includes('qwen'));
-assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('deepseek'))), {
-  'gpt-5.5': 'deepseek-v4-pro',
-  'gpt-5.4': 'deepseek-v4-flash',
-  'gpt-5.4-mini': 'deepseek-v4-flash',
-  'gpt-5.3-codex': 'deepseek-v4-flash',
-  'gpt-5.3-codex-spark': 'deepseek-v4-flash',
-  'gpt-5.2': 'deepseek-v4-flash',
-  'codex-auto-review': 'deepseek-v4-flash',
-});
-assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('longcat'))), {
-  'gpt-5.5': 'LongCat-Flash-Chat',
-  'gpt-5.4': 'LongCat-Flash-Chat',
-  'gpt-5.4-mini': 'LongCat-Flash-Chat',
-  'gpt-5.3-codex': 'LongCat-Flash-Chat',
-  'gpt-5.3-codex-spark': 'LongCat-Flash-Chat',
-  'gpt-5.2': 'LongCat-Flash-Chat',
-  'codex-auto-review': 'LongCat-Flash-Chat',
-});
-assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('mimo'))), {
-  'gpt-5.5': 'mimo-v2.5-pro',
-  'gpt-5.4': 'mimo-v2.5-pro',
-  'gpt-5.4-mini': 'mimo-v2.5-pro',
-  'gpt-5.3-codex': 'mimo-v2.5-pro',
-  'gpt-5.3-codex-spark': 'mimo-v2.5-pro',
-  'gpt-5.2': 'mimo-v2.5-pro',
-  'codex-auto-review': 'mimo-v2-omni',
-});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('deepseek'))), {});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('longcat'))), {});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.codexProviderModelMap('mimo'))), {});
 context.addAccount('deepseek', 'codex');
 assert.strictEqual(context.editingAccount.client_surface, 'cli');
-assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'deepseek-v4-pro');
-assert.strictEqual(context.editingAccount.model_map['gpt-5.2'], 'deepseek-v4-flash');
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.4'], 'deepseek-v4-flash');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.model_map)), {});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'native');
 context.editingAccount.endpoints[0].path = '/v1/chat/completions';
 const codexDefaultVisionDetail = context.renderAccountsPanel();
@@ -757,13 +739,13 @@ assert(codexDefaultVisionDetail.includes('onchange="handleEndpointKindChange(thi
 
 context.addAccount('longcat', 'codex');
 assert.strictEqual(context.editingAccount.upstream, 'https://api.longcat.chat/openai');
-assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'LongCat-Flash-Chat');
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5.3-codex'], 'LongCat-Flash-Chat');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.model_map)), {});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 
 context.addAccount('mimo', 'codex');
 assert.strictEqual(context.editingAccount.upstream, 'https://token-plan-cn.xiaomimimo.com/v1');
-assert.strictEqual(context.editingAccount.model_map['gpt-5.5'], 'mimo-v2.5-pro');
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['codex-auto-review'], 'mimo-v2-omni');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.model_map)), {});
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'off');
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2-omni'])), { vision_mode: 'native' });
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_profiles['mimo-v2.5-pro'])), { vision_mode: 'off' });
@@ -800,7 +782,8 @@ context.document = {
 };
 context.handleEndpointKindChange('open_ai_responses');
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_responses');
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5'], 'deepseek-chat');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
+assert.deepStrictEqual(Array.from(context.editingAccount.endpoints[0].known_models || []), ['deepseek-chat']);
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
 assert.strictEqual(context.editingAccount.capability_enabled, true);
 assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);
@@ -813,9 +796,9 @@ endpointKindValue = 'open_ai_chat';
 context.handleEndpointKindChange('open_ai_chat');
 context.document = originalDocument;
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_chat');
-assert(mainContent.innerHTML.includes('model-map-table'));
+assert(!mainContent.innerHTML.includes('model-map-table'));
 assert(mainContent.innerHTML.includes('能力补全'));
-assert.strictEqual(context.editingAccount.endpoints[0].model_map['gpt-5'], 'deepseek-chat');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
 assert.strictEqual(context.editingAccount.capability_enabled, true);
 assert.strictEqual(context.editingAccount.dev_pipeline_enabled, true);

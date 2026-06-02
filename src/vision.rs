@@ -280,6 +280,7 @@ mod tests {
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
                 ])),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -315,6 +316,7 @@ mod tests {
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
                 ])),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,

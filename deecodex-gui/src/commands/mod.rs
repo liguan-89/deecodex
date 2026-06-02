@@ -356,11 +356,13 @@ fn codex_official_endpoint_config(account_id: &str) -> deecodex::accounts::Endpo
         template_id: "codex_official".into(),
         template_version: 1,
         model_map: HashMap::new(),
+        known_models: Vec::new(),
         model_profiles: HashMap::new(),
         vision: deecodex::accounts::VisionConfig {
             mode: deecodex::accounts::VisionMode::Native,
             ..Default::default()
         },
+        image_generation_enabled: Some(true),
         custom_headers: HashMap::new(),
         request_timeout_secs: None,
         max_retries: None,
@@ -1179,11 +1181,13 @@ async fn create_oauth_account(
                 template_id: "codex_official".into(),
                 template_version: 1,
                 model_map: HashMap::new(),
+                known_models: Vec::new(),
                 model_profiles: HashMap::new(),
                 vision: deecodex::accounts::VisionConfig {
                     mode: VisionMode::Native,
                     ..Default::default()
                 },
+                image_generation_enabled: Some(true),
                 custom_headers: HashMap::new(),
                 request_timeout_secs: None,
                 max_retries: None,

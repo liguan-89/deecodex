@@ -138,6 +138,7 @@ pub fn response_to_chat(value: Value) -> ChatResponse {
                 } else {
                     Some(reasoning)
                 },
+                reasoning_details: None,
                 tool_calls: if tool_calls.is_empty() {
                     None
                 } else {
@@ -311,6 +312,7 @@ mod tests {
             role: role.into(),
             content: Some(content),
             reasoning_content: None,
+            reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -415,6 +417,7 @@ mod tests {
             role: "assistant".into(),
             content: Some(Value::String("checking".into())),
             reasoning_content: None,
+            reasoning_details: None,
             tool_calls: Some(vec![json!({
                 "id":"call_1",
                 "type":"function",
@@ -427,6 +430,7 @@ mod tests {
             role: "tool".into(),
             content: Some(Value::String("file text".into())),
             reasoning_content: None,
+            reasoning_details: None,
             tool_calls: None,
             tool_call_id: Some("call_1".into()),
             name: None,

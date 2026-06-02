@@ -95,6 +95,7 @@ pub async fn maybe_observe(
                 role: "user".into(),
                 content: Some(content),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,

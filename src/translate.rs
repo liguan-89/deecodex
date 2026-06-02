@@ -62,6 +62,7 @@ pub fn to_chat_request(
             role: "system".into(),
             content: Some(Value::String(system)),
             reasoning_content: None,
+            reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -80,6 +81,7 @@ pub fn to_chat_request(
                 role: "user".into(),
                 content: Some(Value::String(text.clone())),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -94,6 +96,7 @@ pub fn to_chat_request(
                 if item_type == "function_call" {
                     let mut grouped: Vec<Value> = Vec::new();
                     let mut reasoning_content: Option<String> = None;
+                    let mut reasoning_details: Option<Value> = None;
                     let mut call_ids: Vec<String> = Vec::new();
 
                     while i < items.len() {
@@ -114,6 +117,9 @@ pub fn to_chat_request(
                         if reasoning_content.is_none() {
                             reasoning_content = sessions.get_reasoning(call_id);
                         }
+                        if reasoning_details.is_none() {
+                            reasoning_details = sessions.get_reasoning_details(call_id);
+                        }
 
                         grouped.push(json!({
                             "id": call_id,
@@ -127,6 +133,7 @@ pub fn to_chat_request(
                         role: "assistant".into(),
                         content: None,
                         reasoning_content,
+                        reasoning_details,
                         tool_calls: Some(grouped),
                         tool_call_id: None,
                         name: None,
@@ -137,6 +144,14 @@ pub fn to_chat_request(
                     if msg.reasoning_content.is_none() {
                         msg.reasoning_content =
                             sessions.scan_history_reasoning(&messages, &call_ids);
+                    }
+                    if msg.reasoning_details.is_none() {
+                        msg.reasoning_details =
+                            sessions.get_turn_reasoning_details(&messages, &msg);
+                    }
+                    if msg.reasoning_details.is_none() {
+                        msg.reasoning_details =
+                            sessions.scan_history_reasoning_details(&messages, &call_ids);
                     }
                     messages.push(msg);
                 } else {
@@ -165,6 +180,7 @@ pub fn to_chat_request(
                                         role: "assistant".into(),
                                         content: None,
                                         reasoning_content: None,
+                                        reasoning_details: None,
                                         tool_calls: Some(vec![json!({
                                             "id": call_id,
                                             "type": "function",
@@ -192,6 +208,7 @@ pub fn to_chat_request(
                                 role: "tool".into(),
                                 content: Some(Value::String(display)),
                                 reasoning_content: None,
+                                reasoning_details: None,
                                 tool_calls: None,
                                 tool_call_id: Some(call_id.to_string()),
                                 name: None,
@@ -209,6 +226,7 @@ pub fn to_chat_request(
                                 role,
                                 content: Some(Value::String(text.clone())),
                                 reasoning_content: None,
+                                reasoning_details: None,
                                 tool_calls: None,
                                 tool_call_id: None,
                                 name: None,
@@ -1074,6 +1092,7 @@ pub fn from_chat_response(
                 role: "assistant".into(),
                 content: Some(Value::String(String::new())),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -1539,6 +1558,7 @@ mod tests {
             role: "assistant".into(),
             content: None,
             reasoning_content: Some("prior_reason".into()),
+            reasoning_details: None,
             tool_calls: Some(vec![
                 json!({"id": "tc_x", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
             ]),
@@ -1550,6 +1570,7 @@ mod tests {
                 role: "user".into(),
                 content: Some("q".into()),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -1695,6 +1716,7 @@ mod tests {
                     role: "assistant".into(),
                     content: None,
                     reasoning_content: None,
+                    reasoning_details: None,
                     tool_calls: Some(vec![json!({
                         "id": "call_123",
                         "type": "function",
@@ -1730,6 +1752,7 @@ mod tests {
                     role: "assistant".into(),
                     content: Some(Value::String("<think>先分析</think>最终答案".into())),
                     reasoning_content: None,
+                    reasoning_details: None,
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -1755,6 +1778,7 @@ mod tests {
                     role: "assistant".into(),
                     content: None,
                     reasoning_content: None,
+                    reasoning_details: None,
                     tool_calls: Some(vec![json!({
                         "id": "call_obj",
                         "type": "function",
@@ -1787,6 +1811,7 @@ mod tests {
                     role: "assistant".into(),
                     content: None,
                     reasoning_content: None,
+                    reasoning_details: None,
                     tool_calls: Some(vec![json!({
                         "id": "call_mcp",
                         "type": "function",
@@ -1824,6 +1849,7 @@ mod tests {
                     role: "assistant".into(),
                     content: Some(Value::String("done".into())),
                     reasoning_content: Some("thinking".into()),
+                    reasoning_details: None,
                     tool_calls: Some(vec![
                         json!({
                             "id": "call_abc",
@@ -2081,6 +2107,7 @@ mod tests {
                     role: "assistant".into(),
                     content: None,
                     reasoning_content: None,
+                    reasoning_details: None,
                     tool_calls: Some(vec![json!({
                         "id": "call_ts",
                         "type": "function",

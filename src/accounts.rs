@@ -412,10 +412,15 @@ pub struct EndpointConfig {
     pub template_version: u32,
     #[serde(default)]
     pub model_map: HashMap<String, String>,
+    /// Codex 模型直选使用的上游模型列表。旧 model_map 的 value 只迁移到这里一次。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_models: Vec<String>,
     #[serde(default)]
     pub model_profiles: HashMap<String, ModelProfile>,
     #[serde(default)]
     pub vision: VisionConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_generation_enabled: Option<bool>,
     #[serde(default)]
     pub custom_headers: HashMap<String, String>,
     #[serde(default)]
@@ -445,6 +450,41 @@ fn default_fast_service_tier() -> String {
     "priority".into()
 }
 
+fn default_image_generation_enabled_for(provider: &str, kind: &EndpointKind) -> bool {
+    matches!(kind, EndpointKind::CodexOfficial)
+        || (matches!(kind, EndpointKind::OpenAiResponses)
+            && provider.trim().eq_ignore_ascii_case("openai"))
+}
+
+fn legacy_model_map_values(model_map: &HashMap<String, String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut values = Vec::new();
+    for model in model_map.values() {
+        let model = model.trim();
+        if model.is_empty() || !seen.insert(model.to_string()) {
+            continue;
+        }
+        values.push(model.to_string());
+    }
+    values
+}
+
+fn append_known_models(known_models: &mut Vec<String>, models: impl IntoIterator<Item = String>) {
+    let mut seen = known_models
+        .iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect::<HashSet<_>>();
+    known_models.retain(|model| !model.trim().is_empty());
+    for model in models {
+        let model = model.trim().to_string();
+        if model.is_empty() || !seen.insert(model.clone()) {
+            continue;
+        }
+        known_models.push(model);
+    }
+}
+
 impl EndpointConfig {
     pub fn effective_path(&self) -> &str {
         if self.path.trim().is_empty() {
@@ -459,6 +499,11 @@ impl EndpointConfig {
             .get(model)
             .map(|profile| profile.vision_mode.resolve(&self.vision.mode))
             .unwrap_or_else(|| self.vision.mode.clone())
+    }
+
+    pub fn effective_image_generation_enabled(&self, account: &Account) -> bool {
+        self.image_generation_enabled
+            .unwrap_or_else(|| default_image_generation_enabled_for(&account.provider, &self.kind))
     }
 }
 
@@ -479,7 +524,7 @@ pub struct Account {
     pub api_key: String,
     #[serde(default)]
     pub auth_mode: AccountAuthMode,
-    /// 非 Codex 客户端直接使用的默认模型名。Codex 账号继续使用 model_map。
+    /// 非 Codex 客户端直接使用的默认模型名。Codex 账号使用模型直选，旧 model_map 仅保留解析兼容。
     #[serde(default)]
     pub default_model: String,
     /// 客户端侧扩展配置，例如 env 覆盖、profile 名称、配置路径等。
@@ -679,6 +724,7 @@ impl Account {
         self.dev_pipeline_implementer_instruction.clear();
         self.dev_pipeline_reviewer_instruction.clear();
 
+        let provider = self.provider.clone();
         for endpoint in &mut self.endpoints {
             if !force_openai_responses
                 && !endpoint.kind.is_responses_like()
@@ -710,31 +756,43 @@ impl Account {
                 mode: VisionMode::Native,
                 ..VisionConfig::default()
             };
+            if endpoint.image_generation_enabled.is_none() {
+                endpoint.image_generation_enabled = Some(default_image_generation_enabled_for(
+                    &provider,
+                    &endpoint.kind,
+                ));
+            }
             endpoint.context_window_override = None;
             endpoint.reasoning_effort_override = None;
             endpoint.thinking_tokens = None;
         }
     }
 
-    fn normalize_mimo_codex_defaults(&mut self) {
+    fn retire_codex_model_map(&mut self) {
+        if !self.client_kind.is_codex() {
+            return;
+        }
+        let account_models = legacy_model_map_values(&self.model_map);
+        for endpoint in &mut self.endpoints {
+            let mut models = legacy_model_map_values(&endpoint.model_map);
+            if models.is_empty() {
+                models.extend(account_models.clone());
+            }
+            append_known_models(&mut endpoint.known_models, models);
+        }
+        self.model_map.clear();
+        for endpoint in &mut self.endpoints {
+            endpoint.model_map.clear();
+        }
+    }
+
+    fn normalize_mimo_codex_model_profiles(&mut self) {
         if !self.client_kind.is_codex() || !self.provider.eq_ignore_ascii_case("mimo") {
             return;
         }
         for endpoint in &mut self.endpoints {
             if !endpoint.kind.is_chat_like() {
                 continue;
-            }
-            for codex_model in CODEX_MODEL_LIST {
-                endpoint
-                    .model_map
-                    .entry((*codex_model).into())
-                    .or_insert_with(|| {
-                        if *codex_model == "codex-auto-review" {
-                            "mimo-v2-omni".into()
-                        } else {
-                            "mimo-v2.5-pro".into()
-                        }
-                    });
             }
             endpoint
                 .model_profiles
@@ -766,7 +824,8 @@ impl Account {
             self.endpoints.push(endpoint_from_legacy_account(self));
         }
         self.normalize_responses_direct();
-        self.normalize_mimo_codex_defaults();
+        self.retire_codex_model_map();
+        self.normalize_mimo_codex_model_profiles();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -783,7 +842,11 @@ impl Account {
 
     pub fn sync_legacy_from_endpoint(&mut self, endpoint: &EndpointConfig) {
         self.upstream = endpoint.base_url.clone();
-        self.model_map = endpoint.model_map.clone();
+        if self.client_kind.is_codex() {
+            self.model_map.clear();
+        } else {
+            self.model_map = endpoint.model_map.clone();
+        }
         self.balance_url = endpoint.balance_url.clone();
         self.context_window_override = endpoint.context_window_override;
         self.reasoning_effort_override = endpoint.reasoning_effort_override.clone();
@@ -1527,6 +1590,12 @@ fn endpoint_from_legacy_account(account: &Account) -> EndpointConfig {
         };
     }
 
+    let kind = if account.translate_enabled {
+        EndpointKind::OpenAiChat
+    } else {
+        EndpointKind::OpenAiResponses
+    };
+
     EndpointConfig {
         id: format!("endpoint_{}", account.id),
         name: if account.translate_enabled {
@@ -1534,18 +1603,19 @@ fn endpoint_from_legacy_account(account: &Account) -> EndpointConfig {
         } else {
             "Responses".into()
         },
-        kind: if account.translate_enabled {
-            EndpointKind::OpenAiChat
-        } else {
-            EndpointKind::OpenAiResponses
-        },
+        kind: kind.clone(),
         base_url: account.upstream.clone(),
         path: String::new(),
         template_id: account.provider.clone(),
         template_version: default_template_version(),
         model_map: account.model_map.clone(),
+        known_models: legacy_model_map_values(&account.model_map),
         model_profiles: HashMap::new(),
         vision,
+        image_generation_enabled: Some(default_image_generation_enabled_for(
+            &account.provider,
+            &kind,
+        )),
         custom_headers: account.custom_headers.clone(),
         request_timeout_secs: account.request_timeout_secs,
         max_retries: account.max_retries,
@@ -2199,6 +2269,7 @@ mod provider_tests {
         assert_eq!(endpoint.context_window_override, None);
         assert_eq!(endpoint.reasoning_effort_override, None);
         assert_eq!(endpoint.thinking_tokens, None);
+        assert_eq!(endpoint.image_generation_enabled, Some(true));
         assert!(endpoint.fast_mode_enabled);
         assert_eq!(endpoint.request_timeout_secs, Some(42));
         assert_eq!(endpoint.max_retries, Some(4));
@@ -2264,6 +2335,7 @@ mod provider_tests {
         assert_eq!(endpoint.context_window_override, None);
         assert_eq!(endpoint.reasoning_effort_override, None);
         assert_eq!(endpoint.thinking_tokens, None);
+        assert_eq!(endpoint.image_generation_enabled, Some(false));
     }
 
     #[test]
@@ -2330,6 +2402,7 @@ mod provider_tests {
         assert_eq!(endpoint.context_window_override, None);
         assert_eq!(endpoint.reasoning_effort_override, None);
         assert_eq!(endpoint.thinking_tokens, None);
+        assert_eq!(endpoint.image_generation_enabled, Some(true));
     }
 }
 
@@ -2564,7 +2637,8 @@ mod tests {
         account.normalize_v2();
         let endpoint = account.endpoints.first().unwrap();
         assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
-        assert_eq!(endpoint.model_map["gpt-5"], "deepseek-chat");
+        assert!(endpoint.model_map.is_empty());
+        assert_eq!(endpoint.known_models, vec!["deepseek-chat"]);
         assert_eq!(endpoint.vision.mode, VisionMode::Off);
     }
 
@@ -2607,6 +2681,7 @@ mod tests {
         let mut account = legacy_account(false);
         account.normalize_v2();
         assert_eq!(account.endpoints[0].kind, EndpointKind::OpenAiResponses);
+        assert_eq!(account.endpoints[0].image_generation_enabled, Some(false));
     }
 
     #[test]
@@ -2716,22 +2791,22 @@ mod tests {
     }
 
     #[test]
-    fn mimo_codex_normalize_adds_model_map_and_vision_profiles() {
+    fn mimo_codex_normalize_clears_model_map_and_keeps_vision_profiles() {
         let mut account = legacy_account(true);
         account.provider = "mimo".into();
         account.upstream = "https://token-plan-cn.xiaomimimo.com/v1".into();
-        account.model_map.clear();
+        account.model_map = HashMap::from([("gpt-5.5".into(), "old-mapped-model".into())]);
         account.normalize_v2();
 
         let endpoint = account.endpoints.first().unwrap();
-        assert_eq!(endpoint.model_map["gpt-5.5"], "mimo-v2.5-pro");
-        assert_eq!(endpoint.model_map["codex-auto-review"], "mimo-v2-omni");
+        assert!(endpoint.model_map.is_empty());
+        assert_eq!(endpoint.known_models, vec!["old-mapped-model"]);
         assert_eq!(endpoint.model_vision_mode("mimo-v2.5-pro"), VisionMode::Off);
         assert_eq!(
             endpoint.model_vision_mode("mimo-v2-omni"),
             VisionMode::Native
         );
-        assert_eq!(account.model_map["gpt-5.5"], "mimo-v2.5-pro");
+        assert!(account.model_map.is_empty());
     }
 
     #[test]

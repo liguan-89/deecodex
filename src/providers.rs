@@ -236,16 +236,19 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "MiniMax Chat Completions/OpenAI 兼容接口",
             "https://api.minimaxi.com/v1",
             vec![
+                "MiniMax-M3",
                 "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.1",
+                "MiniMax-M2.1-highspeed",
                 "MiniMax-M2",
-                "MiniMax-M1",
-                "MiniMax-Text-01",
-                "abab6.5s-chat",
             ],
             "MINIMAX_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
-                reasoning: ReasoningMode::None,
+                reasoning: ReasoningMode::DeepSeek,
                 allow_missing_done: true,
                 ..Default::default()
             },
@@ -672,6 +675,50 @@ mod tests {
         assert!(!profile_by_slug("mimo").capabilities.allow_missing_done);
         assert!(!profile_by_slug("glm").capabilities.allow_missing_done);
         assert!(!profile_by_slug("custom").capabilities.allow_missing_done);
+    }
+
+    #[test]
+    fn minimax_profile_knows_m3_and_keeps_supported_reasoning_fields() {
+        let minimax = profile_by_slug("minimax");
+        assert!(minimax
+            .known_models
+            .iter()
+            .any(|model| model == "MiniMax-M3"));
+        assert!(minimax
+            .known_models
+            .iter()
+            .any(|model| model == "MiniMax-M2.7-highspeed"));
+        assert_eq!(minimax.capabilities.reasoning, ReasoningMode::DeepSeek);
+
+        let mut req = ChatRequest {
+            model: "MiniMax-M3".into(),
+            messages: vec![],
+            tools: vec![
+                json!({"type":"function","function":{"name":"x","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: Some("high".into()),
+            thinking: Some(json!({"type":"enabled"})),
+            tool_choice: None,
+            parallel_tool_calls: Some(true),
+            response_format: Some(json!({"type":"json_object"})),
+            user: None,
+            stream_options: Some(crate::types::StreamOptions {
+                include_usage: true,
+            }),
+            web_search_options: Some(json!({"search_context": {}})),
+        };
+
+        adapt_chat_request(&minimax, &mut req);
+
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
+        assert_eq!(req.parallel_tool_calls, None);
+        assert_eq!(req.web_search_options, None);
+        assert!(!req.tools.is_empty());
     }
 
     #[test]

@@ -311,6 +311,7 @@ pub(super) async fn dex_speed_test_impl() -> Result<Value, String> {
                 role: "user".into(),
                 content: Some(json!("hi")),
                 reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
