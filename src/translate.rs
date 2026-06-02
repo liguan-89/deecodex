@@ -328,7 +328,7 @@ pub fn to_chat_request(
     let (reasoning_effort, thinking) = map_effort(effort);
 
     // Filter + convert Codex tools → OpenAI Chat tools.
-    // apply_patch is translated to exec_command-compatible function tool.
+    // apply_patch 保持为独立函数工具，便于 Codex 识别代码修改并展示动态 diff。
     let tools: Vec<Value> = req
         .tools
         .iter()
@@ -380,7 +380,7 @@ pub fn to_chat_request(
             reasoning_effort,
             thinking,
             reasoning_split: None,
-            tool_choice: req.tool_choice.clone(),
+            tool_choice: convert_tool_choice(req.tool_choice.as_ref()),
             parallel_tool_calls: req.parallel_tool_calls,
             response_format: response_format_from_text(req.text.as_ref()),
             user: req
@@ -887,54 +887,19 @@ pub fn convert_tool(tool: &Value) -> Value {
                 .unwrap_or("custom_tool");
             let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
 
-            // apply_patch → mapped to exec_command (identical parameter schema)
+            // apply_patch 是 Codex 的代码修改工具。Chat 兼容模型只能通过 JSON
+            // function calling 表达参数，因此固定使用 patch 字段承载补丁文本。
             let params = if name == "apply_patch" {
                 json!({
                     "type": "object",
                     "properties": {
-                        "cmd": {
+                        "patch": {
                             "type": "string",
-                            "description": "Shell command to execute."
-                        },
-                        "workdir": {
-                            "type": "string",
-                            "description": "Optional working directory to run the command in; defaults to the turn cwd."
-                        },
-                        "shell": {
-                            "type": "string",
-                            "description": "Shell binary to launch. Defaults to the user's default shell."
-                        },
-                        "tty": {
-                            "type": "boolean",
-                            "description": "Whether to allocate a TTY for the command. Defaults to false (plain pipes)."
-                        },
-                        "sandbox_permissions": {
-                            "type": "string",
-                            "description": "Sandbox permissions. Defaults to \"use_default\"."
-                        },
-                        "max_output_tokens": {
-                            "type": "number",
-                            "description": "Maximum number of tokens to return."
-                        },
-                        "justification": {
-                            "type": "string",
-                            "description": "Justification for running outside sandbox (only when sandbox_permissions is require_escalated)."
-                        },
-                        "login": {
-                            "type": "boolean",
-                            "description": "Whether to run the shell with -l/-i semantics. Defaults to true."
-                        },
-                        "yield_time_ms": {
-                            "type": "number",
-                            "description": "How long to wait (ms) for output before yielding."
-                        },
-                        "prefix_rule": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Prefix command pattern for future sandbox escalation."
+                            "description": "Patch text to apply to the local workspace. Use the Codex apply_patch format beginning with *** Begin Patch and ending with *** End Patch."
                         }
                     },
-                    "required": ["cmd"]
+                    "required": ["patch"],
+                    "additionalProperties": false
                 })
             } else {
                 // Generic custom tool: make a simple text parameter
@@ -953,7 +918,11 @@ pub fn convert_tool(tool: &Value) -> Value {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": desc,
+                    "description": if name == "apply_patch" && desc.trim().is_empty() {
+                        "Apply a source-code patch to the local workspace so Codex can show file edit diff statistics."
+                    } else {
+                        desc
+                    },
                     "parameters": params
                 }
             })
@@ -1078,6 +1047,40 @@ pub fn convert_tool(tool: &Value) -> Value {
     }
 }
 
+fn convert_tool_choice(choice: Option<&Value>) -> Option<Value> {
+    let choice = choice?;
+    if choice.is_string() {
+        return Some(choice.clone());
+    }
+    let obj = choice.as_object()?;
+    let typ = obj.get("type").and_then(Value::as_str).unwrap_or("");
+
+    if let Some(name) = obj
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+    {
+        return Some(json!({
+            "type": "function",
+            "function": {"name": normalize_tool_search_name(name)}
+        }));
+    }
+
+    match typ {
+        "function" | "custom" => obj.get("name").and_then(Value::as_str).map(|name| {
+            json!({
+                "type": "function",
+                "function": {"name": normalize_tool_search_name(name)}
+            })
+        }),
+        "tool_search" => Some(json!({
+            "type": "function",
+            "function": {"name": "tool_search"}
+        })),
+        _ => Some(choice.clone()),
+    }
+}
+
 /// Convert Chat Completions response → Responses API response.
 pub fn from_chat_response(
     id: String,
@@ -1136,6 +1139,7 @@ pub fn from_chat_response(
             name: None,
             server_label: None,
             arguments: None,
+            input: None,
             action: None,
             status: Some("completed".into()),
             phase: None,
@@ -1156,6 +1160,7 @@ pub fn from_chat_response(
             name: None,
             server_label: None,
             arguments: None,
+            input: None,
             action: None,
             status: None,
             phase: None,
@@ -1171,6 +1176,15 @@ pub fn from_chat_response(
             .unwrap_or_default();
         let arguments = function.get("arguments").map(tool_arguments_string);
         let is_computer_call = name == "local_computer";
+        let is_apply_patch = name == "apply_patch";
+        let apply_patch_input = is_apply_patch
+            .then(|| {
+                arguments
+                    .as_deref()
+                    .map(apply_patch_input_from_arguments)
+                    .unwrap_or_default()
+            })
+            .filter(|input| !input.is_empty());
         let call_id = tool_call
             .get("id")
             .and_then(Value::as_str)
@@ -1186,6 +1200,8 @@ pub fn from_chat_response(
             format!("cc_{}", call_id)
         } else if is_mcp_call {
             format!("mcp_{}", call_id)
+        } else if is_apply_patch {
+            format!("ctc_{}", call_id)
         } else {
             format!("fc_{}", call_id)
         };
@@ -1194,6 +1210,8 @@ pub fn from_chat_response(
                 "computer_call".into()
             } else if is_mcp_call {
                 "mcp_tool_call".into()
+            } else if is_apply_patch {
+                "custom_tool_call".into()
             } else {
                 "function_call".into()
             },
@@ -1213,9 +1231,12 @@ pub fn from_chat_response(
                 None
             } else if let Some(mcp) = &mcp {
                 Some(mcp.arguments.clone())
+            } else if is_apply_patch {
+                None
             } else {
                 arguments.clone()
             },
+            input: apply_patch_input,
             action: if is_computer_call {
                 arguments
                     .as_deref()
@@ -1286,6 +1307,19 @@ fn tool_arguments_string(value: &Value) -> String {
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| value.to_string())
+}
+
+fn apply_patch_input_from_arguments(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("patch")
+                .or_else(|| value.get("input"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| arguments.to_string())
 }
 
 fn chat_message_content_text(content: Option<&Value>) -> String {
@@ -1742,6 +1776,44 @@ mod tests {
         assert_eq!(
             resp.output[0].arguments.as_deref(),
             Some("{\"cmd\":\"pwd\"}")
+        );
+    }
+
+    #[test]
+    fn test_blocking_apply_patch_call_keeps_patch_tool_name() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    reasoning_details: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "patch_123",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": "{\"patch\":\"*** Begin Patch\\n*** End Patch\"}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_patch".into(), "deepseek-v4-pro", chat_resp);
+
+        assert_eq!(resp.output.len(), 1);
+        assert_eq!(resp.output[0].kind, "custom_tool_call");
+        assert_eq!(resp.output[0].id.as_deref(), Some("ctc_patch_123"));
+        assert_eq!(resp.output[0].call_id.as_deref(), Some("patch_123"));
+        assert_eq!(resp.output[0].name.as_deref(), Some("apply_patch"));
+        assert_eq!(resp.output[0].arguments, None);
+        assert_eq!(
+            resp.output[0].input.as_deref(),
+            Some("*** Begin Patch\n*** End Patch")
         );
     }
 
@@ -2224,14 +2296,31 @@ mod tests {
         let result = convert_tool(&tool);
         assert_eq!(result["type"], "function");
         assert_eq!(result["function"]["name"], "apply_patch");
-        // Should be mapped to exec_command-compatible schema with cmd required
         let params = &result["function"]["parameters"];
         assert_eq!(params["type"], "object");
-        assert!(params["properties"]["cmd"].is_object());
-        assert_eq!(params["required"][0], "cmd");
-        // Has exec_command-style fields
-        assert!(params["properties"].get("workdir").is_some());
-        assert!(params["properties"].get("shell").is_some());
+        assert!(params["properties"]["patch"].is_object());
+        assert_eq!(params["required"][0], "patch");
+        assert_eq!(params["additionalProperties"], false);
+        assert!(params["properties"].get("cmd").is_none());
+    }
+
+    #[test]
+    fn test_tool_choice_custom_apply_patch_converts_to_chat_function_choice() {
+        let sessions = SessionStore::new();
+        let mut req = base_req(ResponsesInput::Text("改文件".into()));
+        req.tools = vec![json!({
+            "type": "custom",
+            "name": "apply_patch",
+            "description": "apply a patch"
+        })];
+        req.tool_choice = Some(json!({"type": "custom", "name": "apply_patch"}));
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+
+        assert_eq!(
+            chat.tool_choice,
+            Some(json!({"type":"function","function":{"name":"apply_patch"}}))
+        );
     }
 
     #[test]

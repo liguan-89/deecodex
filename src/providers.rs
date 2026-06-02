@@ -884,6 +884,73 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_tool_survives_deepseek_minimax_and_mimo_adaptation() {
+        for slug in ["deepseek", "minimax", "mimo"] {
+            let mut req = ChatRequest {
+                model: match slug {
+                    "minimax" => "MiniMax-M3".into(),
+                    "mimo" => "mimo-v2.5-pro".into(),
+                    _ => "deepseek-v4-pro".into(),
+                },
+                messages: vec![],
+                tools: vec![json!({
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "description": "Apply code patch",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "patch": {"type": "string"}
+                            },
+                            "required": ["patch"]
+                        }
+                    }
+                })],
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                stream: true,
+                reasoning_effort: Some("high".into()),
+                thinking: Some(json!({"type":"enabled"})),
+                reasoning_split: None,
+                tool_choice: Some(json!({
+                    "type": "function",
+                    "function": {"name": "apply_patch"}
+                })),
+                parallel_tool_calls: Some(true),
+                response_format: None,
+                user: None,
+                stream_options: Some(crate::types::StreamOptions {
+                    include_usage: true,
+                }),
+                web_search_options: None,
+            };
+
+            adapt_chat_request(&profile_by_slug(slug), &mut req);
+
+            assert!(
+                req.tools.iter().any(|tool| {
+                    tool.get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("apply_patch")
+                }),
+                "{slug} 不应清除 apply_patch"
+            );
+            assert_eq!(
+                req.tool_choice
+                    .as_ref()
+                    .and_then(|choice| choice.get("function"))
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str),
+                Some("apply_patch"),
+                "{slug} 不应清除 apply_patch tool_choice"
+            );
+        }
+    }
+
+    #[test]
     fn native_protocol_profiles_are_enabled() {
         assert_eq!(
             profile_by_slug("anthropic").wire_protocol,

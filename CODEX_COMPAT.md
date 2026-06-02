@@ -124,7 +124,7 @@
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
-| `custom` / `apply_patch` | ✅ | 映射为 `exec_command` 兼容格式 |
+| `custom` / `apply_patch` | ✅ | Chat 兼容端点以 `apply_patch(patch)` 桥接，回传为 Codex `custom_tool_call` |
 | `namespace` | ✅ | MCP namespace 展开为独立工具 |
 | `local_shell` | ✅ | 本地 Shell 命令执行 |
 

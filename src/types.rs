@@ -126,6 +126,8 @@ pub struct ResponsesOutputItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,

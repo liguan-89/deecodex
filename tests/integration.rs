@@ -3644,6 +3644,47 @@ async fn test_translate_stream_tool_call() {
 }
 
 #[tokio::test]
+async fn test_translate_stream_apply_patch_tool_call_keeps_patch_name() {
+    let sse_body = build_sse_body(vec![
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"patch_abc","function":{"name":"apply_patch","arguments":""}}]},"finish_reason":null}]}"#,
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"patch\":\"*** Begin Patch\\n"}}]},"finish_reason":null}]}"#,
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"*** End Patch\"}"}}]},"finish_reason":null}]}"#,
+        "data: [DONE]",
+    ]);
+
+    let url = start_mock_sse(sse_body).await;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let args = make_stream_args(client, url.as_str(), false, None, None);
+    let bytes = axum::body::to_bytes(
+        translate_stream(args).into_response().into_body(),
+        usize::MAX,
+    )
+    .await
+    .unwrap();
+    let events = parse_sse_events(&bytes);
+
+    assert_eq!(events.len(), 4);
+    assert_sequence_numbers(&events);
+    assert_eq!(events[1].0, "response.output_item.added");
+    assert_eq!(events[1].1["item"]["type"], "custom_tool_call");
+    assert_eq!(events[1].1["item"]["name"], "apply_patch");
+    assert_eq!(events[1].1["item"]["call_id"], "patch_abc");
+    assert_eq!(events[1].1["item"]["input"], "");
+    assert_eq!(events[2].0, "response.output_item.done");
+    assert_eq!(events[2].1["item"]["type"], "custom_tool_call");
+    assert_eq!(events[2].1["item"]["name"], "apply_patch");
+    assert_eq!(
+        events[2].1["item"]["input"],
+        "*** Begin Patch\n*** End Patch"
+    );
+    assert_eq!(events[3].0, "response.completed");
+}
+
+#[tokio::test]
 async fn test_translate_stream_reasoning() {
     let sse_body = build_sse_body(vec![
         r#"data: {"choices":[{"delta":{"reasoning_content":"Let me think"},"finish_reason":null}]}"#,

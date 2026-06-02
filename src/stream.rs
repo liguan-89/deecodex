@@ -103,6 +103,7 @@ struct ResponseToolCallItem {
     name: Option<String>,
     server_label: Option<String>,
     arguments: Option<String>,
+    input: Option<String>,
     action: Option<Value>,
 }
 
@@ -305,6 +306,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             name: None,
             server_label: None,
             arguments: None,
+            input: None,
             action: serde_json::from_str::<Value>(arguments)
                 .ok()
                 .or_else(|| Some(json!({"type": "unknown"}))),
@@ -317,23 +319,44 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             name: Some(mcp.tool),
             server_label: Some(mcp.server_label),
             arguments: Some(mcp.arguments),
+            input: None,
+            action: None,
+        }
+    } else if name == "apply_patch" {
+        ResponseToolCallItem {
+            item_type: "custom_tool_call",
+            item_id: format!("ctc_{call_id}"),
+            name: Some("apply_patch".into()),
+            server_label: None,
+            arguments: None,
+            input: Some(apply_patch_input_from_arguments(arguments)),
             action: None,
         }
     } else {
-        let tool_name = if name == "apply_patch" {
-            "exec_command".to_string()
-        } else {
-            normalize_tool_search_name(name).to_string()
-        };
+        let tool_name = normalize_tool_search_name(name).to_string();
         ResponseToolCallItem {
             item_type: "function_call",
             item_id: format!("fc_{call_id}"),
             name: Some(tool_name),
             server_label: None,
             arguments: Some(arguments.to_string()),
+            input: None,
             action: None,
         }
     }
+}
+
+fn apply_patch_input_from_arguments(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("patch")
+                .or_else(|| value.get("input"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| arguments.to_string())
 }
 
 fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progress: bool) -> Value {
@@ -351,6 +374,9 @@ fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progre
     }
     if let Some(arguments) = &spec.arguments {
         item["arguments"] = json!(if in_progress { "" } else { arguments.as_str() });
+    }
+    if let Some(input) = &spec.input {
+        item["input"] = json!(if in_progress { "" } else { input.as_str() });
     }
     if let Some(action) = &spec.action {
         item["action"] = action.clone();
@@ -1237,11 +1263,7 @@ pub fn translate_stream(
                         .values()
                         .map(|tc| CachedToolCall {
                             id: tc.id.clone(),
-                            name: if tc.name == "apply_patch" {
-                                "exec_command".into()
-                            } else {
-                                normalize_tool_search_name(&tc.name).to_string()
-                            },
+                            name: normalize_tool_search_name(&tc.name).to_string(),
                             arguments: tc.arguments.clone(),
                         })
                         .collect(),
@@ -1792,16 +1814,17 @@ mod tests {
             .unwrap();
         let events = parse_sse_events(&bytes);
 
-        assert_eq!(events.len(), 5);
+        assert_eq!(events.len(), 4);
         assert_eq!(events[0].0, "response.created");
         assert_eq!(events[1].0, "response.output_item.added");
-        assert_eq!(events[1].1["item"]["type"], "function_call");
-        assert_eq!(events[1].1["item"]["name"], "exec_command");
-        assert_eq!(events[2].0, "response.function_call_arguments.delta");
-        assert_eq!(events[3].0, "response.output_item.done");
-        assert_eq!(events[3].1["item"]["type"], "function_call");
-        assert_eq!(events[3].1["item"]["name"], "exec_command");
-        assert_eq!(events[4].0, "response.completed");
+        assert_eq!(events[1].1["item"]["type"], "custom_tool_call");
+        assert_eq!(events[1].1["item"]["name"], "apply_patch");
+        assert_eq!(events[1].1["item"]["input"], "");
+        assert_eq!(events[2].0, "response.output_item.done");
+        assert_eq!(events[2].1["item"]["type"], "custom_tool_call");
+        assert_eq!(events[2].1["item"]["name"], "apply_patch");
+        assert_eq!(events[2].1["item"]["input"], "diff...");
+        assert_eq!(events[3].0, "response.completed");
     }
 
     // --- Pure function tests ---
@@ -1835,9 +1858,11 @@ mod tests {
     #[test]
     fn test_response_tool_call_item_apply_patch() {
         let item = response_tool_call_item("p1", "apply_patch", r#"{"patch":"diff"}"#);
-        assert_eq!(item.item_type, "function_call");
-        assert_eq!(item.name.as_deref(), Some("exec_command"));
-        assert_eq!(item.arguments.as_deref(), Some(r#"{"patch":"diff"}"#));
+        assert_eq!(item.item_type, "custom_tool_call");
+        assert_eq!(item.item_id, "ctc_p1");
+        assert_eq!(item.name.as_deref(), Some("apply_patch"));
+        assert_eq!(item.arguments, None);
+        assert_eq!(item.input.as_deref(), Some("diff"));
     }
 
     #[test]
