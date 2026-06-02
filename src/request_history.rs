@@ -25,6 +25,7 @@ pub struct HistoryEntry {
     pub account_name: String,
     pub endpoint_kind: String,
     pub request_path: String,
+    pub route_trace: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +63,7 @@ pub struct HistoryRecord {
     pub account_name: String,
     pub endpoint_kind: String,
     pub request_path: String,
+    pub route_trace: String,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +75,7 @@ pub struct HistoryContext {
     pub request_path: String,
     pub provider: String,
     pub provider_profile: String,
+    pub route_trace: String,
 }
 
 impl Default for HistoryContext {
@@ -85,6 +88,7 @@ impl Default for HistoryContext {
             request_path: "/v1/responses".into(),
             provider: String::new(),
             provider_profile: String::new(),
+            route_trace: String::new(),
         }
     }
 }
@@ -122,6 +126,7 @@ impl HistoryContext {
             account_name: self.account_name.clone(),
             endpoint_kind: self.endpoint_kind.clone(),
             request_path: self.request_path.clone(),
+            route_trace: self.route_trace.clone(),
         }
     }
 }
@@ -158,6 +163,7 @@ impl HistoryRecord {
             account_name: String::new(),
             endpoint_kind: "openai_responses".into(),
             request_path: "/v1/responses".into(),
+            route_trace: String::new(),
         }
     }
 }
@@ -214,7 +220,8 @@ impl RequestHistoryStore {
                 account_id TEXT DEFAULT '',
                 account_name TEXT DEFAULT '',
                 endpoint_kind TEXT DEFAULT 'openai_responses',
-                request_path TEXT DEFAULT '/v1/responses'
+                request_path TEXT DEFAULT '/v1/responses',
+                route_trace TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_created_at ON request_history(created_at DESC);
             CREATE TABLE IF NOT EXISTS history_monthly_stats (
@@ -242,6 +249,7 @@ impl RequestHistoryStore {
             "ALTER TABLE request_history ADD COLUMN account_name TEXT DEFAULT '';",
             "ALTER TABLE request_history ADD COLUMN endpoint_kind TEXT DEFAULT 'openai_responses';",
             "ALTER TABLE request_history ADD COLUMN request_path TEXT DEFAULT '/v1/responses';",
+            "ALTER TABLE request_history ADD COLUMN route_trace TEXT DEFAULT '';",
         ] {
             let _ = conn.execute_batch(ddl);
         }
@@ -278,8 +286,8 @@ impl RequestHistoryStore {
         let db = self.db.lock().await;
         let _ = db.execute(
             "INSERT OR REPLACE INTO request_history
-             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit, client_kind, account_id, account_name, endpoint_kind, request_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+             (id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit, client_kind, account_id, account_name, endpoint_kind, request_path, route_trace)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 record.id,
                 record.created_at,
@@ -299,6 +307,7 @@ impl RequestHistoryStore {
                 record.account_name,
                 record.endpoint_kind,
                 record.request_path,
+                record.route_trace,
             ],
         );
         archive_previous_months(&db);
@@ -308,7 +317,7 @@ impl RequestHistoryStore {
     pub async fn list(&self, limit: usize, filter: &HistoryFilter) -> Vec<HistoryEntry> {
         let db = self.db.lock().await;
         let mut stmt = match db.prepare(
-            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit, client_kind, account_id, account_name, endpoint_kind, request_path
+            "SELECT id, created_at, model, status, input_tokens, output_tokens, total_tokens, duration_ms, upstream_url, provider, provider_profile, error_msg, cache_hit, client_kind, account_id, account_name, endpoint_kind, request_path, route_trace
              FROM request_history
              WHERE (?2 = '' OR client_kind = ?2)
                AND (?3 = '' OR account_id = ?3)
@@ -346,6 +355,7 @@ impl RequestHistoryStore {
                     account_name: row.get(15)?,
                     endpoint_kind: row.get(16)?,
                     request_path: row.get(17)?,
+                    route_trace: row.get(18)?,
                 })
             },
         );
@@ -596,6 +606,7 @@ mod tests {
             account_name: format!("账号 {account_id}"),
             endpoint_kind: "openai_chat".into(),
             request_path: "/v1/chat/completions".into(),
+            route_trace: String::new(),
         }
     }
 
@@ -645,8 +656,25 @@ mod tests {
         assert_eq!(entries[0].client_kind, "codex");
         assert_eq!(entries[0].endpoint_kind, "openai_responses");
         assert_eq!(entries[0].request_path, "/v1/responses");
+        assert!(entries[0].route_trace.is_empty());
         assert_eq!(entries[0].error_msg, "HTTP 429");
         assert!(entries[0].cache_hit);
+    }
+
+    #[tokio::test]
+    async fn records_route_trace() {
+        let store = RequestHistoryStore::new(Path::new(":memory:")).unwrap();
+        let mut item = record("router", now_secs(), "codex", "exec-a");
+        item.request_path = "/codex-router/v1/responses".into();
+        item.route_trace = r#"{"trace_version":1,"selected":{"account_id":"exec-a"}}"#.into();
+
+        store.record(item).await;
+
+        let entries = store.list(10, &HistoryFilter::default()).await;
+        assert_eq!(
+            entries[0].route_trace,
+            r#"{"trace_version":1,"selected":{"account_id":"exec-a"}}"#
+        );
     }
 
     #[tokio::test]

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::accounts::{
     account_routing_options, Account, AccountAuthMode, AccountClientKind, AccountClientSurface,
-    AccountRuntimeStatus, AccountStore, EndpointConfig, EndpointKind, GlueVisionStrategy,
-    UnsupportedImagePolicy, VisionMode,
+    AccountRoutingOptions, AccountRuntimeStatus, AccountStore, EndpointConfig, EndpointKind,
+    GlueVisionStrategy, UnsupportedImagePolicy, VisionMode,
 };
 use crate::anthropic;
 use crate::cache::RequestCache;
@@ -12,6 +12,7 @@ use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvo
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
 use crate::request_history::{HistoryContext, HistoryRecord};
+use crate::runtime_feedback::RuntimeFeedbackSink;
 use crate::session::SessionStore;
 use crate::token_anomaly::TokenTracker;
 use crate::types::*;
@@ -21,8 +22,8 @@ use crate::vision::{
     strip_images_from_chat_request, VlmArgs,
 };
 use crate::{
-    capability, dev_pipeline, files, prompts, providers, sse::SseState, stream, translate,
-    vector_stores,
+    capability, codex_config, dev_pipeline, files, prompts, providers, sse::SseState, stream,
+    translate, vector_stores,
 };
 use anyhow::{bail, Result};
 use axum::{
@@ -54,6 +55,10 @@ pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
+static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
+const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
+const DEX_ROUTER_NATIVE_OBSERVE_TURNS: u8 = 3;
+const DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS: u64 = 10 * 60;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -97,6 +102,8 @@ pub struct AppState {
     pub request_timeout_secs: Arc<tokio::sync::RwLock<Option<u64>>>,
     /// 请求历史持久化存储
     pub request_history: Arc<crate::request_history::RequestHistoryStore>,
+    /// DEX Router 会话级原生 Responses 轨道状态
+    pub codex_router_sessions: Arc<dashmap::DashMap<String, DexRouterSessionRouteState>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -120,6 +127,7 @@ struct BlockingArgs<'a> {
     response_extra: Value,
     req: &'a ResponsesRequest,
     history_context: HistoryContext,
+    runtime_feedback: RuntimeFeedbackSink,
     start: Instant,
 }
 
@@ -137,6 +145,7 @@ struct BypassArgs {
     model: String,
     requested_service_tier: Option<String>,
     history_context: HistoryContext,
+    runtime_feedback: RuntimeFeedbackSink,
 }
 
 struct CapabilityObservationResult {
@@ -161,6 +170,7 @@ struct AnthropicArgs<'a> {
     response_extra: Value,
     req: &'a ResponsesRequest,
     history_context: HistoryContext,
+    runtime_feedback: RuntimeFeedbackSink,
     start: Instant,
 }
 
@@ -177,6 +187,8 @@ struct UpstreamFailureArgs<'a> {
     message: String,
     status: StatusCode,
     history_context: HistoryContext,
+    runtime_feedback: RuntimeFeedbackSink,
+    retry_after_secs: Option<u64>,
 }
 
 struct DevPipelineResponseArgs<'a> {
@@ -196,7 +208,122 @@ enum AccountRouteSurface {
     Global,
     CodexCli,
     CodexDesktop,
+    CodexRouter,
     DexAssistant,
+}
+
+#[derive(Clone)]
+struct AccountRouteSelection {
+    account: Account,
+    endpoint: EndpointConfig,
+    route_trace: Option<String>,
+    requires_computer: bool,
+    explicit_model: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CodexRouterExternalAnchor {
+    account_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DexRouterSessionRouteState {
+    observe_remaining: u8,
+    expires_at: u64,
+    reason: String,
+}
+
+#[derive(Clone, Debug)]
+struct DexRouterSessionRouteDecision {
+    key: String,
+    state: &'static str,
+    reason: String,
+    observe_remaining: u8,
+    expires_at: Option<u64>,
+    force_native_responses: bool,
+}
+
+struct DexRouterCandidate {
+    account: Account,
+    endpoint: EndpointConfig,
+    priority: i64,
+    weight: u32,
+    mapped_model: String,
+    health: DexRouterHealth,
+}
+
+#[derive(Clone, Copy)]
+struct DexRouterHealth {
+    score: i64,
+    recent_success: u64,
+    recent_failed: u64,
+    failure_rate_percent: u64,
+}
+
+struct RouterAttemptFailure {
+    status: StatusCode,
+    code: String,
+    message: String,
+    body: Bytes,
+    parts: axum::http::response::Parts,
+}
+
+#[derive(Clone, Copy)]
+struct DexRouterTraceExclusion<'a> {
+    account_ids: &'a [String],
+    reason: &'static str,
+}
+
+impl<'a> DexRouterTraceExclusion<'a> {
+    fn none() -> Self {
+        Self {
+            account_ids: &[],
+            reason: "excluded",
+        }
+    }
+
+    fn new(account_ids: &'a [String], reason: &'static str) -> Self {
+        Self {
+            account_ids,
+            reason,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RouterToolRequirements {
+    tool_count: usize,
+    has_function_tools: bool,
+    has_web_search: bool,
+    has_file_search: bool,
+    has_mcp: bool,
+    has_computer: bool,
+    has_image_generation: bool,
+    requires_function_tools: bool,
+    requires_web_search: bool,
+    requires_file_search: bool,
+    requires_mcp: bool,
+    requires_computer: bool,
+    requires_image_generation: bool,
+    requires_unknown_tools: bool,
+    has_unknown_tools: bool,
+    labels: Vec<String>,
+}
+
+impl RouterToolRequirements {
+    fn has_tools(&self) -> bool {
+        self.tool_count > 0 || self.has_required_tools()
+    }
+
+    fn has_required_tools(&self) -> bool {
+        self.requires_function_tools
+            || self.requires_web_search
+            || self.requires_file_search
+            || self.requires_mcp
+            || self.requires_computer
+            || self.requires_image_generation
+            || self.requires_unknown_tools
+    }
 }
 
 impl AccountRouteSurface {
@@ -205,6 +332,7 @@ impl AccountRouteSurface {
             AccountRouteSurface::Global => None,
             AccountRouteSurface::CodexCli => Some(AccountClientSurface::Cli),
             AccountRouteSurface::CodexDesktop => Some(AccountClientSurface::Desktop),
+            AccountRouteSurface::CodexRouter => Some(AccountClientSurface::Desktop),
             AccountRouteSurface::DexAssistant => None,
         }
     }
@@ -214,9 +342,146 @@ impl AccountRouteSurface {
             AccountRouteSurface::Global => "/v1/responses",
             AccountRouteSurface::CodexCli => "/codex-cli/v1/responses",
             AccountRouteSurface::CodexDesktop => "/codex-desktop/v1/responses",
+            AccountRouteSurface::CodexRouter => "/codex-router/v1/responses",
             AccountRouteSurface::DexAssistant => "/dex-assistant/v1/responses",
         }
     }
+}
+
+fn is_sensitive_router_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "authorization"
+        || name == "cookie"
+        || name == "set-cookie"
+        || name == "x-api-key"
+        || name == "chatgpt-account-id"
+        || name == "session_id"
+        || name.contains("token")
+        || name.contains("secret")
+        || name.contains("credential")
+}
+
+fn truncate_router_header_value(value: &str) -> String {
+    let mut chars = value.chars();
+    let head: String = chars.by_ref().take(160).collect();
+    if chars.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
+fn masked_router_headers(headers: &HeaderMap) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, value) in headers {
+        let name = name.as_str();
+        let value = if is_sensitive_router_header(name) {
+            "<redacted>".to_string()
+        } else {
+            value
+                .to_str()
+                .map(truncate_router_header_value)
+                .unwrap_or_else(|_| "<non-utf8>".to_string())
+        };
+        out.insert(name.to_string(), Value::String(value));
+    }
+    Value::Object(out)
+}
+
+fn codex_router_external_anchor_from_headers(
+    headers: &HeaderMap,
+) -> Option<CodexRouterExternalAnchor> {
+    let account_id = headers
+        .get("chatgpt-account-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let has_bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .is_some_and(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.starts_with("bearer ") && value.len() > "bearer ".len()
+        });
+    (has_bearer || account_id.is_some()).then_some(CodexRouterExternalAnchor { account_id })
+}
+
+fn codex_router_pool_unavailable_response(
+    message: impl Into<String>,
+    code: &'static str,
+) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "configuration_error",
+                "code": code
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn effective_codex_router_anchor(store: &AccountStore) -> Option<&Account> {
+    store
+        .active_account_for_surface(&AccountClientSurface::Desktop)
+        .filter(|account| {
+            account_routing_options(account).effective_anchor_enabled_for_account(account)
+        })
+}
+
+fn codex_router_store_with_external_anchor(
+    mut store: AccountStore,
+    external_anchor: Option<&CodexRouterExternalAnchor>,
+) -> AccountStore {
+    if effective_codex_router_anchor(&store).is_some() || external_anchor.is_none() {
+        return store;
+    }
+
+    let external_anchor = external_anchor.expect("checked above");
+    let anchor_id = "__codex_desktop_login_anchor__";
+    let display_suffix = external_anchor
+        .account_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!(" · {id}"))
+        .unwrap_or_default();
+    let mut account: Account = serde_json::from_value(json!({
+        "id": anchor_id,
+        "name": format!("Codex Desktop 登录态{}", display_suffix),
+        "provider": "codex",
+        "client_kind": "codex",
+        "client_surface": "desktop",
+        "upstream": CODEX_OFFICIAL_BASE_URL,
+        "api_key": "",
+        "auth_mode": "oauth",
+        "endpoints": []
+    }))
+    .expect("synthetic external Codex anchor should deserialize");
+    crate::accounts::set_account_routing_options(
+        &mut account,
+        AccountRoutingOptions {
+            enabled: true,
+            anchor_enabled: Some(true),
+            execution_enabled: Some(false),
+            pool: "codex-official".into(),
+            disabled: false,
+            ..Default::default()
+        },
+    );
+
+    store.accounts.retain(|account| account.id != anchor_id);
+    store.accounts.push(account);
+    store.set_active_for_surface(
+        &AccountClientKind::Codex,
+        &AccountClientSurface::Desktop,
+        anchor_id.to_string(),
+        None,
+    );
+    store
 }
 
 fn infer_account_route_surface(headers: &HeaderMap) -> AccountRouteSurface {
@@ -268,6 +533,68 @@ async fn active_account_endpoint(state: &AppState) -> (Account, EndpointConfig) 
     (account, endpoint)
 }
 
+async fn refresh_account_store_from_disk(state: &AppState) {
+    let store = match crate::accounts::load_accounts_checked(state.data_dir.as_ref()) {
+        Ok(store) => store,
+        Err(err) => {
+            warn!("刷新运行态账号库失败，继续使用内存账号库: {err:#}");
+            return;
+        }
+    };
+    if !store
+        .accounts
+        .iter()
+        .any(|account| account.client_kind.is_codex())
+    {
+        return;
+    }
+
+    let mut active_account = store.active_account().cloned();
+    let active_endpoint = active_account.as_ref().and_then(|account| {
+        account
+            .active_endpoint(store.active_endpoint_id.as_deref())
+            .or_else(|| account.endpoints.first())
+            .cloned()
+    });
+    if let (Some(account), Some(endpoint)) = (active_account.as_mut(), active_endpoint.as_ref()) {
+        account.sync_legacy_from_endpoint(endpoint);
+    }
+
+    *state.account_store.write().await = store;
+    if let Some(account) = active_account {
+        *state.active_account.write().await = account.clone();
+        *state.api_key.write().await = account.api_key.clone();
+    }
+    if let Some(endpoint) = active_endpoint {
+        if let Ok(upstream) = validate_upstream(&endpoint.base_url) {
+            *state.upstream.write().await = upstream;
+        }
+        *state.model_map.write().await = endpoint.model_map.clone();
+        *state.vision_upstream.write().await = if endpoint.vision.base_url.trim().is_empty() {
+            None
+        } else {
+            match validate_upstream(&endpoint.vision.base_url) {
+                Ok(url) => Some(url),
+                Err(err) => {
+                    warn!("刷新账号视觉上游失败，忽略视觉上游: {err}");
+                    None
+                }
+            }
+        };
+        *state.vision_api_key.write().await = endpoint.vision.api_key.clone();
+        if !endpoint.vision.model.trim().is_empty() {
+            *state.vision_model.write().await = endpoint.vision.model.clone();
+        }
+        if !endpoint.vision.path.trim().is_empty() {
+            *state.vision_endpoint.write().await = endpoint.vision.path.clone();
+        }
+        *state.reasoning_effort_override.write().await = endpoint.reasoning_effort_override.clone();
+        *state.thinking_tokens.write().await = endpoint.thinking_tokens;
+        *state.custom_headers.write().await = endpoint.custom_headers.clone();
+        *state.request_timeout_secs.write().await = endpoint.request_timeout_secs;
+    }
+}
+
 async fn active_account_endpoint_without_hot_overrides(
     state: &AppState,
 ) -> (Account, EndpointConfig) {
@@ -282,6 +609,7 @@ async fn active_account_endpoint_without_hot_overrides(
 async fn active_account_endpoint_for_route(
     state: &AppState,
     route_surface: AccountRouteSurface,
+    requested_model: Option<&str>,
 ) -> (Account, EndpointConfig) {
     if route_surface == AccountRouteSurface::DexAssistant {
         let store = state.account_store.read().await;
@@ -295,6 +623,31 @@ async fn active_account_endpoint_for_route(
 
         warn!("未找到 DEX 助手对应的活跃账号，回退到全局活跃账号");
         return active_account_endpoint(state).await;
+    }
+
+    if route_surface == AccountRouteSurface::CodexRouter {
+        let store = state.account_store.read().await.clone();
+        let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+        if let Some((account, endpoint)) = select_dex_router_account_endpoint(
+            &store,
+            requested_model.unwrap_or(""),
+            crate::accounts::now_secs(),
+            cursor,
+            None,
+        ) {
+            tracing::info!(
+                account_id = %account.id,
+                account_name = %account.name,
+                endpoint_id = %endpoint.id,
+                endpoint_kind = ?endpoint.kind,
+                requested_model = %requested_model.unwrap_or(""),
+                "DEX Router 已选择执行账号"
+            );
+            return (account, endpoint);
+        }
+        drop(store);
+
+        warn!("DEX Router 未找到可用执行账号，回退到 Codex 桌面版活跃账号");
     }
 
     let Some(surface) = route_surface.explicit_surface() else {
@@ -315,6 +668,302 @@ async fn active_account_endpoint_for_route(
         surface
     );
     active_account_endpoint(state).await
+}
+
+async fn resolve_account_endpoint_for_response(
+    state: &AppState,
+    route_surface: AccountRouteSurface,
+    requested_model: &str,
+    tool_requirements: Option<&RouterToolRequirements>,
+    external_anchor: Option<&CodexRouterExternalAnchor>,
+) -> Result<AccountRouteSelection, Response> {
+    refresh_account_store_from_disk(state).await;
+
+    if codex_config::decode_dex_account_model_slug(requested_model).is_some() {
+        let store = state.account_store.read().await.clone();
+        let store = if route_surface == AccountRouteSurface::CodexRouter {
+            codex_router_store_with_external_anchor(store, external_anchor)
+        } else {
+            store
+        };
+        if let Some(selection) =
+            resolve_explicit_dex_account_model_selection(&store, requested_model, tool_requirements)
+                .map_err(|response| *response)?
+        {
+            return Ok(selection);
+        }
+    }
+
+    if route_surface != AccountRouteSurface::CodexRouter {
+        let (account, endpoint) =
+            active_account_endpoint_for_route(state, route_surface, Some(requested_model)).await;
+        return Ok(AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: None,
+            requires_computer: false,
+            explicit_model: None,
+        });
+    }
+
+    let store = state.account_store.read().await.clone();
+    let store = codex_router_store_with_external_anchor(store, external_anchor);
+    let Some(anchor) = store.active_account_for_surface(&AccountClientSurface::Desktop) else {
+        return Err(codex_router_pool_unavailable_response(
+            "DEX Router 未配置 Codex 桌面版锚点账号，请先在账号管理中为 Codex 桌面版选择一个账号",
+            "dex_router_missing_desktop_anchor",
+        ));
+    };
+    let anchor_routing = account_routing_options(anchor);
+    if !anchor_routing.effective_anchor_enabled_for_account(anchor) {
+        return Err(codex_router_pool_unavailable_response(
+            "DEX Router 的 Codex 桌面版锚点账号已关闭登录态锚定，请在账号管理中重新开启",
+            "dex_router_anchor_disabled",
+        ));
+    }
+    let anchor_pool = anchor_routing.pool;
+    let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let now = crate::accounts::now_secs();
+    let (selection, route_trace) =
+        dex_router_trace_for_selection(&store, requested_model, now, cursor, tool_requirements);
+    match selection {
+        Some((account, endpoint)) => Ok(AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: Some(route_trace),
+            requires_computer: tool_requirements.is_some_and(|requirements| {
+                requirements.requires_computer
+            }),
+            explicit_model: None,
+        }),
+        None => Err(codex_router_pool_unavailable_response(
+            format!(
+                "DEX Router 在账号池「{}」中没有找到可用于模型 {} 的执行账号：请检查账号池启用状态、模型映射和冷却状态",
+                anchor_pool, requested_model
+            ),
+            "dex_router_pool_unavailable",
+        )),
+    }
+}
+
+fn resolve_explicit_dex_account_model_selection(
+    store: &AccountStore,
+    requested_model: &str,
+    tool_requirements: Option<&RouterToolRequirements>,
+) -> Result<Option<AccountRouteSelection>, Box<Response>> {
+    let Some(model_ref) = codex_config::decode_dex_account_model_slug(requested_model) else {
+        return Ok(None);
+    };
+    let Some(account) = store.accounts.iter().find(|account| {
+        account.id == model_ref.account_id
+            && account.client_kind.is_codex()
+            && account.client_surface == AccountClientSurface::Desktop
+    }) else {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            "DEX Router 直选账号不存在或不是 Codex 桌面版账号，请重新同步账号模型目录",
+            "dex_router_explicit_account_missing",
+        )));
+    };
+    let Some(endpoint) = account
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == model_ref.endpoint_id)
+        .cloned()
+    else {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            "DEX Router 直选端点不存在，请重新同步账号模型目录",
+            "dex_router_explicit_endpoint_missing",
+        )));
+    };
+    let now = crate::accounts::now_secs();
+    let upstream_model = model_ref.model.clone();
+    if tool_requirements.is_some_and(|requirements| requirements.requires_computer)
+        && !endpoint_is_native_router_executor(&endpoint)
+    {
+        return resolve_explicit_chat_model_native_helper_selection(
+            store,
+            account,
+            &endpoint,
+            &model_ref.model,
+            tool_requirements,
+            now,
+            requested_model,
+        )
+        .map(Some)
+        .map_err(Box::new);
+    }
+    if let Some(block) = account_runtime_block(account, &upstream_model, now) {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            format!(
+                "已选择「{} / {}」，但该模型当前不可用：{}",
+                account.name, upstream_model, block.reason
+            ),
+            "dex_router_explicit_model_runtime_blocked",
+        )));
+    }
+    let mut account = account.clone();
+    account.sync_legacy_from_endpoint(&endpoint);
+    let trace = json!({
+        "requested_model": requested_model,
+        "explicit_model_selection": true,
+        "selected_account_id": account.id,
+        "selected_account_name": account.name,
+        "selected_endpoint_id": endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&endpoint.kind),
+        "selected_model": model_ref.model,
+        "upstream_model": upstream_model,
+    });
+    Ok(Some(AccountRouteSelection {
+        account,
+        endpoint,
+        route_trace: serde_json::to_string(&trace).ok(),
+        requires_computer: tool_requirements
+            .is_some_and(|requirements| requirements.requires_computer),
+        explicit_model: Some(model_ref.model),
+    }))
+}
+
+fn explicit_native_helper_model(selected_model: &str) -> String {
+    if codex_router_native_direct_model(selected_model) {
+        selected_model.to_string()
+    } else {
+        "gpt-5.5".into()
+    }
+}
+
+fn resolve_explicit_chat_model_native_helper_selection(
+    store: &AccountStore,
+    main_account: &Account,
+    main_endpoint: &EndpointConfig,
+    selected_model: &str,
+    tool_requirements: Option<&RouterToolRequirements>,
+    now: u64,
+    requested_model: &str,
+) -> Result<AccountRouteSelection, Response> {
+    let helper_model = explicit_native_helper_model(selected_model);
+    let routing = account_routing_options(main_account);
+    let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let Some((mut helper_account, helper_endpoint)) = select_dex_router_native_executor_in_pool(
+        store,
+        &routing.pool,
+        &helper_model,
+        now,
+        cursor,
+        tool_requirements,
+        Some(main_account.id.as_str()),
+    ) else {
+        return Err(codex_router_pool_unavailable_response(
+            format!(
+                "已选择「{} / {}」作为主账号模型，但账号池「{}」中没有可接管 Computer Use 的 GPT/Responses 原生账号",
+                main_account.name, selected_model, routing.pool
+            ),
+            "dex_router_explicit_model_native_helper_unavailable",
+        ));
+    };
+    helper_account.sync_legacy_from_endpoint(&helper_endpoint);
+    let trace = json!({
+        "requested_model": requested_model,
+        "explicit_model_selection": true,
+        "native_helper_reroute": true,
+        "main_account_id": main_account.id,
+        "main_account_name": main_account.name,
+        "main_endpoint_id": main_endpoint.id,
+        "main_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
+        "main_selected_model": selected_model,
+        "selected_account_id": helper_account.id,
+        "selected_account_name": helper_account.name,
+        "selected_endpoint_id": helper_endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&helper_endpoint.kind),
+        "upstream_model": helper_model,
+    });
+    Ok(AccountRouteSelection {
+        account: helper_account,
+        endpoint: helper_endpoint,
+        route_trace: serde_json::to_string(&trace).ok(),
+        requires_computer: true,
+        explicit_model: Some(helper_model),
+    })
+}
+
+fn select_dex_router_native_executor_in_pool(
+    store: &AccountStore,
+    pool: &str,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    tool_requirements: Option<&RouterToolRequirements>,
+    excluded_account_id: Option<&str>,
+) -> Option<(Account, EndpointConfig)> {
+    let mut candidates: Vec<DexRouterCandidate> = store
+        .accounts
+        .iter()
+        .filter(|account| account.client_kind.is_codex())
+        .filter(|account| account.client_surface == AccountClientSurface::Desktop)
+        .filter(|account| excluded_account_id != Some(account.id.as_str()))
+        .filter_map(|account| {
+            let routing = account_routing_options(account);
+            if !routing.effective_execution_enabled_for_account(account) || routing.pool != pool {
+                return None;
+            }
+            let endpoint = router_endpoint_for_account(store, account, requested_model)?;
+            if !endpoint_is_native_router_executor(&endpoint) {
+                return None;
+            }
+            let mapped_model = resolve_model(requested_model, &endpoint.model_map);
+            if !account_runtime_ready(account, &mapped_model, now) {
+                return None;
+            }
+            let capabilities = dex_router_capability_summary(account, &endpoint, &mapped_model);
+            if !dex_router_capability_gaps(&capabilities, tool_requirements).is_empty() {
+                return None;
+            }
+            let mut account = account.clone();
+            account.sync_legacy_from_endpoint(&endpoint);
+            Some(DexRouterCandidate {
+                health: dex_router_health(&account, now),
+                account,
+                endpoint,
+                priority: routing.priority,
+                weight: routing.weight,
+                mapped_model,
+            })
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        right.priority.cmp(&left.priority).then_with(|| {
+            right
+                .health
+                .score
+                .cmp(&left.health.score)
+                .then_with(|| left.account.id.cmp(&right.account.id))
+                .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
+        })
+    });
+    let best_priority = candidates.first().map(|candidate| candidate.priority)?;
+    let best_health = candidates.first().map(|candidate| candidate.health.score)?;
+    let top: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.priority == best_priority && candidate.health.score == best_health
+        })
+        .collect();
+    let total_weight: u64 = top
+        .iter()
+        .map(|candidate| u64::from(candidate.weight.max(1)))
+        .sum();
+    if total_weight == 0 {
+        return None;
+    }
+    let mut slot = cursor % total_weight;
+    for candidate in top {
+        let weight = u64::from(candidate.weight.max(1));
+        if slot < weight {
+            return Some((candidate.account, candidate.endpoint));
+        }
+        slot = slot.saturating_sub(weight);
+    }
+    None
 }
 
 fn account_endpoint_or_fallback(
@@ -356,6 +1005,472 @@ fn account_endpoint_or_fallback(
         });
     account.sync_legacy_from_endpoint(&endpoint);
     (account, endpoint)
+}
+
+fn select_dex_router_account_endpoint(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    tool_requirements: Option<&RouterToolRequirements>,
+) -> Option<(Account, EndpointConfig)> {
+    select_dex_router_account_endpoint_excluding(
+        store,
+        requested_model,
+        now,
+        cursor,
+        tool_requirements,
+        &[],
+    )
+}
+
+fn select_dex_router_account_endpoint_excluding(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    tool_requirements: Option<&RouterToolRequirements>,
+    excluded_account_ids: &[String],
+) -> Option<(Account, EndpointConfig)> {
+    let anchor = store.active_account_for_surface(&AccountClientSurface::Desktop)?;
+    let anchor_routing = account_routing_options(anchor);
+    if !anchor_routing.effective_anchor_enabled_for_account(anchor) {
+        return None;
+    }
+    let anchor_pool = anchor_routing.pool;
+    let native_direct_model = codex_router_native_direct_model(requested_model);
+    let mut candidates: Vec<DexRouterCandidate> = store
+        .accounts
+        .iter()
+        .filter(|account| account.client_kind.is_codex())
+        .filter(|account| account.client_surface == AccountClientSurface::Desktop)
+        .filter(|account| !excluded_account_ids.iter().any(|id| id == &account.id))
+        .filter_map(|account| {
+            let routing = account_routing_options(account);
+            if !routing.effective_execution_enabled_for_account(account)
+                || routing.pool != anchor_pool
+            {
+                return None;
+            }
+            let endpoint = router_endpoint_for_account(store, account, requested_model)?;
+            if native_direct_model && !endpoint_is_native_router_executor(&endpoint) {
+                return None;
+            }
+            let mapped_model = resolve_model(requested_model, &endpoint.model_map);
+            if !account_runtime_ready(account, &mapped_model, now) {
+                return None;
+            }
+            let capabilities = dex_router_capability_summary(account, &endpoint, &mapped_model);
+            if !dex_router_capability_gaps(&capabilities, tool_requirements).is_empty() {
+                return None;
+            }
+            let mut account = account.clone();
+            account.sync_legacy_from_endpoint(&endpoint);
+            Some(DexRouterCandidate {
+                health: dex_router_health(&account, now),
+                account,
+                endpoint,
+                priority: routing.priority,
+                weight: routing.weight,
+                mapped_model,
+            })
+        })
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        right.priority.cmp(&left.priority).then_with(|| {
+            right
+                .health
+                .score
+                .cmp(&left.health.score)
+                .then_with(|| left.account.id.cmp(&right.account.id))
+                .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
+        })
+    });
+    let best_priority = candidates.first().map(|candidate| candidate.priority)?;
+    let best_health = candidates.first().map(|candidate| candidate.health.score)?;
+    let top: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.priority == best_priority && candidate.health.score == best_health
+        })
+        .collect();
+    let total_weight: u64 = top
+        .iter()
+        .map(|candidate| u64::from(candidate.weight.max(1)))
+        .sum();
+    if total_weight == 0 {
+        return None;
+    }
+    let mut slot = cursor % total_weight;
+    for candidate in top {
+        let weight = u64::from(candidate.weight.max(1));
+        if slot < weight {
+            tracing::info!(
+                account_id = %candidate.account.id,
+                account_name = %candidate.account.name,
+                endpoint_id = %candidate.endpoint.id,
+                endpoint_kind = ?candidate.endpoint.kind,
+                requested_model = %requested_model,
+                mapped_model = %candidate.mapped_model,
+                priority = candidate.priority,
+                health_score = candidate.health.score,
+                "DEX Router 命中账号池候选"
+            );
+            return Some((candidate.account, candidate.endpoint));
+        }
+        slot = slot.saturating_sub(weight);
+    }
+    None
+}
+
+#[allow(dead_code)]
+pub fn dex_router_status_snapshot(store: &AccountStore, requested_model: &str, now: u64) -> Value {
+    let selected = select_dex_router_account_endpoint(store, requested_model, now, 0, None);
+    dex_router_snapshot_value(
+        store,
+        requested_model,
+        now,
+        0,
+        selected.as_ref(),
+        None,
+        DexRouterTraceExclusion::none(),
+    )
+}
+
+pub fn dex_router_status_snapshot_for_tools(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    tools: &[Value],
+) -> Value {
+    let requirements = router_tool_requirements_for_diagnostic_tools(tools);
+    let requirements = requirements.has_tools().then_some(requirements);
+    let requirements_ref = requirements.as_ref();
+    let selected =
+        select_dex_router_account_endpoint(store, requested_model, now, 0, requirements_ref);
+    dex_router_snapshot_value(
+        store,
+        requested_model,
+        now,
+        0,
+        selected.as_ref(),
+        requirements_ref,
+        DexRouterTraceExclusion::none(),
+    )
+}
+
+pub fn dex_router_status_scenarios(store: &AccountStore, requested_model: &str, now: u64) -> Value {
+    let scenarios: [(&str, &str, Vec<Value>); 5] = [
+        ("text", "文本", Vec::new()),
+        ("web", "Web", vec![json!({"type": "web_search_preview"})]),
+        ("file", "文件", vec![json!({"type": "file_search"})]),
+        (
+            "mcp",
+            "MCP",
+            vec![json!({"type": "remote_mcp", "server_label": "diagnostic"})],
+        ),
+        (
+            "native",
+            "图片/电脑",
+            vec![
+                json!({"type": "image_generation"}),
+                json!({"type": "computer_use_preview"}),
+            ],
+        ),
+    ];
+    let values = scenarios
+        .into_iter()
+        .map(|(id, label, tools)| {
+            let mut snapshot =
+                dex_router_status_snapshot_for_tools(store, requested_model, now, &tools);
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("scenario_id".into(), json!(id));
+                obj.insert("scenario_label".into(), json!(label));
+            }
+            snapshot
+        })
+        .collect::<Vec<_>>();
+    json!(values)
+}
+
+fn dex_router_trace_for_selection(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    tool_requirements: Option<&RouterToolRequirements>,
+) -> (Option<(Account, EndpointConfig)>, String) {
+    dex_router_trace_for_selection_excluding(
+        store,
+        requested_model,
+        now,
+        cursor,
+        tool_requirements,
+        &[],
+        "excluded",
+    )
+}
+
+fn dex_router_trace_for_selection_excluding(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    tool_requirements: Option<&RouterToolRequirements>,
+    excluded_account_ids: &[String],
+    excluded_reason: &'static str,
+) -> (Option<(Account, EndpointConfig)>, String) {
+    let selected = select_dex_router_account_endpoint_excluding(
+        store,
+        requested_model,
+        now,
+        cursor,
+        tool_requirements,
+        excluded_account_ids,
+    );
+    let snapshot = dex_router_snapshot_value(
+        store,
+        requested_model,
+        now,
+        cursor,
+        selected.as_ref(),
+        tool_requirements,
+        DexRouterTraceExclusion::new(excluded_account_ids, excluded_reason),
+    );
+    let trace = serde_json::to_string(&snapshot).unwrap_or_default();
+    (selected, trace)
+}
+
+fn dex_router_snapshot_value(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    selected: Option<&(Account, EndpointConfig)>,
+    tool_requirements: Option<&RouterToolRequirements>,
+    exclusion: DexRouterTraceExclusion<'_>,
+) -> Value {
+    let anchor = store.active_account_for_surface(&AccountClientSurface::Desktop);
+    let anchor_routing = anchor.map(account_routing_options);
+    let anchor_disabled = anchor
+        .zip(anchor_routing.as_ref())
+        .is_some_and(|(account, routing)| !routing.effective_anchor_enabled_for_account(account));
+    let anchor_pool = anchor
+        .zip(anchor_routing.as_ref())
+        .and_then(|(account, routing)| {
+            routing
+                .effective_anchor_enabled_for_account(account)
+                .then(|| routing.pool.clone())
+        });
+    let native_direct_model = codex_router_native_direct_model(requested_model);
+    let candidates: Vec<Value> = store
+        .accounts
+        .iter()
+        .filter(|account| account.client_kind.is_codex())
+        .filter(|account| account.client_surface == AccountClientSurface::Desktop)
+        .map(|account| {
+            let routing = account_routing_options(account);
+            let endpoint = router_endpoint_for_account(store, account, requested_model);
+            let mapped_model = endpoint
+                .as_ref()
+                .map(|endpoint| resolve_model(requested_model, &endpoint.model_map))
+                .unwrap_or_else(|| requested_model.to_string());
+            let runtime_block = account_runtime_block(account, &mapped_model, now);
+            let capabilities = endpoint
+                .as_ref()
+                .map(|endpoint| dex_router_capability_summary(account, endpoint, &mapped_model));
+            let capability_gaps =
+                dex_router_capability_gaps_value(capabilities.as_ref(), tool_requirements);
+            let native_direct_blocked = endpoint.as_ref().is_some_and(|endpoint| {
+                native_direct_model && !endpoint_is_native_router_executor(endpoint)
+            });
+            let reason = if anchor.is_none() {
+                "no_anchor"
+            } else if anchor_disabled {
+                "anchor_disabled"
+            } else if !routing.effective_enabled() {
+                "routing_disabled"
+            } else if !routing.effective_execution_enabled_for_account(account) {
+                "execution_disabled"
+            } else if Some(routing.pool.as_str()) != anchor_pool.as_deref() {
+                "pool_mismatch"
+            } else if exclusion.account_ids.iter().any(|id| id == &account.id) {
+                exclusion.reason
+            } else if endpoint.is_none() {
+                "no_supported_endpoint"
+            } else if native_direct_blocked {
+                "native_direct_requires_gpt_account"
+            } else if let Some(block) = runtime_block.as_ref() {
+                block.reason
+            } else if capability_gaps
+                .as_array()
+                .is_some_and(|gaps| !gaps.is_empty())
+            {
+                "capability_mismatch"
+            } else {
+                "ready"
+            };
+            let model_state = account.runtime_state.model_states.get(&mapped_model);
+            let health = dex_router_health(account, now);
+            let stream_preflight_risk = if reason == "ready" {
+                endpoint
+                    .as_ref()
+                    .and_then(|_| dex_router_stream_preflight_risk(account, &mapped_model, health, now))
+            } else {
+                None
+            };
+            json!({
+                "account_id": account.id,
+                "account_name": account.name,
+                "provider": account.provider,
+                "pool": routing.pool,
+                "priority": routing.priority,
+                "weight": routing.weight,
+                "route_score": routing.priority.saturating_mul(1000).saturating_add(health.score),
+                "health_score": health.score,
+                "recent_success": health.recent_success,
+                "recent_failed": health.recent_failed,
+                "failure_rate_percent": health.failure_rate_percent,
+                "stream_preflight_risk": stream_preflight_risk,
+                "routing_enabled": routing.effective_enabled(),
+                "anchor_enabled": routing.effective_anchor_enabled_for_account(account),
+                "execution_enabled": routing.effective_execution_enabled_for_account(account),
+                "endpoint_id": endpoint.as_ref().map(|endpoint| endpoint.id.clone()),
+                "endpoint_name": endpoint.as_ref().map(|endpoint| endpoint.name.clone()),
+                "endpoint_kind": endpoint.as_ref().map(|endpoint| endpoint.kind.label()),
+                "mapped_model": mapped_model,
+                "capabilities": capabilities,
+                "capability_gaps": capability_gaps,
+                "eligible": reason == "ready",
+                "reason": reason,
+                "runtime_status": account.runtime_state.status,
+                "runtime_message": account.runtime_state.status_message,
+                "runtime_next_retry_after": account.runtime_state.next_retry_after,
+                "runtime_quota_exceeded": account.runtime_state.quota.exceeded,
+                "model_runtime_status": model_state.map(|state| state.status.clone()),
+                "model_runtime_message": model_state.map(|state| state.status_message.clone()),
+                "model_runtime_next_retry_after": model_state.and_then(|state| state.next_retry_after),
+                "model_runtime_quota_exceeded": model_state.is_some_and(|state| state.quota.exceeded),
+            })
+        })
+        .collect();
+    let eligible_count = candidates
+        .iter()
+        .filter(|candidate| candidate["eligible"].as_bool().unwrap_or(false))
+        .count();
+    let stream_preflight = dex_router_stream_preflight_snapshot(
+        store,
+        requested_model,
+        now,
+        cursor,
+        selected,
+        tool_requirements,
+    );
+    let selected = selected.map(|(account, endpoint)| {
+        let candidate = candidates.iter().find(|candidate| {
+            candidate["account_id"].as_str() == Some(account.id.as_str())
+                && candidate["endpoint_id"].as_str() == Some(endpoint.id.as_str())
+        });
+        json!({
+            "account_id": account.id,
+            "account_name": account.name,
+            "endpoint_id": endpoint.id,
+            "endpoint_name": endpoint.name,
+            "endpoint_kind": endpoint.kind.label(),
+            "mapped_model": resolve_model(requested_model, &endpoint.model_map),
+            "priority": candidate.and_then(|candidate| candidate.get("priority")).cloned(),
+            "weight": candidate.and_then(|candidate| candidate.get("weight")).cloned(),
+            "route_score": candidate.and_then(|candidate| candidate.get("route_score")).cloned(),
+            "health_score": candidate.and_then(|candidate| candidate.get("health_score")).cloned(),
+            "recent_success": candidate.and_then(|candidate| candidate.get("recent_success")).cloned(),
+            "recent_failed": candidate.and_then(|candidate| candidate.get("recent_failed")).cloned(),
+            "failure_rate_percent": candidate.and_then(|candidate| candidate.get("failure_rate_percent")).cloned(),
+            "stream_preflight_risk": candidate.and_then(|candidate| candidate.get("stream_preflight_risk")).cloned(),
+            "capabilities": candidate.and_then(|candidate| candidate.get("capabilities")).cloned(),
+            "tool_decisions": candidate
+                .and_then(|candidate| candidate.get("capabilities"))
+                .map(|capabilities| dex_router_tool_decisions(capabilities, tool_requirements)),
+        })
+    });
+    let selected_tool_decisions = selected
+        .as_ref()
+        .and_then(|selected| selected.get("tool_decisions").cloned());
+
+    json!({
+        "trace_version": 1,
+        "route_surface": "codex_router",
+        "requested_model": requested_model,
+        "cursor": cursor,
+        "tool_requirements": router_tool_requirements_value(tool_requirements),
+        "tool_decisions": selected_tool_decisions,
+        "stream_preflight": stream_preflight,
+        "anchor": anchor.map(|account| {
+            let routing = account_routing_options(account);
+            json!({
+                "account_id": account.id,
+                "account_name": account.name,
+                "pool": routing.pool,
+                "anchor_enabled": routing.effective_anchor_enabled_for_account(account),
+                "execution_enabled": routing.effective_execution_enabled_for_account(account),
+            })
+        }),
+        "selected": selected,
+        "candidate_count": candidates.len(),
+        "eligible_count": eligible_count,
+        "skipped_count": candidates.len().saturating_sub(eligible_count),
+        "candidates": candidates,
+    })
+}
+
+fn router_endpoint_for_account(
+    store: &AccountStore,
+    account: &Account,
+    requested_model: &str,
+) -> Option<EndpointConfig> {
+    let active_endpoint_id = store
+        .active_endpoint_id_for_surface(&AccountClientKind::Codex, &AccountClientSurface::Desktop)
+        .filter(|_| {
+            store
+                .active_account_for_surface(&AccountClientSurface::Desktop)
+                .is_some_and(|active| active.id == account.id)
+        });
+    account
+        .active_endpoint(active_endpoint_id)
+        .filter(|endpoint| endpoint_supports_router_model(endpoint, requested_model))
+        .cloned()
+        .or_else(|| {
+            account
+                .endpoints
+                .iter()
+                .find(|endpoint| {
+                    Some(endpoint.id.as_str()) != active_endpoint_id
+                        && endpoint_supports_router_model(endpoint, requested_model)
+                })
+                .cloned()
+        })
+}
+
+fn endpoint_supports_router_model(endpoint: &EndpointConfig, requested_model: &str) -> bool {
+    match endpoint.kind {
+        EndpointKind::OpenAiChat | EndpointKind::CustomChat | EndpointKind::AnthropicMessages => {
+            !requested_model.trim().is_empty() && endpoint.model_map.contains_key(requested_model)
+        }
+        EndpointKind::OpenAiResponses
+        | EndpointKind::CustomResponses
+        | EndpointKind::CodexOfficial => true,
+    }
+}
+
+fn endpoint_is_native_router_executor(endpoint: &EndpointConfig) -> bool {
+    endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial
+}
+
+fn codex_router_native_direct_model(requested_model: &str) -> bool {
+    matches!(
+        requested_model.trim(),
+        "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini"
+    )
 }
 
 async fn codex_official_account_endpoint(
@@ -527,18 +1642,836 @@ fn official_endpoint_for_account(
 }
 
 fn account_runtime_ready(account: &Account, mapped_model: &str, now: u64) -> bool {
-    runtime_retry_ready(account.runtime_state.next_retry_after, now)
-        && account
-            .runtime_state
-            .model_states
-            .get(mapped_model)
-            .is_none_or(|state| {
-                runtime_retry_ready(state.next_retry_after, now)
-                    || !matches!(
-                        state.status,
-                        AccountRuntimeStatus::CoolingDown | AccountRuntimeStatus::QuotaExceeded
-                    )
+    account_runtime_block(account, mapped_model, now).is_none()
+}
+
+fn dex_router_health(account: &Account, now: u64) -> DexRouterHealth {
+    let since = now.saturating_sub(60 * 60);
+    let mut recent_success = 0_u64;
+    let mut recent_failed = 0_u64;
+    for bucket in &account.runtime_state.recent_requests {
+        if bucket.bucket_start.saturating_add(600) < since {
+            continue;
+        }
+        recent_success = recent_success.saturating_add(bucket.success);
+        recent_failed = recent_failed.saturating_add(bucket.failed);
+    }
+
+    let total = recent_success.saturating_add(recent_failed);
+    if total == 0 {
+        return DexRouterHealth {
+            score: 80,
+            recent_success,
+            recent_failed,
+            failure_rate_percent: 0,
+        };
+    }
+
+    let failure_rate_percent = recent_failed.saturating_mul(100) / total.max(1);
+    let success_rate = recent_success.saturating_mul(100) / total.max(1);
+    let repeated_failure_penalty = recent_failed.saturating_mul(5).min(30);
+    let score = success_rate
+        .saturating_sub(repeated_failure_penalty)
+        .min(100) as i64;
+    DexRouterHealth {
+        score,
+        recent_success,
+        recent_failed,
+        failure_rate_percent,
+    }
+}
+
+fn dex_router_stream_preflight_risk(
+    account: &Account,
+    mapped_model: &str,
+    health: DexRouterHealth,
+    now: u64,
+) -> Option<&'static str> {
+    if health.recent_failed >= 2 && health.failure_rate_percent >= 50 {
+        return Some("recent_failure_rate");
+    }
+    if health.recent_failed >= 3 && health.score <= 40 {
+        return Some("low_health_score");
+    }
+    if account.runtime_state.status == AccountRuntimeStatus::Error
+        && health.recent_failed >= 2
+        && health.recent_success == 0
+    {
+        return Some("recent_account_error");
+    }
+    account
+        .runtime_state
+        .model_states
+        .get(mapped_model)
+        .and_then(|state| {
+            let recent_error = state.updated_at.saturating_add(10 * 60) >= now;
+            (state.status == AccountRuntimeStatus::Error && recent_error)
+                .then_some("recent_model_error")
+        })
+}
+
+fn dex_router_stream_preflight_snapshot(
+    store: &AccountStore,
+    requested_model: &str,
+    now: u64,
+    cursor: u64,
+    selected: Option<&(Account, EndpointConfig)>,
+    tool_requirements: Option<&RouterToolRequirements>,
+) -> Option<Value> {
+    let (account, endpoint) = selected?;
+    let mapped_model = resolve_model(requested_model, &endpoint.model_map);
+    let health = dex_router_health(account, now);
+    let reason = dex_router_stream_preflight_risk(account, &mapped_model, health, now)?;
+    let excluded_account_ids = vec![account.id.clone()];
+    let alternate = select_dex_router_account_endpoint_excluding(
+        store,
+        requested_model,
+        now,
+        cursor,
+        tool_requirements,
+        &excluded_account_ids,
+    );
+    let from = AccountRouteSelection {
+        account: account.clone(),
+        endpoint: endpoint.clone(),
+        route_trace: None,
+        requires_computer: tool_requirements
+            .is_some_and(|requirements| requirements.requires_computer),
+        explicit_model: None,
+    };
+    Some(router_stream_preflight_event_value(
+        if alternate.is_some() {
+            "rerouted"
+        } else {
+            "kept_no_alternative"
+        },
+        reason,
+        &from,
+        requested_model,
+        health,
+        alternate
+            .as_ref()
+            .map(|(account, endpoint)| (account, endpoint)),
+    ))
+}
+
+fn dex_router_capability_summary(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    mapped_model: &str,
+) -> Value {
+    let profile = providers::profile_for_account(account);
+    let provider_caps = &profile.capabilities;
+    let protocol = match endpoint.kind {
+        EndpointKind::OpenAiChat | EndpointKind::CustomChat => "chat_translate",
+        EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => "responses_direct",
+        EndpointKind::AnthropicMessages => "anthropic_messages",
+        EndpointKind::CodexOfficial => "codex_official",
+    };
+    let tool_mode = match endpoint.kind {
+        EndpointKind::OpenAiChat | EndpointKind::CustomChat => {
+            if provider_caps.tools {
+                "translated"
+            } else {
+                "none"
+            }
+        }
+        EndpointKind::OpenAiResponses
+        | EndpointKind::CustomResponses
+        | EndpointKind::CodexOfficial => "native",
+        EndpointKind::AnthropicMessages => "anthropic",
+    };
+    let reasoning = match endpoint.kind {
+        EndpointKind::OpenAiResponses
+        | EndpointKind::CustomResponses
+        | EndpointKind::CodexOfficial => "native",
+        EndpointKind::AnthropicMessages => "anthropic",
+        EndpointKind::OpenAiChat | EndpointKind::CustomChat => match provider_caps.reasoning {
+            providers::ReasoningMode::None => "none",
+            providers::ReasoningMode::DeepSeek => "deepseek",
+            providers::ReasoningMode::OpenAi => "openai",
+            providers::ReasoningMode::AnthropicThinking => "anthropic",
+        },
+    };
+    let vision = match endpoint.model_vision_mode(mapped_model) {
+        VisionMode::Off => "off",
+        VisionMode::Native => "native",
+        VisionMode::Glue => "glue",
+    };
+    let stream_usage = match provider_caps.stream_usage {
+        providers::StreamUsageMode::FinalChunk => "final_chunk",
+        providers::StreamUsageMode::ResponseCompleted => "response_completed",
+        providers::StreamUsageMode::Unavailable => "unavailable",
+    };
+    let native_responses = matches!(
+        endpoint.kind,
+        EndpointKind::OpenAiResponses | EndpointKind::CustomResponses | EndpointKind::CodexOfficial
+    );
+    let supports_web = native_responses || provider_caps.web_search_options;
+    let supports_image_generation = matches!(
+        endpoint.kind,
+        EndpointKind::OpenAiResponses | EndpointKind::CustomResponses | EndpointKind::CodexOfficial
+    );
+
+    json!({
+        "protocol": protocol,
+        "tool_mode": tool_mode,
+        "tools": tool_mode != "none",
+        "web": supports_web,
+        "vision": vision,
+        "reasoning": reasoning,
+        "image_generation": supports_image_generation,
+        "stream_usage": stream_usage,
+        "allow_missing_done": provider_caps.allow_missing_done,
+    })
+}
+
+fn router_tool_requirements(req: &ResponsesRequest) -> RouterToolRequirements {
+    let mut requirements = router_tool_requirements_for_tools(&req.tools, req.tool_choice.as_ref());
+    router_tool_requirements_from_input(&req.input, &mut requirements);
+    requirements
+}
+
+fn router_tool_requirements_for_tools(
+    tools: &[Value],
+    tool_choice: Option<&Value>,
+) -> RouterToolRequirements {
+    let mut requirements = RouterToolRequirements {
+        tool_count: tools.len(),
+        ..Default::default()
+    };
+
+    for tool in tools {
+        let typ = tool
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let label = router_tool_label(tool, &typ);
+        match typ.as_str() {
+            "web_search" | "web_search_preview" | "web_fetch" | "web_fetch_preview" => {
+                requirements.has_web_search = true;
+            }
+            "file_search" | "file_search_preview" => {
+                requirements.has_file_search = true;
+            }
+            "mcp" | "remote_mcp" => {
+                requirements.has_mcp = true;
+            }
+            "computer_use" | "computer_use_preview" | "browser_use" | "browser" => {
+                requirements.has_computer = true;
+            }
+            "image_generation" | "image_generation_preview" | "image2" => {
+                requirements.has_image_generation = true;
+            }
+            "function" | "custom" | "namespace" | "local_shell" | "tool_search" => {
+                requirements.has_function_tools = true;
+            }
+            "" if tool.get("function").is_some() => {
+                requirements.has_function_tools = true;
+            }
+            "" => {
+                requirements.has_unknown_tools = true;
+            }
+            _ => {
+                if tool.get("function").is_some() {
+                    requirements.has_function_tools = true;
+                } else {
+                    requirements.has_unknown_tools = true;
+                }
+            }
+        }
+        if !requirements.labels.iter().any(|seen| seen == &label) {
+            requirements.labels.push(label);
+        }
+    }
+
+    match router_tool_choice_type(tool_choice) {
+        Some("function" | "custom" | "namespace" | "local_shell" | "tool_search") => {
+            requirements.requires_function_tools = true;
+            requirements.has_function_tools = true;
+        }
+        Some("web_search" | "web_search_preview" | "web_fetch" | "web_fetch_preview") => {
+            requirements.requires_web_search = true;
+            requirements.has_web_search = true;
+        }
+        Some("file_search" | "file_search_preview") => {
+            requirements.requires_file_search = true;
+            requirements.has_file_search = true;
+        }
+        Some("mcp" | "remote_mcp") => {
+            requirements.requires_mcp = true;
+            requirements.has_mcp = true;
+        }
+        Some("computer_use" | "computer_use_preview" | "browser_use" | "browser") => {
+            requirements.requires_computer = true;
+            requirements.has_computer = true;
+        }
+        Some("image_generation" | "image_generation_preview" | "image2") => {
+            requirements.requires_image_generation = true;
+            requirements.has_image_generation = true;
+        }
+        Some(_) => {
+            requirements.requires_unknown_tools = true;
+            requirements.has_unknown_tools = true;
+        }
+        None => {}
+    }
+
+    requirements
+}
+
+fn router_tool_requirements_for_diagnostic_tools(tools: &[Value]) -> RouterToolRequirements {
+    let mut requirements = router_tool_requirements_for_tools(tools, None);
+    requirements.require_all_available_tools();
+    requirements
+}
+
+fn router_tool_requirements_from_input(
+    input: &ResponsesInput,
+    requirements: &mut RouterToolRequirements,
+) {
+    let mut signal = None;
+    match input {
+        ResponsesInput::Text(text) => {
+            if text.contains("computer_call_output")
+                || text.contains("\"screenshot\"")
+                || text.contains("data:image/")
+            {
+                signal = Some("input.text_computer_signal");
+            } else if router_text_computer_intent_signal(text) {
+                signal = Some("input.computer_intent");
+            }
+        }
+        ResponsesInput::Messages(items) => {
+            for item in items {
+                signal = router_input_computer_signal_for_message_item(item);
+                if signal.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(label) = signal {
+        requirements.has_computer = true;
+        requirements.requires_computer = true;
+        if !requirements.labels.iter().any(|seen| seen == label) {
+            requirements.labels.push(label.to_string());
+        }
+    }
+}
+
+fn router_input_computer_signal_for_message_item(value: &Value) -> Option<&'static str> {
+    let allow_text_intent = value
+        .get("role")
+        .and_then(Value::as_str)
+        .map_or(true, |role| role == "user");
+    router_input_computer_signal(value, allow_text_intent)
+}
+
+fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Option<&'static str> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| router_input_computer_signal(item, allow_text_intent)),
+        Value::Object(map) => {
+            let typ = map.get("type").and_then(Value::as_str).unwrap_or("");
+            if matches!(typ, "computer_call" | "computer_call_output") {
+                return Some("input.computer_call_output");
+            }
+            if map.get("screenshot").is_some() {
+                return Some("input.screenshot");
+            }
+            if typ == "input_image"
+                && map
+                    .get("image_url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| url.starts_with("data:image/"))
+            {
+                return Some("input.screenshot");
+            }
+            let child_text_intent = map
+                .get("role")
+                .and_then(Value::as_str)
+                .map(|role| role == "user")
+                .unwrap_or(allow_text_intent);
+            for key in ["output", "content", "image", "image_url", "text"] {
+                if let Some(value) = map.get(key) {
+                    if let Some(signal) = router_input_computer_signal(value, child_text_intent) {
+                        return Some(signal);
+                    }
+                }
+            }
+            None
+        }
+        Value::String(text) => {
+            if text.starts_with("data:image/") {
+                Some("input.screenshot")
+            } else if allow_text_intent
+                && (text.contains("computer_call_output") || text.contains("\"screenshot\""))
+            {
+                Some("input.text_computer_signal")
+            } else if allow_text_intent && router_text_computer_intent_signal(text) {
+                Some("input.computer_intent")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn router_text_computer_intent_signal(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    if text.contains("computer use")
+        || text.contains("computer-use")
+        || text.contains("computer plugin")
+        || text.contains("computer tool")
+        || text.contains("plugin://computer-use")
+        || text.contains("app://computer-use")
+        || text.contains("browser-use")
+        || text.contains("[@电脑]")
+        || text.contains("电脑插件")
+        || text.contains("电脑操作")
+        || text.contains("操作电脑")
+        || text.contains("使用电脑")
+    {
+        return true;
+    }
+
+    let app_action = text.contains("打开")
+        || text.contains("点击")
+        || text.contains("播放")
+        || text.contains("登录")
+        || text.contains("切到")
+        || text.contains("切换到");
+    let app_target = text.contains(" app")
+        || text.contains("应用")
+        || text.contains("抖音")
+        || text.contains("浏览器")
+        || text.contains("屏幕")
+        || text.contains("窗口");
+    app_action && app_target
+}
+
+impl RouterToolRequirements {
+    fn require_all_available_tools(&mut self) {
+        self.requires_function_tools = self.has_function_tools;
+        self.requires_web_search = self.has_web_search;
+        self.requires_file_search = self.has_file_search;
+        self.requires_mcp = self.has_mcp;
+        self.requires_computer = self.has_computer;
+        self.requires_image_generation = self.has_image_generation;
+        self.requires_unknown_tools = self.has_unknown_tools;
+    }
+}
+
+fn router_tool_choice_type(tool_choice: Option<&Value>) -> Option<&str> {
+    let choice = tool_choice?;
+    match choice {
+        Value::String(choice) => {
+            let choice = choice.trim();
+            (!matches!(choice, "" | "auto" | "none" | "required")).then_some(choice)
+        }
+        Value::Object(obj) => obj.get("type").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+fn router_tool_label(tool: &Value, typ: &str) -> String {
+    tool.get("name")
+        .or_else(|| tool.get("namespace"))
+        .or_else(|| tool.get("server_label"))
+        .or_else(|| tool.get("server_url"))
+        .or_else(|| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+        })
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if typ.is_empty() {
+                "unknown_tool".into()
+            } else {
+                typ.to_string()
+            }
+        })
+}
+
+fn router_tool_requirements_value(requirements: Option<&RouterToolRequirements>) -> Value {
+    let Some(requirements) = requirements else {
+        return Value::Null;
+    };
+    json!({
+        "tool_count": requirements.tool_count,
+        "labels": requirements.labels.clone(),
+        "function_tools": requirements.has_function_tools,
+        "web_search": requirements.has_web_search,
+        "file_search": requirements.has_file_search,
+        "mcp": requirements.has_mcp,
+        "computer": requirements.has_computer,
+        "image_generation": requirements.has_image_generation,
+        "requires_function_tools": requirements.requires_function_tools,
+        "requires_web_search": requirements.requires_web_search,
+        "requires_file_search": requirements.requires_file_search,
+        "requires_mcp": requirements.requires_mcp,
+        "requires_computer": requirements.requires_computer,
+        "requires_image_generation": requirements.requires_image_generation,
+        "requires_unknown_tools": requirements.requires_unknown_tools,
+        "unknown_tools": requirements.has_unknown_tools,
+    })
+}
+
+fn codex_router_session_route_key(headers: &HeaderMap) -> Option<String> {
+    for name in ["thread-id", "session-id"] {
+        if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(format!("{name}:{value}"));
+            }
+        }
+    }
+    None
+}
+
+fn update_codex_router_session_route(
+    state: &AppState,
+    route_key: Option<String>,
+    requirements: Option<&mut RouterToolRequirements>,
+) -> Option<DexRouterSessionRouteDecision> {
+    let route_key = route_key?;
+    let now = crate::accounts::now_secs();
+    let has_native_signal = requirements
+        .as_ref()
+        .is_some_and(|requirements| requirements.requires_computer);
+
+    if has_native_signal {
+        let reason = requirements
+            .as_ref()
+            .and_then(|requirements| {
+                requirements
+                    .labels
+                    .iter()
+                    .find(|label| label.contains("computer") || label.contains("screenshot"))
+                    .cloned()
             })
+            .unwrap_or_else(|| "computer_use".into());
+        let route_state = DexRouterSessionRouteState {
+            observe_remaining: DEX_ROUTER_NATIVE_OBSERVE_TURNS,
+            expires_at: now.saturating_add(DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS),
+            reason: reason.clone(),
+        };
+        state
+            .codex_router_sessions
+            .insert(route_key.clone(), route_state.clone());
+        return Some(DexRouterSessionRouteDecision {
+            key: route_key,
+            state: "native_active",
+            reason,
+            observe_remaining: route_state.observe_remaining,
+            expires_at: Some(route_state.expires_at),
+            force_native_responses: true,
+        });
+    }
+
+    let Some(mut entry) = state.codex_router_sessions.get_mut(&route_key) else {
+        return Some(DexRouterSessionRouteDecision {
+            key: route_key,
+            state: "free",
+            reason: "no_native_session".into(),
+            observe_remaining: 0,
+            expires_at: None,
+            force_native_responses: false,
+        });
+    };
+
+    if entry.expires_at <= now || entry.observe_remaining == 0 {
+        drop(entry);
+        state.codex_router_sessions.remove(&route_key);
+        return Some(DexRouterSessionRouteDecision {
+            key: route_key,
+            state: "free",
+            reason: "native_observe_expired".into(),
+            observe_remaining: 0,
+            expires_at: None,
+            force_native_responses: false,
+        });
+    }
+
+    entry.observe_remaining = entry.observe_remaining.saturating_sub(1);
+    let decision = DexRouterSessionRouteDecision {
+        key: route_key,
+        state: "native_observe",
+        reason: entry.reason.clone(),
+        observe_remaining: entry.observe_remaining,
+        expires_at: Some(entry.expires_at),
+        force_native_responses: true,
+    };
+
+    if let Some(requirements) = requirements {
+        requirements.has_computer = true;
+        requirements.requires_computer = true;
+        if !requirements
+            .labels
+            .iter()
+            .any(|label| label == "session.native_observe")
+        {
+            requirements.labels.push("session.native_observe".into());
+        }
+    }
+
+    if entry.observe_remaining == 0 {
+        drop(entry);
+        state.codex_router_sessions.remove(&decision.key);
+    }
+
+    Some(decision)
+}
+
+fn patch_selection_session_route_trace(
+    mut selection: AccountRouteSelection,
+    decision: Option<&DexRouterSessionRouteDecision>,
+) -> AccountRouteSelection {
+    selection.route_trace = patch_router_session_route_trace(selection.route_trace, decision);
+    selection
+}
+
+fn patch_router_session_route_trace(
+    route_trace: Option<String>,
+    decision: Option<&DexRouterSessionRouteDecision>,
+) -> Option<String> {
+    let Some(decision) = decision else {
+        return route_trace;
+    };
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("session_route_key".into(), json!(decision.key));
+        obj.insert("session_route_state".into(), json!(decision.state));
+        obj.insert("session_route_reason".into(), json!(decision.reason));
+        obj.insert(
+            "session_route_observe_remaining".into(),
+            json!(decision.observe_remaining),
+        );
+        obj.insert(
+            "session_route_expires_at".into(),
+            json!(decision.expires_at),
+        );
+        obj.insert(
+            "session_route_force_native_responses".into(),
+            json!(decision.force_native_responses),
+        );
+    }
+    serde_json::to_string(&trace).ok()
+}
+
+fn dex_router_capability_gaps(
+    capabilities: &Value,
+    requirements: Option<&RouterToolRequirements>,
+) -> Vec<String> {
+    let Some(requirements) = requirements else {
+        return Vec::new();
+    };
+    if !requirements.has_tools() {
+        return Vec::new();
+    }
+
+    let protocol = capabilities
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let tool_mode = capabilities
+        .get("tool_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let tools = capabilities
+        .get("tools")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let web = capabilities
+        .get("web")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let image_generation = capabilities
+        .get("image_generation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let native_tools = tool_mode == "native";
+    let translated_tools = matches!(tool_mode, "translated" | "anthropic");
+    let local_file_search = matches!(protocol, "chat_translate" | "anthropic_messages");
+
+    let mut gaps = Vec::new();
+    if requirements.requires_function_tools && !tools {
+        gaps.push("tools".to_string());
+    }
+    if requirements.requires_web_search && !web {
+        gaps.push("web_search".to_string());
+    }
+    if requirements.requires_file_search && !(native_tools || local_file_search) {
+        gaps.push("file_search".to_string());
+    }
+    if requirements.requires_mcp && !(native_tools || tool_mode == "translated") {
+        gaps.push("mcp".to_string());
+    }
+    if requirements.requires_computer && !native_tools {
+        gaps.push("computer".to_string());
+    }
+    if requirements.requires_image_generation && !image_generation {
+        gaps.push("image_generation".to_string());
+    }
+    if requirements.requires_unknown_tools && !(native_tools || translated_tools) {
+        gaps.push("unknown_tools".to_string());
+    }
+    gaps
+}
+
+fn dex_router_capability_gaps_value(
+    capabilities: Option<&Value>,
+    requirements: Option<&RouterToolRequirements>,
+) -> Value {
+    match capabilities {
+        Some(capabilities) => json!(dex_router_capability_gaps(capabilities, requirements)),
+        None => json!([]),
+    }
+}
+
+fn dex_router_tool_decisions(
+    capabilities: &Value,
+    requirements: Option<&RouterToolRequirements>,
+) -> Value {
+    let Some(requirements) = requirements else {
+        return Value::Null;
+    };
+    let protocol = capabilities
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let tool_mode = capabilities
+        .get("tool_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let native_tools = tool_mode == "native";
+    let translated_tools = tool_mode == "translated";
+    let anthropic_tools = tool_mode == "anthropic";
+
+    let mut kept = Vec::new();
+    let mut translated = Vec::new();
+    let mut local = Vec::new();
+    let mut filtered = dex_router_capability_gaps(capabilities, Some(requirements));
+
+    if requirements.has_function_tools {
+        if native_tools {
+            kept.push("function_tools");
+        } else if translated_tools || anthropic_tools {
+            translated.push("function_tools");
+        }
+    }
+    if requirements.has_web_search {
+        if native_tools {
+            kept.push("web_search");
+        } else if capabilities
+            .get("web")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            translated.push("web_search_options");
+        }
+    }
+    if requirements.has_file_search {
+        if native_tools {
+            kept.push("file_search");
+        } else if matches!(protocol, "chat_translate" | "anthropic_messages") {
+            local.push("file_search");
+        }
+    }
+    if requirements.has_mcp {
+        if native_tools {
+            kept.push("mcp");
+        } else if translated_tools {
+            translated.push("local_mcp_call");
+        }
+    }
+    if requirements.has_computer && native_tools {
+        kept.push("computer_use");
+    }
+    if requirements.has_image_generation && native_tools {
+        kept.push("image_generation");
+    }
+    if requirements.has_unknown_tools {
+        if native_tools {
+            kept.push("unknown_tools");
+        } else if translated_tools || anthropic_tools {
+            translated.push("unknown_tools");
+        }
+    }
+    filtered.sort();
+    filtered.dedup();
+
+    json!({
+        "kept": kept,
+        "translated": translated,
+        "local": local,
+        "filtered": filtered,
+        "labels": requirements.labels.clone(),
+    })
+}
+
+struct RuntimeBlock {
+    reason: &'static str,
+}
+
+fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Option<RuntimeBlock> {
+    if !runtime_retry_ready(account.runtime_state.next_retry_after, now)
+        && !runtime_state_is_transient_upstream_error(
+            &account.runtime_state.status,
+            &account.runtime_state.status_message,
+        )
+    {
+        let reason = match account.runtime_state.status {
+            AccountRuntimeStatus::QuotaExceeded => "account_quota_cooling",
+            AccountRuntimeStatus::CoolingDown => "account_cooling_down",
+            _ => "account_retry_wait",
+        };
+        return Some(RuntimeBlock { reason });
+    }
+
+    account
+        .runtime_state
+        .model_states
+        .get(mapped_model)
+        .and_then(|state| {
+            if runtime_retry_ready(state.next_retry_after, now)
+                || runtime_state_is_transient_upstream_error(&state.status, &state.status_message)
+            {
+                None
+            } else {
+                let reason = match state.status {
+                    AccountRuntimeStatus::QuotaExceeded => "model_quota_cooling",
+                    AccountRuntimeStatus::CoolingDown => "model_cooling_down",
+                    _ => "model_retry_wait",
+                };
+                Some(RuntimeBlock { reason })
+            }
+        })
+}
+
+fn runtime_state_is_transient_upstream_error(
+    status: &AccountRuntimeStatus,
+    status_message: &str,
+) -> bool {
+    if !matches!(
+        status,
+        AccountRuntimeStatus::CoolingDown | AccountRuntimeStatus::Error
+    ) {
+        return false;
+    }
+    let message = status_message.to_ascii_lowercase();
+    ["http 408", "http 500", "http 502", "http 503", "http 504"]
+        .iter()
+        .any(|needle| message.contains(needle))
 }
 
 fn runtime_retry_ready(next_retry_after: Option<u64>, now: u64) -> bool {
@@ -587,7 +2520,17 @@ fn history_context_for(
         request_path: request_path.into(),
         provider: account.provider.clone(),
         provider_profile: profile.slug,
+        route_trace: String::new(),
     }
+}
+
+fn runtime_feedback_for_account(state: &AppState, account: &Account) -> RuntimeFeedbackSink {
+    RuntimeFeedbackSink::new(
+        state.data_dir.clone(),
+        state.account_store.clone(),
+        state.active_account.clone(),
+        account.id.clone(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -625,6 +2568,8 @@ struct SseHistoryBodyContext {
     start: Instant,
     upstream_url: String,
     http_status: StatusCode,
+    retry_after_secs: Option<u64>,
+    runtime_feedback: Option<RuntimeFeedbackSink>,
 }
 
 fn history_recording_sse_body<S>(
@@ -653,6 +2598,7 @@ where
             }
         }
         usage.finish();
+        let had_stream_error = stream_error.is_some();
         let error_msg = stream_error.unwrap_or_else(|| {
             if context.http_status.is_success() {
                 String::new()
@@ -665,6 +2611,25 @@ where
         } else {
             "failed"
         };
+        if let Some(runtime_feedback) = context.runtime_feedback.as_ref() {
+            if status == "completed" {
+                runtime_feedback.success(&context.model).await;
+            } else {
+                let status_code = if had_stream_error {
+                    StatusCode::BAD_GATEWAY.as_u16()
+                } else {
+                    context.http_status.as_u16()
+                };
+                runtime_feedback
+                    .failure(
+                        &context.model,
+                        status_code,
+                        error_msg.clone(),
+                        context.retry_after_secs,
+                    )
+                    .await;
+            }
+        }
         let _ = context
             .request_history
             .record(record_from_context(
@@ -748,6 +2713,7 @@ fn history_context_for_client_proxy(
         request_path: request_path.into(),
         provider: account.provider.clone(),
         provider_profile: profile.slug,
+        route_trace: String::new(),
     }
 }
 
@@ -1367,6 +3333,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handle_responses_codex_desktop),
         )
         .route(
+            "/codex-router/v1/responses",
+            post(handle_responses_codex_router),
+        )
+        .route(
             "/dex-assistant/v1/responses",
             post(handle_responses_dex_assistant),
         )
@@ -1390,7 +3360,15 @@ pub fn build_router(state: AppState) -> Router {
             post(handle_compact_response),
         )
         .route(
+            "/codex-router/v1/responses/compact",
+            post(handle_compact_response),
+        )
+        .route(
             "/codex-desktop/v1/responses/input_tokens",
+            post(handle_input_tokens),
+        )
+        .route(
+            "/codex-router/v1/responses/input_tokens",
             post(handle_input_tokens),
         )
         .route(
@@ -1406,6 +3384,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handle_get_response).delete(handle_delete_response),
         )
         .route(
+            "/codex-router/v1/responses/:response_id",
+            get(handle_get_response).delete(handle_delete_response),
+        )
+        .route(
             "/v1/responses/:response_id/cancel",
             post(handle_cancel_response),
         )
@@ -1418,6 +3400,10 @@ pub fn build_router(state: AppState) -> Router {
             post(handle_cancel_response),
         )
         .route(
+            "/codex-router/v1/responses/:response_id/cancel",
+            post(handle_cancel_response),
+        )
+        .route(
             "/v1/responses/:response_id/input_items",
             get(handle_input_items),
         )
@@ -1427,6 +3413,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/codex-desktop/v1/responses/:response_id/input_items",
+            get(handle_input_items),
+        )
+        .route(
+            "/codex-router/v1/responses/:response_id/input_items",
             get(handle_input_items),
         )
         .route("/v1/prompts", get(handle_list_prompts))
@@ -1481,11 +3471,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/models", get(handle_models))
         .route("/codex-cli/v1/models", get(handle_models))
         .route("/codex-desktop/v1/models", get(handle_models))
+        .route("/codex-router/v1/models", get(handle_models))
         .route("/health", get(handle_health))
         .route("/v1", get(handle_v1))
         .route("/codex-cli/v1", get(handle_v1))
         .route("/codex-desktop/v1", get(handle_v1))
+        .route("/codex-router/v1", get(handle_v1))
         .route("/metrics", get(handle_metrics))
+        .route("/api/router/status", get(handle_router_status_api))
         // Codex 线程聚合（跨 provider）
         .route("/api/threads", get(handle_list_threads_api))
         .route("/api/threads/status", get(handle_threads_status_api))
@@ -3419,6 +5412,66 @@ async fn handle_list_vector_store_file_batch_files(
 
 // ── Codex 线程聚合 API（复用 web.rs 中的 handler 逻辑）──
 
+#[derive(Debug, Deserialize)]
+struct RouterStatusQuery {
+    #[serde(default = "default_router_status_model")]
+    model: String,
+    #[serde(default)]
+    tools: Option<String>,
+}
+
+fn default_router_status_model() -> String {
+    "gpt-5.5".into()
+}
+
+async fn handle_router_status_api(
+    State(state): State<AppState>,
+    Query(query): Query<RouterStatusQuery>,
+) -> Response {
+    refresh_account_store_from_disk(&state).await;
+
+    let model = if query.model.trim().is_empty() {
+        default_router_status_model()
+    } else {
+        query.model.trim().to_string()
+    };
+    let tools = router_status_tools_from_query(query.tools.as_deref());
+    let store = state.account_store.read().await.clone();
+    let now = crate::accounts::now_secs();
+    Json(json!({
+        "ok": true,
+        "router": dex_router_status_snapshot_for_tools(&store, &model, now, &tools),
+        "scenarios": dex_router_status_scenarios(&store, &model, now),
+    }))
+    .into_response()
+}
+
+fn router_status_tools_from_query(raw: Option<&str>) -> Vec<Value> {
+    raw.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .filter_map(router_status_tool_for_slug)
+        .collect()
+}
+
+fn router_status_tool_for_slug(slug: &str) -> Option<Value> {
+    let slug = slug.trim().to_ascii_lowercase();
+    match slug.as_str() {
+        "web" | "web_search" | "web_search_preview" => Some(json!({"type": "web_search_preview"})),
+        "file" | "file_search" | "file_search_preview" => Some(json!({"type": "file_search"})),
+        "mcp" | "remote_mcp" => Some(json!({"type": "remote_mcp", "server_label": "diagnostic"})),
+        "computer" | "computer_use" | "computer_use_preview" => {
+            Some(json!({"type": "computer_use_preview"}))
+        }
+        "image" | "image_generation" | "image2" => Some(json!({"type": "image_generation"})),
+        "function" | "tool" | "tools" => {
+            Some(json!({"type": "function", "name": "diagnostic_tool"}))
+        }
+        _ => None,
+    }
+}
+
 async fn handle_list_threads_api(State(_state): State<AppState>) -> Response {
     match crate::codex_threads::list_all() {
         Ok(threads) => Json(serde_json::json!({ "ok": true, "threads": threads })).into_response(),
@@ -3548,6 +5601,27 @@ async fn handle_responses_codex_desktop(
     handle_responses_for_route(state, body, AccountRouteSurface::CodexDesktop).await
 }
 
+async fn handle_responses_codex_router(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    tracing::info!(
+        headers = %masked_router_headers(&headers),
+        body_bytes = body.len(),
+        "DEX Router 收到 Codex 请求，已打码官方登录态相关请求头"
+    );
+    let external_anchor = codex_router_external_anchor_from_headers(&headers);
+    handle_responses_for_route_with_router_anchor(
+        state,
+        headers,
+        body,
+        AccountRouteSurface::CodexRouter,
+        external_anchor,
+    )
+    .await
+}
+
 async fn handle_responses_dex_assistant(
     State(state): State<AppState>,
     body: axum::body::Bytes,
@@ -3560,8 +5634,25 @@ async fn handle_responses_for_route(
     body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
 ) -> Response {
+    handle_responses_for_route_with_router_anchor(
+        state,
+        HeaderMap::new(),
+        body,
+        route_surface,
+        None,
+    )
+    .await
+}
+
+async fn handle_responses_for_route_with_router_anchor(
+    state: AppState,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+    route_surface: AccountRouteSurface,
+    external_anchor: Option<CodexRouterExternalAnchor>,
+) -> Response {
     let _start = std::time::Instant::now();
-    let mut req: ResponsesRequest = match serde_json::from_slice(&body) {
+    let req: ResponsesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             let mut hasher = DefaultHasher::new();
@@ -3576,7 +5667,98 @@ async fn handle_responses_for_route(
         }
     };
     let model = req.model.clone();
-    let (_account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
+    let explicit_dex_account_model = codex_config::decode_dex_account_model_slug(&model).is_some();
+    let mut router_tool_requirements = (route_surface == AccountRouteSurface::CodexRouter
+        || explicit_dex_account_model)
+        .then(|| router_tool_requirements(&req));
+    let session_route_decision = if route_surface == AccountRouteSurface::CodexRouter {
+        update_codex_router_session_route(
+            &state,
+            codex_router_session_route_key(&headers),
+            router_tool_requirements.as_mut(),
+        )
+    } else {
+        None
+    };
+    if let Some(requirements) = router_tool_requirements.as_ref() {
+        let input_labels: Vec<&str> = requirements
+            .labels
+            .iter()
+            .map(String::as_str)
+            .filter(|label| label.starts_with("input."))
+            .collect();
+        if requirements.requires_computer && !input_labels.is_empty() {
+            tracing::info!(
+                requested_model = %model,
+                input_signals = ?input_labels,
+                "DEX Router 检测到 Computer Use 输入，强制要求 Responses 原生执行账号"
+            );
+        }
+    }
+    let mut route_selection = match resolve_account_endpoint_for_response(
+        &state,
+        route_surface,
+        &model,
+        router_tool_requirements.as_ref(),
+        external_anchor.as_ref(),
+    )
+    .await
+    {
+        Ok(selection) => {
+            patch_selection_session_route_trace(selection, session_route_decision.as_ref())
+        }
+        Err(response) => return response,
+    };
+    if route_surface == AccountRouteSurface::CodexRouter
+        && req.stream
+        && req.background != Some(true)
+    {
+        route_selection = apply_codex_router_stream_preflight(
+            &state,
+            &model,
+            route_selection,
+            router_tool_requirements.as_ref(),
+            session_route_decision.as_ref(),
+        )
+        .await;
+    }
+    if route_surface == AccountRouteSurface::CodexRouter
+        && !req.stream
+        && req.background != Some(true)
+    {
+        return handle_codex_router_non_stream_with_fallback(
+            state,
+            req,
+            body,
+            route_selection,
+            router_tool_requirements,
+            session_route_decision,
+        )
+        .await;
+    }
+
+    handle_responses_for_selection(state, req, body, route_surface, route_selection, _start).await
+}
+
+async fn handle_responses_for_selection(
+    state: AppState,
+    mut req: ResponsesRequest,
+    mut body: axum::body::Bytes,
+    route_surface: AccountRouteSurface,
+    route_selection: AccountRouteSelection,
+    start: Instant,
+) -> Response {
+    let endpoint = route_selection.endpoint.clone();
+    if let Some(model) = route_selection.explicit_model.as_deref() {
+        req.model = model.to_string();
+        match patch_body_model_field(&body, model) {
+            Ok(updated) => body = updated,
+            Err(err) => {
+                warn!("DEX 账号模型直选请求体模型替换失败，继续使用解析后的请求模型: {err}")
+            }
+        }
+    }
+    let model = req.model.clone();
     let mode = match endpoint.kind {
         EndpointKind::OpenAiChat | EndpointKind::CustomChat => "translate",
         EndpointKind::OpenAiResponses | EndpointKind::CustomResponses => "bypass",
@@ -3594,10 +5776,11 @@ async fn handle_responses_for_route(
 
     // 直连模式：仅做模型映射，其他全部透传
     if endpoint.kind.is_responses_like() {
-        return handle_responses_bypass(state, req, body, route_surface).await;
+        return handle_responses_bypass(state, req, body, route_surface, Some(route_selection))
+            .await;
     }
     if endpoint.kind == EndpointKind::CodexOfficial {
-        return handle_codex_official(state, req, body, route_surface).await;
+        return handle_codex_official(state, req, body, route_surface, Some(route_selection)).await;
     }
 
     // ── 以下仅翻译/代理模式生效 ──
@@ -3695,12 +5878,13 @@ async fn handle_responses_for_route(
         local_file_search_output_items,
         local_file_search_input_items,
         route_surface,
+        Some(route_selection),
     )
     .await;
     tracing::info!(
         "⇠ translate {} done in {}ms",
         model,
-        _start.elapsed().as_millis()
+        start.elapsed().as_millis()
     );
     let status = response.status().as_u16().to_string();
     state
@@ -3709,6 +5893,371 @@ async fn handle_responses_for_route(
         .with_label_values(&["POST", &status])
         .inc();
     response
+}
+
+async fn handle_codex_router_non_stream_with_fallback(
+    state: AppState,
+    req: ResponsesRequest,
+    body: axum::body::Bytes,
+    initial_selection: AccountRouteSelection,
+    tool_requirements: Option<RouterToolRequirements>,
+    session_route_decision: Option<DexRouterSessionRouteDecision>,
+) -> Response {
+    let mut selection = initial_selection;
+    let mut excluded_account_ids: Vec<String> = Vec::new();
+    let mut fallback_attempts: Vec<Value> = Vec::new();
+
+    for attempt_index in 1..=DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS {
+        let response = handle_responses_for_selection(
+            state.clone(),
+            req.clone(),
+            body.clone(),
+            AccountRouteSurface::CodexRouter,
+            selection.clone(),
+            Instant::now(),
+        )
+        .await;
+
+        let status = response.status();
+        if status.is_success()
+            || !dex_router_retryable_status(status)
+            || selection.explicit_model.is_some()
+            || attempt_index >= DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS
+        {
+            return response;
+        }
+
+        let failure = collect_router_attempt_failure(response).await;
+        let retryable = dex_router_retryable_failure(&failure);
+        if !retryable {
+            return rebuild_response(failure.parts, failure.body);
+        }
+        let failed_account_id = selection.account.id.clone();
+        excluded_account_ids.push(failed_account_id.clone());
+        fallback_attempts.push(router_fallback_attempt_value(
+            attempt_index,
+            &selection,
+            &req.model,
+            &failure,
+            retryable,
+        ));
+
+        let Some(next_selection) = resolve_dex_router_retry_selection(
+            &state,
+            &req.model,
+            tool_requirements.as_ref(),
+            &excluded_account_ids,
+            &fallback_attempts,
+            session_route_decision.as_ref(),
+        )
+        .await
+        else {
+            tracing::warn!(
+                account_id = %failed_account_id,
+                status = failure.status.as_u16(),
+                "DEX Router 非流式降级无后续候选，返回最后一次上游失败"
+            );
+            return rebuild_response(failure.parts, failure.body);
+        };
+
+        tracing::warn!(
+            from_account_id = %failed_account_id,
+            to_account_id = %next_selection.account.id,
+            status = failure.status.as_u16(),
+            "DEX Router 非流式请求触发同请求降级"
+        );
+        selection = next_selection;
+    }
+
+    unreachable!("DEX Router fallback loop always returns");
+}
+
+async fn apply_codex_router_stream_preflight(
+    state: &AppState,
+    requested_model: &str,
+    mut selection: AccountRouteSelection,
+    tool_requirements: Option<&RouterToolRequirements>,
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
+) -> AccountRouteSelection {
+    if selection.explicit_model.is_some() {
+        return selection;
+    }
+    let mapped_model = resolve_model(requested_model, &selection.endpoint.model_map);
+    let now = crate::accounts::now_secs();
+    let health = dex_router_health(&selection.account, now);
+    let Some(reason) =
+        dex_router_stream_preflight_risk(&selection.account, &mapped_model, health, now)
+    else {
+        return selection;
+    };
+
+    let excluded_account_ids = vec![selection.account.id.clone()];
+    let store = state.account_store.read().await.clone();
+    let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let (next, route_trace) = dex_router_trace_for_selection_excluding(
+        &store,
+        requested_model,
+        now,
+        cursor,
+        tool_requirements,
+        &excluded_account_ids,
+        "stream_preflight_risk",
+    );
+
+    if let Some((account, endpoint)) = next {
+        tracing::warn!(
+            from_account_id = %selection.account.id,
+            to_account_id = %account.id,
+            reason = %reason,
+            recent_failed = health.recent_failed,
+            failure_rate_percent = health.failure_rate_percent,
+            "DEX Router 流式请求前置健康门控已切换候选"
+        );
+        let event = router_stream_preflight_event_value(
+            "rerouted",
+            reason,
+            &selection,
+            requested_model,
+            health,
+            Some((&account, &endpoint)),
+        );
+        return AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: patch_router_stream_preflight_trace(
+                patch_router_session_route_trace(Some(route_trace), session_route_decision),
+                event,
+            ),
+            requires_computer: selection.requires_computer,
+            explicit_model: None,
+        };
+    }
+
+    tracing::warn!(
+        account_id = %selection.account.id,
+        reason = %reason,
+        recent_failed = health.recent_failed,
+        failure_rate_percent = health.failure_rate_percent,
+        "DEX Router 流式请求前置健康门控无替代候选，保留原账号"
+    );
+    let event = router_stream_preflight_event_value(
+        "kept_no_alternative",
+        reason,
+        &selection,
+        requested_model,
+        health,
+        None,
+    );
+    selection.route_trace = patch_router_stream_preflight_trace(selection.route_trace, event);
+    selection
+}
+
+fn router_stream_preflight_event_value(
+    action: &'static str,
+    reason: &'static str,
+    from: &AccountRouteSelection,
+    requested_model: &str,
+    health: DexRouterHealth,
+    to: Option<(&Account, &EndpointConfig)>,
+) -> Value {
+    let to = to.map(|(account, endpoint)| {
+        json!({
+            "account_id": account.id.clone(),
+            "account_name": account.name.clone(),
+            "endpoint_id": endpoint.id.clone(),
+            "endpoint_kind": endpoint.kind.label(),
+            "mapped_model": resolve_model(requested_model, &endpoint.model_map),
+        })
+    });
+    json!({
+        "action": action,
+        "reason": reason,
+        "from": {
+            "account_id": from.account.id.clone(),
+            "account_name": from.account.name.clone(),
+            "endpoint_id": from.endpoint.id.clone(),
+            "endpoint_kind": from.endpoint.kind.label(),
+            "mapped_model": resolve_model(requested_model, &from.endpoint.model_map),
+            "health_score": health.score,
+            "recent_success": health.recent_success,
+            "recent_failed": health.recent_failed,
+            "failure_rate_percent": health.failure_rate_percent,
+        },
+        "to": to,
+    })
+}
+
+fn patch_router_stream_preflight_trace(
+    route_trace: Option<String>,
+    event: Value,
+) -> Option<String> {
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("stream_preflight".into(), event);
+    }
+    serde_json::to_string(&trace).ok()
+}
+
+async fn resolve_dex_router_retry_selection(
+    state: &AppState,
+    requested_model: &str,
+    tool_requirements: Option<&RouterToolRequirements>,
+    excluded_account_ids: &[String],
+    fallback_attempts: &[Value],
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
+) -> Option<AccountRouteSelection> {
+    let store = state.account_store.read().await.clone();
+    let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let (selection, route_trace) = dex_router_trace_for_selection_excluding(
+        &store,
+        requested_model,
+        crate::accounts::now_secs(),
+        cursor,
+        tool_requirements,
+        excluded_account_ids,
+        "attempt_failed",
+    );
+    selection.map(|(account, endpoint)| AccountRouteSelection {
+        account,
+        endpoint,
+        route_trace: patch_router_session_route_trace(
+            patch_router_fallback_trace(Some(route_trace), fallback_attempts),
+            session_route_decision,
+        ),
+        requires_computer: tool_requirements
+            .is_some_and(|requirements| requirements.requires_computer),
+        explicit_model: None,
+    })
+}
+
+fn patch_router_fallback_trace(
+    route_trace: Option<String>,
+    fallback_attempts: &[Value],
+) -> Option<String> {
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if fallback_attempts.is_empty() {
+        return serde_json::to_string(&trace).ok();
+    }
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("fallback_count".into(), json!(fallback_attempts.len()));
+        obj.insert("fallback_attempts".into(), json!(fallback_attempts));
+    }
+    serde_json::to_string(&trace).ok()
+}
+
+fn router_fallback_attempt_value(
+    attempt_index: usize,
+    selection: &AccountRouteSelection,
+    requested_model: &str,
+    failure: &RouterAttemptFailure,
+    retryable: bool,
+) -> Value {
+    json!({
+        "attempt": attempt_index,
+        "account_id": selection.account.id.clone(),
+        "account_name": selection.account.name.clone(),
+        "endpoint_id": selection.endpoint.id.clone(),
+        "endpoint_kind": selection.endpoint.kind.label(),
+        "mapped_model": resolve_model(requested_model, &selection.endpoint.model_map),
+        "status": failure.status.as_u16(),
+        "code": failure.code.clone(),
+        "retryable": retryable,
+        "message": failure.message.clone(),
+    })
+}
+
+async fn collect_router_attempt_failure(response: Response) -> RouterAttemptFailure {
+    let (parts, body) = response.into_parts();
+    let status = parts.status;
+    let body = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .unwrap_or_else(|err| Bytes::from(format!("failed to collect response body: {err}")));
+    let (code, message) = router_failure_details(status, &body);
+    RouterAttemptFailure {
+        status,
+        code,
+        message,
+        body,
+        parts,
+    }
+}
+
+fn rebuild_response(parts: axum::http::response::Parts, body: Bytes) -> Response {
+    Response::from_parts(parts, axum::body::Body::from(body))
+}
+
+fn dex_router_retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    ) || status.is_server_error()
+}
+
+fn dex_router_retryable_failure(failure: &RouterAttemptFailure) -> bool {
+    if matches!(
+        failure.code.as_str(),
+        "rate_limited"
+            | "invalid_request_error"
+            | "unsupported_feature"
+            | "unsupported_endpoint_mode"
+            | "vision_disabled"
+            | "request_builder_clone_failed"
+    ) {
+        return false;
+    }
+    dex_router_retryable_status(failure.status)
+}
+
+fn router_failure_details(status: StatusCode, body: &[u8]) -> (String, String) {
+    let fallback_code = status.as_u16().to_string();
+    let fallback_message = format!("HTTP {}", status.as_u16());
+    if body.is_empty() {
+        return (fallback_code, fallback_message);
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        let error = value.get("error").unwrap_or(&value);
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+            .unwrap_or(fallback_code.as_str())
+            .to_string();
+        if let Some(message) = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            return (code, truncate_router_failure_message(message));
+        }
+    }
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    if text.is_empty() {
+        (fallback_code, fallback_message)
+    } else {
+        (fallback_code, truncate_router_failure_message(text))
+    }
+}
+
+fn truncate_router_failure_message(message: &str) -> String {
+    let mut chars = message.chars();
+    let head: String = chars.by_ref().take(500).collect();
+    if chars.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
 }
 
 async fn handle_client_chat_completions(
@@ -3906,6 +6455,79 @@ fn patch_body_string_field(
         obj.insert(field.to_string(), serde_json::json!(value));
     }
     serde_json::to_vec(&v).map(axum::body::Bytes::from)
+}
+
+fn patch_body_input_and_remove_previous_response_id(
+    body: &axum::body::Bytes,
+    input_items: Vec<Value>,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut v: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("input".to_string(), Value::Array(input_items));
+        obj.remove("previous_response_id");
+    }
+    serde_json::to_vec(&v).map(axum::body::Bytes::from)
+}
+
+fn patch_router_native_bridge_trace(
+    route_trace: &mut String,
+    previous_response_id: &str,
+    replayed_items: usize,
+) {
+    let mut trace = serde_json::from_str::<Value>(route_trace).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert(
+            "native_bridge".into(),
+            json!({
+                "action": "replay_local_input_items",
+                "previous_response_id": previous_response_id,
+                "replayed_items": replayed_items,
+                "removed_previous_response_id": true,
+            }),
+        );
+    }
+    if let Ok(next) = serde_json::to_string(&trace) {
+        *route_trace = next;
+    }
+}
+
+fn bridge_previous_response_for_native_turn(
+    state: &AppState,
+    req: &mut ResponsesRequest,
+    body: &mut axum::body::Bytes,
+    requires_computer: bool,
+    route_trace: &mut Option<String>,
+) {
+    if !requires_computer {
+        return;
+    }
+    let Some(previous_response_id) = req.previous_response_id.clone() else {
+        return;
+    };
+    let Some(previous_items) = state.sessions.get_input_items(&previous_response_id) else {
+        return;
+    };
+    if previous_items.is_empty() {
+        return;
+    }
+    let mut input_items = previous_items;
+    input_items.extend(response_input_items(req));
+    match patch_body_input_and_remove_previous_response_id(body, input_items.clone()) {
+        Ok(updated) => {
+            *body = updated;
+            req.previous_response_id = None;
+            if let Some(trace) = route_trace.as_mut() {
+                patch_router_native_bridge_trace(trace, &previous_response_id, input_items.len());
+            }
+        }
+        Err(err) => {
+            warn!(
+                previous_response_id = %previous_response_id,
+                error = %err,
+                "无法桥接本地 previous_response_id 到原生 Responses，继续使用原请求体"
+            );
+        }
+    }
 }
 
 fn sanitize_client_proxy_body(
@@ -4279,8 +6901,9 @@ fn ensure_minimax_glue_adapter(endpoint: &EndpointConfig) -> Result<(), Box<Resp
 async fn handle_responses_bypass(
     state: AppState,
     mut req: ResponsesRequest,
-    body: axum::body::Bytes,
+    mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
+    selected_endpoint: Option<AccountRouteSelection>,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -4299,8 +6922,31 @@ async fn handle_responses_bypass(
 
     // Responses 直连用于转发 Codex 原生请求，默认保留请求体里的模型名。
     // Chat 兼容端点才需要 Responses -> Chat 的模型映射。
-    let (account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
-    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
+    let mut route_trace = selected_endpoint
+        .as_ref()
+        .and_then(|selection| selection.route_trace.clone());
+    let requires_computer = selected_endpoint
+        .as_ref()
+        .is_some_and(|selection| selection.requires_computer);
+    let (account, endpoint) = match selected_endpoint {
+        Some(selection) => (selection.account, selection.endpoint),
+        None => active_account_endpoint_for_route(&state, route_surface, Some(&req.model)).await,
+    };
+    let mut history_context =
+        history_context_for(&account, &endpoint, route_surface.responses_path());
+    if let Some(trace) = route_trace.clone() {
+        history_context.route_trace = trace;
+    }
+    bridge_previous_response_for_native_turn(
+        &state,
+        &mut req,
+        &mut body,
+        requires_computer,
+        &mut route_trace,
+    );
+    if let Some(trace) = route_trace {
+        history_context.route_trace = trace;
+    }
     let fast_service_tier_status = apply_endpoint_fast_service_tier(&mut req, &endpoint);
     match fast_service_tier_status {
         FastServiceTierStatus::Injected => tracing::info!(
@@ -4423,6 +7069,7 @@ async fn handle_responses_bypass(
     );
 
     let response_id = state.sessions.new_id();
+    let runtime_feedback = runtime_feedback_for_account(&state, &account);
     let bypass = BypassArgs {
         state: state.clone(),
         body,
@@ -4437,6 +7084,7 @@ async fn handle_responses_bypass(
         model,
         requested_service_tier: req.service_tier.clone(),
         history_context,
+        runtime_feedback,
     };
 
     let start = std::time::Instant::now();
@@ -4540,16 +7188,33 @@ async fn handle_codex_official(
     mut req: ResponsesRequest,
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
+    selected_endpoint: Option<AccountRouteSelection>,
 ) -> Response {
     let original_model = req.model.clone();
-    let Some((mut account, endpoint)) =
-        codex_official_account_endpoint(&state, &original_model, route_surface).await
-    else {
-        return codex_official_pool_unavailable_response();
+    let route_trace = selected_endpoint
+        .as_ref()
+        .and_then(|selection| selection.route_trace.clone());
+    let explicit_model = selected_endpoint
+        .as_ref()
+        .and_then(|selection| selection.explicit_model.clone());
+    let (mut account, endpoint) = match selected_endpoint {
+        Some(selection) => (selection.account, selection.endpoint),
+        None => {
+            let Some(selection) =
+                codex_official_account_endpoint(&state, &original_model, route_surface).await
+            else {
+                return codex_official_pool_unavailable_response();
+            };
+            selection
+        }
     };
-    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
+    let mut history_context =
+        history_context_for(&account, &endpoint, route_surface.responses_path());
+    if let Some(trace) = route_trace {
+        history_context.route_trace = trace;
+    }
     let model_map = endpoint.model_map.clone();
-    let mapped_model = resolve_model(&original_model, &model_map);
+    let mapped_model = explicit_model.unwrap_or_else(|| resolve_model(&original_model, &model_map));
     req.model = mapped_model.clone();
     match normalize_codex_official_body(&body, &mapped_model) {
         Ok(updated) => body = updated,
@@ -4717,6 +7382,8 @@ async fn handle_codex_official(
                 start,
                 upstream_url: url,
                 http_status: status,
+                retry_after_secs: retry_after,
+                runtime_feedback: None,
             },
         );
         return Response::builder()
@@ -4888,57 +7555,19 @@ async fn update_runtime_result(
     message: String,
     retry_after_secs: Option<u64>,
 ) {
-    let now = crate::accounts::now_secs();
-    let message_for_persist = message.clone();
-    let mut active_update = None;
-    {
-        let mut store = state.account_store.write().await;
-        if let Some(account) = store
-            .accounts
-            .iter_mut()
-            .find(|candidate| candidate.id == account_id)
-        {
-            if status.is_success() {
-                account.record_runtime_success(model, now);
-            } else {
-                account.record_runtime_failure(
-                    model,
-                    status.as_u16(),
-                    message.clone(),
-                    retry_after_secs,
-                    now,
-                );
-            }
-            active_update = Some(account.clone());
-        }
-    }
-    if let Some(account) = active_update {
-        if state.active_account.read().await.id == account.id {
-            *state.active_account.write().await = account;
-        }
-    }
-    if let Err(err) = crate::accounts::with_account_store(state.data_dir.as_ref(), |store| {
-        if let Some(account) = store
-            .accounts
-            .iter_mut()
-            .find(|candidate| candidate.id == account_id)
-        {
-            if status.is_success() {
-                account.record_runtime_success(model, now);
-            } else {
-                account.record_runtime_failure(
-                    model,
-                    status.as_u16(),
-                    message_for_persist,
-                    retry_after_secs,
-                    now,
-                );
-            }
-        }
-        Ok(())
-    }) {
-        warn!("保存账号运行态失败: {err}");
-    }
+    crate::runtime_feedback::record_runtime_result(
+        state.data_dir.clone(),
+        state.account_store.clone(),
+        state.active_account.clone(),
+        crate::runtime_feedback::RuntimeFeedbackRecord {
+            account_id: account_id.to_string(),
+            model: model.to_string(),
+            status_code: status.as_u16(),
+            message,
+            retry_after_secs,
+        },
+    )
+    .await;
 }
 
 fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {
@@ -4995,6 +7624,17 @@ fn codex_error_message(status: StatusCode, body: &[u8]) -> String {
         .unwrap_or(fallback)
 }
 
+fn runtime_message_from_response_body(status: StatusCode, body: &Value) -> String {
+    let fallback = format!("HTTP {}", status.as_u16());
+    body.get("error")
+        .and_then(|error| error.get("message").or(Some(error)))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or(fallback)
+}
+
 async fn bypass_stream_forward(
     BypassArgs {
         state,
@@ -5010,6 +7650,7 @@ async fn bypass_stream_forward(
         model,
         requested_service_tier,
         history_context,
+        runtime_feedback,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -5047,6 +7688,14 @@ async fn bypass_stream_forward(
         let Some(request) = builder.try_clone() else {
             let message = "failed to clone upstream request builder".to_string();
             error!("bypass stream upstream request build error: {message}");
+            runtime_feedback
+                .failure(
+                    &model,
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    message.clone(),
+                    None,
+                )
+                .await;
             let _ = state
                 .request_history
                 .record(record_from_context(
@@ -5084,6 +7733,14 @@ async fn bypass_stream_forward(
                     continue;
                 }
                 error!("bypass stream upstream exhausted retries: {e}");
+                runtime_feedback
+                    .failure(
+                        &model,
+                        StatusCode::BAD_GATEWAY.as_u16(),
+                        format!("connection error: {e}"),
+                        None,
+                    )
+                    .await;
                 let _ = state
                     .request_history
                     .record(record_from_context(
@@ -5110,6 +7767,7 @@ async fn bypass_stream_forward(
     };
 
     let status = resp.status();
+    let retry_after = retry_after_secs(resp.headers());
     let x_request_id = resp
         .headers()
         .get("x-request-id")
@@ -5123,7 +7781,16 @@ async fn bypass_stream_forward(
         .to_string();
 
     if !status.is_success() {
+        let retry_after = retry_after_secs(resp.headers());
         let error_body = resp.text().await.unwrap_or_default();
+        runtime_feedback
+            .failure(
+                &model,
+                status.as_u16(),
+                format!("HTTP {}", status.as_u16()),
+                retry_after,
+            )
+            .await;
         let _ = state
             .request_history
             .record(record_from_context(
@@ -5175,6 +7842,8 @@ async fn bypass_stream_forward(
             start,
             upstream_url: url,
             http_status: status,
+            retry_after_secs: retry_after,
+            runtime_feedback: Some(runtime_feedback),
         },
     );
     let mut resp = Response::builder()
@@ -5206,6 +7875,7 @@ async fn bypass_send_request(
         model,
         requested_service_tier,
         history_context,
+        runtime_feedback,
     }: BypassArgs,
 ) -> Response {
     let url = format!("{}{}", join_base(&upstream_url), endpoint_path);
@@ -5241,6 +7911,14 @@ async fn bypass_send_request(
         let Some(request) = builder.try_clone() else {
             let message = "failed to clone upstream request builder";
             error!("bypass non-stream upstream request build error: {message}");
+            runtime_feedback
+                .failure(
+                    &model,
+                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    message,
+                    None,
+                )
+                .await;
             if store_response {
                 state.sessions.save_response(
                     response_id.clone(),
@@ -5297,6 +7975,14 @@ async fn bypass_send_request(
     match result {
         Err(e) => {
             error!("bypass non-stream upstream exhausted retries: {e}");
+            runtime_feedback
+                .failure(
+                    &model,
+                    StatusCode::BAD_GATEWAY.as_u16(),
+                    format!("connection error: {e}"),
+                    None,
+                )
+                .await;
             if store_response {
                 state.sessions.save_response(
                     response_id.clone(),
@@ -5337,10 +8023,19 @@ async fn bypass_send_request(
         }
         Ok(resp) => {
             let status = resp.status();
+            let retry_after = retry_after_secs(resp.headers());
             let response_body: Value = match resp.json().await {
                 Ok(v) => v,
                 Err(e) => {
                     error!("bypass non-stream JSON parse: {e}");
+                    runtime_feedback
+                        .failure(
+                            &model,
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            format!("failed to parse upstream response: {e}"),
+                            None,
+                        )
+                        .await;
                     return (
                         StatusCode::BAD_GATEWAY,
                         Json(json!({
@@ -5402,7 +8097,7 @@ async fn bypass_send_request(
                     .record(record_from_context(
                         &history_context,
                         response_id,
-                        model,
+                        model.clone(),
                         if status.is_success() {
                             "completed"
                         } else {
@@ -5417,6 +8112,18 @@ async fn bypass_send_request(
                         cache_hit,
                     ))
                     .await;
+                if status.is_success() {
+                    runtime_feedback.success(&model).await;
+                } else {
+                    runtime_feedback
+                        .failure(
+                            &model,
+                            status.as_u16(),
+                            runtime_message_from_response_body(status, &response_body),
+                            retry_after,
+                        )
+                        .await;
+                }
             }
 
             (
@@ -5439,6 +8146,7 @@ async fn handle_responses_inner(
     local_output_prefix_items: Vec<Value>,
     local_input_suffix_items: Vec<Value>,
     route_surface: AccountRouteSurface,
+    selected_endpoint: Option<AccountRouteSelection>,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -5461,10 +8169,26 @@ async fn handle_responses_inner(
     let original_model = req.model.clone();
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
-    let (account, endpoint) = active_account_endpoint_for_route(&state, route_surface).await;
-    let history_context = history_context_for(&account, &endpoint, route_surface.responses_path());
+    let route_trace = selected_endpoint
+        .as_ref()
+        .and_then(|selection| selection.route_trace.clone());
+    let explicit_model = selected_endpoint
+        .as_ref()
+        .and_then(|selection| selection.explicit_model.clone());
+    let (account, endpoint) = match selected_endpoint {
+        Some(selection) => (selection.account, selection.endpoint),
+        None => {
+            active_account_endpoint_for_route(&state, route_surface, Some(&original_model)).await
+        }
+    };
+    let mut history_context =
+        history_context_for(&account, &endpoint, route_surface.responses_path());
+    if let Some(trace) = route_trace {
+        history_context.route_trace = trace;
+    }
+    let runtime_feedback = runtime_feedback_for_account(&state, &account);
     let model_map = endpoint.model_map.clone();
-    let mapped_model = resolve_model(&original_model, &model_map);
+    let mapped_model = explicit_model.unwrap_or_else(|| resolve_model(&original_model, &model_map));
     let store_response = req.store.unwrap_or(true);
     let mut response_extra = response_extra_fields(&req, conversation_id.as_deref());
     if !local_output_prefix_items.is_empty() {
@@ -5773,6 +8497,7 @@ async fn handle_responses_inner(
             response_extra,
             req: &req,
             history_context: history_context.clone(),
+            runtime_feedback: runtime_feedback.clone(),
             start: Instant::now(),
         })
         .await;
@@ -5836,6 +8561,7 @@ async fn handle_responses_inner(
         let bg_custom_headers = endpoint.custom_headers.clone();
         let bg_timeout = endpoint.request_timeout_secs;
         let bg_max_retries = endpoint.max_retries;
+        let bg_runtime_feedback = runtime_feedback.clone();
         let handle = tokio::spawn(async move {
             if store_response {
                 if let Some(mut in_progress) = bg_state.sessions.get_response(&bg_id) {
@@ -5858,6 +8584,7 @@ async fn handle_responses_inner(
                 response_extra: response_extra.clone(),
                 req: &bg_req,
                 history_context: history_context.clone(),
+                runtime_feedback: bg_runtime_feedback,
                 start: Instant::now(),
             })
             .await;
@@ -5968,6 +8695,7 @@ async fn handle_responses_inner(
             allow_missing_done: providers::profile_for_account(&account)
                 .capabilities
                 .allow_missing_done,
+            runtime_feedback: runtime_feedback.clone(),
             start,
         });
         let mut resp = sse.into_response();
@@ -6002,6 +8730,7 @@ async fn handle_responses_inner(
             response_extra,
             req: &req,
             history_context: history_context.clone(),
+            runtime_feedback,
             start,
         })
         .await;
@@ -6326,6 +9055,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         response_extra,
         req,
         history_context,
+        runtime_feedback,
         start,
     } = args;
     let mut builder = state
@@ -6368,6 +9098,8 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 message: "failed to clone upstream request builder".into(),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 history_context: history_context.clone(),
+                runtime_feedback: runtime_feedback.clone(),
+                retry_after_secs: None,
             })
             .await;
         };
@@ -6389,6 +9121,14 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
     match result {
         Err(e) => {
             error!("upstream error: {e}");
+            runtime_feedback
+                .failure(
+                    &model,
+                    StatusCode::BAD_GATEWAY.as_u16(),
+                    e.to_string(),
+                    None,
+                )
+                .await;
             if store_response {
                 save_response_unless_cancelled(
                     &state.sessions,
@@ -6438,8 +9178,12 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         }
         Ok(r) if !r.status().is_success() => {
             let status = r.status();
+            let retry_after = retry_after_secs(r.headers());
             let body = r.text().await.unwrap_or_default();
             error!("upstream {}: {}", status.as_u16(), body);
+            runtime_feedback
+                .failure(&model, status.as_u16(), body.clone(), retry_after)
+                .await;
             if store_response {
                 save_response_unless_cancelled(
                     &state.sessions,
@@ -6496,6 +9240,14 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         Ok(r) => match r.json::<ChatResponse>().await {
             Err(e) => {
                 error!("parse error: {e}");
+                runtime_feedback
+                    .failure(
+                        &model,
+                        StatusCode::BAD_GATEWAY.as_u16(),
+                        format!("failed to parse upstream response: {e}"),
+                        None,
+                    )
+                    .await;
                 if store_response {
                     save_response_unless_cancelled(
                         &state.sessions,
@@ -6534,6 +9286,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
             Ok(chat_resp) => {
+                runtime_feedback.success(&model).await;
                 // Log token usage including reasoning and cache stats
                 let usage_str = format_usage(chat_resp.usage.as_ref());
                 info!("↑ done {}", usage_str);
@@ -6666,6 +9419,7 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
         response_extra,
         req,
         history_context,
+        runtime_feedback,
         start,
     } = args;
 
@@ -6711,6 +9465,8 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 message: "failed to clone anthropic request builder".into(),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 history_context: history_context.clone(),
+                runtime_feedback: runtime_feedback.clone(),
+                retry_after_secs: None,
             })
             .await;
         };
@@ -6744,11 +9500,14 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 message: format!("anthropic upstream connection error: {e}"),
                 status: StatusCode::BAD_GATEWAY,
                 history_context: history_context.clone(),
+                runtime_feedback: runtime_feedback.clone(),
+                retry_after_secs: None,
             })
             .await
         }
         Ok(r) if !r.status().is_success() => {
             let status = r.status();
+            let retry_after = retry_after_secs(r.headers());
             let body_text = r.text().await.unwrap_or_default();
             error!("anthropic upstream {}: {}", status.as_u16(), body_text);
             upstream_failure_response(UpstreamFailureArgs {
@@ -6764,6 +9523,8 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                 message: body_text,
                 status: StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
                 history_context: history_context.clone(),
+                runtime_feedback: runtime_feedback.clone(),
+                retry_after_secs: retry_after,
             })
             .await
         }
@@ -6783,10 +9544,13 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                     message: e.to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     history_context: history_context.clone(),
+                    runtime_feedback: runtime_feedback.clone(),
+                    retry_after_secs: None,
                 })
                 .await
             }
             Ok(value) => {
+                runtime_feedback.success(&model).await;
                 let chat_resp = anthropic::response_to_chat(value);
                 let usage_str = format_usage(chat_resp.usage.as_ref());
                 info!("↑ anthropic done {}", usage_str);
@@ -6878,7 +9642,12 @@ async fn upstream_failure_response(args: UpstreamFailureArgs<'_>) -> Response {
         message,
         status,
         history_context,
+        runtime_feedback,
+        retry_after_secs,
     } = args;
+    runtime_feedback
+        .failure(&model, status.as_u16(), message.clone(), retry_after_secs)
+        .await;
     if store_response {
         save_response_unless_cancelled(
             &state.sessions,
@@ -7553,6 +10322,41 @@ mod tests {
     }
 
     #[test]
+    fn dex_router_masks_sensitive_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            header::HeaderValue::from_static("Bearer secret-token"),
+        );
+        headers.insert(
+            header::HeaderName::from_static("chatgpt-account-id"),
+            header::HeaderValue::from_static("acct-secret"),
+        );
+        headers.insert(
+            header::USER_AGENT,
+            header::HeaderValue::from_static("codex_desktop/1.0"),
+        );
+
+        let masked = masked_router_headers(&headers);
+
+        assert_eq!(masked["authorization"], "<redacted>");
+        assert_eq!(masked["chatgpt-account-id"], "<redacted>");
+        assert_eq!(masked["user-agent"], "codex_desktop/1.0");
+    }
+
+    #[test]
+    fn dex_router_uses_desktop_surface() {
+        assert_eq!(
+            AccountRouteSurface::CodexRouter.explicit_surface(),
+            Some(AccountClientSurface::Desktop)
+        );
+        assert_eq!(
+            AccountRouteSurface::CodexRouter.responses_path(),
+            "/codex-router/v1/responses"
+        );
+    }
+
+    #[test]
     fn test_response_input_items_defaults_ids() {
         let req = ResponsesRequest {
             model: "gpt-5".into(),
@@ -7681,6 +10485,926 @@ mod tests {
             active_endpoint_id: Some(format!("ep-{active_id}")),
             active_by_surface: HashMap::new(),
         }
+    }
+
+    fn router_chat_account(
+        id: &str,
+        pool: &str,
+        priority: i64,
+        weight: u32,
+        mapped_model: Option<&str>,
+    ) -> Account {
+        let model_map = mapped_model
+            .map(|model| json!({"gpt-5": model}))
+            .unwrap_or_else(|| json!({}));
+        let mut account: Account = serde_json::from_value(json!({
+            "id": id,
+            "name": format!("Router {id}"),
+            "provider": "openrouter",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://openrouter.ai/api/v1",
+            "api_key": format!("token-{id}"),
+            "endpoints": [{
+                "id": format!("ep-{id}"),
+                "name": "Chat",
+                "kind": "open_ai_chat",
+                "base_url": "https://openrouter.ai/api/v1",
+                "model_map": model_map
+            }]
+        }))
+        .unwrap();
+        crate::accounts::set_account_routing_options(
+            &mut account,
+            crate::accounts::AccountRoutingOptions {
+                pool: pool.into(),
+                priority,
+                weight,
+                ..Default::default()
+            },
+        );
+        account
+    }
+
+    fn router_responses_account(id: &str, pool: &str, priority: i64, weight: u32) -> Account {
+        let mut account: Account = serde_json::from_value(json!({
+            "id": id,
+            "name": format!("Router {id}"),
+            "provider": "openai",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://api.example.com/v1",
+            "api_key": format!("token-{id}"),
+            "endpoints": [{
+                "id": format!("ep-{id}"),
+                "name": "Responses",
+                "kind": "open_ai_responses",
+                "base_url": "https://api.example.com/v1"
+            }]
+        }))
+        .unwrap();
+        crate::accounts::set_account_routing_options(
+            &mut account,
+            crate::accounts::AccountRoutingOptions {
+                pool: pool.into(),
+                priority,
+                weight,
+                ..Default::default()
+            },
+        );
+        account
+    }
+
+    fn router_official_anchor_account(id: &str, pool: &str, priority: i64, weight: u32) -> Account {
+        let mut account: Account = serde_json::from_value(json!({
+            "id": id,
+            "name": format!("Official {id}"),
+            "provider": "codex",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://chatgpt.com/backend-api/codex",
+            "api_key": format!("token-{id}"),
+            "auth_mode": "oauth",
+            "endpoints": [{
+                "id": format!("ep-{id}"),
+                "name": "Codex 官方",
+                "kind": "codex_official",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "model_map": {
+                    "gpt-5": format!("official-{id}")
+                }
+            }]
+        }))
+        .unwrap();
+        crate::accounts::set_account_routing_options(
+            &mut account,
+            crate::accounts::AccountRoutingOptions {
+                pool: pool.into(),
+                priority,
+                weight,
+                ..Default::default()
+            },
+        );
+        account
+    }
+
+    fn router_store(accounts: Vec<Account>, active_id: &str) -> AccountStore {
+        let mut accounts = accounts;
+        for account in &mut accounts {
+            if account.id == active_id {
+                let mut routing = crate::accounts::account_routing_options(account);
+                routing.anchor_enabled = Some(true);
+                crate::accounts::set_account_routing_options(account, routing);
+            }
+        }
+        let mut store = AccountStore {
+            version: crate::accounts::ACCOUNT_STORE_VERSION,
+            accounts,
+            active_id: Some(active_id.into()),
+            active_account_id: Some(active_id.into()),
+            active_endpoint_id: Some(format!("ep-{active_id}")),
+            active_by_surface: HashMap::new(),
+        };
+        store.set_active_for_surface(
+            &AccountClientKind::Codex,
+            &AccountClientSurface::Desktop,
+            active_id.into(),
+            Some(format!("ep-{active_id}")),
+        );
+        store
+    }
+
+    fn responses_request_with_tools(tools: Vec<Value>) -> ResponsesRequest {
+        ResponsesRequest {
+            model: "gpt-5".into(),
+            input: ResponsesInput::Messages(vec![]),
+            previous_response_id: None,
+            tools,
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_output_tokens: None,
+            system: None,
+            instructions: None,
+            reasoning: None,
+            tool_choice: None,
+            store: None,
+            metadata: None,
+            truncation: None,
+            background: None,
+            conversation: None,
+            include: None,
+            include_obfuscation: None,
+            max_tool_calls: None,
+            parallel_tool_calls: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            safety_identifier: None,
+            service_tier: None,
+            stream_options: None,
+            text: None,
+            top_logprobs: None,
+            user: None,
+        }
+    }
+
+    fn responses_request_with_tool_choice(
+        tools: Vec<Value>,
+        tool_choice: Value,
+    ) -> ResponsesRequest {
+        let mut req = responses_request_with_tools(tools);
+        req.tool_choice = Some(tool_choice);
+        req
+    }
+
+    #[test]
+    fn dex_router_selects_highest_priority_account_in_active_pool() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let high = router_chat_account("high", "pool-a", 10, 1, Some("model-high"));
+        let other_pool = router_chat_account("other", "pool-b", 100, 1, Some("model-other"));
+        let store = router_store(vec![active, high, other_pool], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "high");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-high");
+    }
+
+    #[test]
+    fn dex_router_uses_official_account_as_anchor_only_by_default() {
+        let official = router_official_anchor_account("official", "pool-a", 100, 1);
+        let executor = router_chat_account("executor", "pool-a", 10, 1, Some("model-executor"));
+        let store = router_store(vec![official, executor], "official");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "executor");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-executor");
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_000);
+        assert_eq!(snapshot["anchor"]["account_id"], "official");
+        assert_eq!(snapshot["anchor"]["anchor_enabled"], true);
+        assert_eq!(snapshot["anchor"]["execution_enabled"], false);
+        assert_eq!(snapshot["selected"]["account_id"], "executor");
+        let official_candidate = snapshot["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "official")
+            .unwrap();
+        assert_eq!(official_candidate["reason"], "execution_disabled");
+        assert_eq!(official_candidate["eligible"], false);
+    }
+
+    #[test]
+    fn dex_router_reuses_external_codex_login_headers_as_anchor() {
+        let executor =
+            router_chat_account("executor", "codex-official", 10, 1, Some("model-executor"));
+        let store = AccountStore {
+            version: crate::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![executor],
+            active_id: None,
+            active_account_id: None,
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+        assert!(select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).is_none());
+
+        let external_anchor = CodexRouterExternalAnchor {
+            account_id: Some("acct_external".into()),
+        };
+        let store = codex_router_store_with_external_anchor(store, Some(&external_anchor));
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "executor");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-executor");
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_000);
+        assert_eq!(
+            snapshot["anchor"]["account_id"],
+            "__codex_desktop_login_anchor__"
+        );
+        assert_eq!(snapshot["anchor"]["execution_enabled"], false);
+        assert_eq!(snapshot["selected"]["account_id"], "executor");
+    }
+
+    #[test]
+    fn dex_router_prefers_healthier_account_at_same_priority() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let mut failing = router_chat_account("failing", "pool-a", 20, 1, Some("model-failing"));
+        failing
+            .runtime_state
+            .recent_requests
+            .push(crate::accounts::AccountRecentRequestBucket {
+                bucket_start: 1_000,
+                success: 0,
+                failed: 4,
+            });
+        let mut healthy = router_chat_account("healthy", "pool-a", 20, 1, Some("model-healthy"));
+        healthy
+            .runtime_state
+            .recent_requests
+            .push(crate::accounts::AccountRecentRequestBucket {
+                bucket_start: 1_000,
+                success: 4,
+                failed: 0,
+            });
+        let store = router_store(vec![active, failing, healthy], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_200, 0, None).unwrap();
+
+        assert_eq!(account.id, "healthy");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-healthy");
+    }
+
+    #[test]
+    fn dex_router_skips_cooled_account() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let mut cooled = router_chat_account("cooled", "pool-a", 100, 1, Some("model-cooled"));
+        cooled.runtime_state.next_retry_after = Some(2_000);
+        let ready = router_chat_account("ready", "pool-a", 10, 1, Some("model-ready"));
+        let store = router_store(vec![active, cooled, ready], "active");
+
+        let (account, _) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "ready");
+    }
+
+    #[test]
+    fn dex_router_keeps_legacy_transient_5xx_cooldown_eligible() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let mut transient =
+            router_chat_account("transient", "pool-a", 100, 1, Some("model-transient"));
+        transient.runtime_state.status = AccountRuntimeStatus::CoolingDown;
+        transient.runtime_state.status_message = "HTTP 502".into();
+        transient.runtime_state.next_retry_after = Some(2_000);
+        transient.runtime_state.model_states.insert(
+            "model-transient".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::CoolingDown,
+                status_message: "HTTP 502".into(),
+                next_retry_after: Some(2_000),
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        let ready = router_chat_account("ready", "pool-a", 10, 1, Some("model-ready"));
+        let store = router_store(vec![active, transient, ready], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "transient");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-transient");
+    }
+
+    #[test]
+    fn dex_router_skips_model_level_cooldown() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let mut model_cooled =
+            router_chat_account("model-cooled", "pool-a", 100, 1, Some("model-cooled"));
+        model_cooled.runtime_state.model_states.insert(
+            "model-cooled".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::CoolingDown,
+                status_message: "模型冷却".into(),
+                next_retry_after: Some(2_000),
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        let ready = router_chat_account("ready", "pool-a", 10, 1, Some("model-ready"));
+        let store = router_store(vec![active, model_cooled, ready], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "ready");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-ready");
+    }
+
+    #[test]
+    fn dex_router_requires_mapping_for_chat_but_allows_responses_direct() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let unmapped = router_chat_account("unmapped", "pool-a", 100, 1, None);
+        let responses = router_responses_account("responses", "pool-a", 50, 1);
+        let store = router_store(vec![active, unmapped, responses], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "responses");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+    }
+
+    #[test]
+    fn dex_router_native_direct_gpt_model_skips_chat_mapping() {
+        let mut chat = router_chat_account("deepseek", "pool-a", 100, 1, Some("model-chat"));
+        chat.provider = "deepseek".into();
+        chat.endpoints[0]
+            .model_map
+            .insert("gpt-5.5".into(), "deepseek-v4-pro".into());
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![chat, responses], "deepseek");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5.5", 1_000, 0, None).unwrap();
+        assert_eq!(account.id, "responses");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5.5", 1_000);
+        let chat = snapshot["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "deepseek")
+            .unwrap();
+        assert_eq!(chat["reason"], "native_direct_requires_gpt_account");
+    }
+
+    #[test]
+    fn dex_router_explicit_account_model_selects_exact_account_without_model_map() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let target = router_chat_account("target", "pool-b", 0, 1, Some("mapped-target"));
+        let slug = codex_config::encode_dex_account_model_slug("target", "ep-target", "real-model");
+        let store = router_store(vec![active, target], "active");
+
+        let selection = resolve_explicit_dex_account_model_selection(&store, &slug, None)
+            .unwrap()
+            .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "target");
+        assert_eq!(selection.endpoint.id, "ep-target");
+        assert_eq!(selection.explicit_model.as_deref(), Some("real-model"));
+        assert_eq!(trace["explicit_model_selection"], true);
+        assert_eq!(trace["upstream_model"], "real-model");
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_uses_native_helper_for_computer_use() {
+        let mut active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        active.endpoints[0]
+            .model_map
+            .insert("gpt-5.5".into(), "deepseek-v4-pro".into());
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            requires_computer: true,
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["main_account_id"], "active");
+        assert_eq!(trace["main_selected_model"], "deepseek-v4-pro");
+        assert_eq!(trace["upstream_model"], "gpt-5.5");
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_rejects_computer_use_without_native_helper() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active], "active");
+        let requirements = RouterToolRequirements {
+            requires_computer: true,
+            ..Default::default()
+        };
+
+        let response = match resolve_explicit_dex_account_model_selection(
+            &store,
+            &slug,
+            Some(&requirements),
+        ) {
+            Ok(_) => panic!("Chat 直选账号没有原生能力账号时应返回 409"),
+            Err(response) => response,
+        };
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_allows_available_computer_tool_for_plain_text() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let slug = codex_config::encode_dex_account_model_slug("active", "ep-active", "real-model");
+        let store = router_store(vec![active], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: false,
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.explicit_model.as_deref(), Some("real-model"));
+    }
+
+    #[test]
+    fn dex_router_status_reports_skip_reasons() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let unmapped = router_chat_account("unmapped", "pool-a", 100, 1, None);
+        let other_pool = router_chat_account("other", "pool-b", 100, 1, Some("model-other"));
+        let store = router_store(vec![active, unmapped, other_pool], "active");
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_000);
+        let candidates = snapshot["candidates"].as_array().unwrap();
+
+        assert_eq!(snapshot["anchor"]["pool"], "pool-a");
+        assert_eq!(snapshot["selected"]["account_id"], "active");
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["account_id"] == "unmapped"
+                && candidate["reason"] == "no_supported_endpoint"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate["account_id"] == "other"
+                && candidate["reason"] == "pool_mismatch"));
+    }
+
+    #[test]
+    fn dex_router_trace_records_selection_context() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let high = router_chat_account("high", "pool-a", 10, 2, Some("model-high"));
+        let other_pool = router_chat_account("other", "pool-b", 100, 1, Some("model-other"));
+        let store = router_store(vec![active, high, other_pool], "active");
+
+        let (selection, trace) = dex_router_trace_for_selection(&store, "gpt-5", 1_000, 7, None);
+        let (account, endpoint) = selection.unwrap();
+        let value: Value = serde_json::from_str(&trace).unwrap();
+
+        assert_eq!(account.id, "high");
+        assert_eq!(endpoint.model_map["gpt-5"], "model-high");
+        assert_eq!(value["trace_version"], 1);
+        assert_eq!(value["route_surface"], "codex_router");
+        assert_eq!(value["cursor"], 7);
+        assert_eq!(value["anchor"]["account_id"], "active");
+        assert_eq!(value["selected"]["account_id"], "high");
+        assert_eq!(value["selected"]["mapped_model"], "model-high");
+        assert_eq!(value["selected"]["health_score"], 80);
+        assert_eq!(
+            value["selected"]["capabilities"]["protocol"],
+            "chat_translate"
+        );
+        assert_eq!(value["selected"]["capabilities"]["tool_mode"], "translated");
+        assert_eq!(value["selected"]["capabilities"]["image_generation"], false);
+        assert_eq!(value["candidate_count"], 3);
+        assert_eq!(value["eligible_count"], 2);
+        assert!(value["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["account_id"] == "other"
+                && candidate["reason"] == "pool_mismatch"));
+    }
+
+    #[test]
+    fn dex_router_status_reports_runtime_skip_details() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let mut account_cooled =
+            router_chat_account("account-cooled", "pool-a", 100, 1, Some("model-account"));
+        account_cooled.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
+        account_cooled.runtime_state.status_message = "账号额度耗尽".into();
+        account_cooled.runtime_state.next_retry_after = Some(2_000);
+
+        let mut model_cooled =
+            router_chat_account("model-cooled", "pool-a", 90, 1, Some("model-cooling"));
+        model_cooled.runtime_state.model_states.insert(
+            "model-cooling".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::CoolingDown,
+                status_message: "模型暂时不可用".into(),
+                next_retry_after: Some(1_800),
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        let store = router_store(vec![active, account_cooled, model_cooled], "active");
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_000);
+        let candidates = snapshot["candidates"].as_array().unwrap();
+
+        let account = candidates
+            .iter()
+            .find(|candidate| candidate["account_id"] == "account-cooled")
+            .unwrap();
+        assert_eq!(account["reason"], "account_quota_cooling");
+        assert_eq!(account["runtime_message"], "账号额度耗尽");
+        assert_eq!(account["runtime_next_retry_after"], 2_000);
+
+        let model = candidates
+            .iter()
+            .find(|candidate| candidate["account_id"] == "model-cooled")
+            .unwrap();
+        assert_eq!(model["reason"], "model_cooling_down");
+        assert_eq!(model["model_runtime_message"], "模型暂时不可用");
+        assert_eq!(model["model_runtime_next_retry_after"], 1_800);
+    }
+
+    #[test]
+    fn dex_router_status_reports_capability_matrix() {
+        let active = router_chat_account("active", "pool-a", 0, 1, Some("model-active"));
+        let responses = router_responses_account("responses", "pool-a", 20, 1);
+        let store = router_store(vec![active, responses], "active");
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_000);
+        let candidates = snapshot["candidates"].as_array().unwrap();
+        let responses = candidates
+            .iter()
+            .find(|candidate| candidate["account_id"] == "responses")
+            .unwrap();
+
+        assert_eq!(responses["capabilities"]["protocol"], "responses_direct");
+        assert_eq!(responses["capabilities"]["tool_mode"], "native");
+        assert_eq!(responses["capabilities"]["image_generation"], true);
+        assert_eq!(responses["capabilities"]["vision"], "off");
+    }
+
+    #[test]
+    fn dex_router_status_scenarios_report_tool_specific_selection() {
+        let mut active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
+        active.provider = "deepseek".into();
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+
+        let scenarios = dex_router_status_scenarios(&store, "gpt-5", 1_000);
+        let scenarios = scenarios.as_array().unwrap();
+        let web = scenarios
+            .iter()
+            .find(|scenario| scenario["scenario_id"] == "web")
+            .unwrap();
+        let native = scenarios
+            .iter()
+            .find(|scenario| scenario["scenario_id"] == "native")
+            .unwrap();
+
+        assert_eq!(web["selected"]["account_id"], "active");
+        assert_eq!(web["tool_requirements"]["web_search"], true);
+        assert_eq!(native["selected"]["account_id"], "responses");
+        assert_eq!(native["tool_requirements"]["image_generation"], true);
+        assert_eq!(native["tool_requirements"]["computer"], true);
+        let chat = native["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "active")
+            .unwrap();
+        assert_eq!(chat["reason"], "capability_mismatch");
+    }
+
+    #[test]
+    fn dex_router_status_reports_stream_preflight_risk() {
+        let mut risky = router_chat_account("risky", "pool-a", 100, 1, Some("model-risky"));
+        risky
+            .runtime_state
+            .recent_requests
+            .push(crate::accounts::AccountRecentRequestBucket {
+                bucket_start: 1_200,
+                success: 0,
+                failed: 2,
+            });
+        let healthy = router_chat_account("healthy", "pool-a", 10, 1, Some("model-healthy"));
+        let store = router_store(vec![risky, healthy], "risky");
+
+        let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_200);
+
+        assert_eq!(snapshot["selected"]["account_id"], "risky");
+        assert_eq!(snapshot["stream_preflight"]["action"], "rerouted");
+        assert_eq!(
+            snapshot["stream_preflight"]["reason"],
+            "recent_failure_rate"
+        );
+        assert_eq!(snapshot["stream_preflight"]["to"]["account_id"], "healthy");
+        let risky_candidate = snapshot["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "risky")
+            .unwrap();
+        assert_eq!(
+            risky_candidate["stream_preflight_risk"],
+            "recent_failure_rate"
+        );
+    }
+
+    #[test]
+    fn router_status_tools_from_query_maps_known_slugs() {
+        let tools =
+            router_status_tools_from_query(Some("web,image,computer,mcp,file,function,unknown"));
+        let requirements = router_tool_requirements_for_tools(&tools, None);
+
+        assert_eq!(tools.len(), 6);
+        assert!(requirements.has_web_search);
+        assert!(requirements.has_image_generation);
+        assert!(requirements.has_computer);
+        assert!(requirements.has_mcp);
+        assert!(requirements.has_file_search);
+        assert!(requirements.has_function_tools);
+        assert!(!requirements.requires_function_tools);
+        assert!(!requirements.requires_web_search);
+        assert!(!requirements.requires_file_search);
+        assert!(!requirements.requires_mcp);
+        assert!(!requirements.requires_image_generation);
+        assert!(requirements.requires_computer);
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_detects_codex_tool_families() {
+        let req = responses_request_with_tools(vec![
+            json!({"type": "function", "name": "read_file"}),
+            json!({"type": "web_search_preview"}),
+            json!({"type": "file_search"}),
+            json!({"type": "remote_mcp", "server_label": "github"}),
+            json!({"type": "computer_use_preview"}),
+            json!({"type": "image_generation"}),
+            json!({"type": "future_tool", "name": "mystery"}),
+        ]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert_eq!(requirements.tool_count, 7);
+        assert!(requirements.has_function_tools);
+        assert!(requirements.has_web_search);
+        assert!(requirements.has_file_search);
+        assert!(requirements.has_mcp);
+        assert!(requirements.has_computer);
+        assert!(requirements.has_image_generation);
+        assert!(!requirements.requires_function_tools);
+        assert!(!requirements.requires_web_search);
+        assert!(!requirements.requires_file_search);
+        assert!(!requirements.requires_mcp);
+        assert!(!requirements.requires_computer);
+        assert!(!requirements.requires_image_generation);
+        assert!(requirements.has_unknown_tools);
+        assert!(requirements.labels.iter().any(|label| label == "github"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_detects_computer_signal_in_input() {
+        let mut req = responses_request_with_tools(vec![json!({"type": "image_generation"})]);
+        req.input = ResponsesInput::Messages(vec![json!({
+            "type": "computer_call_output",
+            "call_id": "call_screen",
+            "screenshot": "data:image/png;base64,abc"
+        })]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(requirements.requires_computer);
+        assert!(requirements.has_image_generation);
+        assert!(!requirements.requires_image_generation);
+        assert!(requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.computer_call_output"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_ignores_system_computer_text() {
+        let mut req = responses_request_with_tools(vec![json!({"type": "computer_use_preview"})]);
+        req.input = ResponsesInput::Messages(vec![
+            json!({
+                "type": "message",
+                "role": "developer",
+                "content": "Computer Use tools are available when the user asks for desktop control."
+            }),
+            json!({
+                "type": "message",
+                "role": "system",
+                "content": "Do not use Computer Use unless needed."
+            }),
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": "普通文本测试 DeepSeek"
+            }),
+        ]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(!requirements.requires_computer);
+        assert!(!requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.computer_intent"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_detects_nested_screenshot_in_input() {
+        let mut req = responses_request_with_tools(vec![]);
+        req.input = ResponsesInput::Messages(vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,abc"
+                }
+            ]
+        })]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(requirements.requires_computer);
+        assert!(requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.screenshot"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_detects_computer_intent_in_text() {
+        let mut req = responses_request_with_tools(vec![
+            json!({"type": "function", "name": "exec_command"}),
+            json!({"type": "image_generation"}),
+        ]);
+        req.input = ResponsesInput::Text("使用 Computer Use 打开抖音 app，播放第一个视频".into());
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(requirements.requires_computer);
+        assert!(requirements.has_function_tools);
+        assert!(requirements.has_image_generation);
+        assert!(requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.computer_intent"));
+    }
+
+    #[test]
+    fn dex_router_allows_chat_candidate_when_tools_are_only_available() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+        let req = responses_request_with_tools(vec![
+            json!({"type": "function", "name": "read_file"}),
+            json!({"type": "web_search_preview"}),
+            json!({"type": "file_search"}),
+            json!({"type": "remote_mcp", "server_label": "github"}),
+            json!({"type": "computer_use_preview"}),
+            json!({"type": "image_generation"}),
+        ]);
+        let requirements = router_tool_requirements(&req);
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, Some(&requirements))
+                .unwrap();
+
+        assert_eq!(account.id, "active");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
+        assert!(requirements.has_computer);
+        assert!(!requirements.requires_computer);
+    }
+
+    #[test]
+    fn dex_router_diagnostic_tools_still_report_capability_gaps() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+        let tools = vec![
+            json!({"type": "image_generation"}),
+            json!({"type": "computer_use_preview"}),
+        ];
+
+        let snapshot = dex_router_status_snapshot_for_tools(&store, "gpt-5", 1_000, &tools);
+        let chat = snapshot["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "active")
+            .unwrap();
+
+        assert_eq!(snapshot["selected"]["account_id"], "responses");
+        assert_eq!(
+            snapshot["tool_requirements"]["requires_image_generation"],
+            true
+        );
+        assert_eq!(snapshot["tool_requirements"]["requires_computer"], true);
+        assert_eq!(chat["reason"], "capability_mismatch");
+        assert!(chat["capability_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap == "image_generation"));
+    }
+
+    #[test]
+    fn dex_router_skips_candidate_without_explicit_image_tool_choice() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+        let req = responses_request_with_tool_choice(
+            vec![json!({"type": "image_generation"})],
+            json!({"type": "image_generation"}),
+        );
+        let requirements = router_tool_requirements(&req);
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, Some(&requirements))
+                .unwrap();
+
+        assert_eq!(account.id, "responses");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+        assert!(requirements.requires_image_generation);
+    }
+
+    #[test]
+    fn dex_router_trace_records_capability_gaps_and_tool_decisions() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+        let req = responses_request_with_tool_choice(
+            vec![json!({"type": "image_generation"})],
+            json!({"type": "image_generation"}),
+        );
+        let requirements = router_tool_requirements(&req);
+
+        let (selection, trace) =
+            dex_router_trace_for_selection(&store, "gpt-5", 1_000, 0, Some(&requirements));
+        let value: Value = serde_json::from_str(&trace).unwrap();
+
+        assert_eq!(selection.unwrap().0.id, "responses");
+        assert_eq!(value["tool_requirements"]["image_generation"], true);
+        assert_eq!(
+            value["tool_requirements"]["requires_image_generation"],
+            true
+        );
+        assert_eq!(
+            value["selected"]["tool_decisions"]["kept"][0],
+            "image_generation"
+        );
+        assert_eq!(value["tool_decisions"]["kept"][0], "image_generation");
+        let chat = value["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["account_id"] == "active")
+            .unwrap();
+        assert_eq!(chat["reason"], "capability_mismatch");
+        assert_eq!(chat["capability_gaps"][0], "image_generation");
     }
 
     #[test]

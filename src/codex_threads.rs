@@ -155,8 +155,14 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
             continue;
         }
 
-        let mut candidates: Vec<_> = std::fs::read_dir(codex_dir)
-            .ok()?
+        let entries = match std::fs::read_dir(codex_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                tracing::warn!(dir = %codex_dir.display(), "读取 Codex 目录失败，跳过: {err}");
+                continue;
+            }
+        };
+        let mut candidates: Vec<_> = entries
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let name = e.file_name();
@@ -167,8 +173,11 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
                     && !name.ends_with("-shm")
                 {
                     let path = e.path();
-                    let size = path.metadata().ok()?.len();
-                    Some((path, size))
+                    let version = state_db_version(&name)?;
+                    let metadata = path.metadata().ok()?;
+                    let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+                    let size = metadata.len();
+                    Some((path, version, modified, size))
                 } else {
                     None
                 }
@@ -176,8 +185,12 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
             .collect();
 
         if !candidates.is_empty() {
-            candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
-            let found = candidates.into_iter().next().map(|(p, _)| p);
+            candidates.sort_by(|a, b| {
+                b.1.cmp(&a.1)
+                    .then_with(|| b.2.cmp(&a.2))
+                    .then_with(|| b.3.cmp(&a.3))
+            });
+            let found = candidates.into_iter().next().map(|(p, _, _, _)| p);
             if let Some(ref db_path) = found {
                 tracing::info!(db = %db_path.display(), "找到 Codex state 数据库");
             }
@@ -189,6 +202,13 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
 
     tracing::warn!(home = %home.display(), "未找到 Codex state SQLite 数据库");
     None
+}
+
+fn state_db_version(name: &str) -> Option<u64> {
+    name.strip_prefix("state_")?
+        .strip_suffix(".sqlite")?
+        .parse()
+        .ok()
 }
 
 /// 备份文件路径（存在 deecodex data_dir 下）。
@@ -1726,7 +1746,7 @@ fn write_desktop_recent_backup(
 fn repair_desktop_recent_visibility(
     db_path: &Path,
     conn: &Connection,
-    backup_path: &Path,
+    _backup_path: &Path,
 ) -> Result<DesktopRecentRepairResult> {
     let Some(global_path) = codex_global_state_path(db_path) else {
         return Ok(DesktopRecentRepairResult::default());
@@ -1755,66 +1775,29 @@ fn repair_desktop_recent_visibility(
     }
     pending_ids.sort();
 
-    if is_live_codex_desktop_state(&global_path) {
+    // Recent 的排序是用户的真实使用时间线。旧实现会把项目线程的
+    // updated_at/updated_at_ms 临时抬到当前时间，虽然能挤进首屏，
+    // 但会把其他真实最近线程顶出去，看起来像“线程丢失”。这里改为只
+    // 报告待显示数量，项目索引仍可修复，但不再改写线程时间戳。
+    let blocked = is_live_codex_desktop_state(&global_path);
+    if blocked {
         tracing::warn!(
             pending = pending_ids.len(),
             path = %global_path.display(),
-            "Codex Desktop 正在运行，跳过 Recent 时间戳修复以避免被运行态线程状态覆盖"
+            "Codex Desktop 正在运行，Recent 仅做只读诊断"
         );
-        return Ok(DesktopRecentRepairResult {
-            fixed_count: 0,
-            pending_count: pending_ids.len(),
-            blocked: true,
-        });
+    } else {
+        tracing::info!(
+            pending = pending_ids.len(),
+            path = %global_path.display(),
+            "Recent 仅做只读诊断，不改写线程时间戳"
+        );
     }
 
-    let mut backups = load_desktop_recent_backup(backup_path)?;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0);
-    let now_sec = now_ms / 1000;
-    let mut fixed = 0usize;
-
-    for (idx, id) in repair_ids.iter().enumerate() {
-        if !backups.contains_key(id) {
-            let original = conn.query_row(
-                "SELECT updated_at, updated_at_ms FROM threads WHERE id = ?1",
-                rusqlite::params![id],
-                |row| {
-                    Ok(DesktopRecentTimestampBackup {
-                        id: id.clone(),
-                        updated_at: row.get(0)?,
-                        updated_at_ms: row.get(1)?,
-                    })
-                },
-            )?;
-            backups.insert(id.clone(), original);
-        }
-
-        let offset = idx as i64;
-        let next_ms = now_ms.saturating_sub(offset);
-        let next_sec = now_sec.saturating_sub(offset);
-        let changed = conn
-            .execute(
-                "UPDATE threads
-                 SET updated_at = ?1,
-                     updated_at_ms = ?2
-                 WHERE id = ?3",
-                rusqlite::params![next_sec, next_ms, id],
-            )
-            .with_context(|| format!("修复 Codex Desktop recent 可见性失败: {id}"))?;
-        fixed += changed;
-    }
-
-    write_desktop_recent_backup(backup_path, &backups)?;
-    if fixed > 0 {
-        tracing::info!("已提升 {fixed} 条 Codex Desktop 项目线程进入 recent 加载窗口");
-    }
     Ok(DesktopRecentRepairResult {
-        fixed_count: fixed,
-        pending_count: 0,
-        blocked: false,
+        fixed_count: 0,
+        pending_count: pending_ids.len(),
+        blocked,
     })
 }
 
@@ -2262,6 +2245,25 @@ mod tests {
             [],
         )
         .expect("create stage1_outputs table");
+    }
+
+    #[test]
+    fn find_state_db_prefers_highest_version_over_largest_file() {
+        let dir = temp_test_dir("state-db-version");
+        let codex_dir = dir.join(".codex");
+        std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+        std::fs::write(codex_dir.join("state_5.sqlite"), vec![0_u8; 4096])
+            .expect("write older larger db");
+        std::fs::write(codex_dir.join("state_10.sqlite"), [1_u8]).expect("write newer smaller db");
+        std::fs::write(codex_dir.join("state_10.sqlite-wal"), [2_u8]).expect("write wal");
+
+        let found = find_state_db(&dir).expect("find state db");
+        assert_eq!(
+            found.file_name().and_then(|name| name.to_str()),
+            Some("state_10.sqlite")
+        );
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2785,7 +2787,7 @@ mod tests {
     }
 
     #[test]
-    fn calibrate_surfaces_desktop_project_threads_into_recent_window() {
+    fn calibrate_reports_desktop_project_threads_outside_recent_without_mutating_timestamps() {
         let dir = temp_test_dir("thread-desktop-recent");
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
@@ -2882,12 +2884,13 @@ mod tests {
             &recent_backup_path,
         )
         .expect("calibrate threads");
-        assert_eq!(diff.desktop_recent_fixed_count, 2);
+        assert_eq!(diff.desktop_recent_fixed_count, 0);
+        assert_eq!(diff.desktop_recent_pending_count, 1);
 
         let conn = Connection::open(&db_path).expect("open db after");
         let recent_after =
             desktop_recent_thread_ids(&conn, DESKTOP_RECENT_LOAD_WINDOW).expect("recent after");
-        assert!(recent_after.contains("project-old"));
+        assert!(!recent_after.contains("project-old"));
         assert!(recent_after.contains("project-new"));
         let updated_at: i64 = conn
             .query_row(
@@ -2896,31 +2899,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read updated");
-        assert!(updated_at > 2_000);
-
-        let backups: Vec<DesktopRecentTimestampBackup> = serde_json::from_str(
-            &std::fs::read_to_string(&recent_backup_path).expect("read recent backup"),
-        )
-        .expect("parse recent backup");
-        assert_eq!(backups.len(), 2);
-        let backup_by_id: HashMap<_, _> = backups
-            .iter()
-            .map(|backup| (backup.id.as_str(), backup.updated_at))
-            .collect();
-        assert_eq!(backup_by_id.get("project-old"), Some(&100));
-        assert_eq!(backup_by_id.get("project-new"), Some(&1_995));
-
-        let restored =
-            restore_desktop_recent_timestamps(&conn, &recent_backup_path).expect("restore recent");
-        assert_eq!(restored, 2);
-        let restored_updated_at: i64 = conn
-            .query_row(
-                "SELECT updated_at FROM threads WHERE id = 'project-old'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read restored updated");
-        assert_eq!(restored_updated_at, 100);
+        assert_eq!(updated_at, 100);
         assert!(!recent_backup_path.exists());
 
         std::fs::remove_dir_all(dir).ok();

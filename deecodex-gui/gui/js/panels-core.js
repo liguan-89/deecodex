@@ -1073,7 +1073,7 @@ function renderHelp() {
       <p>安装完成后，<strong>DEX AI 已自动启动</strong>。你需要配置 Codex 将请求发送到 DEX AI：</p>
       <ul>
         <li>打开 Codex 设置 → 找到「模型提供商」或「自定义 Provider」</li>
-        <li>将 API 地址设为 <strong>http://127.0.0.1:4446/v1</strong></li>
+        <li>将 API 地址设为 <strong>http://127.0.0.1:4446/v1</strong>；技术预览路由使用 <strong>http://127.0.0.1:4446/codex-router/v1</strong></li>
         <li>API Key 可填任意值（如果 DEX AI 未开启客户端认证）</li>
         <li>模型名填写 DEX AI 模型映射中的任一 Codex 侧名称，如 <strong>gpt-5.5</strong></li>
       </ul>
@@ -1085,13 +1085,13 @@ function renderHelp() {
       <p><strong>Codex 桌面版</strong> — 编辑 <code>~/.codex/config.toml</code>：</p>
       <div class="code-block"><pre><span class="comment"># ~/.codex/config.toml</span>
 <span class="key">model</span> = <span class="str">"gpt-5.5"</span>
-<span class="key">model_provider</span> = <span class="str">"custom"</span>
+<span class="key">model_provider</span> = <span class="str">"dex_router"</span>
 <span class="key">model_reasoning_effort</span> = <span class="str">"medium"</span>
 
-<span class="key">[model_providers.custom]</span>
-<span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/v1"</span>
-<span class="key">name</span> = <span class="str">"custom"</span>
-<span class="key">requires_openai_auth</span> = <span class="val">false</span>
+<span class="key">[model_providers.dex_router]</span>
+<span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/codex-router/v1"</span>
+<span class="key">name</span> = <span class="str">"dex_router"</span>
+<span class="key">requires_openai_auth</span> = <span class="val">true</span>
 <span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
       <p class="help-note">注意：base_url 末尾不要加 /，端口须与 DEX AI 监听端口一致。</p>
 

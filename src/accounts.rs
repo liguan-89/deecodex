@@ -184,6 +184,10 @@ pub struct AccountRuntimeState {
 pub struct AccountRoutingOptions {
     #[serde(default = "default_routing_enabled")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_enabled: Option<bool>,
     #[serde(default = "default_routing_pool")]
     pub pool: String,
     #[serde(default)]
@@ -210,6 +214,8 @@ impl Default for AccountRoutingOptions {
     fn default() -> Self {
         Self {
             enabled: true,
+            anchor_enabled: None,
+            execution_enabled: None,
             pool: default_routing_pool(),
             priority: 0,
             weight: 1,
@@ -221,6 +227,27 @@ impl Default for AccountRoutingOptions {
 impl AccountRoutingOptions {
     pub fn effective_enabled(&self) -> bool {
         self.enabled && !self.disabled && self.weight > 0
+    }
+
+    pub fn anchor_enabled_for_account(&self, account: &Account) -> bool {
+        self.anchor_enabled
+            .unwrap_or_else(|| account.is_codex_official_account())
+    }
+
+    pub fn execution_enabled_for_account(&self, account: &Account) -> bool {
+        self.execution_enabled
+            .unwrap_or_else(|| !account.is_codex_official_account())
+    }
+
+    pub fn effective_anchor_enabled_for_account(&self, account: &Account) -> bool {
+        self.enabled && !self.disabled && self.anchor_enabled_for_account(account)
+    }
+
+    pub fn effective_execution_enabled_for_account(&self, account: &Account) -> bool {
+        self.enabled
+            && !self.disabled
+            && self.weight > 0
+            && self.execution_enabled_for_account(account)
     }
 
     pub fn normalized(mut self) -> Self {
@@ -613,6 +640,14 @@ impl Account {
             })
     }
 
+    pub fn is_codex_official_account(&self) -> bool {
+        self.client_kind.is_codex()
+            && self
+                .endpoints
+                .iter()
+                .any(|endpoint| endpoint.kind == EndpointKind::CodexOfficial)
+    }
+
     fn normalize_responses_direct(&mut self) {
         let force_openai_responses = self.is_openai_native_responses();
         if !self.is_responses_direct_account() {
@@ -850,6 +885,12 @@ pub fn account_routing_options(account: &Account) -> AccountRoutingOptions {
         if let Some(enabled) = routing.get("enabled").and_then(Value::as_bool) {
             options.enabled = enabled;
         }
+        if let Some(anchor_enabled) = routing.get("anchor_enabled").and_then(Value::as_bool) {
+            options.anchor_enabled = Some(anchor_enabled);
+        }
+        if let Some(execution_enabled) = routing.get("execution_enabled").and_then(Value::as_bool) {
+            options.execution_enabled = Some(execution_enabled);
+        }
         if let Some(pool) = routing.get("pool").and_then(Value::as_str) {
             options.pool = pool.to_string();
         }
@@ -873,6 +914,8 @@ pub fn set_account_routing_options(account: &mut Account, options: AccountRoutin
         "routing".into(),
         serde_json::json!({
             "enabled": options.enabled,
+            "anchor_enabled": options.anchor_enabled,
+            "execution_enabled": options.execution_enabled,
             "pool": options.pool,
             "priority": options.priority,
             "weight": options.weight,
@@ -917,8 +960,8 @@ pub fn runtime_cooldown_for_status(
             (AccountRuntimeStatus::QuotaExceeded, Some(wait), next_level)
         }
         408 | 500 | 502 | 503 | 504 => (
-            AccountRuntimeStatus::CoolingDown,
-            Some(60),
+            AccountRuntimeStatus::Error,
+            retry_after_secs.filter(|wait| *wait > 0),
             previous_backoff_level,
         ),
         _ => (AccountRuntimeStatus::Error, None, previous_backoff_level),
@@ -2594,6 +2637,8 @@ mod tests {
             &mut account,
             AccountRoutingOptions {
                 enabled: false,
+                anchor_enabled: Some(false),
+                execution_enabled: Some(false),
                 pool: " official-main ".into(),
                 priority: 30,
                 weight: 4,
@@ -2633,6 +2678,24 @@ mod tests {
         assert_eq!(account.runtime_state.failed, 2);
         assert!(account.runtime_state.next_retry_after.is_none());
         assert!(account.runtime_state.model_states.is_empty());
+    }
+
+    #[test]
+    fn transient_upstream_5xx_does_not_cool_down_without_retry_after() {
+        let cooldown = runtime_cooldown_for_status(502, None, 0);
+
+        assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
+        assert!(cooldown.next_retry_after.is_none());
+        assert!(!cooldown.quota.exceeded);
+    }
+
+    #[test]
+    fn transient_upstream_5xx_honors_retry_after() {
+        let cooldown = runtime_cooldown_for_status(503, Some(30), 0);
+
+        assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
+        assert!(cooldown.next_retry_after.is_some());
+        assert!(!cooldown.quota.exceeded);
     }
 
     #[test]

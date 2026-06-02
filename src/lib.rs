@@ -21,6 +21,7 @@ pub mod prompts;
 pub mod providers;
 pub mod ratelimit;
 pub mod request_history;
+pub mod runtime_feedback;
 pub mod session;
 pub mod sse;
 pub mod stream;

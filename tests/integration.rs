@@ -8,9 +8,9 @@ use axum::{
 };
 use deecodex::{
     accounts::{
-        Account, AccountClientKind, AccountClientSurface, AccountStore, DevPipelineToolMode,
-        DevPipelineTriggerMode, EndpointKind, GlueVisionStrategy, ModelProfile, ModelVisionMode,
-        UnsupportedImagePolicy, VisionMode,
+        Account, AccountClientKind, AccountClientSurface, AccountRoutingOptions, AccountStore,
+        DevPipelineToolMode, DevPipelineTriggerMode, EndpointKind, GlueVisionStrategy,
+        ModelProfile, ModelVisionMode, UnsupportedImagePolicy, VisionMode,
     },
     cache::RequestCache,
     handlers::{build_router, AppState},
@@ -176,6 +176,7 @@ fn test_state() -> AppState {
             deecodex::request_history::RequestHistoryStore::new(std::path::Path::new(":memory:"))
                 .unwrap(),
         ),
+        codex_router_sessions: Arc::new(dashmap::DashMap::new()),
     }
 }
 
@@ -280,6 +281,79 @@ async fn start_proxy_mock(
     (format!("http://{addr}"), captured)
 }
 
+fn router_test_account(
+    id: &str,
+    provider: &str,
+    endpoint_kind: EndpointKind,
+    upstream: &reqwest::Url,
+    priority: i64,
+    mapped_model: Option<&str>,
+) -> Account {
+    let model_map = mapped_model
+        .map(|model| json!({"gpt-5": model}))
+        .unwrap_or_else(|| json!({}));
+    let mut account: Account = serde_json::from_value(json!({
+        "id": id,
+        "name": format!("Router {id}"),
+        "provider": provider,
+        "client_kind": "codex",
+        "client_surface": "desktop",
+        "upstream": upstream.to_string(),
+        "api_key": format!("sk-{id}"),
+        "endpoints": [{
+            "id": format!("ep-{id}"),
+            "name": format!("Endpoint {id}"),
+            "kind": endpoint_kind,
+            "base_url": upstream.to_string(),
+            "model_map": model_map
+        }]
+    }))
+    .unwrap();
+    deecodex::accounts::set_account_routing_options(
+        &mut account,
+        AccountRoutingOptions {
+            pool: "router-test".into(),
+            priority,
+            weight: 1,
+            ..Default::default()
+        },
+    );
+    account
+}
+
+async fn configure_router_test_accounts(state: &AppState, accounts: Vec<Account>, active_id: &str) {
+    let mut accounts = accounts;
+    for account in &mut accounts {
+        if account.id == active_id {
+            let mut routing = deecodex::accounts::account_routing_options(account);
+            routing.anchor_enabled = Some(true);
+            deecodex::accounts::set_account_routing_options(account, routing);
+        }
+    }
+    let active = accounts
+        .iter()
+        .find(|account| account.id == active_id)
+        .cloned()
+        .unwrap();
+    let active_endpoint_id = format!("ep-{active_id}");
+    let mut store = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        accounts,
+        active_id: Some(active_id.into()),
+        active_account_id: Some(active_id.into()),
+        active_endpoint_id: Some(active_endpoint_id.clone()),
+        active_by_surface: std::collections::HashMap::new(),
+    };
+    store.set_active_for_surface(
+        &AccountClientKind::Codex,
+        &AccountClientSurface::Desktop,
+        active_id.into(),
+        Some(active_endpoint_id),
+    );
+    *state.account_store.write().await = store;
+    *state.active_account.write().await = active;
+}
+
 fn proxy_account(kind: AccountClientKind, upstream: String, token: &str) -> Account {
     serde_json::from_value(json!({
         "id": "proxy-account",
@@ -323,6 +397,1272 @@ fn claude_oauth_proxy_account(upstream: String, token: &str) -> Account {
         }
     }))
     .unwrap()
+}
+
+#[tokio::test]
+async fn codex_router_routes_native_tools_to_responses_account_and_records_trace() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not run"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_native","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let mut responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    responses.endpoints[0].vision.mode = VisionMode::Native;
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, "Bearer official-token")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"画一张图并操作电脑","store":false,"tools":[{"type":"image_generation"},{"type":"computer_use_preview","display_width":1024,"display_height":768}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], "resp_native");
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["tools"][0]["type"], "image_generation");
+        assert_eq!(captured[0].body["tools"][1]["type"], "computer_use_preview");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-responses");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["tool_requirements"]["image_generation"], true);
+    assert_eq!(trace["tool_requirements"]["computer"], true);
+    assert!(trace["tool_decisions"]["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "image_generation"));
+    assert!(trace["tool_decisions"]["kept"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "computer_use"));
+    let chat_candidate = trace["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["account_id"] == "router-chat")
+        .unwrap();
+    assert_eq!(chat_candidate["reason"], "capability_mismatch");
+    assert!(chat_candidate["capability_gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|gap| gap == "computer"));
+}
+
+#[tokio::test]
+async fn codex_router_routes_computer_input_output_to_responses_account() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not run"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_computer_input","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let mut responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    responses.endpoints[0].vision.mode = VisionMode::Native;
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5",
+                        "input":[
+                            {
+                                "type":"computer_call_output",
+                                "call_id":"call_screen",
+                                "screenshot":"data:image/png;base64,abc"
+                            },
+                            {
+                                "type":"message",
+                                "role":"user",
+                                "content":"继续操作"
+                            }
+                        ],
+                        "tools":[{"type":"image_generation"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], "resp_computer_input");
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["input"][0]["type"], "computer_call_output");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-responses");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["tool_requirements"]["computer"], true);
+    assert_eq!(trace["tool_requirements"]["requires_computer"], true);
+    assert!(trace["tool_requirements"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|label| label == "input.computer_call_output"));
+}
+
+#[tokio::test]
+async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_computer_intent","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5",
+                        "input":"使用 Computer Use 打开抖音 app，播放第一个视频",
+                        "tools":[
+                            {"type":"function","name":"exec_command"},
+                            {"type":"function","name":"view_image"},
+                            {"type":"image_generation"}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], "resp_computer_intent");
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        let tools = captured[0].body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert!(!tools
+            .iter()
+            .any(|tool| tool["type"] == "computer_use_preview"));
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-responses");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["tool_requirements"]["computer"], true);
+    assert_eq!(trace["tool_requirements"]["requires_computer"], true);
+    assert!(trace["tool_requirements"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|label| label == "input.computer_intent"));
+    let chat_candidate = trace["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["account_id"] == "router-chat")
+        .unwrap();
+    assert_eq!(chat_candidate["reason"], "capability_mismatch");
+    assert!(chat_candidate["capability_gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|gap| gap == "computer"));
+}
+
+#[tokio::test]
+async fn codex_router_routes_nested_computer_intent_text_to_responses_account() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_nested_computer_intent","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5",
+                        "input":[{
+                            "type":"message",
+                            "role":"user",
+                            "content":[{
+                                "type":"input_text",
+                                "text":"使用电脑插件打开抖音 app 播放第一个"
+                            }]
+                        }],
+                        "tools":[
+                            {"type":"function","name":"exec_command"},
+                            {"type":"function","name":"view_image"},
+                            {"type":"image_generation"}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], "resp_nested_computer_intent");
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-responses");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["tool_requirements"]["computer"], true);
+    assert_eq!(trace["tool_requirements"]["requires_computer"], true);
+    assert!(trace["tool_requirements"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|label| label == "input.computer_intent"));
+}
+
+#[tokio::test]
+async fn codex_router_keeps_computer_session_on_native_responses_track() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    for body in [
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false}"#,
+        r#"{"model":"gpt-5","input":"刚才页面是什么状态？","store":false}"#,
+        r#"{"model":"gpt-5","input":"继续点击第一个视频","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("thread-id", "thread-computer-track")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    assert_eq!(responses_captured.lock().unwrap().len(), 3);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let mut traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
+    assert_eq!(traces.len(), 3);
+    assert_eq!(
+        traces[0]["session_route_key"],
+        "thread-id:thread-computer-track"
+    );
+    assert_eq!(traces[0]["session_route_state"], "native_active");
+    assert_eq!(traces[1]["session_route_state"], "native_observe");
+    assert_eq!(traces[1]["tool_requirements"]["requires_computer"], true);
+    assert!(traces[1]["tool_requirements"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|label| label == "session.native_observe"));
+    assert_eq!(traces[2]["session_route_state"], "native_active");
+}
+
+#[tokio::test]
+async fn codex_router_without_session_key_keeps_single_turn_routing() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    for body in [
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开应用","store":false}"#,
+        r#"{"model":"gpt-5","input":"普通文本追问","store":false}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    assert_eq!(responses_captured.lock().unwrap().len(), 1);
+    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    assert!(traces
+        .iter()
+        .all(|trace| trace.get("session_route_key").is_none()));
+}
+
+#[tokio::test]
+async fn codex_router_uses_session_id_when_thread_id_is_missing() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    for body in [
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false}"#,
+        r#"{"model":"gpt-5","input":"刚才打开了吗？","store":false}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("session-id", "session-computer-track")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    assert_eq!(responses_captured.lock().unwrap().len(), 2);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let mut traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
+    assert_eq!(
+        traces[0]["session_route_key"],
+        "session-id:session-computer-track"
+    );
+    assert_eq!(traces[0]["session_route_state"], "native_active");
+    assert_eq!(traces[1]["session_route_state"], "native_observe");
+}
+
+#[tokio::test]
+async fn codex_router_observe_window_returns_to_free_routing() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    for body in [
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false}"#,
+        r#"{"model":"gpt-5","input":"纯文本追问 1","store":false}"#,
+        r#"{"model":"gpt-5","input":"纯文本追问 2","store":false}"#,
+        r#"{"model":"gpt-5","input":"纯文本追问 3","store":false}"#,
+        r#"{"model":"gpt-5","input":"纯文本追问 4","store":false}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("thread-id", "thread-observe-expire")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    assert_eq!(responses_captured.lock().unwrap().len(), 4);
+    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let mut traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
+    assert_eq!(traces.len(), 5);
+    assert_eq!(traces[0]["session_route_state"], "native_active");
+    assert_eq!(traces[1]["session_route_observe_remaining"], 2);
+    assert_eq!(traces[2]["session_route_observe_remaining"], 1);
+    assert_eq!(traces[3]["session_route_observe_remaining"], 0);
+    assert_eq!(traces[4]["session_route_state"], "free");
+    assert_eq!(traces[4]["selected"]["account_id"], "router-chat");
+}
+
+#[tokio::test]
+async fn codex_router_chat_then_computer_use_replays_previous_local_response_before_native_bridge()
+{
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let round1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-chat-to-native")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"先用普通文本回答这个问题","store":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(round1.status(), StatusCode::OK);
+    let round1_body = round1.into_body().collect().await.unwrap().to_bytes();
+    let round1_json: Value = serde_json::from_slice(&round1_body).unwrap();
+    let round1_id = round1_json["id"].as_str().unwrap().to_string();
+
+    let round2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-chat-to-native")
+                .body(Body::from(format!(
+                    r#"{{
+                            "model":"gpt-5",
+                            "previous_response_id":"{round1_id}",
+                            "input":"使用 Computer Use 打开浏览器"
+                        }}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(round2.status(), StatusCode::OK);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let mut traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
+    assert_eq!(traces.len(), 2);
+    assert_eq!(traces[0]["selected"]["account_id"], "router-chat");
+    assert_eq!(traces[0]["selected"]["endpoint_kind"], "OpenAI Chat");
+    assert_eq!(traces[1]["selected"]["account_id"], "router-responses");
+    assert_eq!(traces[1]["selected"]["endpoint_kind"], "OpenAI Responses");
+    assert_eq!(traces[1]["session_route_state"], "native_active");
+    assert_eq!(
+        traces[1]["native_bridge"]["action"],
+        "replay_local_input_items"
+    );
+    assert_eq!(
+        traces[1]["native_bridge"]["previous_response_id"],
+        round1_id
+    );
+    assert_eq!(
+        traces[1]["native_bridge"]["removed_previous_response_id"],
+        true
+    );
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert!(captured[0].body.get("previous_response_id").is_none());
+        let input = captured[0].body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["content"][0]["text"], "先用普通文本回答这个问题");
+        assert_eq!(
+            input[1]["content"][0]["text"],
+            "使用 Computer Use 打开浏览器"
+        );
+    }
+    assert!(responses_captured.lock().unwrap().len() >= 1);
+    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn codex_router_routes_web_search_to_supported_chat_translation() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"web ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_should_not_run","object":"response","status":"completed","output":[]}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"联网查一下","store":false,"tools":[{"type":"web_search_preview"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(responses_captured.lock().unwrap().len(), 0);
+    {
+        let captured = chat_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/chat/completions");
+        assert_eq!(captured[0].body["model"], "deepseek-chat");
+        assert!(captured[0].body.get("tools").is_none());
+        assert!(captured[0].body.get("web_search_options").is_some());
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-chat");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-chat");
+    assert_eq!(trace["tool_requirements"]["web_search"], true);
+    assert!(trace["tool_decisions"]["translated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "web_search_options"));
+}
+
+#[tokio::test]
+async fn codex_router_routes_remote_mcp_to_chat_bridge_tool() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"mcp bridge ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_should_not_run","object":"response","status":"completed","output":[]}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"调用 MCP","store":false,"tools":[{"type":"remote_mcp","server_label":"github"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(responses_captured.lock().unwrap().len(), 0);
+    {
+        let captured = chat_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/chat/completions");
+        assert!(captured[0].body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "local_mcp_call"));
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-chat");
+    assert_eq!(trace["tool_requirements"]["mcp"], true);
+    assert!(trace["tool_decisions"]["translated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "local_mcp_call"));
+}
+
+#[tokio::test]
+async fn codex_router_non_stream_falls_back_after_retryable_responses_failure() {
+    let (responses_upstream, responses_captured) = capture_sequence_json_upstream(vec![(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":{"message":"temporary unavailable","type":"api_error"}}"#,
+    )])
+    .await;
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_fallback","choices":[{"message":{"role":"assistant","content":"fallback ok"}}],"usage":{"prompt_tokens":8,"completion_tokens":9,"total_tokens":17}}"#,
+    )
+    .await;
+    let state = test_state();
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        100,
+        None,
+    );
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        10,
+        Some("deepseek-chat"),
+    );
+    configure_router_test_accounts(&state, vec![responses, chat], "router-responses").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"hello","store":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(responses_captured.lock().unwrap().len(), 1);
+    {
+        let captured = chat_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/chat/completions");
+        assert_eq!(captured[0].body["model"], "deepseek-chat");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| {
+            entry.request_path == "/codex-router/v1/responses" && entry.status == "completed"
+        })
+        .unwrap();
+    assert_eq!(entry.account_id, "router-chat");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-chat");
+    assert_eq!(trace["fallback_count"], 1);
+    assert_eq!(
+        trace["fallback_attempts"][0]["account_id"],
+        "router-responses"
+    );
+    assert_eq!(trace["fallback_attempts"][0]["status"], 503);
+    let failed_candidate = trace["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["account_id"] == "router-responses")
+        .unwrap();
+    assert_eq!(failed_candidate["reason"], "attempt_failed");
+}
+
+#[tokio::test]
+async fn codex_router_non_stream_does_not_fallback_after_non_retryable_failure() {
+    let (responses_upstream, responses_captured) = capture_sequence_json_upstream(vec![(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#,
+    )])
+    .await;
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_should_not_run","choices":[{"message":{"role":"assistant","content":"wrong"}}]}"#,
+    )
+    .await;
+    let state = test_state();
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        100,
+        None,
+    );
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        10,
+        Some("deepseek-chat"),
+    );
+    configure_router_test_accounts(&state, vec![responses, chat], "router-responses").await;
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"hello","store":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(responses_captured.lock().unwrap().len(), 1);
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn codex_router_stream_preflight_reroutes_unhealthy_candidate_before_send() {
+    let sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"stream ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n";
+    let (unhealthy_upstream, unhealthy_captured) = capture_sse_request_upstream(sse_body).await;
+    let (healthy_upstream, healthy_captured) = capture_sse_request_upstream(sse_body).await;
+    let state = test_state();
+    let mut unhealthy = router_test_account(
+        "router-unhealthy",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &unhealthy_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    unhealthy
+        .runtime_state
+        .recent_requests
+        .push(deecodex::accounts::AccountRecentRequestBucket {
+            bucket_start: deecodex::accounts::now_secs() / 600 * 600,
+            success: 0,
+            failed: 2,
+        });
+    let healthy = router_test_account(
+        "router-healthy",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &healthy_upstream,
+        10,
+        Some("deepseek-chat"),
+    );
+    configure_router_test_accounts(&state, vec![unhealthy, healthy], "router-unhealthy").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"stream please","store":false,"stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(unhealthy_captured.lock().unwrap().len(), 0);
+    {
+        let captured = healthy_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/chat/completions");
+        assert_eq!(captured[0].body["model"], "deepseek-chat");
+        assert_eq!(captured[0].body["stream"], true);
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-healthy");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-healthy");
+    assert_eq!(trace["stream_preflight"]["action"], "rerouted");
+    assert_eq!(
+        trace["stream_preflight"]["from"]["account_id"],
+        "router-unhealthy"
+    );
+    let blocked = trace["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["account_id"] == "router-unhealthy")
+        .unwrap();
+    assert_eq!(blocked["reason"], "stream_preflight_risk");
+}
+
+#[tokio::test]
+async fn codex_router_rejects_when_computer_use_capability_is_unavailable() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not run"}}]}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    configure_router_test_accounts(&state, vec![chat], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5","input":"操作电脑","tools":[{"type":"computer_use_preview"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "dex_router_pool_unavailable");
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    assert!(entries.is_empty());
+}
+
+#[tokio::test]
+async fn codex_router_status_api_accepts_tool_query_and_returns_scenarios() {
+    let (chat_upstream, _) = capture_any_json_upstream(r#"{"ok":true}"#).await;
+    let (responses_upstream, _) = capture_any_json_upstream(r#"{"ok":true}"#).await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/router/status?model=gpt-5&tools=image,computer")
+                .method(Method::GET)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["router"]["selected"]["account_id"], "router-responses");
+    assert_eq!(
+        json["router"]["tool_requirements"]["image_generation"],
+        true
+    );
+    assert_eq!(json["router"]["tool_requirements"]["computer"], true);
+    assert!(json["scenarios"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|scenario| {
+            scenario["scenario_id"] == "web" && scenario["selected"]["account_id"] == "router-chat"
+        }));
+    assert!(json["scenarios"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|scenario| {
+            scenario["scenario_id"] == "native"
+                && scenario["selected"]["account_id"] == "router-responses"
+        }));
 }
 
 #[tokio::test]
@@ -2086,6 +3426,7 @@ fn make_stream_args(
         history_context: deecodex::request_history::HistoryContext::default(),
         upstream_url: url.to_string(),
         allow_missing_done: false,
+        runtime_feedback: test_runtime_feedback_sink(),
         start: std::time::Instant::now(),
     }
 }
@@ -2139,8 +3480,19 @@ fn make_stream_args_custom(
         history_context: deecodex::request_history::HistoryContext::default(),
         upstream_url: url.to_string(),
         allow_missing_done: false,
+        runtime_feedback: test_runtime_feedback_sink(),
         start: std::time::Instant::now(),
     }
+}
+
+fn test_runtime_feedback_sink() -> deecodex::runtime_feedback::RuntimeFeedbackSink {
+    let state = test_state();
+    deecodex::runtime_feedback::RuntimeFeedbackSink::new(
+        state.data_dir.clone(),
+        state.account_store.clone(),
+        state.active_account.clone(),
+        "test-account".into(),
+    )
 }
 
 fn build_sse_body(chunks: Vec<&str>) -> String {
@@ -3827,6 +5179,29 @@ async fn capture_request_handler(
     response
 }
 
+async fn capture_sse_request_handler(
+    State(state): State<CaptureRequestState>,
+    req: Request<Body>,
+) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    let headers = req.headers().clone();
+    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push(CapturedRequest {
+        path,
+        headers,
+        body,
+    });
+    let mut response = Response::new(Body::from(state.response_body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response
+}
+
 async fn capture_sequence_handler(
     State(state): State<CaptureSequenceState>,
     req: Request<Body>,
@@ -3896,6 +5271,30 @@ async fn capture_any_json_upstream(
     tokio::spawn(async move {
         let app = Router::new()
             .fallback(post(capture_request_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (
+        reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
+        captured,
+    )
+}
+
+async fn capture_sse_request_upstream(
+    response_body: &'static str,
+) -> (reqwest::Url, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = CaptureRequestState {
+        response_body,
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .fallback(post(capture_sse_request_handler))
             .with_state(state);
         axum::serve(listener, app.into_make_service())
             .await

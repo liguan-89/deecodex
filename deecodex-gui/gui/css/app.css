@@ -2539,6 +2539,12 @@ body {
 .history-card .hc-token-in { height: 100%; background: var(--accent); }
 .history-card .hc-token-out { height: 100%; background: var(--green); }
 .history-card .hc-url { font-size: 9px; color: var(--text-muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-route { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 3px; color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-route span { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-route-flow { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+.history-card .hc-route-step { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; padding: 2px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-root); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-card .hc-route-step.warn { color: var(--amber); border-color: rgba(255, 176, 95, 0.24); background: rgba(255, 176, 95, 0.08); }
+.history-card .hc-route-step.ok { color: var(--green); border-color: rgba(52, 199, 89, 0.24); background: rgba(52, 199, 89, 0.08); }
 .history-card .hc-error { font-size: 10px; color: var(--red); margin-top: 3px; cursor: pointer; }
 .history-load-more { text-align: center; padding: 8px; font-size: 11px; color: var(--accent); cursor: pointer; user-select: none; }
 .history-load-more:hover { text-decoration: underline; }
@@ -3572,6 +3578,78 @@ body {
 }
 .official-runtime-summary {
   margin-bottom: 10px;
+}
+.router-status-block {
+  margin: 0 0 12px;
+}
+.router-status-block .official-pool-overview {
+  margin-bottom: 6px;
+}
+.router-scenario-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.router-scenario-chip {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 176px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.router-scenario-chip em,
+.router-scenario-chip strong,
+.router-scenario-chip b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  line-height: 1.2;
+}
+.router-scenario-chip strong {
+  color: var(--text-primary);
+}
+.router-scenario-chip.ok b {
+  color: var(--green);
+}
+.router-scenario-chip.preflight {
+  border-color: rgba(255, 176, 95, 0.28);
+  background: rgba(255, 176, 95, 0.08);
+}
+.router-scenario-chip.preflight b {
+  color: var(--amber);
+}
+.router-scenario-chip.blocked b {
+  color: var(--red);
+}
+.router-preflight-notice {
+  margin: 0 0 6px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.router-preflight-notice.warn {
+  color: var(--amber);
+  border-color: rgba(255, 176, 95, 0.24);
+  background: rgba(255, 176, 95, 0.08);
 }
 .official-card-status {
   display: grid;
@@ -12509,6 +12587,10 @@ body {
 
   .official-pool-overview {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .router-scenario-strip {
+    flex-wrap: wrap;
+    overflow: visible;
   }
 
   .runtime-state-grid {

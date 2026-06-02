@@ -177,8 +177,13 @@ function accountRouting(a) {
   const raw = a?.routing || a?.client_options?.routing || {};
   const enabled = raw.enabled !== false && raw.disabled !== true;
   const weight = Math.max(1, Math.min(100, Number(raw.weight || 1)));
+  const official = isCodexOfficialAccount(a);
+  const anchorEnabled = typeof raw.anchor_enabled === 'boolean' ? raw.anchor_enabled : official;
+  const executionEnabled = typeof raw.execution_enabled === 'boolean' ? raw.execution_enabled : !official;
   return {
     enabled,
+    anchor_enabled: enabled && anchorEnabled,
+    execution_enabled: enabled && executionEnabled,
     pool: String(raw.pool || 'codex-official'),
     priority: Number(raw.priority || 0),
     weight,
@@ -191,10 +196,11 @@ function renderCodexOfficialRouteLine(a) {
   const quota = officialQuotaSnapshot(a) || {};
   const plan = planDisplayName(quota.plan_type || quota.plan || '');
   const accountId = escAttr(a.id || '');
-  const toggle = `<label class="account-pool-switch toggle-label" title="${routing.enabled ? '账号池已启用' : '账号池已停用'}">
-    <input type="checkbox" aria-label="参与账号池" ${routing.enabled ? 'checked' : ''}${accountId ? ` onchange="toggleAccountRouting('${accountId}')"` : ' disabled'}>
+  const toggle = `<label class="account-pool-switch toggle-label" title="${routing.anchor_enabled ? '登录态锚点已启用' : '登录态锚点已停用'}">
+    <input type="checkbox" aria-label="作为 Router 登录态锚点" ${routing.anchor_enabled ? 'checked' : ''}${accountId ? ` onchange="toggleAccountRouting('${accountId}', 'anchor')"` : ' disabled'}>
   </label>`;
-  return `${toggle}${plan !== '未知' ? `<span class="account-plan-pill">${esc(plan)}</span>` : ''}`;
+  const role = routing.execution_enabled ? '<span class="account-plan-pill">可执行</span>' : '<span class="account-plan-pill">仅锚点</span>';
+  return `${toggle}${plan !== '未知' ? `<span class="account-plan-pill">${esc(plan)}</span>` : ''}${role}`;
 }
 
 function runtimeStatusLabel(status) {
@@ -217,27 +223,29 @@ function formatRuntimeDate(ts) {
   return new Date(n * 1000).toLocaleString();
 }
 
-function renderCodexOfficialRuntimePanel(a) {
-  if (!endpointIsCodexOfficial(currentEndpoint(a)) && !isCodexOfficialAccount(a)) return '';
+function renderCodexRouterPanel(a) {
+  if (!isCodexAccount(a)) return '';
   const routing = accountRouting(a);
-  const runtime = a?.runtime_state || {};
-  const modelStates = runtime.model_states && typeof runtime.model_states === 'object' ? runtime.model_states : {};
-  const rows = Object.entries(modelStates);
+  const official = isCodexOfficialAccount(a);
   const accountId = escAttr(a.id || '');
-  return `<section class="account-edit-section official-runtime-section">
+  return `<section class="account-edit-section codex-router-section">
     <div class="account-section-head">
-      <div class="section-sub-label">官方账号池</div>
-    </div>
-    <div class="official-runtime-summary">
-      <div>${esc(officialAccountEligibility(a))}</div>
-      <span>${esc(officialRuntimeSummaryText(a))}</span>
+      <div class="section-sub-label">Router 路由</div>
     </div>
     <div class="config-fields">
+      ${official ? `<div class="config-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="edit_routing_anchor_enabled" ${routing.anchor_enabled ? 'checked' : ''}>
+          作为登录态锚点
+        </label>
+        <span class="hint">只负责让 Codex Desktop 保留官方登录态和能力入口，不代表参与模型响应。</span>
+      </div>` : ''}
       <div class="config-field">
         <label class="toggle-label">
-          <input type="checkbox" id="edit_routing_enabled" ${routing.enabled ? 'checked' : ''}>
-          参与账号池
+          <input type="checkbox" id="edit_routing_execution_enabled" ${routing.execution_enabled ? 'checked' : ''}>
+          参与模型执行
         </label>
+        <span class="hint">${official ? '官方号默认关闭；只有明确开启后才会作为执行候选。' : '开启后作为同池执行账号，由 Router 按能力和健康度选择。'}</span>
       </div>
       <div class="config-field">
         <label>Pool</label>
@@ -253,7 +261,26 @@ function renderCodexOfficialRuntimePanel(a) {
       </div>
     </div>
     <div class="official-runtime-actions">
-      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用账号池</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用路由</button>` : ''}
+    </div>
+  </section>`;
+}
+
+function renderCodexOfficialRuntimePanel(a) {
+  if (!endpointIsCodexOfficial(currentEndpoint(a)) && !isCodexOfficialAccount(a)) return '';
+  const runtime = a?.runtime_state || {};
+  const modelStates = runtime.model_states && typeof runtime.model_states === 'object' ? runtime.model_states : {};
+  const rows = Object.entries(modelStates);
+  const accountId = escAttr(a.id || '');
+  return `<section class="account-edit-section official-runtime-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">官方登录态</div>
+    </div>
+    <div class="official-runtime-summary">
+      <div>${esc(officialAccountEligibility(a))}</div>
+      <span>${esc(officialRuntimeSummaryText(a))}</span>
+    </div>
+    <div class="official-runtime-actions">
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除冷却</button>` : ''}
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="resetAccountRuntime('${accountId}')">重置运行态</button>` : ''}
     </div>
@@ -299,10 +326,10 @@ function officialAccountEligibility(a) {
   const runtime = a?.runtime_state || {};
   const retry = Number(runtime.next_retry_after || 0);
   const now = Math.floor(Date.now() / 1000);
-  if (!routing.enabled) return '已停用';
+  if (!routing.anchor_enabled) return '锚点停用';
   if (retry && retry > now) return `${runtimeStatusLabel(runtime.status)}中`;
   if ((runtime.status || 'active') === 'error') return '最近错误';
-  return '可参与';
+  return routing.execution_enabled ? '锚点+执行' : '登录态锚点';
 }
 
 function officialRuntimeSummaryText(a) {
@@ -439,6 +466,196 @@ function renderOfficialPoolOverview(list) {
       <span>请求</span>
       <strong>${totalSuccess}/${totalFailed}</strong>
     </div>
+  </div>`;
+}
+
+function routerReasonLabel(reason) {
+  const labels = {
+    ready: '可用',
+    no_anchor: '无锚点',
+    anchor_disabled: '锚点已停用',
+    execution_disabled: '未参与执行',
+    routing_disabled: '已停用',
+    pool_mismatch: '非同池',
+    no_supported_endpoint: '未映射',
+    cooling_down: '冷却中',
+    account_quota_cooling: '账号额度冷却',
+    account_cooling_down: '账号冷却',
+    account_retry_wait: '账号等待恢复',
+    model_quota_cooling: '模型额度冷却',
+    model_cooling_down: '模型冷却',
+    model_retry_wait: '模型等待恢复',
+    capability_mismatch: '能力不匹配',
+    attempt_failed: '本次已失败',
+    stream_preflight_risk: '流式预选避开',
+    recent_failure_rate: '近期失败率高',
+    low_health_score: '健康分偏低',
+    recent_account_error: '账号近期错误',
+    recent_model_error: '模型近期错误',
+  };
+  return labels[reason] || reason || '未知';
+}
+
+function routerCandidateDetail(candidate) {
+  const name = candidate.account_name || candidate.account_id || '未知账号';
+  const parts = [`${name}: ${routerReasonLabel(candidate.reason)}`];
+  const capabilities = candidate.capabilities || {};
+  const capabilityBits = [
+    capabilities.protocol,
+    capabilities.tool_mode && capabilities.tool_mode !== 'none' ? `tools:${capabilities.tool_mode}` : '',
+    capabilities.vision && capabilities.vision !== 'off' ? `vision:${capabilities.vision}` : '',
+    capabilities.web ? 'web' : '',
+    capabilities.image_generation ? 'image2' : '',
+  ].filter(Boolean);
+  if (capabilityBits.length) parts.push(capabilityBits.join('/'));
+  if (Array.isArray(candidate.capability_gaps) && candidate.capability_gaps.length) {
+    parts.push(`缺口 ${candidate.capability_gaps.join('/')}`);
+  }
+  const modelRetry = candidate.model_runtime_next_retry_after;
+  const accountRetry = candidate.runtime_next_retry_after;
+  const retry = modelRetry || accountRetry;
+  if (retry) parts.push(`恢复 ${formatRuntimeDate(retry)}`);
+  const message = candidate.model_runtime_message || candidate.runtime_message;
+  if (message) parts.push(message);
+  const endpoint = candidate.endpoint_name || candidate.endpoint_kind;
+  if (endpoint) parts.push(endpoint);
+  if (candidate.mapped_model) parts.push(candidate.mapped_model);
+  if (candidate.health_score !== undefined && candidate.health_score !== null) {
+    parts.push(`健康 ${candidate.health_score}`);
+  }
+  if (candidate.failure_rate_percent !== undefined && candidate.failure_rate_percent !== null) {
+    parts.push(`失败率 ${candidate.failure_rate_percent}%`);
+  }
+  if (candidate.stream_preflight_risk) {
+    parts.push(`流式预选 ${routerReasonLabel(candidate.stream_preflight_risk)}`);
+  }
+  if (candidate.route_score !== undefined && candidate.route_score !== null) {
+    parts.push(`评分 ${candidate.route_score}`);
+  }
+  const recentSuccess = Number(candidate.recent_success || 0);
+  const recentFailed = Number(candidate.recent_failed || 0);
+  if (recentSuccess || recentFailed) {
+    parts.push(`近1h ${recentSuccess}/${recentFailed}`);
+  }
+  return parts.join(' · ');
+}
+
+function routerNodeLabel(node) {
+  return node?.account_name || node?.account_id || '未知账号';
+}
+
+function routerPreflightSummary(preflight) {
+  if (!preflight || typeof preflight !== 'object') return '';
+  const reason = routerReasonLabel(preflight.reason);
+  const from = routerNodeLabel(preflight.from);
+  const to = routerNodeLabel(preflight.to);
+  if (preflight.action === 'rerouted') {
+    return `流式预选避开 ${from}，改走 ${to} · ${reason}`;
+  }
+  if (preflight.action === 'kept_no_alternative') {
+    return `流式预选风险 ${from} · ${reason}，暂无替代候选`;
+  }
+  return `流式预选 ${reason}`;
+}
+
+function routerScenarioDetail(scenario) {
+  const candidates = Array.isArray(scenario?.candidates) ? scenario.candidates : [];
+  const selected = scenario?.selected;
+  const preflight = routerPreflightSummary(scenario?.stream_preflight);
+  const selectedLine = selected
+    ? `执行 ${selected.account_name || selected.account_id || '未知账号'}`
+    : '暂无可用执行账号';
+  const skipped = candidates
+    .filter(candidate => !candidate.eligible)
+    .map(routerCandidateDetail)
+    .join('\n');
+  const toolDecisions = scenario?.tool_decisions || selected?.tool_decisions || {};
+  const decisions = [
+    Array.isArray(toolDecisions.kept) && toolDecisions.kept.length ? `保留 ${toolDecisions.kept.join('/')}` : '',
+    Array.isArray(toolDecisions.translated) && toolDecisions.translated.length ? `转译 ${toolDecisions.translated.join('/')}` : '',
+    Array.isArray(toolDecisions.local) && toolDecisions.local.length ? `本地 ${toolDecisions.local.join('/')}` : '',
+    Array.isArray(toolDecisions.filtered) && toolDecisions.filtered.length ? `过滤 ${toolDecisions.filtered.join('/')}` : '',
+  ].filter(Boolean).join('\n');
+  return [selectedLine, preflight, decisions, skipped].filter(Boolean).join('\n');
+}
+
+function renderRouterScenarioStrip(scenarios) {
+  if (!Array.isArray(scenarios) || !scenarios.length) return '';
+  return `<div class="router-scenario-strip">
+    ${scenarios.map(scenario => {
+      const candidates = Array.isArray(scenario.candidates) ? scenario.candidates : [];
+      const eligible = Number(scenario.eligible_count || 0);
+      const total = Number(scenario.candidate_count || candidates.length || 0);
+      const selected = scenario.selected;
+      const ok = Boolean(selected);
+      const preflight = scenario.stream_preflight || null;
+      const rerouted = preflight?.action === 'rerouted';
+      const selectedName = rerouted
+        ? `流式→${routerNodeLabel(preflight.to)}`
+        : (selected ? (selected.account_name || selected.account_id || '可用') : '不可用');
+      return `<span class="router-scenario-chip ${ok ? 'ok' : 'blocked'}${rerouted ? ' preflight' : ''}" title="${escAttr(routerScenarioDetail(scenario))}">
+        <em>${esc(scenario.scenario_label || scenario.scenario_id || '场景')}</em>
+        <strong>${esc(selectedName)}</strong>
+        <b>${rerouted ? '预选' : `${eligible}/${total}`}</b>
+      </span>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderRouterPreflightNotice(preflight) {
+  const summary = routerPreflightSummary(preflight);
+  if (!summary) return '';
+  const kind = preflight?.action === 'rerouted' ? 'warn' : 'muted';
+  return `<div class="router-preflight-notice ${kind}" title="${escAttr(summary)}">${esc(summary)}</div>`;
+}
+
+function renderRouterStatusOverview() {
+  if (selectedClientKind !== 'codex' || selectedSurfaceForKind('codex') !== 'desktop') return '';
+  const router = accountsData?.router_status || {};
+  const scenarios = Array.isArray(accountsData?.router_status_scenarios)
+    ? accountsData.router_status_scenarios
+    : [];
+  const candidates = Array.isArray(router.candidates) ? router.candidates : [];
+  if (!router.anchor && candidates.length === 0) return '';
+  const ready = candidates.filter(candidate => candidate.eligible).length;
+  const skipped = Math.max(0, candidates.length - ready);
+  const anchorPool = router.anchor?.pool || '—';
+  const selected = router.selected;
+  const selectedName = selected ? (selected.account_name || selected.account_id || '—') : '暂无';
+  const mappedModel = selected?.mapped_model || router.requested_model || '—';
+  const selectedHealth = selected?.health_score;
+  const preflight = router.stream_preflight || null;
+  const skippedTitle = candidates
+    .filter(candidate => !candidate.eligible)
+    .map(routerCandidateDetail)
+    .join('\n');
+  const selectedDetail = selected
+    ? routerCandidateDetail({
+      ...selected,
+      reason: 'ready',
+    })
+    : '暂无可用执行账号';
+  return `<div class="router-status-block">
+  <div class="official-pool-overview router-pool-overview">
+    <div>
+      <span>路由池</span>
+      <strong title="${escAttr(anchorPool)}">${esc(anchorPool)}</strong>
+    </div>
+    <div>
+      <span>执行账号</span>
+      <strong title="${escAttr(selectedDetail)}">${esc(selectedName)}</strong>
+    </div>
+    <div>
+      <span>模型</span>
+      <strong title="${escAttr(mappedModel)}">${esc(mappedModel)}</strong>
+    </div>
+    <div>
+      <span>候选</span>
+      <strong title="${escAttr(skippedTitle)}">${ready}/${candidates.length}${skipped ? ` 跳过${skipped}` : ''}${selectedHealth !== undefined && selectedHealth !== null ? ` · 健康${selectedHealth}` : ''}</strong>
+    </div>
+  </div>
+  ${renderRouterPreflightNotice(preflight)}
+  ${renderRouterScenarioStrip(scenarios)}
   </div>`;
 }
 
@@ -1327,6 +1544,7 @@ function renderAccountList() {
       </div>
     </div>
     <div class="accounts-scroll-region">
+      ${renderRouterStatusOverview()}
       ${cards}
     </div>
   </div>`;
@@ -1995,6 +2213,7 @@ function renderAccountDetail() {
       </div>
     </section>
 
+    ${renderCodexRouterPanel(a)}
     ${renderCodexOfficialRuntimePanel(a)}
 
     ${modelSection}
@@ -2242,6 +2461,8 @@ function accountListRenderSignature(data) {
         upstream: cardUpstream(a),
         endpoint_kind: cardEndpointKind(a),
         routing_enabled: routing.enabled,
+        routing_anchor_enabled: routing.anchor_enabled,
+        routing_execution_enabled: routing.execution_enabled,
         routing_pool: routing.pool,
         routing_priority: routing.priority,
         routing_weight: routing.weight,
@@ -2256,6 +2477,8 @@ function accountListRenderSignature(data) {
     selectedClientSurface: selectedSurfaceForKind(selectedClientKind),
     activeId,
     activeEndpointId,
+    routerStatus: data?.router_status || null,
+    routerStatusScenarios: data?.router_status_scenarios || null,
     accounts,
   });
 }
@@ -2476,14 +2699,17 @@ function syncEditingDraftFromForm(options = {}) {
     ep.balance_url = balanceUrl.value.trim();
     a.balance_url = ep.balance_url;
   }
-  const routingEnabled = document.getElementById('edit_routing_enabled');
+  const routingAnchorEnabled = document.getElementById('edit_routing_anchor_enabled');
+  const routingExecutionEnabled = document.getElementById('edit_routing_execution_enabled');
   const routingPool = document.getElementById('edit_routing_pool');
   const routingPriority = document.getElementById('edit_routing_priority');
   const routingWeight = document.getElementById('edit_routing_weight');
-  if (routingEnabled || routingPool || routingPriority || routingWeight) {
+  if (routingAnchorEnabled || routingExecutionEnabled || routingPool || routingPriority || routingWeight) {
     if (!a.client_options) a.client_options = {};
     const routing = accountRouting(a);
-    routing.enabled = routingEnabled ? routingEnabled.checked : routing.enabled;
+    routing.anchor_enabled = routingAnchorEnabled ? routingAnchorEnabled.checked : routing.anchor_enabled;
+    routing.execution_enabled = routingExecutionEnabled ? routingExecutionEnabled.checked : routing.execution_enabled;
+    routing.enabled = Boolean(routing.anchor_enabled || routing.execution_enabled);
     routing.pool = routingPool ? (routingPool.value.trim() || 'codex-official') : routing.pool;
     routing.priority = routingPriority ? Number(routingPriority.value || 0) : routing.priority;
     routing.weight = routingWeight ? Math.max(1, Math.min(100, Number(routingWeight.value || 1))) : routing.weight;
@@ -2491,6 +2717,8 @@ function syncEditingDraftFromForm(options = {}) {
     a.client_options.routing = {
       enabled: routing.enabled,
       disabled: !routing.enabled,
+      anchor_enabled: routing.anchor_enabled,
+      execution_enabled: routing.execution_enabled,
       pool: routing.pool,
       priority: routing.priority,
       weight: routing.weight,
@@ -2844,16 +3072,25 @@ async function resetAccountRuntime(id) {
   }
 }
 
-async function toggleAccountRouting(id) {
+async function toggleAccountRouting(id, mode = 'execution') {
   const account = (accountsData.accounts || []).find(item => item.id === id);
   const routing = accountRouting(account);
+  const anchorMode = mode === 'anchor';
+  const nextAnchor = anchorMode ? !routing.anchor_enabled : routing.anchor_enabled;
+  const nextExecution = anchorMode ? routing.execution_enabled : !routing.execution_enabled;
   try {
-    await invoke('set_account_routing', { id, enabled: !routing.enabled });
-    showToast(routing.enabled ? '账号池已停用' : '账号池已启用', 'success');
+    await invoke('set_account_routing', {
+      id,
+      anchorEnabled: nextAnchor,
+      executionEnabled: nextExecution,
+    });
+    showToast(anchorMode
+      ? (nextAnchor ? '登录态锚点已启用' : '登录态锚点已停用')
+      : (nextExecution ? '执行候选已启用' : '执行候选已停用'), 'success');
     await loadAccountsData();
     refreshEditingAccountAfterManagement(id);
   } catch (e) {
-    showToast('更新账号池失败: ' + e, 'error');
+    showToast('更新路由设置失败: ' + e, 'error');
   }
 }
 
@@ -2872,12 +3109,13 @@ async function applyAccountRoutingFromDetail(id) {
   try {
     const result = await invoke('set_account_routing', {
       id,
-      enabled: routing.enabled,
+      anchorEnabled: routing.anchor_enabled,
+      executionEnabled: routing.execution_enabled,
       pool: routing.pool,
       priority: routing.priority,
       weight: routing.weight,
     });
-    showToast('账号池设置已应用', 'success');
+    showToast('路由设置已应用', 'success');
     await loadAccountsData();
     editingAccount = accountsData.accounts.find(account => account.id === result.id) || result;
     if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));

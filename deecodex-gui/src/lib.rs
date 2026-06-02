@@ -31,6 +31,18 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn preview_build() -> bool {
+    commands::runtime_defaults().preview
+}
+
+fn product_name() -> &'static str {
+    if preview_build() {
+        "DEX AI Preview"
+    } else {
+        "DEX AI"
+    }
+}
+
 const BETA_EXPIRES_AT_UNIX: u64 = 1_780_243_199; // 2026-05-31 23:59:59 Asia/Shanghai
 
 fn beta_trial_expired() -> bool {
@@ -82,15 +94,16 @@ pub struct ServerManager {
 
 impl ServerManager {
     fn new() -> Self {
+        let defaults = commands::runtime_defaults();
         Self {
             shutdown_tx: Mutex::new(None),
             handle: Mutex::new(None),
             host: Mutex::new(deecodex::config::default_host()),
-            port: Mutex::new(4446),
+            port: Mutex::new(defaults.port),
             start_time: Mutex::new(None),
             tray: Mutex::new(None),
             app_handle: Mutex::new(None),
-            data_dir: Mutex::new(std::path::PathBuf::from(".deecodex")),
+            data_dir: Mutex::new(defaults.data_dir),
             app_state: Mutex::new(None),
             plugin_manager: Mutex::new(None),
             request_history: Mutex::new(None),
@@ -115,7 +128,7 @@ impl ServerManager {
             if let Ok(menu) = build_tray_menu(app, running, &data_dir) {
                 let _ = tray.set_menu(Some(menu));
             }
-            let _ = tray.set_tooltip(Some(&format!("DEX AI · {label}")));
+            let _ = tray.set_tooltip(Some(&format!("{} · {label}", product_name())));
         }
     }
 }
@@ -126,7 +139,7 @@ fn build_tray_menu(
     data_dir: &std::path::Path,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let label = if running { "运行中" } else { "已停止" };
-    let status_item = MenuItemBuilder::with_id("status", format!("DEX AI · {label}"))
+    let status_item = MenuItemBuilder::with_id("status", format!("{} · {label}", product_name()))
         .enabled(false)
         .build(app)?;
     let start_item = MenuItemBuilder::with_id("start", "启动服务")
@@ -134,7 +147,7 @@ fn build_tray_menu(
         .build(app)?;
     let stop_item = MenuItemBuilder::with_id("stop", "停止服务").build(app)?;
     let open_item = MenuItemBuilder::with_id("open", "打开控制面板").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "退出 DEX AI")
+    let quit_item = MenuItemBuilder::with_id("quit", format!("退出 {}", product_name()))
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
 
@@ -201,7 +214,12 @@ fn find_env_file() -> Option<std::path::PathBuf> {
         }
     }
     if let Some(home) = deecodex::config::home_dir() {
-        let home_env = home.join(".deecodex").join(".env");
+        let data_dir_name = if preview_build() {
+            ".deecodex-preview"
+        } else {
+            ".deecodex"
+        };
+        let home_env = home.join(data_dir_name).join(".env");
         if home_env.exists() {
             return Some(home_env);
         }
@@ -262,7 +280,7 @@ pub fn run() {
                 .ok()
                 .as_deref(),
         ) || env_flag_enabled(std::env::var("DEECODEX_GUI_ALLOW_MULTIPLE").ok().as_deref()));
-    if !allow_multi_instance {
+    if !allow_multi_instance && !preview_build() {
         let current_pid = std::process::id();
         let process_name = "deecodex-gui";
         // 扫描同名进程（排除自身）
@@ -326,7 +344,7 @@ pub fn run() {
                 .icon_as_template(false)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("DEX AI · 已停止")
+                .tooltip(format!("{} · 已停止", product_name()))
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click {
                         button: MouseButton::Left,

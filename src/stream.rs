@@ -18,6 +18,7 @@ use crate::{
     },
     metrics::Metrics,
     request_history::{HistoryContext, RequestHistoryStore},
+    runtime_feedback::RuntimeFeedbackSink,
     session::SessionStore,
     token_anomaly::TokenTracker,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
@@ -32,6 +33,13 @@ fn chat_usage_cache_hit(usage: &ChatUsage) -> bool {
         .and_then(|details| details.cached_tokens)
         .unwrap_or(0);
     prompt_cache_hit > 0 || prompt_cached > 0
+}
+
+fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 pub struct StreamArgs {
@@ -66,6 +74,7 @@ pub struct StreamArgs {
     pub history_context: HistoryContext,
     pub upstream_url: String,
     pub allow_missing_done: bool,
+    pub runtime_feedback: RuntimeFeedbackSink,
     pub start: std::time::Instant,
 }
 
@@ -474,6 +483,7 @@ pub fn translate_stream(
         history_context,
         upstream_url,
         allow_missing_done,
+        runtime_feedback,
         start,
     } = args;
     let msg_item_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
@@ -544,6 +554,7 @@ pub fn translate_stream(
                 Ok(r) => {
                     let status = r.status();
                     let status_code = status.as_u16();
+                    let retry_after = retry_after_secs(r.headers());
                     let body = r.text().await.unwrap_or_default();
 
                     let reasoning_content_error =
@@ -567,6 +578,9 @@ pub fn translate_stream(
                     } else {
                         body.clone()
                     };
+                    runtime_feedback
+                        .failure(&model, status_code, error_msg.clone(), retry_after)
+                        .await;
                     error!("upstream {}: {}", status_code, body.chars().take(300).collect::<String>());
                     if store_response {
                         let mut failed = json!({
@@ -607,6 +621,14 @@ pub fn translate_stream(
                         continue;
                     }
                     error!("upstream request failed: {e}");
+                    runtime_feedback
+                        .failure(
+                            &model,
+                            reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                            e.to_string(),
+                            None,
+                        )
+                        .await;
                     if store_response {
                         let mut failed = json!({
                             "id": &response_id,
@@ -744,6 +766,14 @@ pub fn translate_stream(
         if !stream_completed {
             if let Some(message) = stream_error {
                 error!("upstream stream incomplete: {message}");
+                runtime_feedback
+                    .failure(
+                        &model,
+                        reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                        message.clone(),
+                        None,
+                    )
+                    .await;
                 if store_response {
                     let mut failed = json!({
                         "id": &response_id,
@@ -780,6 +810,14 @@ pub fn translate_stream(
             } else {
                 let message = "upstream stream ended without [DONE]".to_string();
                 error!("upstream stream incomplete: {message}");
+                runtime_feedback
+                    .failure(
+                        &model,
+                        reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                        message.clone(),
+                        None,
+                    )
+                    .await;
                 if store_response {
                     let mut failed = json!({
                         "id": &response_id,
@@ -1178,6 +1216,7 @@ pub fn translate_stream(
             }
         }
 
+        runtime_feedback.success(&model).await;
         let _ = request_history.record(history_context.record(
             response_id,
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),

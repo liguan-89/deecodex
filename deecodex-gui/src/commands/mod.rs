@@ -1483,6 +1483,83 @@ fn normalize_data_dir(data_dir: impl Into<std::path::PathBuf>) -> std::path::Pat
     }
 }
 
+fn sync_data_dir_env_file(data_dir: &Path, key: &str, value: &str) {
+    let path = data_dir.join(".env");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("{key}=");
+    let new_line = format!("{key}={value}");
+    let replaced = if content.lines().any(|line| line.starts_with(&prefix)) {
+        content
+            .lines()
+            .map(|line| {
+                if line.starts_with(&prefix) {
+                    new_line.as_str()
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else if content.is_empty() {
+        new_line
+    } else {
+        format!("{content}\n{new_line}")
+    };
+    let _ = std::fs::write(path, replaced);
+}
+
+pub(crate) struct RuntimeDefaults {
+    pub preview: bool,
+    pub port: u16,
+    pub data_dir: PathBuf,
+}
+
+pub(crate) fn runtime_defaults() -> RuntimeDefaults {
+    let preview = option_env!("DEX_AI_PREVIEW_BUILD")
+        .is_some_and(|value| matches!(value, "1" | "true" | "yes" | "preview"));
+    let data_dir_name = if preview {
+        ".deecodex-preview"
+    } else {
+        ".deecodex"
+    };
+    RuntimeDefaults {
+        preview,
+        port: if preview { 4556 } else { 4446 },
+        data_dir: deecodex::config::home_dir()
+            .map(|home| home.join(data_dir_name))
+            .unwrap_or_else(|| PathBuf::from(data_dir_name)),
+    }
+}
+
+fn apply_runtime_data_dir_default(
+    mut args: Args,
+    defaults: &RuntimeDefaults,
+    data_dir_env_configured: bool,
+) -> Args {
+    if defaults.preview
+        && !data_dir_env_configured
+        && args.data_dir.as_path() == Path::new(".deecodex")
+    {
+        args.data_dir = defaults.data_dir.clone();
+    }
+    args
+}
+
+fn apply_runtime_port_default(
+    mut args: Args,
+    defaults: &RuntimeDefaults,
+    port_file_configured: bool,
+    port_env_configured: bool,
+) -> Args {
+    if defaults.preview && !port_file_configured && !port_env_configured && args.port == 4446 {
+        args.port = defaults.port;
+    }
+    args
+}
+
 struct AccountBackedConfig {
     upstream: String,
     api_key: String,
@@ -1512,6 +1589,9 @@ fn account_backed_config(existing: Option<&Args>) -> AccountBackedConfig {
 }
 
 pub(crate) fn load_args() -> Args {
+    let defaults = runtime_defaults();
+    let port_env_configured = std::env::var_os("DEECODEX_PORT").is_some();
+    let data_dir_env_configured = std::env::var_os("DEECODEX_DATA_DIR").is_some();
     // 从环境变量 + 默认值构建 Args
     let args = match Args::try_parse_from(["deecodex-gui"]) {
         Ok(a) => a,
@@ -1522,7 +1602,7 @@ pub(crate) fn load_args() -> Args {
                     command: None,
                     config: None,
                     host: deecodex::config::default_host(),
-                    port: 4446,
+                    port: defaults.port,
                     upstream: "https://openrouter.ai/api/v1".into(),
                     api_key: String::new(),
                     model_map: "{}".into(),
@@ -1535,9 +1615,7 @@ pub(crate) fn load_args() -> Args {
                     codex_auto_inject: true,
                     codex_persistent_inject: false,
                     prompts_dir: "prompts".into(),
-                    data_dir: deecodex::config::home_dir()
-                        .map(|h| h.join(".deecodex"))
-                        .unwrap_or_else(|| std::path::PathBuf::from(".deecodex")),
+                    data_dir: defaults.data_dir,
                     token_anomaly_prompt_max: 200000,
                     token_anomaly_spike_ratio: 5.0,
                     token_anomaly_burn_window: 120,
@@ -1558,13 +1636,19 @@ pub(crate) fn load_args() -> Args {
             });
         }
     };
-    let mut args = args;
+    let mut args = apply_runtime_data_dir_default(args, &defaults, data_dir_env_configured);
     // 先确保 data_dir 为绝对路径，再合并配置文件；否则 dev 模式会去
     // deecodex-gui/.deecodex 读配置，导致 GUI 保存到 HOME 后又读回默认值。
     if args.data_dir.is_relative() {
         args.data_dir = normalize_data_dir(args.data_dir);
     }
+    let config_path = match &args.config {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => Args::default_config_path(&args.data_dir),
+    };
+    let port_file_configured = Args::load_from_file(&config_path).is_some();
     let mut args = args.merge_with_file();
+    args = apply_runtime_port_default(args, &defaults, port_file_configured, port_env_configured);
     args.host = deecodex::config::normalize_host(&args.host);
     // 文件里的旧 data_dir 也可能仍是相对路径，合并后再规整一次。
     if args.data_dir.is_relative() {
@@ -1942,6 +2026,7 @@ fn build_app_state(args: &Args) -> anyhow::Result<handlers::AppState> {
                 }),
             )
         },
+        codex_router_sessions: Arc::new(dashmap::DashMap::new()),
     })
 }
 
@@ -2016,7 +2101,13 @@ async fn sync_active_account_to_running_state(
 
     let host = manager.host.lock().await.clone();
     let port = *manager.port.lock().await;
-    deecodex::codex_config::inject_with_host(&host, port, target.context_window_override);
+    let data_dir = manager.data_dir.lock().await.clone();
+    deecodex::codex_config::inject_with_host_and_data_dir(
+        &host,
+        port,
+        target.context_window_override,
+        Some(&data_dir),
+    );
 
     tracing::info!("已同步运行中账号: {} ({})", target.name, target.provider);
     Ok(())
@@ -2052,10 +2143,11 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject_with_host(
+        deecodex::codex_config::inject_with_host_and_data_dir(
             &host,
             port,
             load_active_account_context_window(&args.data_dir),
+            Some(&args.data_dir),
         );
     }
 
@@ -2315,12 +2407,12 @@ fn save_config_inner(
     let existing = Args::load_from_file(&config_path);
     let account_config = account_backed_config(existing.as_ref());
 
-    // 同步关键字段到 .env（始终写入，空值会清除 .env 中的旧条目）
-    Args::sync_to_env_file(&data_dir, "DEECODEX_HOST", &host);
-    Args::sync_to_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
-    Args::sync_to_env_file(&data_dir, "DEECODEX_UPSTREAM", &account_config.upstream);
-    Args::sync_to_env_file(&data_dir, "DEECODEX_API_KEY", &account_config.api_key);
-    Args::sync_to_env_file(&data_dir, "DEECODEX_MODEL_MAP", &account_config.model_map);
+    // GUI 始终写入当前数据目录，避免 Preview 或自定义目录污染正式版配置。
+    sync_data_dir_env_file(&data_dir, "DEECODEX_HOST", &host);
+    sync_data_dir_env_file(&data_dir, "DEECODEX_PORT", &config.port.to_string());
+    sync_data_dir_env_file(&data_dir, "DEECODEX_UPSTREAM", &account_config.upstream);
+    sync_data_dir_env_file(&data_dir, "DEECODEX_API_KEY", &account_config.api_key);
+    sync_data_dir_env_file(&data_dir, "DEECODEX_MODEL_MAP", &account_config.model_map);
 
     let args = Args {
         command: None,
@@ -2368,7 +2460,12 @@ fn save_config_inner(
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject_with_host(&inject_host, inject_port, cw);
+        deecodex::codex_config::inject_with_host_and_data_dir(
+            &inject_host,
+            inject_port,
+            cw,
+            Some(&args.data_dir),
+        );
     } else {
         deecodex::codex_config::remove();
     }
@@ -2607,6 +2704,10 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
         .map(|account| account_to_value_for_store(account, &store))
         .collect();
     let client_counts = client_account_counts(&store);
+    let router_now = deecodex::accounts::now_secs();
+    let router_status = handlers::dex_router_status_snapshot(&store, "gpt-5.5", router_now);
+    let router_status_scenarios =
+        handlers::dex_router_status_scenarios(&store, "gpt-5.5", router_now);
 
     Ok(json!({
         "accounts": accounts,
@@ -2615,6 +2716,8 @@ pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, S
         "active_endpoint_id": store.active_endpoint_id,
         "active_by_surface": store.active_by_surface,
         "client_counts": client_counts,
+        "router_status": router_status,
+        "router_status_scenarios": router_status_scenarios,
     }))
 }
 
@@ -3231,7 +3334,8 @@ pub async fn reset_account_runtime_state(
 pub async fn set_account_routing(
     manager: State<'_, ServerManager>,
     id: String,
-    enabled: Option<bool>,
+    anchor_enabled: Option<bool>,
+    execution_enabled: Option<bool>,
     pool: Option<String>,
     priority: Option<i64>,
     weight: Option<u32>,
@@ -3244,9 +3348,17 @@ pub async fn set_account_routing(
             .find(|account| account.id == id)
             .ok_or_else(|| format!("账号不存在: {id}"))?;
         let mut routing = deecodex::accounts::account_routing_options(account);
-        if let Some(enabled) = enabled {
-            routing.enabled = enabled;
-            routing.disabled = !enabled;
+        let role_changed = anchor_enabled.is_some() || execution_enabled.is_some();
+        if let Some(anchor_enabled) = anchor_enabled {
+            routing.anchor_enabled = Some(anchor_enabled);
+        }
+        if let Some(execution_enabled) = execution_enabled {
+            routing.execution_enabled = Some(execution_enabled);
+        }
+        if role_changed {
+            routing.enabled = routing.anchor_enabled_for_account(account)
+                || routing.execution_enabled_for_account(account);
+            routing.disabled = !routing.enabled;
         }
         if let Some(pool) = pool {
             let pool = pool.trim();
@@ -4831,6 +4943,7 @@ pub async fn fetch_upstream_models(
     api_key: Option<String>,
     endpoint_kind: Option<String>,
 ) -> Result<Vec<String>, String> {
+    let mut cache_target: Option<(PathBuf, String, String)> = None;
     let (upstream, api_key, profile, endpoint_kind, oauth_account) = if let Some(id) = account_id {
         let data_dir = manager.data_dir.lock().await.clone();
         let store = deecodex::accounts::load_accounts(&data_dir);
@@ -4840,6 +4953,16 @@ pub async fn fetch_upstream_models(
             .find(|a| a.id == id)
             .ok_or_else(|| "账号不存在".to_string())?;
         let endpoint = endpoint_for_account_in_store(account, &store);
+        let endpoint_id = endpoint
+            .map(|endpoint| endpoint.id.clone())
+            .or_else(|| {
+                account
+                    .endpoints
+                    .first()
+                    .map(|endpoint| endpoint.id.clone())
+            })
+            .unwrap_or_else(|| "default".into());
+        cache_target = Some((data_dir, account.id.clone(), endpoint_id));
         (
             non_empty_override(upstream).unwrap_or_else(|| {
                 endpoint
@@ -4883,6 +5006,8 @@ pub async fn fetch_upstream_models(
             upstream = %upstream,
             "官方 OAuth 账号不探测真实 /models，按 CLIProxyAPI registry 模式使用内置模型列表"
         );
+        persist_fetched_models(cache_target.as_ref(), &profile.known_models);
+        refresh_codex_model_catalog_after_fetch(&manager, cache_target.as_ref()).await;
         return Ok(profile.known_models);
     }
 
@@ -4904,6 +5029,8 @@ pub async fn fetch_upstream_models(
                 let models = deecodex::providers::parse_models_response(&profile, &body);
                 if !models.is_empty() {
                     tracing::info!(provider = %profile.slug, "获取上游模型成功: {} 个模型", models.len());
+                    persist_fetched_models(cache_target.as_ref(), &models);
+                    refresh_codex_model_catalog_after_fetch(&manager, cache_target.as_ref()).await;
                     return Ok(models);
                 }
                 tracing::info!(provider = %profile.slug, "上游模型响应解析为空: {:?}", body);
@@ -4938,9 +5065,40 @@ pub async fn fetch_upstream_models(
             upstream = %upstream,
             "Anthropic 兼容入口未返回可解析模型列表，使用内置模型模板"
         );
+        persist_fetched_models(cache_target.as_ref(), &profile.known_models);
+        refresh_codex_model_catalog_after_fetch(&manager, cache_target.as_ref()).await;
         return Ok(profile.known_models);
     }
     Err("无法从上游获取模型列表".to_string())
+}
+
+fn persist_fetched_models(target: Option<&(PathBuf, String, String)>, models: &[String]) {
+    let Some((data_dir, account_id, endpoint_id)) = target else {
+        return;
+    };
+    if let Err(err) =
+        deecodex::codex_config::save_account_model_cache(data_dir, account_id, endpoint_id, models)
+    {
+        tracing::warn!(
+            account_id = %account_id,
+            endpoint_id = %endpoint_id,
+            error = %err,
+            "保存 Codex 账号模型缓存失败"
+        );
+    }
+}
+
+async fn refresh_codex_model_catalog_after_fetch(
+    manager: &ServerManager,
+    target: Option<&(PathBuf, String, String)>,
+) {
+    let Some((data_dir, _, _)) = target else {
+        return;
+    };
+    let host = manager.host.lock().await.clone();
+    let port = *manager.port.lock().await;
+    let cw = load_active_account_context_window(data_dir);
+    deecodex::codex_config::inject_with_host_and_data_dir(&host, port, cw, Some(data_dir));
 }
 
 fn endpoint_kind_is_codex_official(kind: &str) -> bool {
@@ -6564,6 +6722,47 @@ mod tests {
         }
     }
 
+    fn preview_defaults() -> RuntimeDefaults {
+        RuntimeDefaults {
+            preview: true,
+            port: 4556,
+            data_dir: PathBuf::from("/tmp/.deecodex-preview"),
+        }
+    }
+
+    #[test]
+    fn preview_runtime_defaults_replace_core_defaults() {
+        let defaults = preview_defaults();
+        let args = apply_runtime_data_dir_default(test_args(), &defaults, false);
+        let args = apply_runtime_port_default(args, &defaults, false, false);
+
+        assert_eq!(args.port, 4556);
+        assert_eq!(args.data_dir, defaults.data_dir);
+    }
+
+    #[test]
+    fn preview_runtime_defaults_preserve_explicit_values() {
+        let defaults = preview_defaults();
+        let mut args = test_args();
+        args.port = 4666;
+        args.data_dir = PathBuf::from("/tmp/custom-preview");
+        let args = apply_runtime_data_dir_default(args, &defaults, false);
+        let args = apply_runtime_port_default(args, &defaults, false, false);
+
+        assert_eq!(args.port, 4666);
+        assert_eq!(args.data_dir, PathBuf::from("/tmp/custom-preview"));
+    }
+
+    #[test]
+    fn preview_runtime_defaults_preserve_env_and_file_values() {
+        let defaults = preview_defaults();
+        let args = apply_runtime_data_dir_default(test_args(), &defaults, true);
+        let args = apply_runtime_port_default(args, &defaults, true, false);
+
+        assert_eq!(args.port, 4446);
+        assert_eq!(args.data_dir, PathBuf::from(".deecodex"));
+    }
+
     #[test]
     fn secret_override_rejects_redacted_values() {
         assert_eq!(
@@ -6638,6 +6837,8 @@ mod tests {
         );
         assert_eq!(routing.pool, "codex-official");
         assert!(routing.effective_enabled());
+        assert!(routing.effective_anchor_enabled_for_account(&account));
+        assert!(!routing.effective_execution_enabled_for_account(&account));
         assert!(account
             .endpoints
             .iter()

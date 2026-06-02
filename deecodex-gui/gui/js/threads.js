@@ -206,14 +206,14 @@ function renderCodexThreadActions(status) {
   const recentPending = Number(status.desktop_recent_pending_count || 0);
   const missingPreview = Number(status.missing_preview_count || 0);
   const missingUserEvent = Number(status.missing_user_event_count || 0);
-  const actionNeeded = pendingUnified > 0 || desktopPending > 0 || recentPending > 0 || missingPreview > 0 || missingUserEvent > 0;
+  const actionNeeded = pendingUnified > 0 || desktopPending > 0 || missingPreview > 0 || missingUserEvent > 0;
   const migrateDisabled = actionNeeded ? '' : ' disabled';
   const desktopTitle = desktopBlocked
     ? ' title="Codex Desktop 正在运行，项目索引会被运行态状态覆盖；退出 Codex Desktop 后再聚合可写入"'
     : '';
   const recentTitle = recentBlocked
-    ? ' title="Codex Desktop 正在运行，Recent 时间戳修复会被运行态状态覆盖；请完全退出 Codex Desktop 后再聚合"'
-    : ' title="Codex Desktop 侧边栏首屏只加载最近 20 条；这里统计项目线程是否已进入该窗口"';
+    ? ' title="Codex Desktop 正在运行；Recent 仅做只读统计，不改写线程时间"'
+    : ' title="Codex Desktop 侧边栏首屏只加载最近 20 条；这里仅统计项目线程是否已进入该窗口，不改写线程时间"';
   return `<div class="codex-thread-tools codex-thread-strip">
     <div class="codex-thread-meta">
       <span class="codex-thread-label">Codex 专属操作</span>
@@ -224,8 +224,8 @@ function renderCodexThreadActions(status) {
       <span class="tag tag-other">当前项目: ${Number(status.current_cwd_visible_count || 0)}</span>
       <span class="tag ${desktopBlocked ? 'tag-warning' : 'tag-current'}"${desktopTitle}>桌面索引: ${Number(status.desktop_project_indexed_count || 0)}</span>
       <span class="tag ${desktopPending ? 'tag-warning' : 'tag-other'}"${desktopTitle}>待写索引: ${desktopPending}</span>
-      <span class="tag ${recentPending ? 'tag-warning' : 'tag-current'}"${recentTitle}>Recent: ${Number(status.desktop_recent_visible_count || 0)}</span>
-      <span class="tag ${recentPending ? 'tag-warning' : 'tag-other'}"${recentTitle}>待入 Recent: ${recentPending}</span>
+      <span class="tag ${recentPending ? 'tag-warning' : 'tag-current'}"${recentTitle}>Recent可见: ${Number(status.desktop_recent_visible_count || 0)}</span>
+      <span class="tag tag-other"${recentTitle}>Recent未进首屏: ${recentPending}</span>
       <span class="tag tag-other">缺预览: ${missingPreview}</span>
       <span class="tag tag-other">缺用户事件: ${missingUserEvent}</span>
       ${renderContextWindowTags(status)}
@@ -329,15 +329,14 @@ async function doMigrate() {
     const diff = await invoke('migrate_threads');
     const fixed = Number(diff.visibility_fixed_count || 0);
     const desktopFixed = Number(diff.desktop_project_fixed_count || 0);
-    const recentFixed = Number(diff.desktop_recent_fixed_count || 0);
     const pending = Number(diff.desktop_project_pending_count || 0);
     const recentPending = Number(diff.desktop_recent_pending_count || 0);
     const blocked = !!diff.desktop_project_repair_blocked || !!diff.desktop_recent_repair_blocked;
     const suffix = blocked
-      ? `，桌面项目索引待写 ${pending} 条，Recent 待写 ${recentPending} 条；请完全退出 Codex Desktop 后再聚合`
-      : `，桌面项目修复 ${desktopFixed} 条，Recent 修复 ${recentFixed} 条`;
+      ? `，桌面项目索引待写 ${pending} 条，Recent 未进首屏 ${recentPending} 条；请完全退出 Codex Desktop 后再聚合`
+      : `，桌面项目修复 ${desktopFixed} 条，Recent 只读统计 ${recentPending} 条未进首屏`;
     const changed = Number(diff.changed_count || 0);
-    const message = changed || fixed || desktopFixed || recentFixed || pending
+    const message = changed || fixed || desktopFixed || pending
       ? `已聚合 ${changed} 条 Codex 线程，可见性修复 ${fixed} 项${suffix}`
       : '已检查 Codex 线程，无需变更';
     showToast(message, blocked ? 'warning' : 'success');

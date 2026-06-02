@@ -319,7 +319,8 @@ assert(codexList.includes("editAccount('c1', 'codex')"));
 assert(codexList.includes("testAccountUpstreamForCard('c1')"));
 assert(codexList.includes('aria-label="测试上游连接"'));
 assert(codexList.includes("deleteAccount('c1')"));
-assert(codexList.includes('池已启用'));
+assert(codexList.includes('登录态锚点已启用'));
+assert(codexList.includes('仅锚点'));
 assert(!codexList.includes('official-pool-overview'));
 assert(codexList.includes('account-surface-tab'));
 assert(codexList.includes('surface-cli'));
@@ -333,7 +334,7 @@ assert(codexList.includes('522d6@edu.kg.182796.xyz'));
 assert(!codexList.includes('Codex · 522d6'));
 assert(codexList.includes('account-plan-pill'));
 assert(codexList.includes('account-pool-switch toggle-label'));
-assert(codexList.includes("toggleAccountRouting('c2')"));
+assert(codexList.includes("toggleAccountRouting('c2', 'anchor')"));
 assert(codexList.includes('5h'));
 assert(codexList.includes('7d'));
 assert(!codexList.includes('codex-official</span>'));
@@ -347,6 +348,70 @@ assert(codexList.includes('runtime-quota_exceeded'));
 assert(!codexList.includes('account-meta-tags mid-tags'));
 assert(!codexList.includes('<span class="card-context">Chat 兼容</span>'));
 assert(!codexList.includes('https://api.deepseek.com/v1'));
+
+context.accountsData.router_status = {
+  anchor: { account_id: 'desktop-anchor', account_name: 'Codex Desktop', pool: 'pool-a' },
+  requested_model: 'gpt-5',
+  selected: {
+    account_id: 'risky',
+    account_name: 'Risky Router',
+    mapped_model: 'deepseek-chat',
+    health_score: 20,
+    recent_success: 0,
+    recent_failed: 2,
+    failure_rate_percent: 100,
+    stream_preflight_risk: 'recent_failure_rate',
+  },
+  candidate_count: 2,
+  eligible_count: 2,
+  skipped_count: 0,
+  candidates: [
+    {
+      account_id: 'risky',
+      account_name: 'Risky Router',
+      eligible: true,
+      reason: 'ready',
+      mapped_model: 'deepseek-chat',
+      health_score: 20,
+      recent_success: 0,
+      recent_failed: 2,
+      failure_rate_percent: 100,
+      stream_preflight_risk: 'recent_failure_rate',
+    },
+    {
+      account_id: 'healthy',
+      account_name: 'Healthy Router',
+      eligible: true,
+      reason: 'ready',
+      mapped_model: 'deepseek-chat',
+      health_score: 90,
+    },
+  ],
+  stream_preflight: {
+    action: 'rerouted',
+    reason: 'recent_failure_rate',
+    from: { account_id: 'risky', account_name: 'Risky Router' },
+    to: { account_id: 'healthy', account_name: 'Healthy Router' },
+  },
+};
+context.accountsData.router_status_scenarios = [
+  {
+    scenario_id: 'text',
+    scenario_label: '文本',
+    selected: context.accountsData.router_status.selected,
+    candidate_count: 2,
+    eligible_count: 2,
+    candidates: context.accountsData.router_status.candidates,
+    stream_preflight: context.accountsData.router_status.stream_preflight,
+  },
+];
+context.selectedClientSurface = 'desktop';
+const routerDesktopOverview = context.renderRouterStatusOverview();
+assert(routerDesktopOverview.includes('router-preflight-notice warn'));
+assert(routerDesktopOverview.includes('流式预选避开 Risky Router，改走 Healthy Router'));
+assert(routerDesktopOverview.includes('router-scenario-chip ok preflight'));
+assert(routerDesktopOverview.includes('流式→Healthy Router'));
+context.selectedClientSurface = 'cli';
 
 context.accountsView = 'add';
 const addPanel = context.renderAccountsPanel();
@@ -507,7 +572,10 @@ context.editingAccount.endpoints[0].context_window_override = 1000000;
 context.editingAccount.endpoints[0].reasoning_effort_override = 'high';
 context.accountsView = 'edit';
 const officialDetail = context.renderAccountsPanel();
-assert(officialDetail.includes('官方账号池'));
+assert(officialDetail.includes('Router 路由'));
+assert(officialDetail.includes('作为登录态锚点'));
+assert(officialDetail.includes('参与模型执行'));
+assert(officialDetail.includes('官方登录态'));
 assert(officialDetail.includes('id="edit_routing_pool"'));
 assert(officialDetail.includes('value="codex-official"'));
 assert(officialDetail.includes('id="edit_routing_priority" value="20"'));

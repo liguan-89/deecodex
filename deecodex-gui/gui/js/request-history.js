@@ -30,19 +30,190 @@ const HISTORY_LIST_LIMIT = 20000;
 		  }
 		}
 
-		function historyClientLabel(kind) {
-		  if (kind === 'all') return '全部';
-		  const labels = (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS) || {
-		    codex: 'Codex',
-		    claude_code: 'Claude',
+			function historyClientLabel(kind) {
+			  if (kind === 'all') return '全部';
+			  const labels = (typeof CLIENT_KIND_LABELS !== 'undefined' && CLIENT_KIND_LABELS) || {
+			    codex: 'Codex',
+			    claude_code: 'Claude',
 		    openclaw: 'OpenClaw',
 		    hermes: 'Hermes',
 		    generic_client: '通用客户端',
-		  };
-		  return labels[kind] || kind || '未知客户端';
-		}
+			  };
+			  return labels[kind] || kind || '未知客户端';
+			}
 
-		function historyClientProfiles() {
+			function historyRouteLabel(path) {
+			  const value = String(path || '');
+			  if (value.startsWith('/codex-router/')) return 'Router';
+			  if (value.startsWith('/dex-assistant/')) return 'DEX';
+			  if (value.startsWith('/codex-desktop/')) return 'Desktop';
+			  if (value.startsWith('/codex-cli/')) return 'CLI';
+			  if (value.startsWith('/client-proxy/')) return 'Client Proxy';
+			  return '';
+			}
+
+				function historyRouteTitle(entry) {
+				  const parts = [];
+				  if (entry.request_path) parts.push(entry.request_path);
+				  if (entry.endpoint_kind) parts.push(entry.endpoint_kind);
+				  if (entry.account_id) parts.push(entry.account_id);
+				  return parts.join(' · ');
+				}
+
+				function historyRouteReasonLabel(reason) {
+				  const labels = {
+				    ready: '可用',
+				    no_anchor: '无锚点',
+				    routing_disabled: '已停用',
+				    pool_mismatch: '非同池',
+				    no_supported_endpoint: '未映射',
+				    account_quota_cooling: '账号额度冷却',
+				    account_cooling_down: '账号冷却',
+				    account_retry_wait: '账号等待恢复',
+				    model_quota_cooling: '模型额度冷却',
+				    model_cooling_down: '模型冷却',
+				    model_retry_wait: '模型等待恢复',
+				    capability_mismatch: '能力不匹配',
+				    attempt_failed: '本次已失败',
+				    stream_preflight_risk: '流式预选避开',
+				    recent_failure_rate: '近期失败率高',
+				    low_health_score: '健康分偏低',
+				    recent_account_error: '账号近期错误',
+				    recent_model_error: '模型近期错误',
+				  };
+				  return labels[reason] || reason || '未知';
+				}
+
+				function parseHistoryRouteTrace(entry) {
+				  const raw = entry?.route_trace;
+				  if (!raw) return null;
+				  if (typeof raw === 'object') return raw;
+				  if (typeof raw !== 'string') return null;
+				  try {
+				    const value = JSON.parse(raw);
+				    return value && typeof value === 'object' ? value : null;
+				  } catch (_) {
+				    return null;
+				  }
+				}
+
+				function historyRouterNodeLabel(node) {
+				  if (!node) return '未知账号';
+				  return node.account_name || node.account_id || '未知账号';
+				}
+
+				function renderHistoryRouterFlow(trace) {
+				  const rows = [];
+				  const preflight = trace.stream_preflight;
+				  if (preflight && typeof preflight === 'object') {
+				    const from = preflight.from || {};
+				    const to = preflight.to || {};
+				    const reason = historyRouteReasonLabel(preflight.reason);
+				    const action = preflight.action === 'kept_no_alternative' ? '保留' : '切换';
+				    const target = preflight.action === 'kept_no_alternative'
+				      ? historyRouterNodeLabel(from)
+				      : historyRouterNodeLabel(to);
+				    const title = [
+				      `流式预选: ${action}`,
+				      `原因: ${reason}`,
+				      `原候选: ${historyRouterNodeLabel(from)}`,
+				      to && (to.account_id || to.account_name) ? `新候选: ${historyRouterNodeLabel(to)}` : '',
+				      from.health_score !== undefined ? `健康: ${from.health_score}` : '',
+				      from.recent_failed !== undefined ? `近期失败: ${from.recent_failed}` : '',
+				      from.failure_rate_percent !== undefined ? `失败率: ${from.failure_rate_percent}%` : '',
+				    ].filter(Boolean).join('\n');
+				    rows.push(`<span class="hc-route-step warn" title="${escAttr(title)}">流式预选 ${esc(action)} · ${esc(target)} · ${esc(reason)}</span>`);
+				  }
+
+				  const attempts = Array.isArray(trace.fallback_attempts) ? trace.fallback_attempts : [];
+				  attempts.forEach(attempt => {
+				    const name = historyRouterNodeLabel(attempt);
+				    const status = attempt.status ? `HTTP ${attempt.status}` : '';
+				    const message = attempt.message ? ` · ${attempt.message}` : '';
+				    const title = [
+				      `第 ${attempt.attempt || '?'} 次尝试失败`,
+				      `账号: ${name}`,
+				      attempt.endpoint_kind ? `端点: ${attempt.endpoint_kind}` : '',
+				      attempt.mapped_model ? `模型: ${attempt.mapped_model}` : '',
+				      status,
+				      attempt.code ? `错误码: ${attempt.code}` : '',
+				      attempt.message || '',
+				    ].filter(Boolean).join('\n');
+				    rows.push(`<span class="hc-route-step warn" title="${escAttr(title)}">降级 ${esc(name)} · ${esc(status || '失败')}${message ? ` · ${esc(trunc(attempt.message, 36))}` : ''}</span>`);
+				  });
+
+				  if (attempts.length) {
+				    const selected = trace.selected || {};
+				    rows.push(`<span class="hc-route-step ok">最终 ${esc(historyRouterNodeLabel(selected))}</span>`);
+				  }
+
+				  if (!rows.length) return '';
+				  return `<div class="hc-route-flow">${rows.join('')}</div>`;
+				}
+
+				function renderHistoryRouteTrace(entry) {
+				  const trace = parseHistoryRouteTrace(entry);
+				  if (!trace || trace.route_surface !== 'codex_router') return '';
+				  const anchor = trace.anchor || {};
+				  const selected = trace.selected || {};
+				  const capabilities = selected.capabilities || {};
+				  const anchorName = anchor.account_name || anchor.account_id || '无锚点';
+				  const selectedName = selected.account_name || selected.account_id || '暂无执行账号';
+				  const mappedModel = selected.mapped_model || trace.requested_model || '';
+				  const healthScore = selected.health_score ?? '';
+				  const routeScore = selected.route_score ?? '';
+				  const toolDecisions = trace.tool_decisions || selected.tool_decisions || {};
+				  const capabilityBits = [
+				    capabilities.protocol,
+				    capabilities.tool_mode && capabilities.tool_mode !== 'none' ? `tools:${capabilities.tool_mode}` : '',
+				    capabilities.vision && capabilities.vision !== 'off' ? `vision:${capabilities.vision}` : '',
+				    capabilities.web ? 'web' : '',
+				    capabilities.image_generation ? 'image2' : '',
+				  ].filter(Boolean);
+				  const toolDecisionBits = [
+				    Array.isArray(toolDecisions.kept) && toolDecisions.kept.length ? `保留 ${toolDecisions.kept.length}` : '',
+				    Array.isArray(toolDecisions.translated) && toolDecisions.translated.length ? `转译 ${toolDecisions.translated.length}` : '',
+				    Array.isArray(toolDecisions.local) && toolDecisions.local.length ? `本地 ${toolDecisions.local.length}` : '',
+				    Array.isArray(toolDecisions.filtered) && toolDecisions.filtered.length ? `过滤 ${toolDecisions.filtered.length}` : '',
+				  ].filter(Boolean);
+				  const total = Number(trace.candidate_count || 0);
+				  const eligible = Number(trace.eligible_count || 0);
+				  const skipped = Number(trace.skipped_count || Math.max(0, total - eligible));
+				  const skippedLines = Array.isArray(trace.candidates)
+				    ? trace.candidates
+				      .filter(candidate => !candidate.eligible)
+				      .map(candidate => {
+				        const gaps = Array.isArray(candidate.capability_gaps) && candidate.capability_gaps.length
+				          ? ` (${candidate.capability_gaps.join('/')})`
+				          : '';
+				        return `${candidate.account_name || candidate.account_id || '未知账号'}: ${historyRouteReasonLabel(candidate.reason)}${gaps}`;
+				      })
+				    : [];
+				  const titleParts = [
+				    `锚点 ${anchorName}`,
+				    `执行 ${selectedName}`,
+				    mappedModel ? `模型 ${mappedModel}` : '',
+				    capabilityBits.length ? `能力 ${capabilityBits.join('/')}` : '',
+				    toolDecisionBits.length ? `工具 ${toolDecisionBits.join(' / ')}` : '',
+				    Array.isArray(toolDecisions.labels) && toolDecisions.labels.length ? `请求工具 ${toolDecisions.labels.join(', ')}` : '',
+				    trace.stream_preflight ? `流式预选 ${historyRouteReasonLabel(trace.stream_preflight.reason)} / ${trace.stream_preflight.action || ''}` : '',
+				    Array.isArray(trace.fallback_attempts) && trace.fallback_attempts.length ? `降级 ${trace.fallback_attempts.length} 次` : '',
+				    healthScore !== '' ? `健康 ${healthScore}` : '',
+				    routeScore !== '' ? `评分 ${routeScore}` : '',
+				    `候选 ${eligible}/${total}`,
+				    skippedLines.join('\n'),
+				  ].filter(Boolean);
+				  const routeLine = `<div class="hc-route" title="${escAttr(titleParts.join('\n'))}">
+				    Router ${esc(anchorName)} → ${esc(selectedName)}
+				    <span>${esc(mappedModel || '原模型')}</span>
+				    ${capabilityBits.length ? `<span>${esc(capabilityBits.join('/'))}</span>` : ''}
+				    ${toolDecisionBits.length ? `<span>${esc(toolDecisionBits.join('/'))}</span>` : ''}
+				    <span>候选 ${eligible}/${total}${skipped ? ` · 跳过 ${skipped}` : ''}${healthScore !== '' ? ` · 健康 ${healthScore}` : ''}</span>
+				  </div>`;
+				  return routeLine + renderHistoryRouterFlow(trace);
+				}
+
+				function historyClientProfiles() {
 		  const fallback = [
 		    { slug: 'codex', label: 'Codex' },
 		    { slug: 'claude_code', label: 'Claude' },
@@ -221,16 +392,18 @@ const HISTORY_LIST_LIMIT = 20000;
 		  for (const e of show) {
 		    const inputRatio = e.total_tokens > 0 ? Math.round((e.input_tokens || 0) / e.total_tokens * 100) : 50;
 		    const providerLabel = e.provider_profile || e.provider || '';
-		    const clientLabel = historyClientLabel(e.client_kind || 'codex');
-		    const accountLabel = e.account_name || e.account_id || '';
-		    const endpointLabel = e.endpoint_kind || '';
-		    html += `<div class="history-card${e.status === 'failed' ? ' failed' : ''}">
-		      <div class="hc-row">
-		        <span class="hc-time">${fmtTime(e.created_at)}</span>
-		        <span class="hc-model">${esc(e.model)}</span>
-		        <span class="hc-chip">${esc(clientLabel)}</span>
-		        ${accountLabel ? `<span class="hc-chip" title="${escAttr(e.account_id || '')}">${esc(accountLabel)}</span>` : ''}
-		        ${providerLabel ? `<span class="hc-chip" title="Provider profile">${esc(providerLabel)}</span>` : ''}
+			    const clientLabel = historyClientLabel(e.client_kind || 'codex');
+			    const accountLabel = e.account_name || e.account_id || '';
+			    const endpointLabel = e.endpoint_kind || '';
+			    const routeLabel = historyRouteLabel(e.request_path);
+			    html += `<div class="history-card${e.status === 'failed' ? ' failed' : ''}">
+			      <div class="hc-row">
+			        <span class="hc-time">${fmtTime(e.created_at)}</span>
+			        <span class="hc-model">${esc(e.model)}</span>
+			        <span class="hc-chip">${esc(clientLabel)}</span>
+			        ${routeLabel ? `<span class="hc-chip" title="${escAttr(historyRouteTitle(e))}">${esc(routeLabel)}</span>` : ''}
+			        ${accountLabel ? `<span class="hc-chip" title="${escAttr(e.account_id || '')}">${esc(accountLabel)}</span>` : ''}
+			        ${providerLabel ? `<span class="hc-chip" title="Provider profile">${esc(providerLabel)}</span>` : ''}
 		        ${statusBadge(e.status)}
 		        <span class="hc-dur">${fmtDuration(e.duration_ms)}</span>
 		      </div>
@@ -239,10 +412,11 @@ const HISTORY_LIST_LIMIT = 20000;
 		        <span>出:${fmtTokens(e.output_tokens)}</span>
 		        <span>总计:${fmtTokens(e.total_tokens)}</span>
 		      </div>
-		      <div class="hc-token-bar"><div class="hc-token-in" style="width:${inputRatio}%"></div><div class="hc-token-out" style="width:${100 - inputRatio}%"></div></div>
-		      <div class="hc-url" title="${escAttr(e.upstream_url)}">${endpointLabel ? esc(endpointLabel + ' · ') : ''}${esc(trunc(e.upstream_url, 50))}</div>
-		      ${e.error_msg ? `<div class="hc-error" onclick="this.nextElementSibling?.classList.toggle('hidden')">▸ 错误详情</div><div class="hc-error hidden" style="margin-top:2px;">${esc(e.error_msg)}</div>` : ''}
-		    </div>`;
+			      <div class="hc-token-bar"><div class="hc-token-in" style="width:${inputRatio}%"></div><div class="hc-token-out" style="width:${100 - inputRatio}%"></div></div>
+			      <div class="hc-url" title="${escAttr(e.upstream_url)}">${endpointLabel ? esc(endpointLabel + ' · ') : ''}${esc(trunc(e.upstream_url, 50))}</div>
+			      ${renderHistoryRouteTrace(e)}
+			      ${e.error_msg ? `<div class="hc-error" onclick="this.nextElementSibling?.classList.toggle('hidden')">▸ 错误详情</div><div class="hc-error hidden" style="margin-top:2px;">${esc(e.error_msg)}</div>` : ''}
+			    </div>`;
 		  }
 		  if (filtered.length > limit) {
 		    html += `<div class="history-load-more" onclick="loadMoreHistory(${limit + _historyDisplayStep})">

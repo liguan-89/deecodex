@@ -769,60 +769,65 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
         .get("model_provider")
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
+    let expected_provider = codex_config::managed_model_provider();
     let expected_base = format!(
-        "http://{}:{}/v1",
+        "http://{}:{}{}",
         crate::config::client_url_host(&ctx.host),
-        ctx.port
+        ctx.port,
+        codex_config::managed_model_provider_route_prefix()
     );
 
-    let has_deecodex_section = doc
+    let has_expected_section = doc
         .get("model_providers")
-        .and_then(|mp| mp.get("deecodex"))
+        .and_then(|mp| mp.get(expected_provider))
         .is_some();
 
     let actual_base = doc
         .get("model_providers")
-        .and_then(|mp| mp.get("deecodex"))
+        .and_then(|mp| mp.get(expected_provider))
         .and_then(|d| d.get("base_url"))
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
 
-    if model_provider != "deecodex" {
+    if model_provider != expected_provider {
         DiagnosticItem {
             status: Status::Fail,
-            check_name: "deecodex 路由".into(),
+            check_name: "DEX AI 路由".into(),
             message: format!(
-                "Codex 未路由到 deecodex，当前 provider 为: {}",
-                model_provider
+                "Codex 未路由到 {}，当前 provider 为: {}",
+                expected_provider, model_provider
             ),
             detail: None,
             suggestion: Some(
-                "请在 deecodex 控制面板中点击「注入配置」，将 Codex 路由至 deecodex".into(),
+                "请在 DEX AI 控制面板中点击「注入配置」，将 Codex 路由至 DEX AI".into(),
             ),
         }
-    } else if !has_deecodex_section {
+    } else if !has_expected_section {
         DiagnosticItem {
             status: Status::Fail,
-            check_name: "deecodex 路由".into(),
-            message: "model_provider=deecodex 但缺少 [model_providers.deecodex] 配置节".into(),
+            check_name: "DEX AI 路由".into(),
+            message: format!(
+                "model_provider={} 但缺少 [model_providers.{}] 配置节",
+                expected_provider, expected_provider
+            ),
             detail: None,
-            suggestion: Some("请在 deecodex 控制面板中点击「注入配置」以修复".into()),
+            suggestion: Some("请在 DEX AI 控制面板中点击「注入配置」以修复".into()),
         }
     } else if actual_base != expected_base {
         DiagnosticItem {
             status: Status::Warn,
-            check_name: "deecodex 路由".into(),
-            message: "deecodex 路由已配置但服务入口不匹配".into(),
+            check_name: "DEX AI 路由".into(),
+            message: "DEX AI 路由已配置但服务入口不匹配".into(),
             detail: Some(format!("期望: {}, 实际: {}", expected_base, actual_base)),
             suggestion: Some(
-                "请在 deecodex 控制面板中点击「注入配置」以更新服务地址和协议入口".into(),
+                "请在 DEX AI 控制面板中点击「注入配置」以更新服务地址和协议入口".into(),
             ),
         }
     } else {
         DiagnosticItem {
             status: Status::Pass,
-            check_name: "deecodex 路由".into(),
-            message: "Codex 已正确路由到 deecodex".into(),
+            check_name: "DEX AI 路由".into(),
+            message: format!("Codex 已正确路由到 {}", expected_provider),
             detail: Some(format!("base_url: {}", actual_base)),
             suggestion: None,
         }
@@ -1493,26 +1498,30 @@ fn check_codex_config_consistency(_ctx: &DiagnosticContext) -> DiagnosticItem {
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
 
-    let has_deecodex_section = doc
+    let expected_provider = codex_config::managed_model_provider();
+    let has_expected_section = doc
         .get("model_providers")
-        .and_then(|mp| mp.get("deecodex"))
+        .and_then(|mp| mp.get(expected_provider))
         .is_some();
 
     // 检查自相矛盾
-    if model_provider == "deecodex" && !has_deecodex_section {
-        issues.push("model_provider=deecodex 但缺少 [model_providers.deecodex] 节".to_string());
-    }
-    if model_provider != "deecodex" && has_deecodex_section {
+    if model_provider == expected_provider && !has_expected_section {
         issues.push(format!(
-            "model_provider={} 但存在 [model_providers.deecodex] 节（未被使用）",
-            model_provider
+            "model_provider={} 但缺少 [model_providers.{}] 节",
+            expected_provider, expected_provider
+        ));
+    }
+    if model_provider != expected_provider && has_expected_section {
+        issues.push(format!(
+            "model_provider={} 但存在 [model_providers.{}] 节（未被使用）",
+            model_provider, expected_provider
         ));
     }
 
     // 检查 wire_api
     if let Some(wire) = doc
         .get("model_providers")
-        .and_then(|mp| mp.get("deecodex"))
+        .and_then(|mp| mp.get(expected_provider))
         .and_then(|d| d.get("wire_api"))
         .and_then(|v| v.as_str())
     {
@@ -1523,15 +1532,17 @@ fn check_codex_config_consistency(_ctx: &DiagnosticContext) -> DiagnosticItem {
 
     // 检查重复节
     let content_lines: Vec<&str> = content.lines().collect();
+    let expected_section_name = format!("[model_providers.{}]", expected_provider);
     let deecodex_sections: Vec<_> = content_lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.trim() == "[model_providers.deecodex]")
+        .filter(|(_, l)| l.trim() == expected_section_name.as_str())
         .collect();
     if deecodex_sections.len() > 1 {
         issues.push(format!(
-            "发现 {} 个重复的 [model_providers.deecodex] 节",
-            deecodex_sections.len()
+            "发现 {} 个重复的 {} 节",
+            deecodex_sections.len(),
+            expected_section_name
         ));
     }
 

@@ -3,6 +3,7 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=gui");
+    println!("cargo:rerun-if-env-changed=DEX_AI_PREVIEW_BUILD");
     tauri_build::build();
 
     // 拼接 gui/nav/*.html 为 fragments.js，避免 fetch 在 webview 中失败

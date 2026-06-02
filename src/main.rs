@@ -22,6 +22,7 @@ mod prompts;
 mod providers;
 mod ratelimit;
 mod request_history;
+mod runtime_feedback;
 mod session;
 mod sse;
 mod stream;
@@ -624,6 +625,93 @@ async fn main() -> Result<()> {
     };
     default_account.normalize_v2();
 
+    let mut account_store = crate::accounts::load_accounts(&args.data_dir);
+    if account_store
+        .accounts
+        .iter()
+        .any(|account| account.client_kind.is_codex())
+    {
+        info!(
+            "loaded account store: {} account(s)",
+            account_store.accounts.len()
+        );
+    } else {
+        warn!("未找到账号库中的 Codex 账号，使用 CLI/env 默认账号启动服务");
+        account_store = AccountStore {
+            version: crate::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![default_account.clone()],
+            active_id: Some(default_account.id.clone()),
+            active_account_id: Some(default_account.id.clone()),
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+    }
+
+    let mut active_account = account_store
+        .active_account()
+        .cloned()
+        .unwrap_or_else(|| default_account.clone());
+    let active_endpoint = active_account
+        .active_endpoint(account_store.active_endpoint_id.as_deref())
+        .cloned()
+        .or_else(|| active_account.endpoints.first().cloned());
+    if let Some(endpoint) = active_endpoint.as_ref() {
+        active_account.sync_legacy_from_endpoint(endpoint);
+    }
+
+    let state_upstream = match active_endpoint.as_ref() {
+        Some(endpoint) => handlers::validate_upstream(&endpoint.base_url).unwrap_or_else(|err| {
+            warn!("活跃账号上游 URL 无效，使用启动参数上游: {err}");
+            upstream.clone()
+        }),
+        None => upstream.clone(),
+    };
+    let state_model_map = active_endpoint
+        .as_ref()
+        .map(|endpoint| endpoint.model_map.clone())
+        .unwrap_or_else(|| model_map.clone());
+    let state_vision_upstream = match active_endpoint.as_ref() {
+        Some(endpoint) if !endpoint.vision.base_url.trim().is_empty() => {
+            match handlers::validate_upstream(&endpoint.vision.base_url) {
+                Ok(url) => Some(url),
+                Err(err) => {
+                    warn!("活跃账号视觉上游 URL 无效，忽略视觉上游: {err}");
+                    None
+                }
+            }
+        }
+        _ => vision_upstream.clone(),
+    };
+    let state_vision_api_key = active_endpoint
+        .as_ref()
+        .map(|endpoint| endpoint.vision.api_key.clone())
+        .unwrap_or_else(|| args.vision_api_key.clone());
+    let state_vision_model = active_endpoint
+        .as_ref()
+        .and_then(|endpoint| {
+            (!endpoint.vision.model.trim().is_empty()).then(|| endpoint.vision.model.clone())
+        })
+        .unwrap_or_else(|| args.vision_model.clone());
+    let state_vision_endpoint = active_endpoint
+        .as_ref()
+        .and_then(|endpoint| {
+            (!endpoint.vision.path.trim().is_empty()).then(|| endpoint.vision.path.clone())
+        })
+        .unwrap_or_else(|| args.vision_endpoint.clone());
+    let state_reasoning_effort_override = active_endpoint
+        .as_ref()
+        .and_then(|endpoint| endpoint.reasoning_effort_override.clone());
+    let state_thinking_tokens = active_endpoint
+        .as_ref()
+        .and_then(|endpoint| endpoint.thinking_tokens);
+    let state_custom_headers = active_endpoint
+        .as_ref()
+        .map(|endpoint| endpoint.custom_headers.clone())
+        .unwrap_or_default();
+    let state_request_timeout_secs = active_endpoint
+        .as_ref()
+        .and_then(|endpoint| endpoint.request_timeout_secs);
+
     let state = handlers::AppState {
         sessions: crate::session::SessionStore::new(),
         client: Client::builder()
@@ -633,13 +721,13 @@ async fn main() -> Result<()> {
             .tcp_keepalive(std::time::Duration::from_secs(60))
             .timeout(std::time::Duration::from_secs(300))
             .build()?,
-        upstream: Arc::new(tokio::sync::RwLock::new(upstream)),
-        api_key: Arc::new(tokio::sync::RwLock::new(args.api_key.clone())),
-        model_map: Arc::new(tokio::sync::RwLock::new(model_map.clone())),
-        vision_upstream: Arc::new(tokio::sync::RwLock::new(vision_upstream)),
-        vision_api_key: Arc::new(tokio::sync::RwLock::new(args.vision_api_key.clone())),
-        vision_model: Arc::new(tokio::sync::RwLock::new(args.vision_model.clone())),
-        vision_endpoint: Arc::new(tokio::sync::RwLock::new(args.vision_endpoint.clone())),
+        upstream: Arc::new(tokio::sync::RwLock::new(state_upstream)),
+        api_key: Arc::new(tokio::sync::RwLock::new(active_account.api_key.clone())),
+        model_map: Arc::new(tokio::sync::RwLock::new(state_model_map)),
+        vision_upstream: Arc::new(tokio::sync::RwLock::new(state_vision_upstream)),
+        vision_api_key: Arc::new(tokio::sync::RwLock::new(state_vision_api_key)),
+        vision_model: Arc::new(tokio::sync::RwLock::new(state_vision_model)),
+        vision_endpoint: Arc::new(tokio::sync::RwLock::new(state_vision_endpoint)),
         start_time: std::time::Instant::now(),
         request_cache: crate::cache::RequestCache::default(),
         prompts: Arc::new(crate::prompts::PromptRegistry::new(&args.prompts_dir)),
@@ -666,19 +754,14 @@ async fn main() -> Result<()> {
         })),
         executors: Arc::new(tokio::sync::RwLock::new(executors)),
         data_dir: Arc::new(args.data_dir.clone()),
-        account_store: Arc::new(tokio::sync::RwLock::new(AccountStore {
-            version: crate::accounts::ACCOUNT_STORE_VERSION,
-            accounts: vec![default_account.clone()],
-            active_id: Some(default_account.id.clone()),
-            active_account_id: Some(default_account.id.clone()),
-            active_endpoint_id: None,
-            active_by_surface: HashMap::new(),
-        })),
-        active_account: Arc::new(tokio::sync::RwLock::new(default_account)),
-        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(None)),
-        thinking_tokens: Arc::new(tokio::sync::RwLock::new(None)),
-        custom_headers: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(None)),
+        account_store: Arc::new(tokio::sync::RwLock::new(account_store)),
+        active_account: Arc::new(tokio::sync::RwLock::new(active_account)),
+        reasoning_effort_override: Arc::new(tokio::sync::RwLock::new(
+            state_reasoning_effort_override,
+        )),
+        thinking_tokens: Arc::new(tokio::sync::RwLock::new(state_thinking_tokens)),
+        custom_headers: Arc::new(tokio::sync::RwLock::new(state_custom_headers)),
+        request_timeout_secs: Arc::new(tokio::sync::RwLock::new(state_request_timeout_secs)),
         request_history: {
             let db_path = args.data_dir.join("request_history.db");
             Arc::new(
@@ -691,6 +774,7 @@ async fn main() -> Result<()> {
                 }),
             )
         },
+        codex_router_sessions: Arc::new(dashmap::DashMap::new()),
         rate_limiter: {
             let rate_limit = std::env::var("DEECODEX_RATE_LIMIT")
                 .or_else(|_| std::env::var("CODEX_RELAY_RATE_LIMIT"))
@@ -792,7 +876,7 @@ async fn main() -> Result<()> {
     // 注入 deecodex 配置到 codex 的 config.toml
     if args.codex_auto_inject && !args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject_with_host(&host, args.port, None);
+        codex_config::inject_with_host_and_data_dir(&host, args.port, None, Some(&args.data_dir));
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口
