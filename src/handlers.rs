@@ -55,6 +55,8 @@ pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.4-mini";
+const GPT54_MODEL: &str = "gpt-5.4";
+const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
@@ -758,6 +760,64 @@ async fn resolve_account_endpoint_for_response(
 
 fn router_effective_model(requested_model: &str, _endpoint: &EndpointConfig) -> String {
     requested_model.to_string()
+}
+
+fn gpt54_recent_upstream_error(account: &Account, now: u64) -> bool {
+    account
+        .runtime_state
+        .model_states
+        .get(GPT54_MODEL)
+        .is_some_and(|state| {
+            state.updated_at.saturating_add(10 * 60) >= now
+                && runtime_state_is_transient_upstream_error(&state.status, &state.status_message)
+        })
+}
+
+fn gpt54_fallback_trace_event(
+    requested_model: &str,
+    fallback_model: &str,
+    account: &Account,
+    endpoint: &EndpointConfig,
+    reason: &'static str,
+) -> Value {
+    json!({
+        "action": "model_fallback",
+        "reason": reason,
+        "from_model": requested_model,
+        "to_model": fallback_model,
+        "account_id": account.id,
+        "account_name": account.name,
+        "endpoint_id": endpoint.id,
+        "endpoint_kind": endpoint.kind.label(),
+    })
+}
+
+fn patch_router_model_fallback_trace(route_trace: Option<String>, event: Value) -> Option<String> {
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("model_fallback".into(), event);
+    }
+    serde_json::to_string(&trace).ok()
+}
+
+fn apply_gpt54_fallback_to_selection(
+    mut selection: AccountRouteSelection,
+    requested_model: &str,
+    fallback_model: &str,
+    reason: &'static str,
+) -> AccountRouteSelection {
+    let event = gpt54_fallback_trace_event(
+        requested_model,
+        fallback_model,
+        &selection.account,
+        &selection.endpoint,
+        reason,
+    );
+    selection.route_trace = patch_router_model_fallback_trace(selection.route_trace, event);
+    selection.explicit_model = Some(fallback_model.to_string());
+    selection
 }
 
 fn resolve_explicit_dex_account_model_selection(
@@ -6111,6 +6171,34 @@ async fn handle_codex_router_non_stream_with_fallback(
             retryable,
         ));
 
+        if req.model == GPT54_MODEL
+            && selection.explicit_model.is_none()
+            && endpoint_is_native_router_executor(&selection.endpoint)
+            && account_runtime_ready(
+                &selection.account,
+                GPT54_FALLBACK_MODEL,
+                crate::accounts::now_secs(),
+            )
+        {
+            tracing::warn!(
+                account_id = %selection.account.id,
+                account_name = %selection.account.name,
+                status = failure.status.as_u16(),
+                from_model = GPT54_MODEL,
+                to_model = GPT54_FALLBACK_MODEL,
+                "DEX Router 非流式 gpt-5.4 失败，同请求降级到 gpt-5.4-mini"
+            );
+            selection = apply_gpt54_fallback_to_selection(
+                selection,
+                &req.model,
+                GPT54_FALLBACK_MODEL,
+                "same_request_gpt54_upstream_error",
+            );
+            selection.route_trace =
+                patch_router_fallback_trace(selection.route_trace, &fallback_attempts);
+            continue;
+        }
+
         let Some(next_selection) = resolve_dex_router_retry_selection(
             &state,
             &req.model,
@@ -6153,6 +6241,25 @@ async fn apply_codex_router_stream_preflight(
     }
     let mapped_model = router_effective_model(requested_model, &selection.endpoint);
     let now = crate::accounts::now_secs();
+    if requested_model == GPT54_MODEL
+        && endpoint_is_native_router_executor(&selection.endpoint)
+        && gpt54_recent_upstream_error(&selection.account, now)
+        && account_runtime_ready(&selection.account, GPT54_FALLBACK_MODEL, now)
+    {
+        tracing::warn!(
+            account_id = %selection.account.id,
+            account_name = %selection.account.name,
+            from_model = GPT54_MODEL,
+            to_model = GPT54_FALLBACK_MODEL,
+            "DEX Router 检测到 gpt-5.4 近期上游 5xx，流式请求降级到 gpt-5.4-mini"
+        );
+        return apply_gpt54_fallback_to_selection(
+            selection,
+            requested_model,
+            GPT54_FALLBACK_MODEL,
+            "recent_gpt54_upstream_error",
+        );
+    }
     let health = dex_router_health(&selection.account, now);
     let Some(reason) =
         dex_router_stream_preflight_risk(&selection.account, &mapped_model, health, now)
@@ -11099,6 +11206,51 @@ mod tests {
             .find(|candidate| candidate["account_id"] == "deepseek")
             .unwrap();
         assert_eq!(chat["reason"], "no_supported_endpoint");
+    }
+
+    #[test]
+    fn gpt54_fallback_only_after_recent_upstream_error() {
+        let mut account = router_responses_account("responses", "pool-a", 10, 1);
+        let endpoint = account.endpoints[0].clone();
+        assert!(!gpt54_recent_upstream_error(&account, 1_000));
+
+        account.runtime_state.model_states.insert(
+            GPT54_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 503".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        assert!(gpt54_recent_upstream_error(&account, 1_100));
+
+        let selection = AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
+            requires_computer: true,
+            explicit_model: None,
+        };
+        let selection = apply_gpt54_fallback_to_selection(
+            selection,
+            GPT54_MODEL,
+            GPT54_FALLBACK_MODEL,
+            "recent_gpt54_upstream_error",
+        );
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(
+            selection.explicit_model.as_deref(),
+            Some(GPT54_FALLBACK_MODEL)
+        );
+        assert_eq!(trace["model_fallback"]["from_model"], GPT54_MODEL);
+        assert_eq!(trace["model_fallback"]["to_model"], GPT54_FALLBACK_MODEL);
+        assert_eq!(
+            trace["model_fallback"]["reason"],
+            "recent_gpt54_upstream_error"
+        );
     }
 
     #[test]
