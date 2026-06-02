@@ -7,7 +7,7 @@
 //! 迁移前自动备份，还原后自动清理备份。全程不破坏 Codex 原有数据。
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -693,38 +693,122 @@ fn value_text_len(value: &Value) -> usize {
 pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    let conn = Connection::open(&db_path)?;
+    delete_thread_from_db(data_dir, &home, &db_path, thread_id)
+}
+
+fn delete_thread_from_db(
+    data_dir: &Path,
+    home: &Path,
+    db_path: &Path,
+    thread_id: &str,
+) -> Result<()> {
+    let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "busy_timeout", "5000")?;
 
-    let affected = conn
+    let rollout_path: Option<String> = conn
+        .query_row(
+            "SELECT rollout_path FROM threads WHERE id = ?1",
+            rusqlite::params![thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("读取线程 rollout 路径失败")?;
+
+    let Some(rollout_path) = rollout_path else {
+        anyhow::bail!("未找到线程 {thread_id}");
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    delete_if_table_exists(&tx, "stage1_outputs", "thread_id", thread_id)?;
+    delete_if_table_exists(&tx, "thread_dynamic_tools", "thread_id", thread_id)?;
+    let affected = tx
         .execute(
             "DELETE FROM threads WHERE id = ?1",
             rusqlite::params![thread_id],
         )
         .context("删除线程失败")?;
-
-    if affected == 0 {
-        anyhow::bail!("未找到线程 {thread_id}");
-    }
+    tx.commit().context("提交线程删除失败")?;
 
     // 同时从迁移备份中移除
-    let bp = backup_path(data_dir);
-    if bp.exists() {
-        if let Ok(json) = std::fs::read_to_string(&bp) {
-            if let Ok(mut originals) = serde_json::from_str::<Vec<(String, String)>>(&json) {
-                let before = originals.len();
-                originals.retain(|(id, _)| id != thread_id);
-                if originals.len() != before {
-                    let new_json =
-                        serde_json::to_string_pretty(&originals).context("序列化备份失败")?;
-                    std::fs::write(&bp, new_json).context("写入备份文件失败")?;
-                }
-            }
-        }
+    remove_thread_from_migration_backup(&backup_path(data_dir), thread_id)?;
+    if let Err(err) = remove_deleted_thread_from_desktop_state(db_path, thread_id) {
+        tracing::warn!("清理 Codex Desktop 线程索引失败: {err}");
     }
+    remove_thread_rollout_file(home, &rollout_path)?;
 
-    tracing::info!("已永久删除线程 {thread_id}");
+    tracing::info!(affected, "已永久删除线程 {thread_id}");
     Ok(())
+}
+
+fn delete_if_table_exists(
+    conn: &Connection,
+    table: &str,
+    id_column: &str,
+    thread_id: &str,
+) -> Result<usize> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            rusqlite::params![table],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("检查线程关联表 {table} 失败"))?;
+    if !exists {
+        return Ok(0);
+    }
+    let sql = format!("DELETE FROM {table} WHERE {id_column} = ?1");
+    conn.execute(&sql, rusqlite::params![thread_id])
+        .with_context(|| format!("删除线程关联表 {table} 记录失败"))
+}
+
+fn remove_thread_from_migration_backup(path: &Path, thread_id: &str) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(mut originals) = serde_json::from_str::<Vec<(String, String)>>(&json) else {
+        return Ok(());
+    };
+    let before = originals.len();
+    originals.retain(|(id, _)| id != thread_id);
+    if originals.len() == before {
+        return Ok(());
+    }
+    let new_json = serde_json::to_string_pretty(&originals).context("序列化备份失败")?;
+    std::fs::write(path, new_json).context("写入备份文件失败")
+}
+
+fn remove_thread_rollout_file(home: &Path, rollout_path: &str) -> Result<()> {
+    let path = PathBuf::from(rollout_path);
+    if !path.exists() {
+        return Ok(());
+    }
+    if !is_safe_codex_rollout_path(home, &path) {
+        tracing::warn!(
+            thread_rollout_path = %path.display(),
+            "跳过删除不在 Codex sessions 目录内的 rollout 文件"
+        );
+        return Ok(());
+    }
+    std::fs::remove_file(&path)
+        .with_context(|| format!("删除线程 rollout 文件失败: {}", path.display()))
+}
+
+fn is_safe_codex_rollout_path(home: &Path, path: &Path) -> bool {
+    let sessions_dir = home.join(".codex").join("sessions");
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(sessions_dir) = sessions_dir.canonicalize() else {
+        return false;
+    };
+    path.starts_with(sessions_dir)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
 }
 
 // ── 内部函数 ──
@@ -1286,6 +1370,83 @@ fn remove_value(items: &mut Vec<String>, value: &str) -> bool {
     let before = items.len();
     items.retain(|item| item != value);
     before != items.len()
+}
+
+fn remove_deleted_thread_from_desktop_state(db_path: &Path, thread_id: &str) -> Result<usize> {
+    let Some(global_path) = codex_global_state_path(db_path) else {
+        return Ok(0);
+    };
+    if !global_path.exists() {
+        return Ok(0);
+    }
+
+    let raw = std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
+    let mut state: Value = serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
+    let Some(object) = state.as_object_mut() else {
+        return Ok(0);
+    };
+
+    let mut changed = 0usize;
+    for key in [
+        "thread-project-assignments",
+        "thread-workspace-root-hints",
+        "thread-projectless-output-directories",
+    ] {
+        if let Some(map) = object.get_mut(key).and_then(Value::as_object_mut) {
+            if map.remove(thread_id).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if let Some(items) = object
+        .get_mut("projectless-thread-ids")
+        .and_then(Value::as_array_mut)
+    {
+        let before = items.len();
+        items.retain(|item| item.as_str() != Some(thread_id));
+        changed += before.saturating_sub(items.len());
+    }
+
+    if let Some(orders) = object
+        .get_mut("sidebar-project-thread-orders")
+        .and_then(Value::as_object_mut)
+    {
+        let mut empty_projects = Vec::new();
+        for (project, order) in orders.iter_mut() {
+            let Some(ids) = order.get_mut("threadIds").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let before = ids.len();
+            ids.retain(|item| item.as_str() != Some(thread_id));
+            changed += before.saturating_sub(ids.len());
+            if ids.is_empty() {
+                empty_projects.push(project.clone());
+            }
+        }
+        for project in empty_projects {
+            if orders.remove(&project).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if changed == 0 {
+        return Ok(0);
+    }
+
+    let backup_path = global_path.with_file_name(format!(
+        ".codex-global-state.json.deecodex-delete-thread-{}.bak",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&backup_path, raw).context("备份 Codex Desktop 全局状态失败")?;
+    let next_raw =
+        serde_json::to_string(&state).context("序列化 Codex Desktop 全局状态失败")? + "\n";
+    std::fs::write(&global_path, next_raw).context("写入 Codex Desktop 全局状态失败")?;
+    Ok(changed)
 }
 
 fn path_starts_with(path: &str, root: &str) -> bool {
@@ -2247,6 +2408,68 @@ mod tests {
         .expect("create stage1_outputs table");
     }
 
+    fn create_test_threads_db_with_rollout(path: &Path, thread_id: &str, rollout_path: &Path) {
+        let conn = Connection::open(path).expect("open test db");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                preview TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                rollout_path TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'vscode',
+                cwd TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )
+        .expect("create threads table");
+        conn.execute(
+            "INSERT INTO threads (
+                id, model_provider, title, preview, first_user_message,
+                rollout_path, source, cwd, archived
+            ) VALUES (?1, 'deecodex', '待删除', '预览', '首问', ?2, 'vscode', '/tmp/project', 0)",
+            params![thread_id, rollout_path.to_string_lossy().to_string()],
+        )
+        .expect("insert thread");
+        conn.execute(
+            "CREATE TABLE stage1_outputs (
+                thread_id TEXT PRIMARY KEY,
+                source_updated_at INTEGER NOT NULL,
+                raw_memory TEXT NOT NULL,
+                rollout_summary TEXT NOT NULL,
+                generated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .expect("create stage1_outputs table");
+        conn.execute(
+            "INSERT INTO stage1_outputs
+             (thread_id, source_updated_at, raw_memory, rollout_summary, generated_at)
+             VALUES (?1, 1, '{}', 'summary', 2)",
+            params![thread_id],
+        )
+        .expect("insert stage1");
+        conn.execute(
+            "CREATE TABLE thread_dynamic_tools (
+                thread_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                position INTEGER NOT NULL
+            )",
+            [],
+        )
+        .expect("create dynamic tools table");
+        conn.execute(
+            "INSERT INTO thread_dynamic_tools
+             (thread_id, name, description, position)
+             VALUES (?1, 'tool', 'desc', 1)",
+            params![thread_id],
+        )
+        .expect("insert dynamic tool");
+    }
+
     #[test]
     fn find_state_db_prefers_highest_version_over_largest_file() {
         let dir = temp_test_dir("state-db-version");
@@ -2264,6 +2487,121 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn delete_thread_removes_db_rows_rollout_backup_and_desktop_index() {
+        let dir = temp_test_dir("thread-delete");
+        let codex_dir = dir.join(".codex");
+        let sessions_dir = codex_dir
+            .join("sessions")
+            .join("2026")
+            .join("06")
+            .join("03");
+        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        let rollout_path = sessions_dir.join("rollout-delete-me.jsonl");
+        std::fs::write(&rollout_path, "{\"type\":\"response_item\"}\n").expect("write rollout");
+
+        let db_path = codex_dir.join("state_10.sqlite");
+        create_test_threads_db_with_rollout(&db_path, "delete-me", &rollout_path);
+        let backup_path = backup_path(&dir);
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string(&vec![
+                ("delete-me".to_string(), "codex".to_string()),
+                ("keep-me".to_string(), "codex".to_string()),
+            ])
+            .unwrap(),
+        )
+        .expect("write migration backup");
+        let global_path = codex_dir.join(".codex-global-state.json");
+        std::fs::write(
+            &global_path,
+            serde_json::to_string(&json!({
+                "thread-project-assignments": {
+                    "delete-me": {"projectId": "/tmp/project"},
+                    "keep-me": {"projectId": "/tmp/project"}
+                },
+                "thread-workspace-root-hints": {
+                    "delete-me": "/tmp/project",
+                    "keep-me": "/tmp/project"
+                },
+                "thread-projectless-output-directories": {
+                    "delete-me": "/tmp/output"
+                },
+                "projectless-thread-ids": ["delete-me", "keep-me"],
+                "sidebar-project-thread-orders": {
+                    "/tmp/project": {"threadIds": ["delete-me", "keep-me"], "sortKey": "abc"},
+                    "/tmp/empty": {"threadIds": ["delete-me"]}
+                }
+            }))
+            .unwrap(),
+        )
+        .expect("write global state");
+
+        delete_thread_from_db(&dir, &dir, &db_path, "delete-me").expect("delete thread");
+
+        let conn = Connection::open(&db_path).expect("open db after delete");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = 'delete-me'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count thread");
+        assert_eq!(count, 0);
+        let stage1_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stage1_outputs WHERE thread_id = 'delete-me'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count stage1");
+        assert_eq!(stage1_count, 0);
+        let tools_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM thread_dynamic_tools WHERE thread_id = 'delete-me'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count dynamic tools");
+        assert_eq!(tools_count, 0);
+        assert!(!rollout_path.exists());
+
+        let backup_json = std::fs::read_to_string(&backup_path).expect("read backup");
+        assert!(!backup_json.contains("delete-me"));
+        assert!(backup_json.contains("keep-me"));
+
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(&global_path).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert!(state["thread-project-assignments"]
+            .get("delete-me")
+            .is_none());
+        assert!(state["thread-workspace-root-hints"]
+            .get("delete-me")
+            .is_none());
+        assert!(state["thread-projectless-output-directories"]
+            .get("delete-me")
+            .is_none());
+        assert!(state["projectless-thread-ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_str() != Some("delete-me")));
+        let order_ids = state["sidebar-project-thread-orders"]["/tmp/project"]["threadIds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(order_ids, vec!["keep-me"]);
+        assert!(state["sidebar-project-thread-orders"]
+            .get("/tmp/empty")
+            .is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

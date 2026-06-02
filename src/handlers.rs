@@ -54,6 +54,7 @@ const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_item
 pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
+const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
@@ -839,7 +840,7 @@ fn explicit_native_helper_model(selected_model: &str) -> String {
     if codex_router_native_direct_model(selected_model) {
         selected_model.to_string()
     } else {
-        "gpt-5.5".into()
+        DEFAULT_NATIVE_HELPER_MODEL.into()
     }
 }
 
@@ -11142,11 +11143,11 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
         assert_eq!(trace["main_selected_model"], "deepseek-v4-pro");
-        assert_eq!(trace["upstream_model"], "gpt-5.5");
+        assert_eq!(trace["upstream_model"], "gpt-5.4-mini");
     }
 
     #[test]
