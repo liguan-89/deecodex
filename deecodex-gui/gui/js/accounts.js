@@ -1246,7 +1246,7 @@ function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(acc
     endpoint.vision = {
       ...(endpoint.vision || {}),
       mode: 'native',
-      unsupported_image_policy: 'reject',
+      unsupported_image_policy: 'strip_with_warning',
       glue_strategy: 'final_answer',
       adapter_id: 'minimax_coding_plan_vlm',
       base_url: '',
@@ -1430,7 +1430,7 @@ function createEndpointFromTemplate(template, account) {
     model_profiles: {},
     vision: {
       mode: 'native',
-      unsupported_image_policy: 'reject',
+      unsupported_image_policy: 'strip_with_warning',
       glue_strategy: 'final_answer',
       adapter_id: 'minimax_coding_plan_vlm',
       base_url: account?.vision_upstream || '',
@@ -1459,7 +1459,7 @@ function applyProviderSpecificEndpointDefaults(account) {
     endpoint.vision = {
       ...(endpoint.vision || {}),
       mode: 'off',
-      unsupported_image_policy: 'reject',
+      unsupported_image_policy: 'strip_with_warning',
       glue_strategy: 'final_answer',
       adapter_id: 'minimax_coding_plan_vlm',
       base_url: '',
@@ -1979,8 +1979,8 @@ function renderAccountDetail() {
         <div class="config-field">
           <label>不支持图片时</label>
           <select id="edit_unsupported_image_policy">
-            <option value="reject" ${(ep.vision?.unsupported_image_policy || 'reject') === 'reject' ? 'selected' : ''}>拒绝请求并提示</option>
-            <option value="strip_with_warning" ${ep.vision?.unsupported_image_policy === 'strip_with_warning' ? 'selected' : ''}>剥离图片并继续</option>
+            <option value="strip_with_warning" ${(ep.vision?.unsupported_image_policy || 'strip_with_warning') === 'strip_with_warning' ? 'selected' : ''}>剥离图片并继续</option>
+            <option value="reject" ${ep.vision?.unsupported_image_policy === 'reject' ? 'selected' : ''}>拒绝请求并提示</option>
           </select>
           <span class="hint">关闭视觉或模型覆盖为关闭时生效</span>
         </div>
@@ -2806,7 +2806,7 @@ function syncEditingDraftFromForm(options = {}) {
   if (visionPath) { ep.vision.path = visionPath.value.trim() || 'v1/coding_plan/vlm'; a.vision_endpoint = ep.vision.path; }
   ep.vision.adapter_id = document.getElementById('edit_vision_adapter')?.value || ep.vision.adapter_id || 'minimax_coding_plan_vlm';
   ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
-  ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'reject';
+  ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'strip_with_warning';
 
   ep.model_map = {};
   if (!endpointKindUsesModelMapping(ep.kind) && !options.preserveHiddenResponses) {

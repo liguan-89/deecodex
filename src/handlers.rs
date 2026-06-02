@@ -1957,10 +1957,7 @@ fn router_tool_requirements_from_input(
     let mut signal = None;
     match input {
         ResponsesInput::Text(text) => {
-            if text.contains("computer_call_output")
-                || text.contains("\"screenshot\"")
-                || text.contains("data:image/")
-            {
+            if text.contains("computer_call_output") || text.contains("\"screenshot\"") {
                 signal = Some("input.text_computer_signal");
             } else if router_text_computer_intent_signal(text) {
                 signal = Some("input.computer_intent");
@@ -2006,14 +2003,6 @@ fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Optio
             if map.get("screenshot").is_some() {
                 return Some("input.screenshot");
             }
-            if typ == "input_image"
-                && map
-                    .get("image_url")
-                    .and_then(Value::as_str)
-                    .is_some_and(|url| url.starts_with("data:image/"))
-            {
-                return Some("input.screenshot");
-            }
             let child_text_intent = map
                 .get("role")
                 .and_then(Value::as_str)
@@ -2029,9 +2018,7 @@ fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Optio
             None
         }
         Value::String(text) => {
-            if text.starts_with("data:image/") {
-                Some("input.screenshot")
-            } else if allow_text_intent
+            if allow_text_intent
                 && (text.contains("computer_call_output") || text.contains("\"screenshot\""))
             {
                 Some("input.text_computer_signal")
@@ -11500,7 +11487,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_tool_requirements_detects_nested_screenshot_in_input() {
+    fn dex_router_tool_requirements_ignores_plain_input_image() {
         let mut req = responses_request_with_tools(vec![]);
         req.input = ResponsesInput::Messages(vec![json!({
             "type": "message",
@@ -11515,9 +11502,9 @@ mod tests {
 
         let requirements = router_tool_requirements(&req);
 
-        assert!(requirements.has_computer);
-        assert!(requirements.requires_computer);
-        assert!(requirements
+        assert!(!requirements.has_computer);
+        assert!(!requirements.requires_computer);
+        assert!(!requirements
             .labels
             .iter()
             .any(|label| label == "input.screenshot"));

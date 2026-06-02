@@ -335,8 +335,8 @@ impl ModelVisionMode {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UnsupportedImagePolicy {
-    #[default]
     Reject,
+    #[default]
     StripWithWarning,
 }
 
@@ -380,7 +380,7 @@ impl Default for VisionConfig {
     fn default() -> Self {
         Self {
             mode: VisionMode::Off,
-            unsupported_image_policy: UnsupportedImagePolicy::Reject,
+            unsupported_image_policy: UnsupportedImagePolicy::StripWithWarning,
             glue_strategy: GlueVisionStrategy::FinalAnswer,
             adapter_id: default_minimax_adapter(),
             base_url: String::new(),
@@ -817,6 +817,14 @@ impl Account {
         }
     }
 
+    fn normalize_unsupported_image_policy_default(&mut self) {
+        for endpoint in &mut self.endpoints {
+            if endpoint.vision.unsupported_image_policy == UnsupportedImagePolicy::Reject {
+                endpoint.vision.unsupported_image_policy = UnsupportedImagePolicy::StripWithWarning;
+            }
+        }
+    }
+
     pub fn normalize_v2(&mut self) {
         if !self.client_kind.supports_desktop_surface() {
             self.client_surface = AccountClientSurface::Cli;
@@ -832,6 +840,7 @@ impl Account {
         self.normalize_responses_direct();
         self.retire_codex_model_map();
         self.normalize_mimo_codex_model_profiles();
+        self.normalize_unsupported_image_policy_default();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -2794,6 +2803,20 @@ mod tests {
 
         assert_eq!(endpoint.model_vision_mode("deepseek-chat"), VisionMode::Off);
         assert_eq!(endpoint.model_vision_mode("other"), VisionMode::Glue);
+    }
+
+    #[test]
+    fn normalize_migrates_legacy_reject_image_policy_to_strip() {
+        let mut account = legacy_account(true);
+        account.normalize_v2();
+        account.endpoints[0].vision.unsupported_image_policy = UnsupportedImagePolicy::Reject;
+
+        account.normalize_v2();
+
+        assert_eq!(
+            account.endpoints[0].vision.unsupported_image_policy,
+            UnsupportedImagePolicy::StripWithWarning
+        );
     }
 
     #[test]

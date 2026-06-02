@@ -1267,6 +1267,67 @@ async fn codex_router_routes_web_search_to_native_responses_when_chat_lacks_web(
 }
 
 #[tokio::test]
+async fn codex_router_explicit_chat_model_strips_plain_image_without_native_helper() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_image_strip","choices":[{"message":{"role":"assistant","content":"image stripped"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
+    )
+    .await;
+    let state = test_state();
+    let mut chat = router_test_account(
+        "router-chat",
+        "minimax",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("MiniMax-M3"),
+    );
+    chat.endpoints[0].vision.mode = VisionMode::Off;
+    configure_router_test_accounts(&state, vec![chat], "router-chat").await;
+    let app = build_router(state);
+    let model = deecodex::codex_config::encode_dex_account_model_slug(
+        "router-chat",
+        "ep-router-chat",
+        "MiniMax-M3",
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{
+                        "model":"{model}",
+                        "input":[{{
+                            "role":"user",
+                            "content":[
+                                {{"type":"input_text","text":"识别图片"}},
+                                {{"type":"input_image","image_url":"data:image/png;base64,abc"}}
+                            ]
+                        }}],
+                        "store":false
+                    }}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let captured = chat_captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/chat/completions");
+    assert_eq!(captured[0].body["model"], "MiniMax-M3");
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("识别图片"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("input_image"));
+}
+
+#[tokio::test]
 async fn codex_router_routes_remote_mcp_to_chat_bridge_tool() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"mcp bridge ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
@@ -3839,8 +3900,33 @@ async fn test_responses_blocking_text() {
 }
 
 #[tokio::test]
-async fn test_responses_rejects_image_when_vision_off() {
-    let app = build_router(test_state());
+async fn test_responses_strips_image_by_default_when_vision_off() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "stripped by default"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+    )
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
+        };
+    }
+    let app = build_router(state);
 
     let response = app
         .oneshot(
@@ -3865,15 +3951,43 @@ async fn test_responses_rejects_image_when_vision_off() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["error"]["code"], "vision_disabled");
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("请看这张图"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("input_image"));
 }
 
 #[tokio::test]
-async fn test_responses_rejects_image_when_not_last_input_item() {
-    let app = build_router(test_state());
+async fn test_responses_strips_image_when_not_last_input_item() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "stripped earlier image"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+    )
+    .await;
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
+        };
+    }
+    let app = build_router(state);
 
     let response = app
         .oneshot(
@@ -3904,10 +4018,13 @@ async fn test_responses_rejects_image_when_not_last_input_item() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["error"]["code"], "vision_disabled");
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("最后一项只是文本"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("input_image"));
 }
 
 #[tokio::test]
