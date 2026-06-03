@@ -1243,15 +1243,7 @@ function toggleFastFields() {
 }
 
 function toggleCapabilityFields() {
-  const cb = document.getElementById('edit_capability_enabled');
-  const fields = document.getElementById('capabilityFields');
-  if (cb && fields) {
-    fields.style.display = cb.checked ? '' : 'none';
-    if (!cb.checked) {
-      const select = document.getElementById('edit_capability_account_id');
-      if (select) select.value = '';
-    }
-  }
+  // 账号级“能力补全”已废弃；函数保留为空实现，兼容旧页面事件引用。
 }
 
 function collectFormData() {

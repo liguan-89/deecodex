@@ -22,7 +22,7 @@ use crate::vision::{
     strip_images_from_chat_request, VlmArgs,
 };
 use crate::{
-    capability, codex_config, dev_pipeline, files, prompts, providers, sse::SseState, stream,
+    codex_config, dev_pipeline, files, local_ocr, prompts, providers, sse::SseState, stream,
     translate, vector_stores,
 };
 use anyhow::{bail, Result};
@@ -148,11 +148,6 @@ struct BypassArgs {
     requested_service_tier: Option<String>,
     history_context: HistoryContext,
     runtime_feedback: RuntimeFeedbackSink,
-}
-
-struct CapabilityObservationResult {
-    message: Option<ChatMessage>,
-    suppress_vision_route: bool,
 }
 
 struct AnthropicArgs<'a> {
@@ -7202,6 +7197,33 @@ fn strip_images_from_value(value: &mut Value) {
     }
 }
 
+fn append_ocr_fallback_message(chat_req: &mut ChatRequest, ocr: local_ocr::OcrFallbackReport) {
+    if ocr.image_count == 0 {
+        return;
+    }
+    let content = if ocr.text.trim().is_empty() {
+        format!(
+            "用户上传了 {} 张图片。当前 Chat 兼容模型不支持图片输入，DEX AI 已剥离图片并尝试本机 OCR，但未识别到可用文字。请基于现有文本继续；不要声称已经看到图片细节。",
+            ocr.image_count
+        )
+    } else {
+        format!(
+            "用户上传了 {} 张图片。当前 Chat 兼容模型不支持图片输入，DEX AI 已剥离图片，并用本机 OCR 提取到以下文字。OCR 仅代表图片中的可识别文字，不包含颜色、布局、物体或图形关系：\n\n{}",
+            ocr.image_count,
+            ocr.text.trim()
+        )
+    };
+    chat_req.messages.push(ChatMessage {
+        role: "user".into(),
+        content: Some(Value::String(content)),
+        reasoning_content: None,
+        reasoning_details: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    });
+}
+
 async fn handle_responses_vlm_final_answer(
     state: AppState,
     req: &ResponsesRequest,
@@ -7427,6 +7449,10 @@ async fn handle_responses_bypass(
             }
             UnsupportedImagePolicy::StripWithWarning => {
                 warn!("Responses 直连端点未启用视觉能力，已按配置剥离图片后继续请求");
+                body = strip_images_from_responses_body(&body).unwrap_or(body);
+            }
+            UnsupportedImagePolicy::OcrThenStrip => {
+                warn!("Responses 直连端点不执行本机 OCR，已按配置剥离图片后继续请求");
                 body = strip_images_from_responses_body(&body).unwrap_or(body);
             }
         }
@@ -8727,8 +8753,6 @@ async fn handle_responses_inner(
         }
     }
 
-    let capability_observation = build_capability_observation(&state, &req, &raw_body).await;
-
     // Route to VLM when the current turn has new images (not just history carrying old ones)
     let is_review_model = original_model.contains("auto-review");
     let has_new_image = response_input_has_new_image(&req.input);
@@ -8737,10 +8761,7 @@ async fn handle_responses_inner(
     } else {
         endpoint.model_vision_mode(&mapped_model)
     };
-    let route_to_vision = translated.has_images
-        && has_new_image
-        && vision_mode == VisionMode::Glue
-        && !capability_observation.suppress_vision_route;
+    let route_to_vision = translated.has_images && has_new_image && vision_mode == VisionMode::Glue;
     let native_vision = translated.has_images && has_new_image && vision_mode == VisionMode::Native;
     info!(
         "route_to_vision: has_images={} review={} new_image={} msgs={} mode={:?} route={}",
@@ -8770,12 +8791,34 @@ async fn handle_responses_inner(
             UnsupportedImagePolicy::StripWithWarning => {
                 warn!("当前端点未启用视觉能力，已按配置剥离图片后继续请求");
             }
+            UnsupportedImagePolicy::OcrThenStrip => {
+                warn!("当前 Chat 兼容端点未启用视觉能力，已使用本机 OCR 降级后继续请求");
+            }
         }
     }
 
     // 非原生视觉端点必须剥离 image_url，否则 DeepSeek 等上游会拒绝。
     if !route_to_vision && !native_vision {
+        let should_ocr = translated.has_images
+            && has_new_image
+            && vision_mode == VisionMode::Off
+            && endpoint.vision.unsupported_image_policy == UnsupportedImagePolicy::OcrThenStrip
+            && endpoint.kind.is_chat_like();
+        let ocr_report = if should_ocr {
+            match serde_json::from_slice::<Value>(&raw_body) {
+                Ok(value) => Some(local_ocr::recognize_images_from_value(&value).await),
+                Err(err) => {
+                    warn!(error = %err, "解析原始请求失败，本机 OCR 降级跳过并改为剥离图片");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         strip_images_from_chat_request(&mut chat_req);
+        if let Some(report) = ocr_report {
+            append_ocr_fallback_message(&mut chat_req, report);
+        }
     }
 
     maybe_inject_explicit_model_identity(
@@ -8784,20 +8827,6 @@ async fn handle_responses_inner(
         &endpoint,
         explicit_model_for_identity.as_deref(),
     );
-
-    // 能力通道观察注入（在 strip_images 之后，保护多模态 content 不被剥离）
-    if let Some(observation) = capability_observation.message {
-        let insert_at = if chat_req
-            .messages
-            .first()
-            .is_some_and(|message| message.role == "system")
-        {
-            1
-        } else {
-            0
-        };
-        chat_req.messages.insert(insert_at, observation);
-    }
 
     let mut use_vision_transport = route_to_vision;
     let (url, api_key) = if route_to_vision {
@@ -9176,141 +9205,6 @@ async fn handle_responses_inner(
         let elapsed = start.elapsed();
         debug!("blocking request completed in {:.0}ms", elapsed.as_millis());
         resp
-    }
-}
-
-async fn build_capability_observation(
-    state: &AppState,
-    req: &ResponsesRequest,
-    raw_body: &[u8],
-) -> CapabilityObservationResult {
-    let main_account = state.active_account.read().await.clone();
-    let requested = !capability::capability_observer_request(req)
-        && main_account.capability_enabled
-        && capability::detect_trigger(req).is_some();
-    if !requested {
-        return CapabilityObservationResult {
-            message: None,
-            suppress_vision_route: false,
-        };
-    }
-
-    let helper_account = {
-        let store = state.account_store.read().await;
-        main_account
-            .capability_account_id
-            .as_ref()
-            .and_then(|helper_id| store.accounts.iter().find(|a| &a.id == helper_id).cloned())
-    };
-
-    let helper_context = if let Some(helper) = helper_account.as_ref() {
-        let mut normalized_helper = helper.clone();
-        if normalized_helper.endpoints.is_empty() {
-            normalized_helper.normalize_v2();
-        }
-        let Some(helper_endpoint) = normalized_helper
-            .active_endpoint(None)
-            .cloned()
-            .or_else(|| normalized_helper.endpoints.first().cloned())
-        else {
-            warn!(
-                account_id = %helper.id,
-                account_name = %helper.name,
-                "能力账号没有可用端点，Computer Use 原生能力通道不可用"
-            );
-            return CapabilityObservationResult {
-                message: Some(capability_config_error_message(
-                    "能力账号没有可用端点，无法接管 Computer Use。",
-                )),
-                suppress_vision_route: true,
-            };
-        };
-        if !helper_endpoint.kind.is_responses_like() {
-            warn!(
-                account_id = %helper.id,
-                account_name = %helper.name,
-                endpoint_kind = ?helper_endpoint.kind,
-                "能力账号必须配置为原生 Responses 端点，拒绝回退到 Chat 或本地桥"
-            );
-            return CapabilityObservationResult {
-                message: Some(capability_config_error_message(
-                    "能力账号必须配置为原生 Responses 端点；当前端点不是 Responses，已拒绝回退到 Chat 或本地桥。",
-                )),
-                suppress_vision_route: true,
-            };
-        }
-        match validate_upstream(&helper_endpoint.base_url) {
-            Ok(upstream) => Some(capability::CapabilityContext {
-                client: state.client.clone(),
-                upstream,
-                endpoint_path: helper_endpoint.effective_path().to_string(),
-                api_key: helper.api_key.clone(),
-                custom_headers: helper_endpoint.custom_headers.clone(),
-                timeout_secs: helper_endpoint.request_timeout_secs,
-                max_retries: helper_endpoint.max_retries,
-                model_map: helper_endpoint.model_map.clone(),
-                executors: state.executors.read().await.clone(),
-                tool_policy: state.tool_policy.read().await.clone(),
-            }),
-            Err(err) => {
-                warn!(
-                    account_id = %helper.id,
-                    account_name = %helper.name,
-                    error = %err,
-                    "能力账号上游 URL 无效，回退主模型并跳过旧视觉路由"
-                );
-                return CapabilityObservationResult {
-                    message: Some(capability_config_error_message(
-                        "能力账号上游 URL 无效，无法接管 Computer Use。",
-                    )),
-                    suppress_vision_route: true,
-                };
-            }
-        }
-    } else {
-        None
-    };
-
-    let Some(context) = helper_context else {
-        warn!(
-            account_id = %main_account.id,
-            account_name = %main_account.name,
-            "能力补全已触发但未配置有效能力账号，回退主模型并跳过旧视觉路由"
-        );
-        return CapabilityObservationResult {
-            message: Some(capability_config_error_message(
-                "未配置有效的原生 Responses 能力账号，无法接管 Computer Use。",
-            )),
-            suppress_vision_route: true,
-        };
-    };
-
-    let message =
-        capability::maybe_observe(req, raw_body, &main_account, helper_account, context).await;
-    if message.is_none() {
-        warn!(
-            account_id = %main_account.id,
-            account_name = %main_account.name,
-            "能力补全已触发但未产生可注入观察，回退主模型并允许旧视觉路由"
-        );
-    }
-    CapabilityObservationResult {
-        suppress_vision_route: message.is_some(),
-        message,
-    }
-}
-
-fn capability_config_error_message(message: &str) -> ChatMessage {
-    ChatMessage {
-        role: "system".into(),
-        content: Some(Value::String(format!(
-            "【deecodex 能力账号配置错误】{message}请直接告知用户该配置问题；不要尝试由主模型、Chat fallback 或本地 MCP bridge 执行 Computer Use。"
-        ))),
-        reasoning_content: None,
-        reasoning_details: None,
-tool_calls: None,
-        tool_call_id: None,
-        name: None,
     }
 }
 

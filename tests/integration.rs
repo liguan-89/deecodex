@@ -4133,6 +4133,72 @@ async fn test_chat_strip_policy_removes_image_and_continues() {
 }
 
 #[tokio::test]
+async fn test_chat_ocr_policy_removes_image_and_injects_local_ocr_note() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "ocr fallback ok"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        }"#,
+    )
+    .await;
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(upstream.clone()));
+    {
+        let mut account = state.active_account.write().await;
+        account.normalize_v2();
+        account.endpoints[0].kind = EndpointKind::OpenAiChat;
+        account.endpoints[0].base_url = upstream.to_string();
+        account.endpoints[0].vision.mode = VisionMode::Off;
+        account.endpoints[0].vision.unsupported_image_policy = UnsupportedImagePolicy::OcrThenStrip;
+        *state.account_store.write().await = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: account.endpoints.first().map(|e| e.id.clone()),
+            active_by_surface: std::collections::HashMap::new(),
+        };
+    }
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model": "gpt-5",
+                        "input": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "识别图片里的字"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                            ]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let sent = serde_json::to_string(&captured[0].body).unwrap();
+    assert!(sent.contains("识别图片里的字"));
+    assert!(sent.contains("本机 OCR"));
+    assert!(sent.contains("未识别到可用文字") || sent.contains("OCR 仅代表"));
+    assert!(!sent.contains("data:image/png"));
+    assert!(!sent.contains("input_image"));
+}
+
+#[tokio::test]
 async fn test_model_profile_native_vision_overrides_endpoint_off() {
     let (upstream, captured) = capture_any_json_upstream(
         r#"{
@@ -6956,14 +7022,14 @@ async fn test_translate_stream_web_search() {
     assert_eq!(events[4].0, "response.completed");
 }
 
-// ── 能力补全：Computer Use 只走能力执行账号 ──────────────────────
+// ── 旧能力补全已废弃 ──────────────────────
 
 #[tokio::test]
-async fn test_capability_computer_use_uses_native_responses_account() {
+async fn test_legacy_capability_completion_no_longer_calls_helper_account() {
     let (main_upstream, main_captured) = capture_json_upstream(
         r#"{
             "choices": [
-                {"message": {"role": "assistant", "content": "能力账号已经完成电脑操作。"}}
+                {"message": {"role": "assistant", "content": "主模型直接回答。"}}
             ],
             "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
         }"#,
@@ -6974,16 +7040,7 @@ async fn test_capability_computer_use_uses_native_responses_account() {
             "id": "resp_capability_native",
             "object": "response",
             "status": "completed",
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [
-                        {"type": "output_text", "text": "已打开抖音并播放第一个视频"}
-                    ]
-                }
-            ],
-            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+            "output": []
         }"#,
     )
     .await;
@@ -7005,246 +7062,6 @@ async fn test_capability_computer_use_uses_native_responses_account() {
     helper_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
     helper_account.endpoints[0].base_url = capability_upstream.to_string();
     helper_account.endpoints[0].path = "responses".into();
-    helper_account.endpoints[0]
-        .model_map
-        .insert("gpt-5".into(), "gpt-4.1".into());
-
-    *state.active_account.write().await = main_account.clone();
-    {
-        let mut store = state.account_store.write().await;
-        store.accounts = vec![main_account, helper_account];
-        store.active_account_id = Some("test-account".into());
-        store.active_id = Some("test-account".into());
-        store.active_endpoint_id = None;
-    }
-
-    let app = build_router(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "gpt-5",
-                        "system": "主模型系统提示不应透传给能力账号的 system 字段",
-                        "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音 app 播放第一个视频",
-                        "tools": [{"type":"computer_use_preview", "display_width":1024, "display_height":768}]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let capability_requests = capability_captured.lock().unwrap();
-    assert_eq!(capability_requests.len(), 1);
-    assert_eq!(capability_requests[0].path, "/responses");
-    assert_eq!(capability_requests[0].body["model"], "gpt-4.1");
-    assert!(capability_requests[0].body.get("system").is_none());
-    assert!(capability_requests[0].body["instructions"]
-        .as_str()
-        .is_some_and(|s| s.contains("能力执行代理")));
-    assert_eq!(
-        capability_requests[0].body["tools"][0]["type"],
-        "computer_use_preview"
-    );
-    assert!(capability_requests[0].body.get("background").is_none());
-    assert!(capability_requests[0].body.get("store").is_none());
-    assert!(capability_requests[0]
-        .body
-        .get("previous_response_id")
-        .is_none());
-    assert!(capability_requests[0].body.get("conversation").is_none());
-    assert!(capability_requests[0].body.get("temperature").is_none());
-    assert!(capability_requests[0].body.get("tool_choice").is_none());
-
-    let main_requests = main_captured.lock().unwrap();
-    assert_eq!(main_requests.len(), 1);
-    let messages = main_requests[0]["messages"].as_array().unwrap();
-    // 观察结果现在以 user 角色 + 多模态 content 注入
-    assert!(messages.iter().any(|message| {
-        message["role"] == "user"
-            && message["content"].as_array().is_some_and(|parts| {
-                parts.iter().any(|p| {
-                    p["text"]
-                        .as_str()
-                        .is_some_and(|t| t.contains("已打开抖音并播放第一个视频"))
-                })
-            })
-    }));
-    assert!(!main_requests[0]["tools"].as_array().is_some_and(|tools| {
-        tools
-            .iter()
-            .any(|tool| tool["function"]["name"] == "local_mcp_call")
-    }));
-}
-
-#[tokio::test]
-async fn test_capability_computer_use_rejects_chat_helper_without_bridge_fallback() {
-    let (main_upstream, main_captured) = capture_json_upstream(
-        r#"{
-            "choices": [
-                {"message": {"role": "assistant", "content": "能力账号配置错误。"}}
-            ],
-            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
-        }"#,
-    )
-    .await;
-    let (capability_upstream, capability_captured) = capture_any_json_upstream(
-        r#"{
-            "choices": [
-                {"message": {"role": "assistant", "content": "不应该调用到这里"}}
-            ],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        }"#,
-    )
-    .await;
-
-    let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream));
-
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("capability-chat".into());
-
-    let mut helper_account = main_account.clone();
-    helper_account.id = "capability-chat".into();
-    helper_account.name = "错误 Chat 能力账号".into();
-    helper_account.upstream = capability_upstream.to_string();
-    helper_account.translate_enabled = true;
-    helper_account.endpoints.clear();
-    helper_account.normalize_v2();
-    helper_account.endpoints[0].kind = EndpointKind::OpenAiChat;
-    helper_account.endpoints[0].base_url = capability_upstream.to_string();
-    helper_account.endpoints[0].path = "chat/completions".into();
-
-    *state.active_account.write().await = main_account.clone();
-    {
-        let mut store = state.account_store.write().await;
-        store.accounts = vec![main_account, helper_account];
-        store.active_account_id = Some("test-account".into());
-        store.active_id = Some("test-account".into());
-        store.active_endpoint_id = None;
-    }
-
-    let app = build_router(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method(Method::POST)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "model": "gpt-5",
-                        "input": "[@电脑](plugin://computer-use@openai-bundled) 打开抖音",
-                        "tools": [{"type":"computer_use_preview"}]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(
-        capability_captured.lock().unwrap().is_empty(),
-        "Chat 能力账号不应被调用，也不能回退本地 bridge"
-    );
-
-    let main_requests = main_captured.lock().unwrap();
-    let messages = main_requests[0]["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "system"
-            && message["content"].as_str().is_some_and(|text| {
-                text.contains("能力账号必须配置为原生 Responses 端点")
-                    && text.contains("不要尝试由主模型、Chat fallback 或本地 MCP bridge 执行")
-            })
-    }));
-    assert!(!main_requests[0]["tools"].as_array().is_some_and(|tools| {
-        tools
-            .iter()
-            .any(|tool| tool["function"]["name"] == "local_mcp_call")
-    }));
-}
-
-#[tokio::test]
-async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back() {
-    let (main_upstream, main_captured) = capture_json_upstream(
-        r#"{
-            "choices": [
-                {"message": {"role": "assistant", "content": "能力账号已完成电脑操作并返回结果。"}}
-            ],
-            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
-        }"#,
-    )
-    .await;
-    let (capability_upstream, capability_captured) = capture_sequence_json_upstream(vec![
-        (
-            StatusCode::OK,
-            r#"{
-                "id": "resp_capability_round1",
-                "object": "response",
-                "status": "in_progress",
-                "output": [
-                    {
-                        "type": "computer_call",
-                        "call_id": "call_comp_001",
-                        "action": {"type": "click", "x": 100, "y": 200}
-                    }
-                ],
-                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-            }"#,
-        ),
-        (
-            StatusCode::OK,
-            r#"{
-                "id": "resp_capability_final",
-                "object": "response",
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [
-                            {"type": "output_text", "text": "抖音已打开，正在播放第一个视频"}
-                        ]
-                    }
-                ],
-                "usage": {"input_tokens": 15, "output_tokens": 5, "total_tokens": 20}
-            }"#,
-        ),
-    ])
-    .await;
-
-    let mut state = test_state();
-    state.upstream = Arc::new(tokio::sync::RwLock::new(main_upstream));
-    *state.executors.write().await =
-        deecodex::executor::LocalExecutorConfig::from_raw("browser-use", 1, "", "", "", 5).unwrap();
-
-    let mut main_account = state.active_account.read().await.clone();
-    main_account.capability_enabled = true;
-    main_account.capability_account_id = Some("capability-openai".into());
-
-    let mut helper_account = main_account.clone();
-    helper_account.id = "capability-openai".into();
-    helper_account.name = "OpenAI 原生能力账号".into();
-    helper_account.upstream = capability_upstream.to_string();
-    helper_account.translate_enabled = false;
-    helper_account.endpoints.clear();
-    helper_account.normalize_v2();
-    helper_account.endpoints[0].kind = EndpointKind::OpenAiResponses;
-    helper_account.endpoints[0].base_url = capability_upstream.to_string();
-    helper_account.endpoints[0].path = "responses".into();
-    helper_account.endpoints[0]
-        .model_map
-        .insert("gpt-5".into(), "gpt-4.1".into());
 
     *state.active_account.write().await = main_account.clone();
     {
@@ -7276,55 +7093,12 @@ async fn test_capability_tool_loop_executes_computer_call_and_sends_output_back(
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-
-    let capability_requests = capability_captured.lock().unwrap();
-    assert_eq!(
-        capability_requests.len(),
-        2,
-        "工具执行循环应产生2次请求: 初始请求 + 工具输出请求"
-    );
-
-    // 第一轮：初始能力通道请求
-    let req1 = &capability_requests[0];
-    assert_eq!(req1.path, "/responses");
-    assert_eq!(req1.body["model"], "gpt-4.1");
-    assert!(req1.body["instructions"]
-        .as_str()
-        .is_some_and(|s| s.contains("能力执行代理")));
-    assert!(req1.body.get("previous_response_id").is_none());
-
-    // 第二轮：带工具输出的后续请求
-    let req2 = &capability_requests[1];
-    assert_eq!(req2.path, "/responses");
-    assert_eq!(req2.body["model"], "gpt-4.1");
-    assert_eq!(req2.body["previous_response_id"], "resp_capability_round1");
-    let input = req2.body["input"].as_array().unwrap();
-    assert_eq!(input.len(), 1);
-    assert_eq!(input[0]["type"], "computer_call_output");
-    assert_eq!(input[0]["call_id"], "call_comp_001");
-
-    // 主模型应收到能力通道观察结果（user 角色 + 多模态 content）
+    assert!(capability_captured.lock().unwrap().is_empty());
     let main_requests = main_captured.lock().unwrap();
     assert_eq!(main_requests.len(), 1);
-    let messages = main_requests[0]["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "user"
-            && message["content"].as_array().is_some_and(|parts| {
-                parts
-                    .iter()
-                    .any(|p| p["text"].as_str().is_some_and(|t| t.contains("抖音已打开")))
-            })
-    }));
-    assert!(messages.iter().any(|message| {
-        message["role"] == "user"
-            && message["content"].as_array().is_some_and(|parts| {
-                parts.iter().any(|p| {
-                    p["text"]
-                        .as_str()
-                        .is_some_and(|t| t.contains("Computer 调用") || t.contains("Computer 结果"))
-                })
-            })
-    }));
+    let sent = serde_json::to_string(&main_requests[0]).unwrap();
+    assert!(!sent.contains("能力执行代理"));
+    assert!(!sent.contains("能力账号配置错误"));
 }
 
 // ── P2 端到端实验：computer_use 多轮闭环 ──────────────────────────────────

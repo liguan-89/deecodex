@@ -338,6 +338,7 @@ pub enum UnsupportedImagePolicy {
     Reject,
     #[default]
     StripWithWarning,
+    OcrThenStrip,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -587,10 +588,10 @@ pub struct Account {
     /// 关闭时请求直接透传至上游 Responses API 端点。
     #[serde(default = "default_translate_enabled")]
     pub translate_enabled: bool,
-    /// 是否启用能力补全：由耦合账号先执行多模态/工具观察，再回传主模型推理。
+    /// 旧版能力补全开关。当前已废弃，规范化时会关闭，仅保留字段兼容旧账号文件。
     #[serde(default)]
     pub capability_enabled: bool,
-    /// 能力补全账号 ID，通常选择支持原生工具/多模态能力的 OpenAI/GPT 账号。
+    /// 旧版能力补全账号 ID。当前已废弃，仅保留字段兼容旧账号文件。
     #[serde(default)]
     pub capability_account_id: Option<String>,
     /// 是否启用开发协作编排。触发后按角色账号依次完成方案、实现草稿和验收收口。
@@ -837,6 +838,8 @@ impl Account {
     }
 
     pub fn normalize_v2(&mut self) {
+        self.capability_enabled = false;
+        self.capability_account_id = None;
         if !self.client_kind.supports_desktop_surface() {
             self.client_surface = AccountClientSurface::Cli;
         }
@@ -2065,19 +2068,11 @@ pub fn validate_capability_links(store: &AccountStore) -> Result<()> {
         if !account.capability_enabled {
             continue;
         }
-        let Some(helper_id) = account.capability_account_id.as_deref() else {
-            anyhow::bail!("账号 '{}' 已启用能力补全但未选择能力账号", account.name);
-        };
-        if helper_id == account.id {
-            anyhow::bail!("账号 '{}' 的能力账号不能指向自身", account.name);
-        }
-        if !store
-            .accounts
-            .iter()
-            .any(|candidate| candidate.id == helper_id)
-        {
-            anyhow::bail!("账号 '{}' 选择的能力账号不存在", account.name);
-        }
+        tracing::warn!(
+            account_id = %account.id,
+            account_name = %account.name,
+            "能力补全已废弃，忽略旧配置"
+        );
     }
     Ok(())
 }
@@ -2551,7 +2546,7 @@ mod capability_tests {
             active_by_surface: HashMap::new(),
         };
 
-        assert!(validate_capability_links(&store).is_err());
+        assert!(validate_capability_links(&store).is_ok());
     }
 
     #[test]
@@ -2570,6 +2565,18 @@ mod capability_tests {
         };
 
         assert!(validate_capability_links(&store).is_ok());
+    }
+
+    #[test]
+    fn normalize_disables_legacy_capability_completion() {
+        let mut account = base_account("a1");
+        account.capability_enabled = true;
+        account.capability_account_id = Some("a2".into());
+
+        account.normalize_v2();
+
+        assert!(!account.capability_enabled);
+        assert_eq!(account.capability_account_id, None);
     }
 
     #[test]

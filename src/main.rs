@@ -2,7 +2,6 @@ mod accounts;
 mod anthropic;
 mod backup_store;
 mod cache;
-mod capability;
 mod cdp;
 #[allow(dead_code)]
 mod client_integrations;
@@ -15,6 +14,7 @@ mod executor;
 mod files;
 mod handlers;
 mod inject;
+mod local_ocr;
 mod metrics;
 mod native_protocols;
 mod oauth_accounts;

@@ -1049,26 +1049,6 @@ function accountCapabilityLabels(a) {
   return preset && Array.isArray(preset.capability_labels) ? preset.capability_labels : [];
 }
 
-function renderCapabilityAccountOptions(current) {
-  const list = accountsData.accounts || [];
-  const currentId = current?.id || '';
-  const selected = current?.capability_account_id || '';
-  const options = ['<option value="">请选择能力账号</option>'];
-  list
-    .filter(account => account.id && account.id !== currentId)
-    .forEach(account => {
-      const isSelected = account.id === selected ? 'selected' : '';
-      options.push(`<option value="${escAttr(account.id)}" ${isSelected}>${esc(account.name)} · ${esc(account.provider)}</option>`);
-    });
-  return options.join('');
-}
-
-function toggleCapabilityFields() {
-  const enabled = document.getElementById('edit_capability_enabled')?.checked;
-  const fields = document.getElementById('capabilityFields');
-  if (fields) fields.style.display = enabled ? '' : 'none';
-}
-
 function renderDevPipelineAccountOptions(current, selected) {
   const list = accountsData.accounts || [];
   const options = [`<option value="" ${!selected ? 'selected' : ''}>活跃账号（当前主账号）</option>`];
@@ -1125,6 +1105,13 @@ function endpointKindIsResponsesDirect(kind) {
     || kind === 'OpenAiResponses'
     || kind === 'custom_responses'
     || kind === 'CustomResponses';
+}
+
+function endpointKindIsChat(kind) {
+  return kind === 'open_ai_chat'
+    || kind === 'OpenAiChat'
+    || kind === 'custom_chat'
+    || kind === 'CustomChat';
 }
 
 function endpointKindUsesModelMapping(kind) {
@@ -1980,6 +1967,7 @@ function renderAccountDetail() {
           <label>不支持图片时</label>
           <select id="edit_unsupported_image_policy">
             <option value="strip_with_warning" ${(ep.vision?.unsupported_image_policy || 'strip_with_warning') === 'strip_with_warning' ? 'selected' : ''}>剥离图片并继续</option>
+            ${endpointKindIsChat(ep.kind) ? `<option value="ocr_then_strip" ${ep.vision?.unsupported_image_policy === 'ocr_then_strip' ? 'selected' : ''}>本机 OCR 后继续</option>` : ''}
             <option value="reject" ${ep.vision?.unsupported_image_policy === 'reject' ? 'selected' : ''}>拒绝请求并提示</option>
           </select>
           <span class="hint">关闭视觉或模型覆盖为关闭时生效</span>
@@ -2111,25 +2099,6 @@ function renderAccountDetail() {
             <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="priority">
             <span class="hint">默认 priority；旧配置中的 fast 会在请求时自动转为 priority。</span>
           </div>
-        </div>
-      </div>
-    </section>`;
-  const capabilitySection = responsesDirectForm ? '' : `
-    <section class="account-edit-section">
-      <div class="account-section-head">
-        <div class="section-sub-label">能力补全</div>
-      </div>
-      <div class="config-fields">
-        <div class="config-field">
-          <label class="toggle-label">
-            <input type="checkbox" id="edit_capability_enabled" ${a.capability_enabled ? 'checked' : ''} onchange="toggleCapabilityFields()">
-            启用能力补全
-          </label>
-          <span class="hint">能力账号不能选择当前账号，建议使用支持原生工具和多模态的账号。</span>
-        </div>
-        <div class="config-field" id="capabilityFields" style="${a.capability_enabled ? '' : 'display:none;'}">
-          <label>能力账号</label>
-          <select id="edit_capability_account_id">${renderCapabilityAccountOptions(a)}</select>
         </div>
       </div>
     </section>`;
@@ -2293,7 +2262,6 @@ function renderAccountDetail() {
     ${modelSection}
     ${visionSection}
     ${runtimeSection}
-    ${capabilitySection}
     ${devPipelineSection}
 
   <div class="collapsible-section">
@@ -3312,22 +3280,8 @@ async function saveAccount(options = {}) {
   if (!a.provider_options || Object.keys(a.provider_options).length === 0) {
     a.provider_options = { capability_labels: preset ? (preset.capability_labels || []) : [] };
   }
-  const capabilityEnabled = document.getElementById('edit_capability_enabled');
-  if (capabilityEnabled) a.capability_enabled = capabilityEnabled.checked;
-  const capabilityAccount = document.getElementById('edit_capability_account_id');
-  a.capability_account_id = capabilityEnabled && capabilityEnabled.checked && capabilityAccount
-    ? (capabilityAccount.value || null)
-    : null;
-  if (a.capability_enabled) {
-    if (!a.capability_account_id) {
-      showToast('请选择能力补全账号', 'error');
-      return;
-    }
-    if (a.id && a.capability_account_id === a.id) {
-      showToast('能力补全账号不能选择当前账号', 'error');
-      return;
-    }
-  }
+  a.capability_enabled = false;
+  a.capability_account_id = null;
   const devPipelineEnabled = document.getElementById('edit_dev_pipeline_enabled');
   if (devPipelineEnabled) a.dev_pipeline_enabled = devPipelineEnabled.checked;
   const devTriggerMode = document.getElementById('edit_dev_pipeline_trigger_mode');

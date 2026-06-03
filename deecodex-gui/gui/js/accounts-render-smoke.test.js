@@ -798,7 +798,7 @@ context.handleEndpointKindChange('open_ai_chat');
 context.document = originalDocument;
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_chat');
 assert(!mainContent.innerHTML.includes('model-map-table'));
-assert(mainContent.innerHTML.includes('能力补全'));
+assert(!mainContent.innerHTML.includes('能力补全'));
 assert.deepStrictEqual(JSON.parse(JSON.stringify(context.editingAccount.endpoints[0].model_map)), {});
 assert.strictEqual(context.editingAccount.endpoints[0].vision.mode, 'glue');
 assert.strictEqual(context.editingAccount.capability_enabled, true);
