@@ -60,7 +60,6 @@ const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
-const DEX_ROUTER_NATIVE_OBSERVE_TURNS: u8 = 3;
 const DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS: u64 = 10 * 60;
 
 #[allow(dead_code)]
@@ -233,7 +232,6 @@ struct CodexRouterExternalAnchor {
 pub struct DexRouterSessionRouteState {
     observe_remaining: u8,
     expires_at: u64,
-    reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -925,14 +923,53 @@ fn resolve_explicit_chat_model_native_helper_selection(
         tool_requirements,
         Some(main_account.id.as_str()),
     ) else {
-        return Err(Box::new(codex_router_pool_unavailable_response(
-            format!(
-                "已选择「{} / {}」作为主账号模型，但账号池「{}」中没有可接管 Computer Use 的 GPT/Responses 原生账号",
-                main_account.name, selected_model, routing.pool
-            ),
-            "dex_router_explicit_model_native_helper_unavailable",
-        )));
+        tracing::warn!(
+            main_account_id = %main_account.id,
+            main_account_name = %main_account.name,
+            selected_model = %selected_model,
+            pool = %routing.pool,
+            "DEX Router 未找到原生 Computer Use helper，降级回 Chat 兼容账号"
+        );
+        return explicit_chat_model_native_helper_fallback_selection(
+            main_account,
+            main_endpoint,
+            selected_model,
+            requested_model,
+            "native_helper_unavailable",
+            None,
+            now,
+        );
     };
+    let helper_health = dex_router_health(&helper_account, now);
+    if let Some(risk) =
+        dex_router_stream_preflight_risk(&helper_account, &helper_model, helper_health, now)
+    {
+        tracing::warn!(
+            main_account_id = %main_account.id,
+            main_account_name = %main_account.name,
+            helper_account_id = %helper_account.id,
+            helper_account_name = %helper_account.name,
+            helper_model = %helper_model,
+            risk = %risk,
+            recent_failed = helper_health.recent_failed,
+            failure_rate_percent = helper_health.failure_rate_percent,
+            "DEX Router 原生 Computer Use helper 近期不稳定，降级回 Chat 兼容账号"
+        );
+        return explicit_chat_model_native_helper_fallback_selection(
+            main_account,
+            main_endpoint,
+            selected_model,
+            requested_model,
+            risk,
+            Some((
+                &helper_account,
+                &helper_endpoint,
+                helper_model.as_str(),
+                helper_health,
+            )),
+            now,
+        );
+    }
     helper_account.sync_legacy_from_endpoint(&helper_endpoint);
     let trace = json!({
         "requested_model": requested_model,
@@ -955,6 +992,67 @@ fn resolve_explicit_chat_model_native_helper_selection(
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: true,
         explicit_model: Some(helper_model),
+    })
+}
+
+fn explicit_chat_model_native_helper_fallback_selection(
+    main_account: &Account,
+    main_endpoint: &EndpointConfig,
+    selected_model: &str,
+    requested_model: &str,
+    reason: &'static str,
+    helper: Option<(&Account, &EndpointConfig, &str, DexRouterHealth)>,
+    now: u64,
+) -> Result<AccountRouteSelection, Box<Response>> {
+    if let Some(block) = account_runtime_block(main_account, selected_model, now) {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            format!(
+                "已选择「{} / {}」作为主账号模型，但原生 Computer Use helper 不可用，且主账号当前不可降级使用：{}",
+                main_account.name, selected_model, block.reason
+            ),
+            "dex_router_explicit_model_native_helper_fallback_blocked",
+        )));
+    }
+    let mut account = main_account.clone();
+    account.sync_legacy_from_endpoint(main_endpoint);
+    let helper = helper.map(|(account, endpoint, model, health)| {
+        json!({
+            "account_id": account.id,
+            "account_name": account.name,
+            "endpoint_id": endpoint.id,
+            "endpoint_kind": endpoint_kind_slug(&endpoint.kind),
+            "model": model,
+            "health_score": health.score,
+            "recent_success": health.recent_success,
+            "recent_failed": health.recent_failed,
+            "failure_rate_percent": health.failure_rate_percent,
+        })
+    });
+    let trace = json!({
+        "requested_model": requested_model,
+        "explicit_model_selection": true,
+        "native_helper_fallback_to_chat": true,
+        "native_helper_fallback_reason": reason,
+        "native_helper_reroute": false,
+        "native_helper": helper,
+        "main_account_id": main_account.id,
+        "main_account_name": main_account.name,
+        "main_endpoint_id": main_endpoint.id,
+        "main_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
+        "main_selected_model": selected_model,
+        "selected_account_id": account.id,
+        "selected_account_name": account.name,
+        "selected_endpoint_id": main_endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
+        "selected_model": selected_model,
+        "upstream_model": selected_model,
+    });
+    Ok(AccountRouteSelection {
+        account,
+        endpoint: main_endpoint.clone(),
+        route_trace: serde_json::to_string(&trace).ok(),
+        requires_computer: false,
+        explicit_model: Some(selected_model.to_string()),
     })
 }
 
@@ -2076,12 +2174,7 @@ fn router_tool_requirements_from_input(
             }
         }
         ResponsesInput::Messages(items) => {
-            for item in items {
-                signal = router_input_computer_signal_for_message_item(item);
-                if signal.is_some() {
-                    break;
-                }
-            }
+            signal = router_latest_input_computer_signal(items);
         }
     }
 
@@ -2091,6 +2184,61 @@ fn router_tool_requirements_from_input(
         if !requirements.labels.iter().any(|seen| seen == label) {
             requirements.labels.push(label.to_string());
         }
+    }
+}
+
+fn router_latest_input_computer_signal(items: &[Value]) -> Option<&'static str> {
+    for item in items.iter().rev() {
+        if let Some(signal) = router_explicit_computer_output_signal(item) {
+            return Some(signal);
+        }
+        if router_input_item_is_user_turn(item) {
+            return router_input_computer_signal_for_message_item(item);
+        }
+    }
+    None
+}
+
+fn router_input_item_is_user_turn(value: &Value) -> bool {
+    let Value::Object(map) = value else {
+        return true;
+    };
+    map.get("role")
+        .and_then(Value::as_str)
+        .is_none_or(|role| role == "user")
+}
+
+fn router_explicit_computer_output_signal(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .rev()
+            .find_map(router_explicit_computer_output_signal),
+        Value::Object(map) => {
+            let typ = map.get("type").and_then(Value::as_str).unwrap_or("");
+            if matches!(typ, "computer_call" | "computer_call_output") {
+                return Some("input.computer_call_output");
+            }
+            if map.get("screenshot").is_some() {
+                return Some("input.screenshot");
+            }
+            for key in ["output", "content"] {
+                if let Some(value) = map.get(key) {
+                    if let Some(signal) = router_explicit_computer_output_signal(value) {
+                        return Some(signal);
+                    }
+                }
+            }
+            None
+        }
+        Value::String(text) => {
+            if text.contains("computer_call_output") || text.contains("\"screenshot\"") {
+                Some("input.text_computer_signal")
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2263,8 +2411,21 @@ fn update_codex_router_session_route(
     route_key: Option<String>,
     requirements: Option<&mut RouterToolRequirements>,
 ) -> Option<DexRouterSessionRouteDecision> {
+    update_codex_router_session_route_state(
+        &state.codex_router_sessions,
+        route_key,
+        requirements,
+        crate::accounts::now_secs(),
+    )
+}
+
+fn update_codex_router_session_route_state(
+    sessions: &dashmap::DashMap<String, DexRouterSessionRouteState>,
+    route_key: Option<String>,
+    requirements: Option<&mut RouterToolRequirements>,
+    now: u64,
+) -> Option<DexRouterSessionRouteDecision> {
     let route_key = route_key?;
-    let now = crate::accounts::now_secs();
     let has_native_signal = requirements
         .as_ref()
         .is_some_and(|requirements| requirements.requires_computer);
@@ -2281,13 +2442,10 @@ fn update_codex_router_session_route(
             })
             .unwrap_or_else(|| "computer_use".into());
         let route_state = DexRouterSessionRouteState {
-            observe_remaining: DEX_ROUTER_NATIVE_OBSERVE_TURNS,
+            observe_remaining: 1,
             expires_at: now.saturating_add(DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS),
-            reason: reason.clone(),
         };
-        state
-            .codex_router_sessions
-            .insert(route_key.clone(), route_state.clone());
+        sessions.insert(route_key.clone(), route_state.clone());
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
             state: "native_active",
@@ -2298,7 +2456,7 @@ fn update_codex_router_session_route(
         });
     }
 
-    let Some(mut entry) = state.codex_router_sessions.get_mut(&route_key) else {
+    let Some(entry) = sessions.get(&route_key) else {
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
             state: "free",
@@ -2311,7 +2469,7 @@ fn update_codex_router_session_route(
 
     if entry.expires_at <= now || entry.observe_remaining == 0 {
         drop(entry);
-        state.codex_router_sessions.remove(&route_key);
+        sessions.remove(&route_key);
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
             state: "free",
@@ -2322,34 +2480,18 @@ fn update_codex_router_session_route(
         });
     }
 
-    entry.observe_remaining = entry.observe_remaining.saturating_sub(1);
-    let decision = DexRouterSessionRouteDecision {
+    // Computer Use 的会话状态只用于识别下一次明确的原生信号。
+    // 普通文本轮不再被观察窗劫持，避免 Chat 兼容账号被拖进不稳定的 Responses helper。
+    drop(entry);
+    sessions.remove(&route_key);
+    Some(DexRouterSessionRouteDecision {
         key: route_key,
-        state: "native_observe",
-        reason: entry.reason.clone(),
-        observe_remaining: entry.observe_remaining,
-        expires_at: Some(entry.expires_at),
-        force_native_responses: true,
-    };
-
-    if let Some(requirements) = requirements {
-        requirements.has_computer = true;
-        requirements.requires_computer = true;
-        if !requirements
-            .labels
-            .iter()
-            .any(|label| label == "session.native_observe")
-        {
-            requirements.labels.push("session.native_observe".into());
-        }
-    }
-
-    if entry.observe_remaining == 0 {
-        drop(entry);
-        state.codex_router_sessions.remove(&decision.key);
-    }
-
-    Some(decision)
+        state: "native_released",
+        reason: "plain_turn_release_to_chat".into(),
+        observe_remaining: 0,
+        expires_at: None,
+        force_native_responses: false,
+    })
 }
 
 fn patch_selection_session_route_trace(
@@ -11313,16 +11455,60 @@ mod tests {
             ..Default::default()
         };
 
-        let response = match resolve_explicit_dex_account_model_selection(
-            &store,
-            &slug,
-            Some(&requirements),
-        ) {
-            Ok(_) => panic!("Chat 直选账号没有原生能力账号时应返回 409"),
-            Err(response) => response,
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(!selection.requires_computer);
+        assert_eq!(trace["native_helper_fallback_to_chat"], true);
+        assert_eq!(
+            trace["native_helper_fallback_reason"],
+            "native_helper_unavailable"
+        );
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_falls_back_when_native_helper_unstable() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        responses
+            .runtime_state
+            .recent_requests
+            .push(crate::accounts::AccountRecentRequestBucket {
+                bucket_start: now,
+                success: 0,
+                failed: 3,
+            });
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            requires_computer: true,
+            ..Default::default()
         };
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(!selection.requires_computer);
+        assert_eq!(trace["native_helper_fallback_to_chat"], true);
+        assert_eq!(
+            trace["native_helper_fallback_reason"],
+            "recent_failure_rate"
+        );
+        assert_eq!(trace["native_helper"]["account_id"], "responses");
     }
 
     #[test]
@@ -11607,6 +11793,88 @@ mod tests {
     }
 
     #[test]
+    fn dex_router_releases_plain_turn_after_computer_use() {
+        let sessions = dashmap::DashMap::new();
+        let mut native_requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            labels: vec!["input.computer_intent".into()],
+            ..Default::default()
+        };
+
+        let active = update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut native_requirements),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(active.state, "native_active");
+        assert!(active.force_native_responses);
+        assert!(sessions.contains_key("thread-id:test-thread"));
+
+        let mut plain_requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: false,
+            ..Default::default()
+        };
+        let released = update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut plain_requirements),
+            1_030,
+        )
+        .unwrap();
+
+        assert_eq!(released.state, "native_released");
+        assert_eq!(released.reason, "plain_turn_release_to_chat");
+        assert!(!released.force_native_responses);
+        assert!(!plain_requirements.requires_computer);
+        assert!(!plain_requirements
+            .labels
+            .iter()
+            .any(|label| label == "session.native_observe"));
+        assert!(!sessions.contains_key("thread-id:test-thread"));
+    }
+
+    #[test]
+    fn dex_router_refreshes_native_track_on_computer_output() {
+        let sessions = dashmap::DashMap::new();
+        let mut native_requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            labels: vec!["input.computer_intent".into()],
+            ..Default::default()
+        };
+        update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut native_requirements),
+            1_000,
+        )
+        .unwrap();
+
+        let mut output_requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+        let refreshed = update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut output_requirements),
+            1_010,
+        )
+        .unwrap();
+
+        assert_eq!(refreshed.state, "native_active");
+        assert_eq!(refreshed.reason, "input.computer_call_output");
+        assert!(refreshed.force_native_responses);
+        assert!(sessions.contains_key("thread-id:test-thread"));
+    }
+
+    #[test]
     fn dex_router_status_scenarios_report_tool_specific_selection() {
         let mut active = router_chat_account("active", "pool-a", 100, 1, Some("model-active"));
         active.provider = "deepseek".into();
@@ -11775,6 +12043,63 @@ mod tests {
             .labels
             .iter()
             .any(|label| label == "input.computer_intent"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_ignores_historical_computer_intent() {
+        let mut req = responses_request_with_tools(vec![json!({"type": "computer_use_preview"})]);
+        req.input = ResponsesInput::Messages(vec![
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": "使用 Computer Use 打开抖音 app，播放第一个视频"
+            }),
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "content": "已经完成。"
+            }),
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": "刚才为什么失败？"
+            }),
+        ]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(!requirements.requires_computer);
+        assert!(!requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.computer_intent"));
+    }
+
+    #[test]
+    fn dex_router_tool_requirements_keeps_latest_computer_output_native() {
+        let mut req = responses_request_with_tools(vec![json!({"type": "computer_use_preview"})]);
+        req.input = ResponsesInput::Messages(vec![
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": "普通文本"
+            }),
+            json!({
+                "type": "computer_call_output",
+                "call_id": "call_screen",
+                "screenshot": "data:image/png;base64,abc"
+            }),
+        ]);
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.has_computer);
+        assert!(requirements.requires_computer);
+        assert!(requirements
+            .labels
+            .iter()
+            .any(|label| label == "input.computer_call_output"));
     }
 
     #[test]
