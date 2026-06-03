@@ -1522,8 +1522,16 @@ pub(crate) struct RuntimeDefaults {
 }
 
 pub(crate) fn runtime_defaults() -> RuntimeDefaults {
-    let preview = option_env!("DEX_AI_PREVIEW_BUILD")
+    let compile_time_preview = option_env!("DEX_AI_PREVIEW_BUILD")
         .is_some_and(|value| matches!(value, "1" | "true" | "yes" | "preview"));
+    let binary_preview = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        })
+        .is_some_and(|name| name.contains("preview"));
+    let preview = compile_time_preview || binary_preview;
     let data_dir_name = if preview {
         ".deecodex-preview"
     } else {
