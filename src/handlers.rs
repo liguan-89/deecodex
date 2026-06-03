@@ -60,7 +60,6 @@ const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
-const DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS: u64 = 10 * 60;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -105,7 +104,7 @@ pub struct AppState {
     /// 请求历史持久化存储
     pub request_history: Arc<crate::request_history::RequestHistoryStore>,
     /// DEX Router 会话级原生 Responses 轨道状态
-    pub codex_router_sessions: Arc<dashmap::DashMap<String, DexRouterSessionRouteState>>,
+    pub codex_router_sessions: crate::codex_router_session::RouteStateMap,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -216,17 +215,12 @@ struct AccountRouteSelection {
     route_trace: Option<String>,
     requires_computer: bool,
     explicit_model: Option<String>,
+    explicit_account_model: bool,
 }
 
 #[derive(Clone, Debug)]
 struct CodexRouterExternalAnchor {
     account_id: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct DexRouterSessionRouteState {
-    observe_remaining: u8,
-    expires_at: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -237,6 +231,26 @@ struct DexRouterSessionRouteDecision {
     observe_remaining: u8,
     expires_at: Option<u64>,
     force_native_responses: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum NativeRouteSignal {
+    #[default]
+    None,
+    WeakContinuation,
+    TextIntent,
+    StrongNative,
+}
+
+impl NativeRouteSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            NativeRouteSignal::None => "none",
+            NativeRouteSignal::WeakContinuation => "weak_continuation",
+            NativeRouteSignal::TextIntent => "text_intent",
+            NativeRouteSignal::StrongNative => "strong_native",
+        }
+    }
 }
 
 struct DexRouterCandidate {
@@ -303,6 +317,7 @@ struct RouterToolRequirements {
     requires_image_generation: bool,
     requires_unknown_tools: bool,
     has_unknown_tools: bool,
+    native_signal: NativeRouteSignal,
     labels: Vec<String>,
 }
 
@@ -319,6 +334,29 @@ impl RouterToolRequirements {
             || self.requires_computer
             || self.requires_image_generation
             || self.requires_unknown_tools
+    }
+
+    fn add_label(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if !self.labels.iter().any(|seen| seen == &label) {
+            self.labels.push(label);
+        }
+    }
+
+    fn set_native_signal(&mut self, signal: NativeRouteSignal, label: impl Into<String>) {
+        self.native_signal = self.native_signal.max(signal);
+        self.has_computer = true;
+        if signal >= NativeRouteSignal::TextIntent {
+            self.requires_computer = true;
+        }
+        self.add_label(label);
+    }
+
+    fn force_native_observe(&mut self) {
+        self.native_signal = self.native_signal.max(NativeRouteSignal::WeakContinuation);
+        self.has_computer = true;
+        self.requires_computer = true;
+        self.add_label("session.native_observe");
     }
 }
 
@@ -708,6 +746,7 @@ async fn resolve_account_endpoint_for_response(
             route_trace: None,
             requires_computer: false,
             explicit_model: None,
+            explicit_account_model: false,
         });
     }
 
@@ -732,15 +771,19 @@ async fn resolve_account_endpoint_for_response(
     let (selection, route_trace) =
         dex_router_trace_for_selection(&store, requested_model, now, cursor, tool_requirements);
     match selection {
-        Some((account, endpoint)) => Ok(AccountRouteSelection {
-            account,
-            endpoint,
-            route_trace: Some(route_trace),
-            requires_computer: tool_requirements.is_some_and(|requirements| {
-                requirements.requires_computer
-            }),
-            explicit_model: None,
-        }),
+        Some((account, endpoint)) => {
+            let effective_model = router_effective_model_for_account(&account, requested_model, &endpoint);
+            Ok(AccountRouteSelection {
+                account,
+                endpoint,
+                route_trace: Some(route_trace),
+                requires_computer: tool_requirements.is_some_and(|requirements| {
+                    requirements.requires_computer
+                }),
+                explicit_model: (effective_model != requested_model).then_some(effective_model),
+                explicit_account_model: false,
+            })
+        }
         None => Err(codex_router_pool_unavailable_response(
             format!(
                 "DEX Router 在账号池「{}」中没有找到可用于模型 {} 的执行账号：请检查账号池启用状态、模型选择和冷却状态",
@@ -751,8 +794,62 @@ async fn resolve_account_endpoint_for_response(
     }
 }
 
-fn router_effective_model(requested_model: &str, _endpoint: &EndpointConfig) -> String {
-    requested_model.to_string()
+fn router_effective_model_for_account(
+    account: &Account,
+    requested_model: &str,
+    endpoint: &EndpointConfig,
+) -> String {
+    let requested_model = requested_model.trim();
+    if !endpoint.kind.is_chat_like() {
+        return requested_model.to_string();
+    }
+    if codex_router_native_direct_model(requested_model) {
+        return requested_model.to_string();
+    }
+    if let Some(mapped) = endpoint
+        .model_map
+        .get(requested_model)
+        .or_else(|| account.model_map.get(requested_model))
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
+    {
+        return mapped.to_string();
+    }
+    if endpoint
+        .known_models
+        .iter()
+        .any(|model| model.trim() == requested_model)
+    {
+        return requested_model.to_string();
+    }
+    endpoint
+        .known_models
+        .iter()
+        .map(|model| model.trim())
+        .find(|model| !model.is_empty())
+        .unwrap_or(requested_model)
+        .to_string()
+}
+
+fn router_effective_model(requested_model: &str, endpoint: &EndpointConfig) -> String {
+    let requested_model = requested_model.trim();
+    if !endpoint.kind.is_chat_like() {
+        return requested_model.to_string();
+    }
+    if endpoint
+        .known_models
+        .iter()
+        .any(|model| model.trim() == requested_model)
+    {
+        return requested_model.to_string();
+    }
+    endpoint
+        .known_models
+        .iter()
+        .map(|model| model.trim())
+        .find(|model| !model.is_empty())
+        .unwrap_or(requested_model)
+        .to_string()
 }
 
 fn gpt54_recent_upstream_error(account: &Account, now: u64) -> bool {
@@ -886,6 +983,7 @@ fn resolve_explicit_dex_account_model_selection(
         requires_computer: tool_requirements
             .is_some_and(|requirements| requirements.requires_computer),
         explicit_model: Some(model_ref.model),
+        explicit_account_model: true,
     }))
 }
 
@@ -987,6 +1085,7 @@ fn resolve_explicit_chat_model_native_helper_selection(
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: true,
         explicit_model: Some(helper_model),
+        explicit_account_model: true,
     })
 }
 
@@ -1048,6 +1147,7 @@ fn explicit_chat_model_native_helper_fallback_selection(
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: false,
         explicit_model: Some(selected_model.to_string()),
+        explicit_account_model: true,
     })
 }
 
@@ -1126,7 +1226,8 @@ fn select_dex_router_native_executor_in_pool(
             if !endpoint_is_native_router_executor(&endpoint) {
                 return None;
             }
-            let mapped_model = router_effective_model(requested_model, &endpoint);
+            let mapped_model =
+                router_effective_model_for_account(account, requested_model, &endpoint);
             if !account_runtime_ready(account, &mapped_model, now) {
                 return None;
             }
@@ -1272,10 +1373,15 @@ fn select_dex_router_account_endpoint_excluding(
                 return None;
             }
             let endpoint = router_endpoint_for_account(store, account, requested_model)?;
-            if native_direct_model && !endpoint_is_native_router_executor(&endpoint) {
+            if native_direct_model
+                && !endpoint_is_native_router_executor(&endpoint)
+                && router_effective_model_for_account(account, requested_model, &endpoint)
+                    == requested_model
+            {
                 return None;
             }
-            let mapped_model = router_effective_model(requested_model, &endpoint);
+            let mapped_model =
+                router_effective_model_for_account(account, requested_model, &endpoint);
             if !account_runtime_ready(account, &mapped_model, now) {
                 return None;
             }
@@ -1493,7 +1599,7 @@ fn dex_router_snapshot_value(
             let endpoint = router_endpoint_for_account(store, account, requested_model);
             let mapped_model = endpoint
                 .as_ref()
-                .map(|endpoint| router_effective_model(requested_model, endpoint))
+                .map(|endpoint| router_effective_model_for_account(account, requested_model, endpoint))
                 .unwrap_or_else(|| requested_model.to_string());
             let runtime_block = account_runtime_block(account, &mapped_model, now);
             let capabilities = endpoint
@@ -1598,8 +1704,8 @@ fn dex_router_snapshot_value(
             "endpoint_id": endpoint.id,
             "endpoint_name": endpoint.name,
             "endpoint_kind": endpoint.kind.label(),
-            "mapped_model": router_effective_model(requested_model, endpoint),
-            "effective_model": router_effective_model(requested_model, endpoint),
+            "mapped_model": router_effective_model_for_account(account, requested_model, endpoint),
+            "effective_model": router_effective_model_for_account(account, requested_model, endpoint),
             "priority": candidate.and_then(|candidate| candidate.get("priority")).cloned(),
             "weight": candidate.and_then(|candidate| candidate.get("weight")).cloned(),
             "route_score": candidate.and_then(|candidate| candidate.get("route_score")).cloned(),
@@ -1673,14 +1779,14 @@ fn router_endpoint_for_account(
 }
 
 fn endpoint_supports_router_model(endpoint: &EndpointConfig, _requested_model: &str) -> bool {
-    match endpoint.kind {
-        EndpointKind::OpenAiChat | EndpointKind::CustomChat | EndpointKind::AnthropicMessages => {
-            false
-        }
-        EndpointKind::OpenAiResponses
-        | EndpointKind::CustomResponses
-        | EndpointKind::CodexOfficial => true,
-    }
+    matches!(
+        endpoint.kind,
+        EndpointKind::OpenAiChat
+            | EndpointKind::CustomChat
+            | EndpointKind::OpenAiResponses
+            | EndpointKind::CustomResponses
+            | EndpointKind::CodexOfficial
+    )
 }
 
 fn endpoint_is_native_router_executor(endpoint: &EndpointConfig) -> bool {
@@ -1940,7 +2046,7 @@ fn dex_router_stream_preflight_snapshot(
     tool_requirements: Option<&RouterToolRequirements>,
 ) -> Option<Value> {
     let (account, endpoint) = selected?;
-    let mapped_model = router_effective_model(requested_model, endpoint);
+    let mapped_model = router_effective_model_for_account(account, requested_model, endpoint);
     let health = dex_router_health(account, now);
     let reason = dex_router_stream_preflight_risk(account, &mapped_model, health, now)?;
     let excluded_account_ids = vec![account.id.clone()];
@@ -1959,6 +2065,7 @@ fn dex_router_stream_preflight_snapshot(
         requires_computer: tool_requirements
             .is_some_and(|requirements| requirements.requires_computer),
         explicit_model: None,
+        explicit_account_model: false,
     };
     Some(router_stream_preflight_event_value(
         if alternate.is_some() {
@@ -2114,6 +2221,9 @@ fn router_tool_requirements_for_tools(
         }
     }
 
+    if requirements.has_web_search {
+        requirements.requires_web_search = true;
+    }
     match router_tool_choice_type(tool_choice) {
         Some("function" | "custom" | "namespace" | "local_shell" | "tool_search") => {
             requirements.requires_function_tools = true;
@@ -2132,8 +2242,7 @@ fn router_tool_requirements_for_tools(
             requirements.has_mcp = true;
         }
         Some("computer_use" | "computer_use_preview" | "browser_use" | "browser") => {
-            requirements.requires_computer = true;
-            requirements.has_computer = true;
+            requirements.set_native_signal(NativeRouteSignal::StrongNative, "tool_choice.computer");
         }
         Some("image_generation" | "image_generation_preview" | "image2") => {
             requirements.requires_image_generation = true;
@@ -2163,9 +2272,12 @@ fn router_tool_requirements_from_input(
     match input {
         ResponsesInput::Text(text) => {
             if text.contains("computer_call_output") || text.contains("\"screenshot\"") {
-                signal = Some("input.text_computer_signal");
+                signal = Some((
+                    NativeRouteSignal::StrongNative,
+                    "input.text_computer_signal",
+                ));
             } else if router_text_computer_intent_signal(text) {
-                signal = Some("input.computer_intent");
+                signal = Some((NativeRouteSignal::TextIntent, "input.computer_intent"));
             }
         }
         ResponsesInput::Messages(items) => {
@@ -2173,20 +2285,20 @@ fn router_tool_requirements_from_input(
         }
     }
 
-    if let Some(label) = signal {
-        requirements.has_computer = true;
-        requirements.requires_computer = true;
-        if !requirements.labels.iter().any(|seen| seen == label) {
-            requirements.labels.push(label.to_string());
-        }
+    if let Some((signal, label)) = signal {
+        requirements.set_native_signal(signal, label);
     }
 }
 
-fn router_latest_input_computer_signal(items: &[Value]) -> Option<&'static str> {
+fn router_latest_input_computer_signal(
+    items: &[Value],
+) -> Option<(NativeRouteSignal, &'static str)> {
     for item in items.iter().rev() {
         if let Some(signal) = router_explicit_computer_output_signal(item) {
             return Some(signal);
         }
+    }
+    for item in items.iter().rev() {
         if router_input_item_is_user_turn(item) {
             return router_input_computer_signal_for_message_item(item);
         }
@@ -2203,7 +2315,9 @@ fn router_input_item_is_user_turn(value: &Value) -> bool {
         .is_none_or(|role| role == "user")
 }
 
-fn router_explicit_computer_output_signal(value: &Value) -> Option<&'static str> {
+fn router_explicit_computer_output_signal(
+    value: &Value,
+) -> Option<(NativeRouteSignal, &'static str)> {
     match value {
         Value::Array(items) => items
             .iter()
@@ -2212,10 +2326,13 @@ fn router_explicit_computer_output_signal(value: &Value) -> Option<&'static str>
         Value::Object(map) => {
             let typ = map.get("type").and_then(Value::as_str).unwrap_or("");
             if matches!(typ, "computer_call" | "computer_call_output") {
-                return Some("input.computer_call_output");
+                return Some((
+                    NativeRouteSignal::StrongNative,
+                    "input.computer_call_output",
+                ));
             }
             if map.get("screenshot").is_some() {
-                return Some("input.screenshot");
+                return Some((NativeRouteSignal::StrongNative, "input.screenshot"));
             }
             for key in ["output", "content"] {
                 if let Some(value) = map.get(key) {
@@ -2228,7 +2345,10 @@ fn router_explicit_computer_output_signal(value: &Value) -> Option<&'static str>
         }
         Value::String(text) => {
             if text.contains("computer_call_output") || text.contains("\"screenshot\"") {
-                Some("input.text_computer_signal")
+                Some((
+                    NativeRouteSignal::StrongNative,
+                    "input.text_computer_signal",
+                ))
             } else {
                 None
             }
@@ -2237,7 +2357,9 @@ fn router_explicit_computer_output_signal(value: &Value) -> Option<&'static str>
     }
 }
 
-fn router_input_computer_signal_for_message_item(value: &Value) -> Option<&'static str> {
+fn router_input_computer_signal_for_message_item(
+    value: &Value,
+) -> Option<(NativeRouteSignal, &'static str)> {
     let allow_text_intent = value
         .get("role")
         .and_then(Value::as_str)
@@ -2245,7 +2367,10 @@ fn router_input_computer_signal_for_message_item(value: &Value) -> Option<&'stat
     router_input_computer_signal(value, allow_text_intent)
 }
 
-fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Option<&'static str> {
+fn router_input_computer_signal(
+    value: &Value,
+    allow_text_intent: bool,
+) -> Option<(NativeRouteSignal, &'static str)> {
     match value {
         Value::Array(items) => items
             .iter()
@@ -2253,10 +2378,13 @@ fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Optio
         Value::Object(map) => {
             let typ = map.get("type").and_then(Value::as_str).unwrap_or("");
             if matches!(typ, "computer_call" | "computer_call_output") {
-                return Some("input.computer_call_output");
+                return Some((
+                    NativeRouteSignal::StrongNative,
+                    "input.computer_call_output",
+                ));
             }
             if map.get("screenshot").is_some() {
-                return Some("input.screenshot");
+                return Some((NativeRouteSignal::StrongNative, "input.screenshot"));
             }
             let child_text_intent = map
                 .get("role")
@@ -2276,9 +2404,12 @@ fn router_input_computer_signal(value: &Value, allow_text_intent: bool) -> Optio
             if allow_text_intent
                 && (text.contains("computer_call_output") || text.contains("\"screenshot\""))
             {
-                Some("input.text_computer_signal")
+                Some((
+                    NativeRouteSignal::StrongNative,
+                    "input.text_computer_signal",
+                ))
             } else if allow_text_intent && router_text_computer_intent_signal(text) {
-                Some("input.computer_intent")
+                Some((NativeRouteSignal::TextIntent, "input.computer_intent"))
             } else {
                 None
             }
@@ -2315,9 +2446,73 @@ fn router_text_computer_intent_signal(text: &str) -> bool {
         || text.contains("应用")
         || text.contains("抖音")
         || text.contains("浏览器")
+        || text.contains("视频")
         || text.contains("屏幕")
         || text.contains("窗口");
     app_action && app_target
+}
+
+fn router_input_weak_continuation_signal(input: &ResponsesInput) -> Option<&'static str> {
+    let text = router_latest_user_text(input)?;
+    router_text_weak_continuation_signal(&text).then_some("input.weak_continuation")
+}
+
+fn router_latest_user_text(input: &ResponsesInput) -> Option<String> {
+    match input {
+        ResponsesInput::Text(text) => Some(text.clone()),
+        ResponsesInput::Messages(items) => items.iter().rev().find_map(router_user_text_from_value),
+    }
+}
+
+fn router_user_text_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(router_user_text_from_value)
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        Value::Object(map) => {
+            if map
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role != "user")
+            {
+                return None;
+            }
+            if let Some(text) = map.get("text").and_then(Value::as_str) {
+                return Some(text.to_string());
+            }
+            map.get("content")
+                .or_else(|| map.get("input"))
+                .and_then(router_user_text_from_value)
+        }
+        _ => None,
+    }
+}
+
+fn router_text_weak_continuation_signal(text: &str) -> bool {
+    let text = text.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return false;
+    }
+    let weak = [
+        "继续",
+        "下一步",
+        "接着",
+        "然后呢",
+        "点第一个",
+        "点击第一个",
+        "打开第一个",
+        "播放第一个",
+        "刚才那个",
+        "上一个",
+        "这个页面",
+        "当前页面",
+    ];
+    weak.iter().any(|needle| text.contains(needle))
 }
 
 impl RouterToolRequirements {
@@ -2386,6 +2581,7 @@ fn router_tool_requirements_value(requirements: Option<&RouterToolRequirements>)
         "requires_image_generation": requirements.requires_image_generation,
         "requires_unknown_tools": requirements.requires_unknown_tools,
         "unknown_tools": requirements.has_unknown_tools,
+        "native_signal": requirements.native_signal.as_str(),
     })
 }
 
@@ -2404,28 +2600,41 @@ fn codex_router_session_route_key(headers: &HeaderMap) -> Option<String> {
 fn update_codex_router_session_route(
     state: &AppState,
     route_key: Option<String>,
-    requirements: Option<&mut RouterToolRequirements>,
+    mut requirements: Option<&mut RouterToolRequirements>,
+    input: Option<&ResponsesInput>,
 ) -> Option<DexRouterSessionRouteDecision> {
+    let route_key = route_key?;
+    if let (Some(requirements), Some(input)) = (requirements.as_deref_mut(), input) {
+        if requirements.native_signal == NativeRouteSignal::None
+            && state.codex_router_sessions.contains_key(&route_key)
+        {
+            if let Some(label) = router_input_weak_continuation_signal(input) {
+                requirements.native_signal = NativeRouteSignal::WeakContinuation;
+                requirements.add_label(label);
+            }
+        }
+    }
     update_codex_router_session_route_state(
         &state.codex_router_sessions,
-        route_key,
+        Some(route_key),
         requirements,
         crate::accounts::now_secs(),
     )
 }
 
 fn update_codex_router_session_route_state(
-    sessions: &dashmap::DashMap<String, DexRouterSessionRouteState>,
+    sessions: &crate::codex_router_session::RouteStateMap,
     route_key: Option<String>,
     requirements: Option<&mut RouterToolRequirements>,
     now: u64,
 ) -> Option<DexRouterSessionRouteDecision> {
     let route_key = route_key?;
-    let has_native_signal = requirements
+    let native_signal = requirements
         .as_ref()
-        .is_some_and(|requirements| requirements.requires_computer);
+        .map(|requirements| requirements.native_signal)
+        .unwrap_or(NativeRouteSignal::None);
 
-    if has_native_signal {
+    if native_signal >= NativeRouteSignal::TextIntent {
         let reason = requirements
             .as_ref()
             .and_then(|requirements| {
@@ -2436,9 +2645,9 @@ fn update_codex_router_session_route_state(
                     .cloned()
             })
             .unwrap_or_else(|| "computer_use".into());
-        let route_state = DexRouterSessionRouteState {
-            observe_remaining: 1,
-            expires_at: now.saturating_add(DEX_ROUTER_NATIVE_OBSERVE_TTL_SECS),
+        let route_state = crate::codex_router_session::RouteState {
+            observe_remaining: crate::codex_router_session::NATIVE_OBSERVE_TURNS,
+            expires_at: now.saturating_add(crate::codex_router_session::NATIVE_OBSERVE_TTL_SECS),
         };
         sessions.insert(route_key.clone(), route_state.clone());
         return Some(DexRouterSessionRouteDecision {
@@ -2451,6 +2660,7 @@ fn update_codex_router_session_route_state(
         });
     }
 
+    let weak_continuation = native_signal == NativeRouteSignal::WeakContinuation;
     let Some(entry) = sessions.get(&route_key) else {
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
@@ -2462,7 +2672,7 @@ fn update_codex_router_session_route_state(
         });
     };
 
-    if entry.expires_at <= now || entry.observe_remaining == 0 {
+    if entry.expires_at <= now {
         drop(entry);
         sessions.remove(&route_key);
         return Some(DexRouterSessionRouteDecision {
@@ -2475,17 +2685,65 @@ fn update_codex_router_session_route_state(
         });
     }
 
-    // Computer Use 的会话状态只用于识别下一次明确的原生信号。
-    // 普通文本轮不再被观察窗劫持，避免 Chat 兼容账号被拖进不稳定的 Responses helper。
+    if entry.observe_remaining == 0 {
+        if weak_continuation {
+            let route_state = crate::codex_router_session::RouteState {
+                observe_remaining: crate::codex_router_session::NATIVE_OBSERVE_TURNS,
+                expires_at: now
+                    .saturating_add(crate::codex_router_session::NATIVE_OBSERVE_TTL_SECS),
+            };
+            drop(entry);
+            if let Some(requirements) = requirements {
+                requirements.force_native_observe();
+                requirements.add_label("session.weak_continuation");
+            }
+            sessions.insert(route_key.clone(), route_state.clone());
+            return Some(DexRouterSessionRouteDecision {
+                key: route_key,
+                state: "native_observe",
+                reason: "weak_continuation_keep_native".into(),
+                observe_remaining: route_state.observe_remaining,
+                expires_at: Some(route_state.expires_at),
+                force_native_responses: true,
+            });
+        }
+        drop(entry);
+        sessions.remove(&route_key);
+        return Some(DexRouterSessionRouteDecision {
+            key: route_key,
+            state: "native_released",
+            reason: "plain_turn_release_to_chat".into(),
+            observe_remaining: 0,
+            expires_at: None,
+            force_native_responses: false,
+        });
+    }
+
+    let expires_at = entry.expires_at;
+    let observe_remaining = entry.observe_remaining.saturating_sub(1);
     drop(entry);
-    sessions.remove(&route_key);
+
+    if let Some(requirements) = requirements {
+        requirements.force_native_observe();
+        if weak_continuation {
+            requirements.add_label("session.weak_continuation");
+        }
+    }
+
+    sessions.insert(
+        route_key.clone(),
+        crate::codex_router_session::RouteState {
+            observe_remaining,
+            expires_at,
+        },
+    );
     Some(DexRouterSessionRouteDecision {
         key: route_key,
-        state: "native_released",
-        reason: "plain_turn_release_to_chat".into(),
-        observe_remaining: 0,
-        expires_at: None,
-        force_native_responses: false,
+        state: "native_observe",
+        reason: "plain_turn_keep_native_once".into(),
+        observe_remaining,
+        expires_at: Some(expires_at),
+        force_native_responses: true,
     })
 }
 
@@ -2525,6 +2783,34 @@ fn patch_router_session_route_trace(
         );
     }
     serde_json::to_string(&trace).ok()
+}
+
+fn attach_codex_router_session_key(
+    history_context: &mut HistoryContext,
+    decision: Option<&DexRouterSessionRouteDecision>,
+) {
+    history_context.codex_router_session_key = decision.map(|decision| decision.key.clone());
+}
+
+fn refresh_codex_router_session_from_response(
+    state: &AppState,
+    history_context: &HistoryContext,
+    response: &Value,
+) {
+    let feedback = crate::codex_router_session::maybe_refresh_from_response(
+        Some(&state.codex_router_sessions),
+        history_context.codex_router_session_key.as_deref(),
+        response,
+        crate::accounts::now_secs(),
+    );
+    if let Some(feedback) = feedback {
+        tracing::info!(
+            session_route_key = %feedback.key,
+            reason = feedback.reason,
+            refreshed = feedback.refreshed,
+            "DEX Router 响应反查刷新 Computer Use 原生轨道"
+        );
+    }
 }
 
 fn dex_router_capability_gaps(
@@ -2877,6 +3163,7 @@ fn history_context_for(
         provider: account.provider.clone(),
         provider_profile: profile.slug,
         route_trace: String::new(),
+        codex_router_session_key: None,
     }
 }
 
@@ -2919,6 +3206,7 @@ fn record_from_context(
 struct SseHistoryBodyContext {
     request_history: Arc<crate::request_history::RequestHistoryStore>,
     history_context: HistoryContext,
+    codex_router_sessions: Option<crate::codex_router_session::RouteStateMap>,
     response_id: String,
     model: String,
     start: Instant,
@@ -2939,10 +3227,25 @@ where
         let mut source = Box::pin(upstream_stream);
         let mut usage = SseUsageObservation::default();
         let mut stream_error: Option<String> = None;
+        let mut native_feedback_sent = false;
         while let Some(item) = source.next().await {
             match item {
                 Ok(bytes) => {
                     usage.ingest(&bytes);
+                    if !native_feedback_sent && sse_bytes_have_native_signal(&bytes) {
+                        if let (Some(sessions), Some(route_key)) = (
+                            context.codex_router_sessions.as_ref(),
+                            context.history_context.codex_router_session_key.as_deref(),
+                        ) {
+                            crate::codex_router_session::refresh_native_track(
+                                sessions,
+                                route_key,
+                                crate::accounts::now_secs(),
+                                "response.stream_computer_signal",
+                            );
+                            native_feedback_sent = true;
+                        }
+                    }
                     yield Ok::<Bytes, std::io::Error>(bytes);
                 }
                 Err(err) => {
@@ -3003,6 +3306,25 @@ where
             .await;
     };
     axum::body::Body::from_stream(body_stream)
+}
+
+fn sse_bytes_have_native_signal(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(data) {
+            if crate::codex_router_session::response_has_native_signal(&value) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn client_proxy_enabled(account: &Account) -> bool {
@@ -3070,6 +3392,7 @@ fn history_context_for_client_proxy(
         provider: account.provider.clone(),
         provider_profile: profile.slug,
         route_trace: String::new(),
+        codex_router_session_key: None,
     }
 }
 
@@ -6032,6 +6355,7 @@ async fn handle_responses_for_route_with_router_anchor(
             &state,
             codex_router_session_route_key(&headers),
             router_tool_requirements.as_mut(),
+            Some(&req.input),
         )
     } else {
         None
@@ -6093,7 +6417,16 @@ async fn handle_responses_for_route_with_router_anchor(
         .await;
     }
 
-    handle_responses_for_selection(state, req, body, route_surface, route_selection, _start).await
+    handle_responses_for_selection(
+        state,
+        req,
+        body,
+        route_surface,
+        route_selection,
+        _start,
+        session_route_decision.as_ref(),
+    )
+    .await
 }
 
 async fn handle_responses_for_selection(
@@ -6103,6 +6436,7 @@ async fn handle_responses_for_selection(
     route_surface: AccountRouteSurface,
     route_selection: AccountRouteSelection,
     start: Instant,
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> Response {
     let endpoint = route_selection.endpoint.clone();
     if let Some(model) = route_selection.explicit_model.as_deref() {
@@ -6142,11 +6476,26 @@ async fn handle_responses_for_selection(
 
     // 直连模式：仅做模型映射，其他全部透传
     if endpoint.kind.is_responses_like() {
-        return handle_responses_bypass(state, req, body, route_surface, Some(route_selection))
-            .await;
+        return handle_responses_bypass(
+            state,
+            req,
+            body,
+            route_surface,
+            Some(route_selection),
+            session_route_decision,
+        )
+        .await;
     }
     if endpoint.kind == EndpointKind::CodexOfficial {
-        return handle_codex_official(state, req, body, route_surface, Some(route_selection)).await;
+        return handle_codex_official(
+            state,
+            req,
+            body,
+            route_surface,
+            Some(route_selection),
+            session_route_decision,
+        )
+        .await;
     }
 
     // ── 以下仅翻译/代理模式生效 ──
@@ -6245,6 +6594,7 @@ async fn handle_responses_for_selection(
         local_file_search_input_items,
         route_surface,
         Some(route_selection),
+        session_route_decision,
     )
     .await;
     tracing::info!(
@@ -6281,13 +6631,14 @@ async fn handle_codex_router_non_stream_with_fallback(
             AccountRouteSurface::CodexRouter,
             selection.clone(),
             Instant::now(),
+            session_route_decision.as_ref(),
         )
         .await;
 
         let status = response.status();
         if status.is_success()
             || !dex_router_retryable_status(status)
-            || selection.explicit_model.is_some()
+            || selection.explicit_account_model
             || attempt_index >= DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS
         {
             return response;
@@ -6309,7 +6660,7 @@ async fn handle_codex_router_non_stream_with_fallback(
         ));
 
         if req.model == GPT54_MODEL
-            && selection.explicit_model.is_none()
+            && !selection.explicit_account_model
             && endpoint_is_native_router_executor(&selection.endpoint)
             && account_runtime_ready(
                 &selection.account,
@@ -6373,7 +6724,7 @@ async fn apply_codex_router_stream_preflight(
     tool_requirements: Option<&RouterToolRequirements>,
     session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> AccountRouteSelection {
-    if selection.explicit_model.is_some() {
+    if selection.explicit_account_model {
         return selection;
     }
     let mapped_model = router_effective_model(requested_model, &selection.endpoint);
@@ -6434,6 +6785,8 @@ async fn apply_codex_router_stream_preflight(
             health,
             Some((&account, &endpoint)),
         );
+        let effective_model =
+            router_effective_model_for_account(&account, requested_model, &endpoint);
         return AccountRouteSelection {
             account,
             endpoint,
@@ -6442,7 +6795,8 @@ async fn apply_codex_router_stream_preflight(
                 event,
             ),
             requires_computer: selection.requires_computer,
-            explicit_model: None,
+            explicit_model: (effective_model != requested_model).then_some(effective_model),
+            explicit_account_model: false,
         };
     }
 
@@ -6479,8 +6833,8 @@ fn router_stream_preflight_event_value(
             "account_name": account.name.clone(),
             "endpoint_id": endpoint.id.clone(),
             "endpoint_kind": endpoint.kind.label(),
-            "mapped_model": router_effective_model(requested_model, endpoint),
-            "effective_model": router_effective_model(requested_model, endpoint),
+            "mapped_model": router_effective_model_for_account(account, requested_model, endpoint),
+            "effective_model": router_effective_model_for_account(account, requested_model, endpoint),
         })
     });
     json!({
@@ -6491,8 +6845,8 @@ fn router_stream_preflight_event_value(
             "account_name": from.account.name.clone(),
             "endpoint_id": from.endpoint.id.clone(),
             "endpoint_kind": from.endpoint.kind.label(),
-            "mapped_model": router_effective_model(requested_model, &from.endpoint),
-            "effective_model": router_effective_model(requested_model, &from.endpoint),
+            "mapped_model": router_effective_model_for_account(&from.account, requested_model, &from.endpoint),
+            "effective_model": router_effective_model_for_account(&from.account, requested_model, &from.endpoint),
             "health_score": health.score,
             "recent_success": health.recent_success,
             "recent_failed": health.recent_failed,
@@ -6534,16 +6888,21 @@ async fn resolve_dex_router_retry_selection(
         excluded_account_ids,
         "attempt_failed",
     );
-    selection.map(|(account, endpoint)| AccountRouteSelection {
-        account,
-        endpoint,
-        route_trace: patch_router_session_route_trace(
-            patch_router_fallback_trace(Some(route_trace), fallback_attempts),
-            session_route_decision,
-        ),
-        requires_computer: tool_requirements
-            .is_some_and(|requirements| requirements.requires_computer),
-        explicit_model: None,
+    selection.map(|(account, endpoint)| {
+        let effective_model =
+            router_effective_model_for_account(&account, requested_model, &endpoint);
+        AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: patch_router_session_route_trace(
+                patch_router_fallback_trace(Some(route_trace), fallback_attempts),
+                session_route_decision,
+            ),
+            requires_computer: tool_requirements
+                .is_some_and(|requirements| requirements.requires_computer),
+            explicit_model: (effective_model != requested_model).then_some(effective_model),
+            explicit_account_model: false,
+        }
     })
 }
 
@@ -7347,6 +7706,7 @@ async fn handle_responses_bypass(
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
     selected_endpoint: Option<AccountRouteSelection>,
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -7377,6 +7737,7 @@ async fn handle_responses_bypass(
     };
     let mut history_context =
         history_context_for(&account, &endpoint, route_surface.responses_path());
+    attach_codex_router_session_key(&mut history_context, session_route_decision);
     if let Some(trace) = route_trace.clone() {
         history_context.route_trace = trace;
     }
@@ -7636,6 +7997,7 @@ async fn handle_codex_official(
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
     selected_endpoint: Option<AccountRouteSelection>,
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> Response {
     let original_model = req.model.clone();
     let route_trace = selected_endpoint
@@ -7657,6 +8019,7 @@ async fn handle_codex_official(
     };
     let mut history_context =
         history_context_for(&account, &endpoint, route_surface.responses_path());
+    attach_codex_router_session_key(&mut history_context, session_route_decision);
     if let Some(trace) = route_trace {
         history_context.route_trace = trace;
     }
@@ -7823,6 +8186,7 @@ async fn handle_codex_official(
             SseHistoryBodyContext {
                 request_history: state.request_history.clone(),
                 history_context,
+                codex_router_sessions: Some(state.codex_router_sessions.clone()),
                 response_id,
                 model: mapped_model,
                 start,
@@ -7874,6 +8238,11 @@ async fn handle_codex_official(
     } else {
         (0, 0, false)
     };
+    if status.is_success() {
+        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            refresh_codex_router_session_from_response(&state, &history_context, &value);
+        }
+    }
     state
         .request_history
         .record(record_from_context(
@@ -8283,6 +8652,7 @@ async fn bypass_stream_forward(
         SseHistoryBodyContext {
             request_history: state.request_history.clone(),
             history_context,
+            codex_router_sessions: Some(state.codex_router_sessions.clone()),
             response_id,
             model,
             start,
@@ -8559,6 +8929,11 @@ async fn bypass_send_request(
                     ))
                     .await;
                 if status.is_success() {
+                    refresh_codex_router_session_from_response(
+                        &state,
+                        &history_context,
+                        &response_body,
+                    );
                     runtime_feedback.success(&model).await;
                 } else {
                     runtime_feedback
@@ -8585,6 +8960,7 @@ async fn bypass_send_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_responses_inner(
     state: AppState,
     req: ResponsesRequest,
@@ -8593,6 +8969,7 @@ async fn handle_responses_inner(
     local_input_suffix_items: Vec<Value>,
     route_surface: AccountRouteSurface,
     selected_endpoint: Option<AccountRouteSelection>,
+    session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> Response {
     if req.previous_response_id.is_some() && req.conversation.is_some() {
         return (
@@ -8629,6 +9006,7 @@ async fn handle_responses_inner(
     };
     let mut history_context =
         history_context_for(&account, &endpoint, route_surface.responses_path());
+    attach_codex_router_session_key(&mut history_context, session_route_decision);
     if let Some(trace) = route_trace {
         history_context.route_trace = trace;
     }
@@ -8642,6 +9020,8 @@ async fn handle_responses_inner(
     let mapped_model = explicit_model.unwrap_or_else(|| {
         if route_surface.uses_codex_direct_models() {
             original_model.clone()
+        } else if endpoint.kind.is_chat_like() {
+            router_effective_model_for_account(&account, &original_model, &endpoint)
         } else {
             resolve_model(&original_model, &model_map)
         }
@@ -8743,6 +9123,7 @@ async fn handle_responses_inner(
         state.chinese_thinking,
     );
     let mut chat_req = translated.chat;
+    chat_req.model = mapped_model.clone();
     if let Some(ref forced) = endpoint.reasoning_effort_override {
         chat_req.reasoning_effort = Some(forced.clone());
         chat_req.thinking = Some(serde_json::json!({"type": "enabled"}));
@@ -9159,6 +9540,7 @@ async fn handle_responses_inner(
             max_retries: endpoint.max_retries,
             request_history: state.request_history.clone(),
             history_context: history_context.clone(),
+            codex_router_sessions: Some(state.codex_router_sessions.clone()),
             upstream_url: url,
             allow_missing_done: providers::profile_for_account(&account)
                 .capabilities
@@ -9762,6 +10144,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     append_local_computer_outputs(&state, &mut value).await;
                     value["status"] = json!("completed");
                     let value = response_with_extra(value, &response_extra);
+                    refresh_codex_router_session_from_response(&state, &history_context, &value);
                     if store_response {
                         save_response_unless_cancelled(
                             &state.sessions,
@@ -11215,8 +11598,23 @@ mod tests {
         let (account, endpoint) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
 
-        assert_eq!(account.id, "responses");
-        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(account.id, "unmapped");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
+    }
+
+    #[test]
+    fn dex_router_pool_chat_selection_sets_internal_upstream_model() {
+        let chat = router_chat_account("chat", "pool-a", 100, 1, Some("deepseek-v4-pro"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![chat, responses], "chat");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+        let effective_model = router_effective_model_for_account(&account, "gpt-5", &endpoint);
+
+        assert_eq!(account.id, "chat");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(effective_model, "deepseek-v4-pro");
     }
 
     #[test]
@@ -11241,7 +11639,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate["account_id"] == "deepseek")
             .unwrap();
-        assert_eq!(chat["reason"], "no_supported_endpoint");
+        assert_eq!(chat["reason"], "native_direct_requires_gpt_account");
     }
 
     #[test]
@@ -11268,6 +11666,7 @@ mod tests {
             route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
             requires_computer: true,
             explicit_model: None,
+            explicit_account_model: false,
         };
         let selection = apply_gpt54_fallback_to_selection(
             selection,
@@ -11516,15 +11915,16 @@ mod tests {
         let candidates = snapshot["candidates"].as_array().unwrap();
 
         assert_eq!(snapshot["anchor"]["pool"], "pool-a");
-        assert_eq!(snapshot["selected"]["account_id"], "responses");
-        assert!(candidates
-            .iter()
-            .any(|candidate| candidate["account_id"] == "active"
-                && candidate["reason"] == "no_supported_endpoint"));
-        assert!(candidates
-            .iter()
-            .any(|candidate| candidate["account_id"] == "unmapped"
-                && candidate["reason"] == "no_supported_endpoint"));
+        assert_eq!(snapshot["selected"]["account_id"], "unmapped");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate["account_id"] == "active"
+                    && candidate["reason"] == "ready")
+        );
+        assert!(candidates.iter().any(
+            |candidate| candidate["account_id"] == "unmapped" && candidate["reason"] == "ready"
+        ));
         assert!(candidates
             .iter()
             .any(|candidate| candidate["account_id"] == "other"
@@ -11687,11 +12087,12 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_releases_plain_turn_after_computer_use() {
-        let sessions = dashmap::DashMap::new();
+    fn dex_router_keeps_one_plain_turn_after_computer_use() {
+        let sessions = Arc::new(dashmap::DashMap::new());
         let mut native_requirements = RouterToolRequirements {
             has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::TextIntent,
             labels: vec!["input.computer_intent".into()],
             ..Default::default()
         };
@@ -11712,7 +12113,7 @@ mod tests {
             requires_computer: false,
             ..Default::default()
         };
-        let released = update_codex_router_session_route_state(
+        let observed = update_codex_router_session_route_state(
             &sessions,
             Some("thread-id:test-thread".into()),
             Some(&mut plain_requirements),
@@ -11720,11 +12121,34 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(observed.state, "native_observe");
+        assert_eq!(observed.reason, "plain_turn_keep_native_once");
+        assert!(observed.force_native_responses);
+        assert!(plain_requirements.requires_computer);
+        assert!(plain_requirements
+            .labels
+            .iter()
+            .any(|label| label == "session.native_observe"));
+        assert!(sessions.contains_key("thread-id:test-thread"));
+
+        let mut next_plain_requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: false,
+            ..Default::default()
+        };
+        let released = update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut next_plain_requirements),
+            1_060,
+        )
+        .unwrap();
+
         assert_eq!(released.state, "native_released");
         assert_eq!(released.reason, "plain_turn_release_to_chat");
         assert!(!released.force_native_responses);
-        assert!(!plain_requirements.requires_computer);
-        assert!(!plain_requirements
+        assert!(!next_plain_requirements.requires_computer);
+        assert!(!next_plain_requirements
             .labels
             .iter()
             .any(|label| label == "session.native_observe"));
@@ -11733,10 +12157,11 @@ mod tests {
 
     #[test]
     fn dex_router_refreshes_native_track_on_computer_output() {
-        let sessions = dashmap::DashMap::new();
+        let sessions = Arc::new(dashmap::DashMap::new());
         let mut native_requirements = RouterToolRequirements {
             has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::TextIntent,
             labels: vec!["input.computer_intent".into()],
             ..Default::default()
         };
@@ -11751,6 +12176,7 @@ mod tests {
         let mut output_requirements = RouterToolRequirements {
             has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
             labels: vec!["input.computer_call_output".into()],
             ..Default::default()
         };
@@ -11766,6 +12192,83 @@ mod tests {
         assert_eq!(refreshed.reason, "input.computer_call_output");
         assert!(refreshed.force_native_responses);
         assert!(sessions.contains_key("thread-id:test-thread"));
+    }
+
+    #[test]
+    fn dex_router_weak_continuation_keeps_existing_native_track() {
+        let sessions = Arc::new(dashmap::DashMap::new());
+        sessions.insert(
+            "thread-id:test-thread".into(),
+            crate::codex_router_session::RouteState {
+                observe_remaining: 0,
+                expires_at: 1_600,
+            },
+        );
+        let mut requirements = RouterToolRequirements::default();
+        requirements.native_signal = NativeRouteSignal::WeakContinuation;
+        requirements.add_label("input.weak_continuation");
+
+        let decision = update_codex_router_session_route_state(
+            &sessions,
+            Some("thread-id:test-thread".into()),
+            Some(&mut requirements),
+            1_030,
+        )
+        .unwrap();
+
+        assert_eq!(decision.state, "native_observe");
+        assert_eq!(decision.reason, "weak_continuation_keep_native");
+        assert!(decision.force_native_responses);
+        assert!(requirements.requires_computer);
+        assert!(requirements
+            .labels
+            .iter()
+            .any(|label| label == "session.weak_continuation"));
+        assert!(sessions.contains_key("thread-id:test-thread"));
+    }
+
+    #[test]
+    fn dex_router_response_feedback_refreshes_native_track() {
+        let sessions = Arc::new(dashmap::DashMap::new());
+        let response = json!({
+            "id": "resp_test",
+            "output": [{"type": "computer_call", "call_id": "call_1"}]
+        });
+
+        let feedback = crate::codex_router_session::maybe_refresh_from_response(
+            Some(&sessions),
+            Some("thread-id:test-thread"),
+            &response,
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(feedback.reason, "response.computer_signal");
+        let state = sessions.get("thread-id:test-thread").unwrap();
+        assert_eq!(
+            state.observe_remaining,
+            crate::codex_router_session::NATIVE_OBSERVE_TURNS
+        );
+        assert!(state.expires_at > 1_000);
+    }
+
+    #[test]
+    fn dex_router_response_feedback_ignores_plain_function_calls() {
+        let sessions = Arc::new(dashmap::DashMap::new());
+        let response = json!({
+            "id": "resp_test",
+            "output": [{"type": "function_call", "name": "read_file"}]
+        });
+
+        let feedback = crate::codex_router_session::maybe_refresh_from_response(
+            Some(&sessions),
+            Some("thread-id:test-thread"),
+            &response,
+            1_000,
+        );
+
+        assert!(feedback.is_none());
+        assert!(!sessions.contains_key("thread-id:test-thread"));
     }
 
     #[test]
@@ -11797,7 +12300,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate["account_id"] == "active")
             .unwrap();
-        assert_eq!(chat["reason"], "no_supported_endpoint");
+        assert_eq!(chat["reason"], "capability_mismatch");
     }
 
     #[test]
@@ -11839,7 +12342,7 @@ mod tests {
     fn router_status_tools_from_query_maps_known_slugs() {
         let tools =
             router_status_tools_from_query(Some("web,image,computer,mcp,file,function,unknown"));
-        let requirements = router_tool_requirements_for_tools(&tools, None);
+        let requirements = router_tool_requirements_for_diagnostic_tools(&tools);
 
         assert_eq!(tools.len(), 6);
         assert!(requirements.has_web_search);
@@ -11848,12 +12351,12 @@ mod tests {
         assert!(requirements.has_mcp);
         assert!(requirements.has_file_search);
         assert!(requirements.has_function_tools);
-        assert!(!requirements.requires_function_tools);
-        assert!(!requirements.requires_web_search);
-        assert!(!requirements.requires_file_search);
-        assert!(!requirements.requires_mcp);
-        assert!(!requirements.requires_image_generation);
-        assert!(!requirements.requires_computer);
+        assert!(requirements.requires_function_tools);
+        assert!(requirements.requires_web_search);
+        assert!(requirements.requires_file_search);
+        assert!(requirements.requires_mcp);
+        assert!(requirements.requires_image_generation);
+        assert!(requirements.requires_computer);
     }
 
     #[test]
@@ -11878,7 +12381,7 @@ mod tests {
         assert!(requirements.has_computer);
         assert!(requirements.has_image_generation);
         assert!(!requirements.requires_function_tools);
-        assert!(!requirements.requires_web_search);
+        assert!(requirements.requires_web_search);
         assert!(!requirements.requires_file_search);
         assert!(!requirements.requires_mcp);
         assert!(!requirements.requires_computer);
@@ -12089,7 +12592,7 @@ mod tests {
             true
         );
         assert_eq!(snapshot["tool_requirements"]["requires_computer"], true);
-        assert_eq!(chat["reason"], "no_supported_endpoint");
+        assert_eq!(chat["reason"], "capability_mismatch");
     }
 
     #[test]
@@ -12144,7 +12647,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate["account_id"] == "active")
             .unwrap();
-        assert_eq!(chat["reason"], "no_supported_endpoint");
+        assert_eq!(chat["reason"], "capability_mismatch");
     }
 
     #[test]

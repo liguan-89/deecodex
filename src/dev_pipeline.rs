@@ -175,7 +175,7 @@ async fn run_stage(
         ctx.active_endpoint_id.as_deref(),
     )
     .ok_or_else(|| anyhow!("账号 '{}' 未配置可用端点", account.name))?;
-    let model = resolve_model(&ctx.requested_model, &endpoint.model_map);
+    let model = stage_model(&ctx.requested_model, &account, &endpoint);
     let started = Instant::now();
     let output = match endpoint.kind {
         EndpointKind::OpenAiChat | EndpointKind::CustomChat => {
@@ -210,6 +210,31 @@ async fn run_stage(
         elapsed_ms,
         output,
     })
+}
+
+fn stage_model(requested_model: &str, account: &Account, endpoint: &EndpointConfig) -> String {
+    let endpoint_model = resolve_model(requested_model, &endpoint.model_map);
+    if endpoint_model != requested_model {
+        return endpoint_model;
+    }
+    let account_model = resolve_model(requested_model, &account.model_map);
+    if account_model != requested_model {
+        return account_model;
+    }
+    if endpoint
+        .known_models
+        .iter()
+        .any(|model| model.trim() == requested_model)
+    {
+        return requested_model.to_string();
+    }
+    endpoint
+        .known_models
+        .iter()
+        .map(|model| model.trim())
+        .find(|model| !model.is_empty())
+        .unwrap_or(requested_model)
+        .to_string()
 }
 
 async fn call_chat_stage(

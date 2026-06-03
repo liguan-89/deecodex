@@ -868,6 +868,81 @@ async fn codex_router_keeps_computer_session_on_native_responses_track() {
 }
 
 #[tokio::test]
+async fn codex_router_response_computer_call_refreshes_native_track_for_weak_continue() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_router","object":"response","status":"completed","model":"gpt-5","output":[{"type":"computer_call","call_id":"call_1","action":{"type":"screenshot"}}],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    for body in [
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false}"#,
+        r#"{"model":"gpt-5","input":"继续","store":false}"#,
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("thread-id", "thread-response-feedback")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    assert_eq!(responses_captured.lock().unwrap().len(), 2);
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let mut traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
+    assert_eq!(traces.len(), 2);
+    assert_eq!(traces[0]["session_route_state"], "native_active");
+    assert_eq!(traces[1]["session_route_state"], "native_observe");
+    assert!(traces[1]["tool_requirements"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|label| label == "session.weak_continuation"));
+}
+
+#[tokio::test]
 async fn codex_router_without_session_key_keeps_single_turn_routing() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"id":"chatcmpl_router","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
@@ -1058,8 +1133,8 @@ async fn codex_router_observe_window_returns_to_free_routing() {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    assert_eq!(responses_captured.lock().unwrap().len(), 4);
-    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+    assert_eq!(responses_captured.lock().unwrap().len(), 2);
+    assert_eq!(chat_captured.lock().unwrap().len(), 3);
 
     let entries = request_history
         .list(10, &deecodex::request_history::HistoryFilter::default())
@@ -1072,11 +1147,11 @@ async fn codex_router_observe_window_returns_to_free_routing() {
     traces.sort_by_key(|trace| trace["cursor"].as_u64().unwrap_or_default());
     assert_eq!(traces.len(), 5);
     assert_eq!(traces[0]["session_route_state"], "native_active");
-    assert_eq!(traces[1]["session_route_observe_remaining"], 2);
-    assert_eq!(traces[2]["session_route_observe_remaining"], 1);
-    assert_eq!(traces[3]["session_route_observe_remaining"], 0);
+    assert_eq!(traces[1]["session_route_state"], "native_observe");
+    assert_eq!(traces[1]["session_route_observe_remaining"], 0);
+    assert_eq!(traces[2]["session_route_state"], "native_released");
+    assert_eq!(traces[3]["session_route_state"], "free");
     assert_eq!(traces[4]["session_route_state"], "free");
-    assert_eq!(traces[4]["selected"]["account_id"], "router-chat");
 }
 
 #[tokio::test]
@@ -3485,6 +3560,7 @@ fn make_stream_args(
                 .unwrap(),
         ),
         history_context: deecodex::request_history::HistoryContext::default(),
+        codex_router_sessions: None,
         upstream_url: url.to_string(),
         allow_missing_done: false,
         runtime_feedback: test_runtime_feedback_sink(),
@@ -3540,6 +3616,7 @@ fn make_stream_args_custom(
                 .unwrap(),
         ),
         history_context: deecodex::request_history::HistoryContext::default(),
+        codex_router_sessions: None,
         upstream_url: url.to_string(),
         allow_missing_done: false,
         runtime_feedback: test_runtime_feedback_sink(),

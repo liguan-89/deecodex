@@ -73,6 +73,7 @@ pub struct StreamArgs {
     pub max_retries: Option<u32>,
     pub request_history: Arc<RequestHistoryStore>,
     pub history_context: HistoryContext,
+    pub codex_router_sessions: Option<crate::codex_router_session::RouteStateMap>,
     pub upstream_url: String,
     pub allow_missing_done: bool,
     pub runtime_feedback: RuntimeFeedbackSink,
@@ -520,6 +521,7 @@ pub fn translate_stream(
         max_retries: account_max_retries,
         request_history,
         history_context,
+        codex_router_sessions,
         upstream_url,
         allow_missing_done,
         runtime_feedback,
@@ -722,6 +724,7 @@ pub fn translate_stream(
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
         let mut final_usage: Option<ChatUsage> = None;
+        let mut response_native_feedback_sent = false;
         let mut source = upstream.bytes_stream().eventsource();
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
@@ -812,6 +815,25 @@ pub fn translate_stream(
                                             }
                                             if let Some(a) = &func.arguments {
                                                 entry.arguments.push_str(a);
+                                            }
+                                        }
+                                        if !response_native_feedback_sent
+                                            && entry.name == "local_computer"
+                                        {
+                                            if let (Some(sessions), Some(route_key)) = (
+                                                codex_router_sessions.as_ref(),
+                                                history_context.codex_router_session_key.as_deref(),
+                                            ) {
+                                                crate::codex_router_session::refresh_native_track(
+                                                    sessions,
+                                                    route_key,
+                                                    std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .unwrap_or_default()
+                                                        .as_secs(),
+                                                    "response.local_computer_tool_call",
+                                                );
+                                                response_native_feedback_sent = true;
                                             }
                                         }
                                     }

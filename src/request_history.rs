@@ -76,6 +76,7 @@ pub struct HistoryContext {
     pub provider: String,
     pub provider_profile: String,
     pub route_trace: String,
+    pub codex_router_session_key: Option<String>,
 }
 
 impl Default for HistoryContext {
@@ -89,6 +90,7 @@ impl Default for HistoryContext {
             provider: String::new(),
             provider_profile: String::new(),
             route_trace: String::new(),
+            codex_router_session_key: None,
         }
     }
 }
