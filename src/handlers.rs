@@ -54,10 +54,11 @@ const LOCAL_OUTPUT_PREFIX_ITEMS_KEY: &str = "x_deecodex_local_output_prefix_item
 pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
-const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.4-mini";
-const NATIVE_HELPER_FALLBACK_MODEL: &str = "gpt-5.5";
+const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.5";
+const NATIVE_HELPER_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 const GPT54_MODEL: &str = "gpt-5.4";
 const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
+const GPT54_COMPUTER_FALLBACK_MODEL: &str = "gpt-5.5";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
@@ -6802,27 +6803,30 @@ fn apply_codex_router_preflight_model_fallback(
     }
     let now = crate::accounts::now_secs();
     if requested_model == GPT54_MODEL && endpoint_is_native_router_executor(&selection.endpoint) {
-        let fallback_reason = if selection.requires_computer {
-            Some("computer_use_gpt54_native_helper")
+        let fallback = if selection.requires_computer {
+            Some((
+                GPT54_COMPUTER_FALLBACK_MODEL,
+                "computer_use_gpt54_native_helper",
+            ))
         } else if gpt54_recent_upstream_error(&selection.account, now) {
-            Some("recent_gpt54_upstream_error")
+            Some((GPT54_FALLBACK_MODEL, "recent_gpt54_upstream_error"))
         } else {
             None
         };
-        if let Some(reason) = fallback_reason {
-            if account_runtime_ready(&selection.account, GPT54_FALLBACK_MODEL, now) {
+        if let Some((fallback_model, reason)) = fallback {
+            if account_runtime_ready(&selection.account, fallback_model, now) {
                 tracing::warn!(
                     account_id = %selection.account.id,
                     account_name = %selection.account.name,
                     from_model = GPT54_MODEL,
-                    to_model = GPT54_FALLBACK_MODEL,
+                    to_model = fallback_model,
                     reason = reason,
-                    "DEX Router 发送前将 gpt-5.4 降级到 gpt-5.4-mini"
+                    "DEX Router 发送前切换 gpt-5.4 原生执行模型"
                 );
                 return apply_gpt54_fallback_to_selection(
                     selection,
                     requested_model,
-                    GPT54_FALLBACK_MODEL,
+                    fallback_model,
                     reason,
                 );
             }
@@ -11822,7 +11826,7 @@ mod tests {
     }
 
     #[test]
-    fn gpt54_computer_use_preflight_falls_back_to_mini() {
+    fn gpt54_computer_use_preflight_falls_back_to_gpt55() {
         let account = router_responses_account("responses", "pool-a", 10, 1);
         let endpoint = account.endpoints[0].clone();
         let selection = AccountRouteSelection {
@@ -11839,7 +11843,11 @@ mod tests {
 
         assert_eq!(
             selection.explicit_model.as_deref(),
-            Some(GPT54_FALLBACK_MODEL)
+            Some(GPT54_COMPUTER_FALLBACK_MODEL)
+        );
+        assert_eq!(
+            trace["model_fallback"]["to_model"],
+            GPT54_COMPUTER_FALLBACK_MODEL
         );
         assert_eq!(
             trace["model_fallback"]["reason"],
@@ -11911,11 +11919,11 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
         assert_eq!(trace["main_selected_model"], "deepseek-v4-pro");
-        assert_eq!(trace["upstream_model"], "gpt-5.4-mini");
+        assert_eq!(trace["upstream_model"], "gpt-5.5");
     }
 
     #[test]
@@ -12003,7 +12011,7 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
@@ -12044,16 +12052,16 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "weak_computer_intent");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
         assert_eq!(
             trace["native_helper_skipped"][0]["reason"],
             "recent_transient_upstream_error"
         );
-        assert_eq!(trace["upstream_model"], "gpt-5.5");
+        assert_eq!(trace["upstream_model"], "gpt-5.4-mini");
     }
 
     #[test]
@@ -12139,11 +12147,11 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
         assert_eq!(
             trace["native_helper_skipped"][0]["reason"],
             "recent_transient_upstream_error"
@@ -12185,11 +12193,11 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
         assert_eq!(trace["native_helper_last_resort"], false);
     }
 

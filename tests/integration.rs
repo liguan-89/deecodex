@@ -695,7 +695,7 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
 }
 
 #[tokio::test]
-async fn codex_router_falls_back_gpt54_to_mini_for_computer_intent() {
+async fn codex_router_falls_back_gpt54_to_gpt55_for_computer_intent() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
     )
@@ -757,7 +757,7 @@ async fn codex_router_falls_back_gpt54_to_mini_for_computer_intent() {
         let captured = responses_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/responses");
-        assert_eq!(captured[0].body["model"], "gpt-5.4-mini");
+        assert_eq!(captured[0].body["model"], "gpt-5.5");
         let tools = captured[0].body["tools"].as_array().unwrap();
         assert!(!tools
             .iter()
@@ -772,11 +772,11 @@ async fn codex_router_falls_back_gpt54_to_mini_for_computer_intent() {
         .find(|entry| entry.request_path == "/codex-router/v1/responses")
         .unwrap();
     assert_eq!(entry.account_id, "router-responses");
-    assert_eq!(entry.model, "gpt-5.4-mini");
+    assert_eq!(entry.model, "gpt-5.5");
     let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
     assert_eq!(trace["selected"]["account_id"], "router-responses");
     assert_eq!(trace["model_fallback"]["from_model"], "gpt-5.4");
-    assert_eq!(trace["model_fallback"]["to_model"], "gpt-5.4-mini");
+    assert_eq!(trace["model_fallback"]["to_model"], "gpt-5.5");
     assert_eq!(
         trace["model_fallback"]["reason"],
         "computer_use_gpt54_native_helper"
