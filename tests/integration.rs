@@ -656,8 +656,8 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/responses");
         let tools = captured[0].body["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
-        assert!(tools
+        assert_eq!(tools.len(), 3);
+        assert!(!tools
             .iter()
             .any(|tool| tool["type"] == "computer_use_preview"));
     }
@@ -679,10 +679,7 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
         .unwrap()
         .iter()
         .any(|label| label == "input.computer_intent"));
-    assert_eq!(
-        trace["computer_tool_injection"]["action"],
-        "inject_computer_use_preview"
-    );
+    assert!(trace.get("computer_tool_injection").is_none());
     let chat_candidate = trace["candidates"]
         .as_array()
         .unwrap()
@@ -769,7 +766,8 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/responses");
         let tools = captured[0].body["tools"].as_array().unwrap();
-        assert!(tools
+        assert_eq!(tools.len(), 3);
+        assert!(!tools
             .iter()
             .any(|tool| tool["type"] == "computer_use_preview"));
     }
@@ -791,10 +789,7 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
         .unwrap()
         .iter()
         .any(|label| label == "input.computer_intent"));
-    assert_eq!(
-        trace["computer_tool_injection"]["action"],
-        "inject_computer_use_preview"
-    );
+    assert!(trace.get("computer_tool_injection").is_none());
 }
 
 #[tokio::test]

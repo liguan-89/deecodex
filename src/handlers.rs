@@ -2102,89 +2102,6 @@ fn router_tool_requirements_from_input(
     }
 }
 
-fn router_requirements_have_input_computer_signal(requirements: &RouterToolRequirements) -> bool {
-    requirements
-        .labels
-        .iter()
-        .any(|label| label.starts_with("input.") && label.contains("computer"))
-}
-
-fn response_tools_have_computer_tool(tools: &[Value]) -> bool {
-    tools.iter().any(|tool| {
-        tool.get("type")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .is_some_and(|typ| {
-                matches!(
-                    typ,
-                    "computer_use" | "computer_use_preview" | "browser_use" | "browser"
-                )
-            })
-    })
-}
-
-fn default_computer_use_tool() -> Value {
-    json!({
-        "type": "computer_use_preview",
-        "display_width": 1024,
-        "display_height": 768,
-    })
-}
-
-fn patch_body_tools_field(
-    body: &axum::body::Bytes,
-    tools: &[Value],
-) -> Result<axum::body::Bytes, serde_json::Error> {
-    let mut value: Value = serde_json::from_slice(body)?;
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("tools".into(), Value::Array(tools.to_vec()));
-    }
-    serde_json::to_vec(&value).map(axum::body::Bytes::from)
-}
-
-fn inject_computer_use_tool_for_router(
-    req: &mut ResponsesRequest,
-    body: &mut axum::body::Bytes,
-    route_selection: &mut AccountRouteSelection,
-    requirements: Option<&RouterToolRequirements>,
-) {
-    let Some(requirements) = requirements else {
-        return;
-    };
-    if !route_selection.requires_computer
-        || !endpoint_is_native_router_executor(&route_selection.endpoint)
-        || !router_requirements_have_input_computer_signal(requirements)
-    {
-        return;
-    }
-    if response_tools_have_computer_tool(&req.tools) {
-        return;
-    }
-
-    req.tools.push(default_computer_use_tool());
-    match patch_body_tools_field(body, &req.tools) {
-        Ok(updated) => {
-            *body = updated;
-            route_selection.route_trace = patch_route_trace_field(
-                route_selection.route_trace.take(),
-                "computer_tool_injection",
-                json!({
-                    "action": "inject_computer_use_preview",
-                    "reason": "input_computer_signal_without_tool",
-                    "tool_count": req.tools.len(),
-                }),
-            );
-            tracing::info!(
-                model = %req.model,
-                "DEX Router 为 Computer Use 文字意图注入 computer_use_preview 工具"
-            );
-        }
-        Err(err) => {
-            warn!("DEX Router 注入 computer_use_preview 工具失败，继续使用原请求体: {err}");
-        }
-    }
-}
-
 fn router_latest_input_computer_signal(
     items: &[Value],
 ) -> Option<(NativeRouteSignal, &'static str)> {
@@ -6416,21 +6333,18 @@ async fn handle_responses_for_route_with_router_anchor(
         route_selection,
         _start,
         session_route_decision.as_ref(),
-        router_tool_requirements.as_ref(),
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_responses_for_selection(
     state: AppState,
     mut req: ResponsesRequest,
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
-    mut route_selection: AccountRouteSelection,
+    route_selection: AccountRouteSelection,
     start: Instant,
     session_route_decision: Option<&DexRouterSessionRouteDecision>,
-    router_tool_requirements: Option<&RouterToolRequirements>,
 ) -> Response {
     let endpoint = route_selection.endpoint.clone();
     if let Some(model) = route_selection.explicit_model.as_deref() {
@@ -6442,14 +6356,7 @@ async fn handle_responses_for_selection(
             }
         }
     }
-    if route_surface == AccountRouteSurface::CodexRouter {
-        inject_computer_use_tool_for_router(
-            &mut req,
-            &mut body,
-            &mut route_selection,
-            router_tool_requirements,
-        );
-    }
+    // Computer Use 文本信号只参与选路；请求体里的工具必须保持 Codex Desktop 原样。
     let model = req.model.clone();
     if endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial {
         if let Err(response) = apply_endpoint_image_generation_declaration(
@@ -6634,7 +6541,6 @@ async fn handle_codex_router_non_stream_with_fallback(
             selection.clone(),
             Instant::now(),
             session_route_decision.as_ref(),
-            tool_requirements.as_ref(),
         )
         .await;
 
@@ -12456,6 +12362,26 @@ mod tests {
             .labels
             .iter()
             .any(|label| label == "input.computer_intent"));
+    }
+
+    #[test]
+    fn dex_router_computer_intent_does_not_synthesize_native_tool() {
+        let mut req = responses_request_with_tools(vec![
+            json!({"type": "function", "name": "mcp__computer_use"}),
+            json!({"type": "image_generation"}),
+        ]);
+        let original_tools = req.tools.clone();
+        req.input = ResponsesInput::Text("使用 Computer Use 打开抖音 app，播放第一个视频".into());
+
+        let requirements = router_tool_requirements(&req);
+
+        assert!(requirements.requires_computer);
+        assert_eq!(req.tools, original_tools);
+        assert!(!req.tools.iter().any(|tool| {
+            tool.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|typ| typ == "computer_use_preview")
+        }));
     }
 
     #[test]
