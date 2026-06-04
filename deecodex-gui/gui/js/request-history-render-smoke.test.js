@@ -53,7 +53,6 @@ const fallbackTrace = {
     account_id: 'healthy',
     account_name: 'Healthy Chat',
     mapped_model: 'deepseek-chat',
-    health_score: 88,
     capabilities: { protocol: 'chat_translate', tool_mode: 'translated', web: true },
   },
   candidate_count: 2,
@@ -82,45 +81,5 @@ const fallbackHtml = context.renderHistoryRouteTrace({ route_trace: JSON.stringi
 assert(fallbackHtml.includes('降级 Failed Responses · HTTP 503'), fallbackHtml);
 assert(fallbackHtml.includes('最终 Healthy Chat'), fallbackHtml);
 assert(fallbackHtml.includes('本次已失败'), fallbackHtml);
-
-const preflightTrace = {
-  route_surface: 'codex_router',
-  requested_model: 'gpt-5',
-  anchor: { account_id: 'anchor', account_name: 'Codex Desktop' },
-  selected: {
-    account_id: 'healthy',
-    account_name: 'Healthy Stream',
-    mapped_model: 'deepseek-chat',
-    health_score: 91,
-    capabilities: { protocol: 'chat_translate', tool_mode: 'translated' },
-  },
-  candidate_count: 2,
-  eligible_count: 1,
-  skipped_count: 1,
-  candidates: [
-    { account_id: 'risky', account_name: 'Risky Stream', eligible: false, reason: 'stream_preflight_risk' },
-    { account_id: 'healthy', account_name: 'Healthy Stream', eligible: true, reason: 'ready' },
-  ],
-  stream_preflight: {
-    action: 'rerouted',
-    reason: 'recent_failure_rate',
-    from: {
-      account_id: 'risky',
-      account_name: 'Risky Stream',
-      health_score: 20,
-      recent_failed: 2,
-      failure_rate_percent: 100,
-    },
-    to: {
-      account_id: 'healthy',
-      account_name: 'Healthy Stream',
-      mapped_model: 'deepseek-chat',
-    },
-  },
-};
-
-const preflightHtml = context.renderHistoryRouteTrace({ route_trace: JSON.stringify(preflightTrace) });
-assert(preflightHtml.includes('流式预选 切换 · Healthy Stream · 近期失败率高'), preflightHtml);
-assert(preflightHtml.includes('流式预选避开'), preflightHtml);
 
 console.log('request-history render smoke ok');

@@ -75,9 +75,6 @@ const HISTORY_LIST_LIMIT = 20000;
 				    model_retry_wait: '模型等待恢复',
 				    capability_mismatch: '能力不匹配',
 				    attempt_failed: '本次已失败',
-				    stream_preflight_risk: '流式预选避开',
-				    recent_failure_rate: '近期失败率高',
-				    low_health_score: '健康分偏低',
 				    recent_account_error: '账号近期错误',
 				    recent_model_error: '模型近期错误',
 				  };
@@ -104,27 +101,6 @@ const HISTORY_LIST_LIMIT = 20000;
 
 				function renderHistoryRouterFlow(trace) {
 				  const rows = [];
-				  const preflight = trace.stream_preflight;
-				  if (preflight && typeof preflight === 'object') {
-				    const from = preflight.from || {};
-				    const to = preflight.to || {};
-				    const reason = historyRouteReasonLabel(preflight.reason);
-				    const action = preflight.action === 'kept_no_alternative' ? '保留' : '切换';
-				    const target = preflight.action === 'kept_no_alternative'
-				      ? historyRouterNodeLabel(from)
-				      : historyRouterNodeLabel(to);
-				    const title = [
-				      `流式预选: ${action}`,
-				      `原因: ${reason}`,
-				      `原候选: ${historyRouterNodeLabel(from)}`,
-				      to && (to.account_id || to.account_name) ? `新候选: ${historyRouterNodeLabel(to)}` : '',
-				      from.health_score !== undefined ? `健康: ${from.health_score}` : '',
-				      from.recent_failed !== undefined ? `近期失败: ${from.recent_failed}` : '',
-				      from.failure_rate_percent !== undefined ? `失败率: ${from.failure_rate_percent}%` : '',
-				    ].filter(Boolean).join('\n');
-				    rows.push(`<span class="hc-route-step warn" title="${escAttr(title)}">流式预选 ${esc(action)} · ${esc(target)} · ${esc(reason)}</span>`);
-				  }
-
 				  const attempts = Array.isArray(trace.fallback_attempts) ? trace.fallback_attempts : [];
 				  attempts.forEach(attempt => {
 				    const name = historyRouterNodeLabel(attempt);
@@ -160,8 +136,6 @@ const HISTORY_LIST_LIMIT = 20000;
 				  const anchorName = anchor.account_name || anchor.account_id || '无锚点';
 				  const selectedName = selected.account_name || selected.account_id || '暂无执行账号';
 				  const mappedModel = selected.mapped_model || trace.requested_model || '';
-				  const healthScore = selected.health_score ?? '';
-				  const routeScore = selected.route_score ?? '';
 				  const toolDecisions = trace.tool_decisions || selected.tool_decisions || {};
 				  const capabilityBits = [
 				    capabilities.protocol,
@@ -196,10 +170,7 @@ const HISTORY_LIST_LIMIT = 20000;
 				    capabilityBits.length ? `能力 ${capabilityBits.join('/')}` : '',
 				    toolDecisionBits.length ? `工具 ${toolDecisionBits.join(' / ')}` : '',
 				    Array.isArray(toolDecisions.labels) && toolDecisions.labels.length ? `请求工具 ${toolDecisions.labels.join(', ')}` : '',
-				    trace.stream_preflight ? `流式预选 ${historyRouteReasonLabel(trace.stream_preflight.reason)} / ${trace.stream_preflight.action || ''}` : '',
 				    Array.isArray(trace.fallback_attempts) && trace.fallback_attempts.length ? `降级 ${trace.fallback_attempts.length} 次` : '',
-				    healthScore !== '' ? `健康 ${healthScore}` : '',
-				    routeScore !== '' ? `评分 ${routeScore}` : '',
 				    `候选 ${eligible}/${total}`,
 				    skippedLines.join('\n'),
 				  ].filter(Boolean);
@@ -208,7 +179,7 @@ const HISTORY_LIST_LIMIT = 20000;
 				    <span>${esc(mappedModel || '原模型')}</span>
 				    ${capabilityBits.length ? `<span>${esc(capabilityBits.join('/'))}</span>` : ''}
 				    ${toolDecisionBits.length ? `<span>${esc(toolDecisionBits.join('/'))}</span>` : ''}
-				    <span>候选 ${eligible}/${total}${skipped ? ` · 跳过 ${skipped}` : ''}${healthScore !== '' ? ` · 健康 ${healthScore}` : ''}</span>
+				    <span>候选 ${eligible}/${total}${skipped ? ` · 跳过 ${skipped}` : ''}</span>
 				  </div>`;
 				  return routeLine + renderHistoryRouterFlow(trace);
 				}

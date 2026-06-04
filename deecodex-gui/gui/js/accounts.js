@@ -245,7 +245,7 @@ function renderCodexRouterPanel(a) {
           <input type="checkbox" id="edit_routing_execution_enabled" ${routing.execution_enabled ? 'checked' : ''}>
           参与模型执行
         </label>
-        <span class="hint">${official ? '官方号默认关闭；只有明确开启后才会作为执行候选。' : '开启后作为同池执行账号，由 Router 按能力和健康度选择。'}</span>
+        <span class="hint">${official ? '官方号默认关闭；只有明确开启后才会作为执行候选。' : '开启后作为同池执行账号，由 Router 按能力、优先级和权重选择。'}</span>
       </div>
       <div class="config-field">
         <label>Pool</label>
@@ -487,9 +487,6 @@ function routerReasonLabel(reason) {
     model_retry_wait: '模型等待恢复',
     capability_mismatch: '能力不匹配',
     attempt_failed: '本次已失败',
-    stream_preflight_risk: '流式预选避开',
-    recent_failure_rate: '近期失败率高',
-    low_health_score: '健康分偏低',
     recent_account_error: '账号近期错误',
     recent_model_error: '模型近期错误',
   };
@@ -520,48 +517,12 @@ function routerCandidateDetail(candidate) {
   const endpoint = candidate.endpoint_name || candidate.endpoint_kind;
   if (endpoint) parts.push(endpoint);
   if (candidate.mapped_model) parts.push(candidate.mapped_model);
-  if (candidate.health_score !== undefined && candidate.health_score !== null) {
-    parts.push(`健康 ${candidate.health_score}`);
-  }
-  if (candidate.failure_rate_percent !== undefined && candidate.failure_rate_percent !== null) {
-    parts.push(`失败率 ${candidate.failure_rate_percent}%`);
-  }
-  if (candidate.stream_preflight_risk) {
-    parts.push(`流式预选 ${routerReasonLabel(candidate.stream_preflight_risk)}`);
-  }
-  if (candidate.route_score !== undefined && candidate.route_score !== null) {
-    parts.push(`评分 ${candidate.route_score}`);
-  }
-  const recentSuccess = Number(candidate.recent_success || 0);
-  const recentFailed = Number(candidate.recent_failed || 0);
-  if (recentSuccess || recentFailed) {
-    parts.push(`近1h ${recentSuccess}/${recentFailed}`);
-  }
   return parts.join(' · ');
-}
-
-function routerNodeLabel(node) {
-  return node?.account_name || node?.account_id || '未知账号';
-}
-
-function routerPreflightSummary(preflight) {
-  if (!preflight || typeof preflight !== 'object') return '';
-  const reason = routerReasonLabel(preflight.reason);
-  const from = routerNodeLabel(preflight.from);
-  const to = routerNodeLabel(preflight.to);
-  if (preflight.action === 'rerouted') {
-    return `流式预选避开 ${from}，改走 ${to} · ${reason}`;
-  }
-  if (preflight.action === 'kept_no_alternative') {
-    return `流式预选风险 ${from} · ${reason}，暂无替代候选`;
-  }
-  return `流式预选 ${reason}`;
 }
 
 function routerScenarioDetail(scenario) {
   const candidates = Array.isArray(scenario?.candidates) ? scenario.candidates : [];
   const selected = scenario?.selected;
-  const preflight = routerPreflightSummary(scenario?.stream_preflight);
   const selectedLine = selected
     ? `执行 ${selected.account_name || selected.account_id || '未知账号'}`
     : '暂无可用执行账号';
@@ -576,7 +537,7 @@ function routerScenarioDetail(scenario) {
     Array.isArray(toolDecisions.local) && toolDecisions.local.length ? `本地 ${toolDecisions.local.join('/')}` : '',
     Array.isArray(toolDecisions.filtered) && toolDecisions.filtered.length ? `过滤 ${toolDecisions.filtered.join('/')}` : '',
   ].filter(Boolean).join('\n');
-  return [selectedLine, preflight, decisions, skipped].filter(Boolean).join('\n');
+  return [selectedLine, decisions, skipped].filter(Boolean).join('\n');
 }
 
 function renderRouterScenarioStrip(scenarios) {
@@ -588,25 +549,14 @@ function renderRouterScenarioStrip(scenarios) {
       const total = Number(scenario.candidate_count || candidates.length || 0);
       const selected = scenario.selected;
       const ok = Boolean(selected);
-      const preflight = scenario.stream_preflight || null;
-      const rerouted = preflight?.action === 'rerouted';
-      const selectedName = rerouted
-        ? `流式→${routerNodeLabel(preflight.to)}`
-        : (selected ? (selected.account_name || selected.account_id || '可用') : '不可用');
-      return `<span class="router-scenario-chip ${ok ? 'ok' : 'blocked'}${rerouted ? ' preflight' : ''}" title="${escAttr(routerScenarioDetail(scenario))}">
+      const selectedName = selected ? (selected.account_name || selected.account_id || '可用') : '不可用';
+      return `<span class="router-scenario-chip ${ok ? 'ok' : 'blocked'}" title="${escAttr(routerScenarioDetail(scenario))}">
         <em>${esc(scenario.scenario_label || scenario.scenario_id || '场景')}</em>
         <strong>${esc(selectedName)}</strong>
-        <b>${rerouted ? '预选' : `${eligible}/${total}`}</b>
+        <b>${eligible}/${total}</b>
       </span>`;
     }).join('')}
   </div>`;
-}
-
-function renderRouterPreflightNotice(preflight) {
-  const summary = routerPreflightSummary(preflight);
-  if (!summary) return '';
-  const kind = preflight?.action === 'rerouted' ? 'warn' : 'muted';
-  return `<div class="router-preflight-notice ${kind}" title="${escAttr(summary)}">${esc(summary)}</div>`;
 }
 
 function renderRouterStatusOverview() {
@@ -623,8 +573,6 @@ function renderRouterStatusOverview() {
   const selected = router.selected;
   const selectedName = selected ? (selected.account_name || selected.account_id || '—') : '暂无';
   const mappedModel = selected?.mapped_model || router.requested_model || '—';
-  const selectedHealth = selected?.health_score;
-  const preflight = router.stream_preflight || null;
   const skippedTitle = candidates
     .filter(candidate => !candidate.eligible)
     .map(routerCandidateDetail)
@@ -651,10 +599,9 @@ function renderRouterStatusOverview() {
     </div>
     <div>
       <span>候选</span>
-      <strong title="${escAttr(skippedTitle)}">${ready}/${candidates.length}${skipped ? ` 跳过${skipped}` : ''}${selectedHealth !== undefined && selectedHealth !== null ? ` · 健康${selectedHealth}` : ''}</strong>
+      <strong title="${escAttr(skippedTitle)}">${ready}/${candidates.length}${skipped ? ` 跳过${skipped}` : ''}</strong>
     </div>
   </div>
-  ${renderRouterPreflightNotice(preflight)}
   ${renderRouterScenarioStrip(scenarios)}
   </div>`;
 }

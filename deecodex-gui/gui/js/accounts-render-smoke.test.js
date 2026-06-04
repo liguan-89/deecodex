@@ -353,46 +353,29 @@ context.accountsData.router_status = {
   anchor: { account_id: 'desktop-anchor', account_name: 'Codex Desktop', pool: 'pool-a' },
   requested_model: 'gpt-5',
   selected: {
-    account_id: 'risky',
-    account_name: 'Risky Router',
+    account_id: 'primary',
+    account_name: 'Primary Router',
     mapped_model: 'deepseek-chat',
-    health_score: 20,
-    recent_success: 0,
-    recent_failed: 2,
-    failure_rate_percent: 100,
-    stream_preflight_risk: 'recent_failure_rate',
   },
   candidate_count: 2,
   eligible_count: 2,
   skipped_count: 0,
   candidates: [
     {
-      account_id: 'risky',
-      account_name: 'Risky Router',
+      account_id: 'primary',
+      account_name: 'Primary Router',
       eligible: true,
       reason: 'ready',
       mapped_model: 'deepseek-chat',
-      health_score: 20,
-      recent_success: 0,
-      recent_failed: 2,
-      failure_rate_percent: 100,
-      stream_preflight_risk: 'recent_failure_rate',
     },
     {
-      account_id: 'healthy',
-      account_name: 'Healthy Router',
+      account_id: 'backup',
+      account_name: 'Backup Router',
       eligible: true,
       reason: 'ready',
       mapped_model: 'deepseek-chat',
-      health_score: 90,
     },
   ],
-  stream_preflight: {
-    action: 'rerouted',
-    reason: 'recent_failure_rate',
-    from: { account_id: 'risky', account_name: 'Risky Router' },
-    to: { account_id: 'healthy', account_name: 'Healthy Router' },
-  },
 };
 context.accountsData.router_status_scenarios = [
   {
@@ -402,15 +385,13 @@ context.accountsData.router_status_scenarios = [
     candidate_count: 2,
     eligible_count: 2,
     candidates: context.accountsData.router_status.candidates,
-    stream_preflight: context.accountsData.router_status.stream_preflight,
   },
 ];
 context.selectedClientSurface = 'desktop';
 const routerDesktopOverview = context.renderRouterStatusOverview();
-assert(routerDesktopOverview.includes('router-preflight-notice warn'));
-assert(routerDesktopOverview.includes('流式预选避开 Risky Router，改走 Healthy Router'));
-assert(routerDesktopOverview.includes('router-scenario-chip ok preflight'));
-assert(routerDesktopOverview.includes('流式→Healthy Router'));
+assert(routerDesktopOverview.includes('Primary Router'));
+assert(routerDesktopOverview.includes('router-scenario-chip ok'));
+assert(routerDesktopOverview.includes('2/2'));
 context.selectedClientSurface = 'cli';
 
 context.accountsView = 'add';

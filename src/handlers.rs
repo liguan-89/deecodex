@@ -259,15 +259,6 @@ struct DexRouterCandidate {
     priority: i64,
     weight: u32,
     mapped_model: String,
-    health: DexRouterHealth,
-}
-
-#[derive(Clone, Copy)]
-struct DexRouterHealth {
-    score: i64,
-    recent_success: u64,
-    recent_failed: u64,
-    failure_rate_percent: u64,
 }
 
 struct RouterAttemptFailure {
@@ -1033,36 +1024,6 @@ fn resolve_explicit_chat_model_native_helper_selection(
             now,
         );
     };
-    let helper_health = dex_router_health(&helper_account, now);
-    if let Some(risk) =
-        dex_router_stream_preflight_risk(&helper_account, &helper_model, helper_health, now)
-    {
-        tracing::warn!(
-            main_account_id = %main_account.id,
-            main_account_name = %main_account.name,
-            helper_account_id = %helper_account.id,
-            helper_account_name = %helper_account.name,
-            helper_model = %helper_model,
-            risk = %risk,
-            recent_failed = helper_health.recent_failed,
-            failure_rate_percent = helper_health.failure_rate_percent,
-            "DEX Router 原生 Computer Use helper 近期不稳定，降级回 Chat 兼容账号"
-        );
-        return explicit_chat_model_native_helper_fallback_selection(
-            main_account,
-            main_endpoint,
-            selected_model,
-            requested_model,
-            risk,
-            Some((
-                &helper_account,
-                &helper_endpoint,
-                helper_model.as_str(),
-                helper_health,
-            )),
-            now,
-        );
-    }
     helper_account.sync_legacy_from_endpoint(&helper_endpoint);
     let trace = json!({
         "requested_model": requested_model,
@@ -1095,7 +1056,7 @@ fn explicit_chat_model_native_helper_fallback_selection(
     selected_model: &str,
     requested_model: &str,
     reason: &'static str,
-    helper: Option<(&Account, &EndpointConfig, &str, DexRouterHealth)>,
+    helper: Option<(&Account, &EndpointConfig, &str)>,
     now: u64,
 ) -> Result<AccountRouteSelection, Box<Response>> {
     if let Some(block) = account_runtime_block(main_account, selected_model, now) {
@@ -1109,17 +1070,13 @@ fn explicit_chat_model_native_helper_fallback_selection(
     }
     let mut account = main_account.clone();
     account.sync_legacy_from_endpoint(main_endpoint);
-    let helper = helper.map(|(account, endpoint, model, health)| {
+    let helper = helper.map(|(account, endpoint, model)| {
         json!({
             "account_id": account.id,
             "account_name": account.name,
             "endpoint_id": endpoint.id,
             "endpoint_kind": endpoint_kind_slug(&endpoint.kind),
             "model": model,
-            "health_score": health.score,
-            "recent_success": health.recent_success,
-            "recent_failed": health.recent_failed,
-            "failure_rate_percent": health.failure_rate_percent,
         })
     });
     let trace = json!({
@@ -1238,7 +1195,6 @@ fn select_dex_router_native_executor_in_pool(
             let mut account = account.clone();
             account.sync_legacy_from_endpoint(&endpoint);
             Some(DexRouterCandidate {
-                health: dex_router_health(&account, now),
                 account,
                 endpoint,
                 priority: routing.priority,
@@ -1249,22 +1205,16 @@ fn select_dex_router_native_executor_in_pool(
         .collect();
 
     candidates.sort_by(|left, right| {
-        right.priority.cmp(&left.priority).then_with(|| {
-            right
-                .health
-                .score
-                .cmp(&left.health.score)
-                .then_with(|| left.account.id.cmp(&right.account.id))
-                .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
-        })
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.account.id.cmp(&right.account.id))
+            .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
     });
     let best_priority = candidates.first().map(|candidate| candidate.priority)?;
-    let best_health = candidates.first().map(|candidate| candidate.health.score)?;
     let top: Vec<_> = candidates
         .into_iter()
-        .filter(|candidate| {
-            candidate.priority == best_priority && candidate.health.score == best_health
-        })
+        .filter(|candidate| candidate.priority == best_priority)
         .collect();
     let total_weight: u64 = top
         .iter()
@@ -1392,7 +1342,6 @@ fn select_dex_router_account_endpoint_excluding(
             let mut account = account.clone();
             account.sync_legacy_from_endpoint(&endpoint);
             Some(DexRouterCandidate {
-                health: dex_router_health(&account, now),
                 account,
                 endpoint,
                 priority: routing.priority,
@@ -1403,22 +1352,16 @@ fn select_dex_router_account_endpoint_excluding(
         .collect();
 
     candidates.sort_by(|left, right| {
-        right.priority.cmp(&left.priority).then_with(|| {
-            right
-                .health
-                .score
-                .cmp(&left.health.score)
-                .then_with(|| left.account.id.cmp(&right.account.id))
-                .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
-        })
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.account.id.cmp(&right.account.id))
+            .then_with(|| left.endpoint.id.cmp(&right.endpoint.id))
     });
     let best_priority = candidates.first().map(|candidate| candidate.priority)?;
-    let best_health = candidates.first().map(|candidate| candidate.health.score)?;
     let top: Vec<_> = candidates
         .into_iter()
-        .filter(|candidate| {
-            candidate.priority == best_priority && candidate.health.score == best_health
-        })
+        .filter(|candidate| candidate.priority == best_priority)
         .collect();
     let total_weight: u64 = top
         .iter()
@@ -1439,7 +1382,6 @@ fn select_dex_router_account_endpoint_excluding(
                 requested_model = %requested_model,
                 mapped_model = %candidate.mapped_model,
                 priority = candidate.priority,
-                health_score = candidate.health.score,
                 "DEX Router 命中账号池候选"
             );
             return Some((candidate.account, candidate.endpoint));
@@ -1637,14 +1579,6 @@ fn dex_router_snapshot_value(
                 "ready"
             };
             let model_state = account.runtime_state.model_states.get(&mapped_model);
-            let health = dex_router_health(account, now);
-            let stream_preflight_risk = if reason == "ready" {
-                endpoint
-                    .as_ref()
-                    .and_then(|_| dex_router_stream_preflight_risk(account, &mapped_model, health, now))
-            } else {
-                None
-            };
             json!({
                 "account_id": account.id,
                 "account_name": account.name,
@@ -1652,12 +1586,6 @@ fn dex_router_snapshot_value(
                 "pool": routing.pool,
                 "priority": routing.priority,
                 "weight": routing.weight,
-                "route_score": routing.priority.saturating_mul(1000).saturating_add(health.score),
-                "health_score": health.score,
-                "recent_success": health.recent_success,
-                "recent_failed": health.recent_failed,
-                "failure_rate_percent": health.failure_rate_percent,
-                "stream_preflight_risk": stream_preflight_risk,
                 "routing_enabled": routing.effective_enabled(),
                 "anchor_enabled": routing.effective_anchor_enabled_for_account(account),
                 "execution_enabled": routing.effective_execution_enabled_for_account(account),
@@ -1685,14 +1613,6 @@ fn dex_router_snapshot_value(
         .iter()
         .filter(|candidate| candidate["eligible"].as_bool().unwrap_or(false))
         .count();
-    let stream_preflight = dex_router_stream_preflight_snapshot(
-        store,
-        requested_model,
-        now,
-        cursor,
-        selected,
-        tool_requirements,
-    );
     let selected = selected.map(|(account, endpoint)| {
         let candidate = candidates.iter().find(|candidate| {
             candidate["account_id"].as_str() == Some(account.id.as_str())
@@ -1708,12 +1628,6 @@ fn dex_router_snapshot_value(
             "effective_model": router_effective_model_for_account(account, requested_model, endpoint),
             "priority": candidate.and_then(|candidate| candidate.get("priority")).cloned(),
             "weight": candidate.and_then(|candidate| candidate.get("weight")).cloned(),
-            "route_score": candidate.and_then(|candidate| candidate.get("route_score")).cloned(),
-            "health_score": candidate.and_then(|candidate| candidate.get("health_score")).cloned(),
-            "recent_success": candidate.and_then(|candidate| candidate.get("recent_success")).cloned(),
-            "recent_failed": candidate.and_then(|candidate| candidate.get("recent_failed")).cloned(),
-            "failure_rate_percent": candidate.and_then(|candidate| candidate.get("failure_rate_percent")).cloned(),
-            "stream_preflight_risk": candidate.and_then(|candidate| candidate.get("stream_preflight_risk")).cloned(),
             "capabilities": candidate.and_then(|candidate| candidate.get("capabilities")).cloned(),
             "tool_decisions": candidate
                 .and_then(|candidate| candidate.get("capabilities"))
@@ -1731,7 +1645,6 @@ fn dex_router_snapshot_value(
         "cursor": cursor,
         "tool_requirements": router_tool_requirements_value(tool_requirements),
         "tool_decisions": selected_tool_decisions,
-        "stream_preflight": stream_preflight,
         "anchor": anchor.map(|account| {
             let routing = account_routing_options(account);
             json!({
@@ -1970,117 +1883,6 @@ fn official_endpoint_for_account(
 
 fn account_runtime_ready(account: &Account, mapped_model: &str, now: u64) -> bool {
     account_runtime_block(account, mapped_model, now).is_none()
-}
-
-fn dex_router_health(account: &Account, now: u64) -> DexRouterHealth {
-    let since = now.saturating_sub(60 * 60);
-    let mut recent_success = 0_u64;
-    let mut recent_failed = 0_u64;
-    for bucket in &account.runtime_state.recent_requests {
-        if bucket.bucket_start.saturating_add(600) < since {
-            continue;
-        }
-        recent_success = recent_success.saturating_add(bucket.success);
-        recent_failed = recent_failed.saturating_add(bucket.failed);
-    }
-
-    let total = recent_success.saturating_add(recent_failed);
-    if total == 0 {
-        return DexRouterHealth {
-            score: 80,
-            recent_success,
-            recent_failed,
-            failure_rate_percent: 0,
-        };
-    }
-
-    let failure_rate_percent = recent_failed.saturating_mul(100) / total.max(1);
-    let success_rate = recent_success.saturating_mul(100) / total.max(1);
-    let repeated_failure_penalty = recent_failed.saturating_mul(5).min(30);
-    let score = success_rate
-        .saturating_sub(repeated_failure_penalty)
-        .min(100) as i64;
-    DexRouterHealth {
-        score,
-        recent_success,
-        recent_failed,
-        failure_rate_percent,
-    }
-}
-
-fn dex_router_stream_preflight_risk(
-    account: &Account,
-    mapped_model: &str,
-    health: DexRouterHealth,
-    now: u64,
-) -> Option<&'static str> {
-    if health.recent_failed >= 2 && health.failure_rate_percent >= 50 {
-        return Some("recent_failure_rate");
-    }
-    if health.recent_failed >= 3 && health.score <= 40 {
-        return Some("low_health_score");
-    }
-    if account.runtime_state.status == AccountRuntimeStatus::Error
-        && health.recent_failed >= 2
-        && health.recent_success == 0
-    {
-        return Some("recent_account_error");
-    }
-    account
-        .runtime_state
-        .model_states
-        .get(mapped_model)
-        .and_then(|state| {
-            let recent_error = state.updated_at.saturating_add(10 * 60) >= now;
-            (state.status == AccountRuntimeStatus::Error && recent_error)
-                .then_some("recent_model_error")
-        })
-}
-
-fn dex_router_stream_preflight_snapshot(
-    store: &AccountStore,
-    requested_model: &str,
-    now: u64,
-    cursor: u64,
-    selected: Option<&(Account, EndpointConfig)>,
-    tool_requirements: Option<&RouterToolRequirements>,
-) -> Option<Value> {
-    let (account, endpoint) = selected?;
-    let mapped_model = router_effective_model_for_account(account, requested_model, endpoint);
-    let health = dex_router_health(account, now);
-    let reason = dex_router_stream_preflight_risk(account, &mapped_model, health, now)?;
-    let excluded_account_ids = vec![account.id.clone()];
-    let alternate = select_dex_router_account_endpoint_excluding(
-        store,
-        requested_model,
-        now,
-        cursor,
-        tool_requirements,
-        &excluded_account_ids,
-    );
-    let from = AccountRouteSelection {
-        account: account.clone(),
-        endpoint: endpoint.clone(),
-        route_trace: None,
-        requires_computer: tool_requirements
-            .is_some_and(|requirements| requirements.requires_computer),
-        explicit_model: None,
-        explicit_account_model: false,
-    };
-    Some(router_stream_preflight_event_value(
-        if alternate.is_some() {
-            "rerouted"
-        } else {
-            "kept_no_alternative"
-        },
-        reason,
-        &from,
-        requested_model,
-        health,
-        alternate
-            .as_ref()
-            .map(|(account, endpoint)| (account, endpoint)),
-    ))
 }
 
 fn dex_router_capability_summary(
@@ -6393,14 +6195,7 @@ async fn handle_responses_for_route_with_router_anchor(
         && req.stream
         && req.background != Some(true)
     {
-        route_selection = apply_codex_router_stream_preflight(
-            &state,
-            &model,
-            route_selection,
-            router_tool_requirements.as_ref(),
-            session_route_decision.as_ref(),
-        )
-        .await;
+        route_selection = apply_codex_router_stream_model_fallback(&model, route_selection);
     }
     if route_surface == AccountRouteSurface::CodexRouter
         && !req.stream
@@ -6717,17 +6512,13 @@ async fn handle_codex_router_non_stream_with_fallback(
     unreachable!("DEX Router fallback loop always returns");
 }
 
-async fn apply_codex_router_stream_preflight(
-    state: &AppState,
+fn apply_codex_router_stream_model_fallback(
     requested_model: &str,
-    mut selection: AccountRouteSelection,
-    tool_requirements: Option<&RouterToolRequirements>,
-    session_route_decision: Option<&DexRouterSessionRouteDecision>,
+    selection: AccountRouteSelection,
 ) -> AccountRouteSelection {
     if selection.explicit_account_model {
         return selection;
     }
-    let mapped_model = router_effective_model(requested_model, &selection.endpoint);
     let now = crate::accounts::now_secs();
     if requested_model == GPT54_MODEL
         && endpoint_is_native_router_executor(&selection.endpoint)
@@ -6748,125 +6539,7 @@ async fn apply_codex_router_stream_preflight(
             "recent_gpt54_upstream_error",
         );
     }
-    let health = dex_router_health(&selection.account, now);
-    let Some(reason) =
-        dex_router_stream_preflight_risk(&selection.account, &mapped_model, health, now)
-    else {
-        return selection;
-    };
-
-    let excluded_account_ids = vec![selection.account.id.clone()];
-    let store = state.account_store.read().await.clone();
-    let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
-    let (next, route_trace) = dex_router_trace_for_selection_excluding(
-        &store,
-        requested_model,
-        now,
-        cursor,
-        tool_requirements,
-        &excluded_account_ids,
-        "stream_preflight_risk",
-    );
-
-    if let Some((account, endpoint)) = next {
-        tracing::warn!(
-            from_account_id = %selection.account.id,
-            to_account_id = %account.id,
-            reason = %reason,
-            recent_failed = health.recent_failed,
-            failure_rate_percent = health.failure_rate_percent,
-            "DEX Router 流式请求前置健康门控已切换候选"
-        );
-        let event = router_stream_preflight_event_value(
-            "rerouted",
-            reason,
-            &selection,
-            requested_model,
-            health,
-            Some((&account, &endpoint)),
-        );
-        let effective_model =
-            router_effective_model_for_account(&account, requested_model, &endpoint);
-        return AccountRouteSelection {
-            account,
-            endpoint,
-            route_trace: patch_router_stream_preflight_trace(
-                patch_router_session_route_trace(Some(route_trace), session_route_decision),
-                event,
-            ),
-            requires_computer: selection.requires_computer,
-            explicit_model: (effective_model != requested_model).then_some(effective_model),
-            explicit_account_model: false,
-        };
-    }
-
-    tracing::warn!(
-        account_id = %selection.account.id,
-        reason = %reason,
-        recent_failed = health.recent_failed,
-        failure_rate_percent = health.failure_rate_percent,
-        "DEX Router 流式请求前置健康门控无替代候选，保留原账号"
-    );
-    let event = router_stream_preflight_event_value(
-        "kept_no_alternative",
-        reason,
-        &selection,
-        requested_model,
-        health,
-        None,
-    );
-    selection.route_trace = patch_router_stream_preflight_trace(selection.route_trace, event);
     selection
-}
-
-fn router_stream_preflight_event_value(
-    action: &'static str,
-    reason: &'static str,
-    from: &AccountRouteSelection,
-    requested_model: &str,
-    health: DexRouterHealth,
-    to: Option<(&Account, &EndpointConfig)>,
-) -> Value {
-    let to = to.map(|(account, endpoint)| {
-        json!({
-            "account_id": account.id.clone(),
-            "account_name": account.name.clone(),
-            "endpoint_id": endpoint.id.clone(),
-            "endpoint_kind": endpoint.kind.label(),
-            "mapped_model": router_effective_model_for_account(account, requested_model, endpoint),
-            "effective_model": router_effective_model_for_account(account, requested_model, endpoint),
-        })
-    });
-    json!({
-        "action": action,
-        "reason": reason,
-        "from": {
-            "account_id": from.account.id.clone(),
-            "account_name": from.account.name.clone(),
-            "endpoint_id": from.endpoint.id.clone(),
-            "endpoint_kind": from.endpoint.kind.label(),
-            "mapped_model": router_effective_model_for_account(&from.account, requested_model, &from.endpoint),
-            "effective_model": router_effective_model_for_account(&from.account, requested_model, &from.endpoint),
-            "health_score": health.score,
-            "recent_success": health.recent_success,
-            "recent_failed": health.recent_failed,
-            "failure_rate_percent": health.failure_rate_percent,
-        },
-        "to": to,
-    })
-}
-
-fn patch_router_stream_preflight_trace(
-    route_trace: Option<String>,
-    event: Value,
-) -> Option<String> {
-    let mut trace = route_trace
-        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
-        .unwrap_or_else(|| json!({}));
-    if let Some(obj) = trace.as_object_mut() {
-        obj.insert("stream_preflight".into(), event);
-    }
-    serde_json::to_string(&trace).ok()
 }
 
 async fn resolve_dex_router_retry_selection(
@@ -11494,32 +11167,19 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_prefers_healthier_account_at_same_priority() {
+    fn dex_router_uses_weighted_round_robin_at_same_priority() {
         let active = router_responses_account("active", "pool-a", 0, 1);
-        let mut failing = router_responses_account("failing", "pool-a", 20, 1);
-        failing
-            .runtime_state
-            .recent_requests
-            .push(crate::accounts::AccountRecentRequestBucket {
-                bucket_start: 1_000,
-                success: 0,
-                failed: 4,
-            });
-        let mut healthy = router_responses_account("healthy", "pool-a", 20, 1);
-        healthy
-            .runtime_state
-            .recent_requests
-            .push(crate::accounts::AccountRecentRequestBucket {
-                bucket_start: 1_000,
-                success: 4,
-                failed: 0,
-            });
-        let store = router_store(vec![active, failing, healthy], "active");
+        let alpha = router_responses_account("alpha", "pool-a", 20, 1);
+        let beta = router_responses_account("beta", "pool-a", 20, 3);
+        let store = router_store(vec![active, alpha, beta], "active");
 
-        let (account, endpoint) =
+        let (first, endpoint) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_200, 0, None).unwrap();
+        let (second, _) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_200, 1, None).unwrap();
 
-        assert_eq!(account.id, "healthy");
+        assert_eq!(first.id, "alpha");
+        assert_eq!(second.id, "beta");
         assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
     }
 
@@ -11766,7 +11426,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_falls_back_when_native_helper_unstable() {
+    fn dex_router_explicit_chat_model_uses_native_helper_despite_recent_failures() {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
         let mut responses = router_responses_account("responses", "pool-a", 10, 1);
         let now = crate::accounts::now_secs();
@@ -11792,16 +11452,13 @@ mod tests {
                 .unwrap();
         let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
 
-        assert_eq!(selection.account.id, "active");
-        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
-        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
-        assert!(!selection.requires_computer);
-        assert_eq!(trace["native_helper_fallback_to_chat"], true);
-        assert_eq!(
-            trace["native_helper_fallback_reason"],
-            "recent_failure_rate"
-        );
-        assert_eq!(trace["native_helper"]["account_id"], "responses");
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert!(selection.requires_computer);
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["main_account_id"], "active");
+        assert_eq!(trace["selected_account_id"], "responses");
     }
 
     #[test]
@@ -11951,7 +11608,6 @@ mod tests {
         assert_eq!(value["selected"]["account_id"], "high");
         assert_eq!(value["selected"]["mapped_model"], "gpt-5");
         assert_eq!(value["selected"]["effective_model"], "gpt-5");
-        assert_eq!(value["selected"]["health_score"], 80);
         assert_eq!(
             value["selected"]["capabilities"]["protocol"],
             "responses_direct"
@@ -12304,7 +11960,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_status_reports_stream_preflight_risk() {
+    fn dex_router_status_ignores_recent_failures_for_selection() {
         let mut risky = router_responses_account("risky", "pool-a", 100, 1);
         risky
             .runtime_state
@@ -12320,22 +11976,13 @@ mod tests {
         let snapshot = dex_router_status_snapshot(&store, "gpt-5", 1_200);
 
         assert_eq!(snapshot["selected"]["account_id"], "risky");
-        assert_eq!(snapshot["stream_preflight"]["action"], "rerouted");
-        assert_eq!(
-            snapshot["stream_preflight"]["reason"],
-            "recent_failure_rate"
-        );
-        assert_eq!(snapshot["stream_preflight"]["to"]["account_id"], "healthy");
         let risky_candidate = snapshot["candidates"]
             .as_array()
             .unwrap()
             .iter()
             .find(|candidate| candidate["account_id"] == "risky")
             .unwrap();
-        assert_eq!(
-            risky_candidate["stream_preflight_risk"],
-            "recent_failure_rate"
-        );
+        assert_eq!(risky_candidate["reason"], "ready");
     }
 
     #[test]
