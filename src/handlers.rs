@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::accounts::{
     account_routing_options, Account, AccountAuthMode, AccountClientKind, AccountClientSurface,
@@ -55,6 +55,7 @@ pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.4-mini";
+const NATIVE_HELPER_FALLBACK_MODEL: &str = "gpt-5.5";
 const GPT54_MODEL: &str = "gpt-5.4";
 const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
@@ -348,6 +349,10 @@ impl RouterToolRequirements {
         self.has_computer = true;
         self.requires_computer = true;
         self.add_label("session.native_observe");
+    }
+
+    fn is_weak_computer_intent(&self) -> bool {
+        self.requires_computer && self.native_signal == NativeRouteSignal::TextIntent
     }
 }
 
@@ -844,14 +849,34 @@ fn router_effective_model(requested_model: &str, endpoint: &EndpointConfig) -> S
 }
 
 fn gpt54_recent_upstream_error(account: &Account, now: u64) -> bool {
+    model_recent_transient_upstream_error(account, GPT54_MODEL, now)
+}
+
+fn model_recent_transient_upstream_error(account: &Account, model: &str, now: u64) -> bool {
     account
         .runtime_state
         .model_states
-        .get(GPT54_MODEL)
+        .get(model)
         .is_some_and(|state| {
             state.updated_at.saturating_add(10 * 60) >= now
                 && runtime_state_is_transient_upstream_error(&state.status, &state.status_message)
         })
+}
+
+fn native_helper_model_candidates(selected_model: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    let push_model = |models: &mut Vec<String>, model: String| {
+        if !models.iter().any(|seen| seen == &model) {
+            models.push(model);
+        }
+    };
+    push_model(&mut models, explicit_native_helper_model(selected_model));
+    if selected_model != GPT54_MODEL && codex_router_native_direct_model(selected_model) {
+        push_model(&mut models, selected_model.to_string());
+    }
+    push_model(&mut models, NATIVE_HELPER_FALLBACK_MODEL.into());
+    push_model(&mut models, DEFAULT_NATIVE_HELPER_MODEL.into());
+    models
 }
 
 fn gpt54_fallback_trace_event(
@@ -996,6 +1021,17 @@ fn explicit_native_helper_model(selected_model: &str) -> String {
     }
 }
 
+struct ExplicitChatFallbackContext<'a> {
+    main_account: &'a Account,
+    main_endpoint: &'a EndpointConfig,
+    selected_model: &'a str,
+    requested_model: &'a str,
+    reason: &'static str,
+    helper: Option<(&'a Account, &'a EndpointConfig, &'a str)>,
+    skipped_helpers: Vec<Value>,
+    now: u64,
+}
+
 fn resolve_explicit_chat_model_native_helper_selection(
     store: &AccountStore,
     main_account: &Account,
@@ -1005,40 +1041,91 @@ fn resolve_explicit_chat_model_native_helper_selection(
     now: u64,
     requested_model: &str,
 ) -> Result<AccountRouteSelection, Box<Response>> {
-    let helper_model = explicit_native_helper_model(selected_model);
     let routing = account_routing_options(main_account);
     let cursor = DEX_ROUTER_POOL_CURSOR.fetch_add(1, Ordering::Relaxed);
-    let Some((mut helper_account, helper_endpoint)) = select_dex_router_native_executor_in_pool(
-        store,
-        &routing.pool,
-        &helper_model,
-        now,
-        cursor,
-        tool_requirements,
-        Some(main_account.id.as_str()),
-    ) else {
+    let weak_text_intent =
+        tool_requirements.is_some_and(|requirements| requirements.is_weak_computer_intent());
+    let mut skipped_helpers = Vec::new();
+    let mut helper_selection = None;
+    let mut helper_model = String::new();
+    let mut last_resort_helper = None;
+    let mut helper_last_resort = false;
+    for candidate_model in native_helper_model_candidates(selected_model) {
+        let Some((mut account, endpoint)) = select_dex_router_native_executor_in_pool(
+            store,
+            &routing.pool,
+            &candidate_model,
+            now,
+            cursor,
+            tool_requirements,
+            Some(main_account.id.as_str()),
+        ) else {
+            continue;
+        };
+        if model_recent_transient_upstream_error(&account, &candidate_model, now) {
+            skipped_helpers.push(json!({
+                "account_id": account.id,
+                "account_name": account.name,
+                "endpoint_id": endpoint.id,
+                "endpoint_kind": endpoint_kind_slug(&endpoint.kind),
+                "model": candidate_model,
+                "reason": "recent_transient_upstream_error",
+            }));
+            if !weak_text_intent && last_resort_helper.is_none() {
+                last_resort_helper = Some((account, endpoint, candidate_model));
+            }
+            continue;
+        }
+        helper_model = candidate_model;
+        account.sync_legacy_from_endpoint(&endpoint);
+        helper_selection = Some((account, endpoint));
+        break;
+    }
+
+    if helper_selection.is_none() {
+        if let Some((mut account, endpoint, candidate_model)) = last_resort_helper {
+            helper_model = candidate_model;
+            helper_last_resort = true;
+            account.sync_legacy_from_endpoint(&endpoint);
+            helper_selection = Some((account, endpoint));
+        }
+    }
+
+    let Some((helper_account, helper_endpoint)) = helper_selection else {
+        if !weak_text_intent {
+            return Err(Box::new(codex_router_pool_unavailable_response(
+                format!(
+                    "已选择「{} / {}」，但本轮包含 Computer Use 原生工具链信号，账号池「{}」中没有可用的 Responses helper；请切换到 Responses 直连或等待 helper 恢复",
+                    main_account.name, selected_model, routing.pool
+                ),
+                "dex_router_explicit_model_native_helper_unavailable",
+            )));
+        }
         tracing::warn!(
             main_account_id = %main_account.id,
             main_account_name = %main_account.name,
             selected_model = %selected_model,
             pool = %routing.pool,
-            "DEX Router 未找到原生 Computer Use helper，降级回 Chat 兼容账号"
+            "DEX Router 弱 Computer Use 意图未找到原生 helper，降级回 Chat 兼容账号"
         );
-        return explicit_chat_model_native_helper_fallback_selection(
+        return explicit_chat_model_native_helper_fallback_selection(ExplicitChatFallbackContext {
             main_account,
             main_endpoint,
             selected_model,
             requested_model,
-            "native_helper_unavailable",
-            None,
+            reason: "weak_intent_native_helper_unavailable",
+            helper: None,
+            skipped_helpers,
             now,
-        );
+        });
     };
-    helper_account.sync_legacy_from_endpoint(&helper_endpoint);
     let trace = json!({
         "requested_model": requested_model,
         "explicit_model_selection": true,
         "native_helper_reroute": true,
+        "native_helper_reason": if weak_text_intent { "weak_computer_intent" } else { "strong_computer_signal" },
+        "native_helper_skipped": skipped_helpers,
+        "native_helper_last_resort": helper_last_resort,
         "main_account_id": main_account.id,
         "main_account_name": main_account.name,
         "main_endpoint_id": main_endpoint.id,
@@ -1061,26 +1148,22 @@ fn resolve_explicit_chat_model_native_helper_selection(
 }
 
 fn explicit_chat_model_native_helper_fallback_selection(
-    main_account: &Account,
-    main_endpoint: &EndpointConfig,
-    selected_model: &str,
-    requested_model: &str,
-    reason: &'static str,
-    helper: Option<(&Account, &EndpointConfig, &str)>,
-    now: u64,
+    context: ExplicitChatFallbackContext<'_>,
 ) -> Result<AccountRouteSelection, Box<Response>> {
-    if let Some(block) = account_runtime_block(main_account, selected_model, now) {
+    if let Some(block) =
+        account_runtime_block(context.main_account, context.selected_model, context.now)
+    {
         return Err(Box::new(codex_router_pool_unavailable_response(
             format!(
                 "已选择「{} / {}」作为主账号模型，但原生 Computer Use helper 不可用，且主账号当前不可降级使用：{}",
-                main_account.name, selected_model, block.reason
+                context.main_account.name, context.selected_model, block.reason
             ),
             "dex_router_explicit_model_native_helper_fallback_blocked",
         )));
     }
-    let mut account = main_account.clone();
-    account.sync_legacy_from_endpoint(main_endpoint);
-    let helper = helper.map(|(account, endpoint, model)| {
+    let mut account = context.main_account.clone();
+    account.sync_legacy_from_endpoint(context.main_endpoint);
+    let helper = context.helper.map(|(account, endpoint, model)| {
         json!({
             "account_id": account.id,
             "account_name": account.name,
@@ -1090,30 +1173,31 @@ fn explicit_chat_model_native_helper_fallback_selection(
         })
     });
     let trace = json!({
-        "requested_model": requested_model,
+        "requested_model": context.requested_model,
         "explicit_model_selection": true,
         "native_helper_fallback_to_chat": true,
-        "native_helper_fallback_reason": reason,
+        "native_helper_fallback_reason": context.reason,
         "native_helper_reroute": false,
         "native_helper": helper,
-        "main_account_id": main_account.id,
-        "main_account_name": main_account.name,
-        "main_endpoint_id": main_endpoint.id,
-        "main_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
-        "main_selected_model": selected_model,
+        "native_helper_skipped": context.skipped_helpers,
+        "main_account_id": context.main_account.id,
+        "main_account_name": context.main_account.name,
+        "main_endpoint_id": context.main_endpoint.id,
+        "main_endpoint_kind": endpoint_kind_slug(&context.main_endpoint.kind),
+        "main_selected_model": context.selected_model,
         "selected_account_id": account.id,
         "selected_account_name": account.name,
-        "selected_endpoint_id": main_endpoint.id,
-        "selected_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
-        "selected_model": selected_model,
-        "upstream_model": selected_model,
+        "selected_endpoint_id": context.main_endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&context.main_endpoint.kind),
+        "selected_model": context.selected_model,
+        "upstream_model": context.selected_model,
     });
     Ok(AccountRouteSelection {
         account,
-        endpoint: main_endpoint.clone(),
+        endpoint: context.main_endpoint.clone(),
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: false,
-        explicit_model: Some(selected_model.to_string()),
+        explicit_model: Some(context.selected_model.to_string()),
         explicit_account_model: true,
     })
 }
@@ -2916,9 +3000,18 @@ fn runtime_state_is_transient_upstream_error(
         return false;
     }
     let message = status_message.to_ascii_lowercase();
-    ["http 408", "http 500", "http 502", "http 503", "http 504"]
-        .iter()
-        .any(|needle| message.contains(needle))
+    [
+        "http 408",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "service temporarily unavailable",
+        "upstream request failed",
+        "response.failed",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn runtime_retry_ready(next_retry_after: Option<u64>, now: u64) -> bool {
@@ -3063,14 +3156,17 @@ where
         }
         usage.finish();
         let had_stream_error = stream_error.is_some();
-        let error_msg = stream_error.unwrap_or_else(|| {
-            if context.http_status.is_success() {
-                String::new()
-            } else {
-                format!("HTTP {}", context.http_status.as_u16())
-            }
-        });
-        let status = if context.http_status.is_success() && error_msg.is_empty() {
+        let had_event_error = usage.saw_error_event;
+        let error_msg = stream_error
+            .or_else(|| usage.event_error_message.clone())
+            .unwrap_or_else(|| {
+                if context.http_status.is_success() {
+                    String::new()
+                } else {
+                    format!("HTTP {}", context.http_status.as_u16())
+                }
+            });
+        let status = if context.http_status.is_success() && error_msg.is_empty() && !had_event_error {
             "completed"
         } else {
             "failed"
@@ -3079,7 +3175,7 @@ where
             if status == "completed" {
                 runtime_feedback.success(&context.model).await;
             } else {
-                let status_code = if had_stream_error {
+                let status_code = if had_stream_error || (context.http_status.is_success() && had_event_error) {
                     StatusCode::BAD_GATEWAY.as_u16()
                 } else {
                     context.http_status.as_u16()
@@ -3094,10 +3190,35 @@ where
                     .await;
             }
         }
+        let native_failure_track_refreshed = maybe_refresh_failed_native_track(
+            context.codex_router_sessions.as_ref(),
+            context.history_context.codex_router_session_key.as_deref(),
+            &context.history_context.route_trace,
+            status == "failed",
+            crate::accounts::now_secs(),
+        );
+        if native_failure_track_refreshed {
+            tracing::warn!(
+                route_key = %context.history_context.codex_router_session_key.as_deref().unwrap_or(""),
+                model = %context.model,
+                "DEX Router 原生 Responses 失败，保持 Computer Use 原生轨道"
+            );
+        }
+        let mut observed_context =
+            history_context_with_sse_observation(&context.history_context, &usage);
+        if native_failure_track_refreshed {
+            let original_trace = observed_context.route_trace.clone();
+            observed_context.route_trace = patch_route_trace_field(
+                Some(original_trace.clone()),
+                "native_failure_keep_native",
+                json!(true),
+            )
+            .unwrap_or(original_trace);
+        }
         let _ = context
             .request_history
             .record(record_from_context(
-                &history_context_with_sse_observation(&context.history_context, &usage),
+                &observed_context,
                 context.response_id,
                 context.model,
                 status.into(),
@@ -3111,6 +3232,28 @@ where
             .await;
     };
     axum::body::Body::from_stream(body_stream)
+}
+
+fn maybe_refresh_failed_native_track(
+    sessions: Option<&crate::codex_router_session::RouteStateMap>,
+    route_key: Option<&str>,
+    route_trace: &str,
+    failed: bool,
+    now: u64,
+) -> bool {
+    if !failed || !route_trace_force_native_responses(route_trace) {
+        return false;
+    }
+    let (Some(sessions), Some(route_key)) = (sessions, route_key) else {
+        return false;
+    };
+    crate::codex_router_session::refresh_native_track(
+        sessions,
+        route_key,
+        now,
+        "response.stream_failed_keep_native",
+    );
+    true
 }
 
 fn history_context_with_sse_observation(
@@ -3591,17 +3734,44 @@ fn json_value_has_key(value: &Value, key: &str) -> bool {
 
 fn sse_error_message_from_value(value: &Value) -> Option<String> {
     let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-    if !event_type.contains("error") && value.get("error").is_none() {
+    let status_failed = value
+        .get("status")
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("status"))
+        })
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "failed");
+    let error = value
+        .get("error")
+        .filter(|error| !error.is_null())
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .filter(|error| !error.is_null())
+        });
+    if !event_type.contains("error")
+        && !event_type.contains("failed")
+        && !status_failed
+        && error.is_none()
+    {
         return None;
     }
-    let error = value.get("error").unwrap_or(value);
-    error
+    let error = error.unwrap_or(value);
+    let message = error
         .get("message")
         .and_then(Value::as_str)
         .or_else(|| error.as_str())
         .map(str::trim)
         .filter(|message| !message.is_empty())
-        .map(str::to_string)
+        .map(str::to_string);
+    message.or_else(|| {
+        (!event_type.trim().is_empty())
+            .then(|| event_type.trim().to_string())
+            .or_else(|| Some("response failed".to_string()))
+    })
 }
 
 fn extract_proxy_response_usage(bytes: &[u8]) -> (u32, u32, bool) {
@@ -6304,11 +6474,8 @@ async fn handle_responses_for_route_with_router_anchor(
         }
         Err(response) => return response,
     };
-    if route_surface == AccountRouteSurface::CodexRouter
-        && req.stream
-        && req.background != Some(true)
-    {
-        route_selection = apply_codex_router_stream_model_fallback(&model, route_selection);
+    if route_surface == AccountRouteSurface::CodexRouter && req.background != Some(true) {
+        route_selection = apply_codex_router_preflight_model_fallback(&model, route_selection);
     }
     if route_surface == AccountRouteSurface::CodexRouter
         && !req.stream
@@ -6626,7 +6793,7 @@ async fn handle_codex_router_non_stream_with_fallback(
     unreachable!("DEX Router fallback loop always returns");
 }
 
-fn apply_codex_router_stream_model_fallback(
+fn apply_codex_router_preflight_model_fallback(
     requested_model: &str,
     selection: AccountRouteSelection,
 ) -> AccountRouteSelection {
@@ -6634,24 +6801,32 @@ fn apply_codex_router_stream_model_fallback(
         return selection;
     }
     let now = crate::accounts::now_secs();
-    if requested_model == GPT54_MODEL
-        && endpoint_is_native_router_executor(&selection.endpoint)
-        && gpt54_recent_upstream_error(&selection.account, now)
-        && account_runtime_ready(&selection.account, GPT54_FALLBACK_MODEL, now)
-    {
-        tracing::warn!(
-            account_id = %selection.account.id,
-            account_name = %selection.account.name,
-            from_model = GPT54_MODEL,
-            to_model = GPT54_FALLBACK_MODEL,
-            "DEX Router 检测到 gpt-5.4 近期上游 5xx，流式请求降级到 gpt-5.4-mini"
-        );
-        return apply_gpt54_fallback_to_selection(
-            selection,
-            requested_model,
-            GPT54_FALLBACK_MODEL,
-            "recent_gpt54_upstream_error",
-        );
+    if requested_model == GPT54_MODEL && endpoint_is_native_router_executor(&selection.endpoint) {
+        let fallback_reason = if selection.requires_computer {
+            Some("computer_use_gpt54_native_helper")
+        } else if gpt54_recent_upstream_error(&selection.account, now) {
+            Some("recent_gpt54_upstream_error")
+        } else {
+            None
+        };
+        if let Some(reason) = fallback_reason {
+            if account_runtime_ready(&selection.account, GPT54_FALLBACK_MODEL, now) {
+                tracing::warn!(
+                    account_id = %selection.account.id,
+                    account_name = %selection.account.name,
+                    from_model = GPT54_MODEL,
+                    to_model = GPT54_FALLBACK_MODEL,
+                    reason = reason,
+                    "DEX Router 发送前将 gpt-5.4 降级到 gpt-5.4-mini"
+                );
+                return apply_gpt54_fallback_to_selection(
+                    selection,
+                    requested_model,
+                    GPT54_FALLBACK_MODEL,
+                    reason,
+                );
+            }
+        }
     }
     selection
 }
@@ -7286,6 +7461,113 @@ fn strip_images_from_responses_body(
     serde_json::to_vec(&value).map(axum::body::Bytes::from)
 }
 
+fn patch_missing_function_call_namespaces(
+    body: &axum::body::Bytes,
+    req: &mut ResponsesRequest,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let namespace_by_tool = namespace_tools_index(&req.tools);
+    if namespace_by_tool.is_empty() {
+        return Ok(body.clone());
+    }
+
+    let mut value: Value = serde_json::from_slice(body)?;
+    let patched = value
+        .get_mut("input")
+        .map(|input| patch_missing_namespaces_in_value(input, &namespace_by_tool))
+        .unwrap_or(false);
+    if !patched {
+        return Ok(body.clone());
+    }
+
+    if let Ok(updated_req) = serde_json::from_value::<ResponsesRequest>(value.clone()) {
+        *req = updated_req;
+    }
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn namespace_tools_index(tools: &[Value]) -> HashMap<String, String> {
+    let mut namespaces_by_tool: HashMap<String, HashSet<String>> = HashMap::new();
+    for tool in tools {
+        let Some(obj) = tool.as_object() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("namespace") {
+            continue;
+        }
+        let Some(namespace) = obj.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(sub_tools) = obj.get("tools").and_then(Value::as_array) else {
+            continue;
+        };
+        for sub_tool in sub_tools {
+            let Some(name) = sub_tool
+                .get("name")
+                .or_else(|| sub_tool.get("function").and_then(|f| f.get("name")))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            namespaces_by_tool
+                .entry(name.to_string())
+                .or_default()
+                .insert(namespace.to_string());
+        }
+    }
+
+    namespaces_by_tool
+        .into_iter()
+        .filter_map(|(tool, namespaces)| {
+            if namespaces.len() == 1 {
+                namespaces
+                    .into_iter()
+                    .next()
+                    .map(|namespace| (tool, namespace))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn patch_missing_namespaces_in_value(
+    value: &mut Value,
+    namespace_by_tool: &HashMap<String, String>,
+) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut patched = false;
+            let is_function_call = map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|typ| typ == "function_call");
+            let missing_namespace = !map.contains_key("namespace");
+            if is_function_call && missing_namespace {
+                if let Some(namespace) = map
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|name| namespace_by_tool.get(name))
+                {
+                    map.insert("namespace".into(), Value::String(namespace.clone()));
+                    patched = true;
+                }
+            }
+            for child in map.values_mut() {
+                patched |= patch_missing_namespaces_in_value(child, namespace_by_tool);
+            }
+            patched
+        }
+        Value::Array(items) => {
+            let mut patched = false;
+            for item in items {
+                patched |= patch_missing_namespaces_in_value(item, namespace_by_tool);
+            }
+            patched
+        }
+        _ => false,
+    }
+}
+
 fn add_caption_to_responses_body(
     body: &axum::body::Bytes,
     caption: &str,
@@ -7557,6 +7839,7 @@ async fn handle_responses_bypass(
     let model_map = ModelMap::new();
     let model = req.model.clone();
     let mut body = body;
+    body = patch_missing_function_call_namespaces(&body, &mut req).unwrap_or(body);
     if let Some(service_tier) = req.service_tier.as_deref() {
         body = patch_body_string_field(&body, "service_tier", service_tier).unwrap_or(body);
     }
@@ -11492,6 +11775,24 @@ mod tests {
         );
         assert!(gpt54_recent_upstream_error(&account, 1_100));
 
+        account.runtime_state.model_states.insert(
+            GPT54_FALLBACK_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message:
+                    r#"{"error":{"message":"Service temporarily unavailable"}} event: response.failed"#
+                        .into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: 1_050,
+            },
+        );
+        assert!(model_recent_transient_upstream_error(
+            &account,
+            GPT54_FALLBACK_MODEL,
+            1_100
+        ));
+
         let selection = AccountRouteSelection {
             account,
             endpoint,
@@ -11517,6 +11818,54 @@ mod tests {
         assert_eq!(
             trace["model_fallback"]["reason"],
             "recent_gpt54_upstream_error"
+        );
+    }
+
+    #[test]
+    fn gpt54_computer_use_preflight_falls_back_to_mini() {
+        let account = router_responses_account("responses", "pool-a", 10, 1);
+        let endpoint = account.endpoints[0].clone();
+        let selection = AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
+            requires_computer: true,
+            explicit_model: None,
+            explicit_account_model: false,
+        };
+
+        let selection = apply_codex_router_preflight_model_fallback(GPT54_MODEL, selection);
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(
+            selection.explicit_model.as_deref(),
+            Some(GPT54_FALLBACK_MODEL)
+        );
+        assert_eq!(
+            trace["model_fallback"]["reason"],
+            "computer_use_gpt54_native_helper"
+        );
+    }
+
+    #[test]
+    fn gpt54_plain_preflight_keeps_requested_model_without_recent_error() {
+        let account = router_responses_account("responses", "pool-a", 10, 1);
+        let endpoint = account.endpoints[0].clone();
+        let selection = AccountRouteSelection {
+            account,
+            endpoint,
+            route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
+            requires_computer: false,
+            explicit_model: None,
+            explicit_account_model: false,
+        };
+
+        let selection = apply_codex_router_preflight_model_fallback(GPT54_MODEL, selection);
+
+        assert!(selection.explicit_model.is_none());
+        assert_eq!(
+            selection.route_trace.as_deref(),
+            Some(json!({"requested_model": GPT54_MODEL}).to_string().as_str())
         );
     }
 
@@ -11570,13 +11919,16 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_rejects_computer_use_without_native_helper() {
+    fn dex_router_explicit_chat_model_weak_intent_falls_back_without_native_helper() {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
         let slug =
             codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
         let store = router_store(vec![active], "active");
         let requirements = RouterToolRequirements {
+            has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::TextIntent,
+            labels: vec!["input.computer_intent".into()],
             ..Default::default()
         };
 
@@ -11593,8 +11945,33 @@ mod tests {
         assert_eq!(trace["native_helper_fallback_to_chat"], true);
         assert_eq!(
             trace["native_helper_fallback_reason"],
-            "native_helper_unavailable"
+            "weak_intent_native_helper_unavailable"
         );
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_rejects_strong_computer_signal_without_native_helper() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+
+        let err = match resolve_explicit_dex_account_model_selection(
+            &store,
+            &slug,
+            Some(&requirements),
+        ) {
+            Ok(_) => panic!("强 Computer Use 信号缺少原生 helper 时不应回退到 Chat"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status(), StatusCode::CONFLICT);
     }
 
     #[test]
@@ -11631,6 +12008,189 @@ mod tests {
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
         assert_eq!(trace["selected_account_id"], "responses");
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_weak_intent_skips_recent_failed_helper_model() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        responses.runtime_state.model_states.insert(
+            DEFAULT_NATIVE_HELPER_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 502: upstream returned response.failed".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: now,
+            },
+        );
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::TextIntent,
+            labels: vec!["input.computer_intent".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert!(selection.requires_computer);
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["native_helper_reason"], "weak_computer_intent");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(
+            trace["native_helper_skipped"][0]["reason"],
+            "recent_transient_upstream_error"
+        );
+        assert_eq!(trace["upstream_model"], "gpt-5.5");
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_weak_intent_falls_back_to_chat_when_all_helpers_recently_failed(
+    ) {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        for model in [DEFAULT_NATIVE_HELPER_MODEL, NATIVE_HELPER_FALLBACK_MODEL] {
+            responses.runtime_state.model_states.insert(
+                model.into(),
+                crate::accounts::AccountModelRuntimeState {
+                    status: AccountRuntimeStatus::Error,
+                    status_message: "HTTP 503: Service temporarily unavailable".into(),
+                    next_retry_after: None,
+                    quota: Default::default(),
+                    updated_at: now,
+                },
+            );
+        }
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::TextIntent,
+            labels: vec!["input.computer_intent".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(!selection.requires_computer);
+        assert_eq!(trace["native_helper_fallback_to_chat"], true);
+        assert_eq!(
+            trace["native_helper_fallback_reason"],
+            "weak_intent_native_helper_unavailable"
+        );
+        assert_eq!(trace["native_helper_skipped"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_strong_signal_uses_recent_failed_helper_as_last_resort() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        for model in [DEFAULT_NATIVE_HELPER_MODEL, NATIVE_HELPER_FALLBACK_MODEL] {
+            responses.runtime_state.model_states.insert(
+                model.into(),
+                crate::accounts::AccountModelRuntimeState {
+                    status: AccountRuntimeStatus::Error,
+                    status_message: "HTTP 503: Service temporarily unavailable".into(),
+                    next_retry_after: None,
+                    quota: Default::default(),
+                    updated_at: now,
+                },
+            );
+        }
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert!(selection.requires_computer);
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(
+            trace["native_helper_skipped"][0]["reason"],
+            "recent_transient_upstream_error"
+        );
+        assert_eq!(trace["native_helper_last_resort"], true);
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_strong_signal_prefers_clean_helper_model() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        responses.runtime_state.model_states.insert(
+            DEFAULT_NATIVE_HELPER_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 503: Service temporarily unavailable".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: now,
+            },
+        );
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert!(selection.requires_computer);
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.4-mini");
+        assert_eq!(trace["native_helper_last_resort"], false);
     }
 
     #[test]
@@ -12055,6 +12615,54 @@ mod tests {
             .iter()
             .any(|label| label == "session.weak_continuation"));
         assert!(sessions.contains_key("thread-id:test-thread"));
+    }
+
+    #[test]
+    fn dex_router_failed_native_stream_keeps_native_track() {
+        let sessions = Arc::new(dashmap::DashMap::new());
+        let route_trace = json!({
+            "session_route_force_native_responses": true
+        })
+        .to_string();
+
+        let refreshed = maybe_refresh_failed_native_track(
+            Some(&sessions),
+            Some("thread-id:test-thread"),
+            &route_trace,
+            true,
+            1_000,
+        );
+
+        assert!(refreshed);
+        let state = sessions.get("thread-id:test-thread").unwrap();
+        assert_eq!(
+            state.observe_remaining,
+            crate::codex_router_session::NATIVE_OBSERVE_TURNS
+        );
+        assert_eq!(
+            state.expires_at,
+            1_000 + crate::codex_router_session::NATIVE_OBSERVE_TTL_SECS
+        );
+    }
+
+    #[test]
+    fn dex_router_plain_failed_stream_does_not_keep_native_track() {
+        let sessions = Arc::new(dashmap::DashMap::new());
+        let route_trace = json!({
+            "session_route_force_native_responses": false
+        })
+        .to_string();
+
+        let refreshed = maybe_refresh_failed_native_track(
+            Some(&sessions),
+            Some("thread-id:test-thread"),
+            &route_trace,
+            true,
+            1_000,
+        );
+
+        assert!(!refreshed);
+        assert!(!sessions.contains_key("thread-id:test-thread"));
     }
 
     #[test]
@@ -13193,6 +13801,52 @@ data: [DONE]
         assert_eq!(observation.input_tokens, 120);
         assert_eq!(observation.output_tokens, 8);
         assert!(observation.cache_hit);
+    }
+
+    #[test]
+    fn test_sse_usage_observation_marks_response_failed_event() {
+        let mut observation = SseUsageObservation::default();
+        observation.ingest(&Bytes::from_static(
+            br#"event: response.created
+data: {"type":"response.created","response":{"status":"in_progress","error":null}}
+
+"#,
+        ));
+        observation.ingest(&Bytes::from_static(
+            br#"event: response.failed
+data: {"type":"response.failed","response":{"status":"failed","error":{"code":"upstream_error","message":"Upstream request failed"}}}
+
+data: [DONE]
+"#,
+        ));
+        observation.finish();
+
+        assert!(observation.saw_error_event);
+        assert_eq!(
+            observation.event_error_message.as_deref(),
+            Some("Upstream request failed")
+        );
+        assert_eq!(
+            sse_error_message_from_value(&json!({
+                "type": "response.created",
+                "response": {
+                    "status": "in_progress",
+                    "error": null
+                }
+            })),
+            None
+        );
+        assert_eq!(
+            sse_error_message_from_value(&json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {"message": "Service temporarily unavailable"}
+                }
+            }))
+            .as_deref(),
+            Some("Service temporarily unavailable")
+        );
     }
 
     #[test]

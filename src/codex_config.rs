@@ -606,17 +606,30 @@ fn catalog_model_slugs(catalog: &Value) -> Vec<String> {
 }
 
 fn catalog_native_gpt_model_slugs(codex_model_slugs: &[String]) -> Vec<String> {
-    codex_model_slugs
+    let mut models = codex_model_slugs
         .iter()
         .map(|slug| slug.trim())
-        .filter(|slug| {
-            matches!(
-                *slug,
-                "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex" | "gpt-5.3-codex-spark"
-            )
-        })
+        .filter(|slug| is_codex_native_text_gpt_model(slug))
         .map(ToString::to_string)
-        .collect()
+        .collect::<Vec<_>>();
+    for model in crate::providers::profile_by_slug("codex").known_models {
+        if is_codex_native_text_gpt_model(&model) && !models.iter().any(|seen| seen == &model) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+fn is_codex_native_text_gpt_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gpt-5.5"
+            | "gpt-5.4"
+            | "gpt-5.4-mini"
+            | "gpt-5.3-codex"
+            | "gpt-5.3-codex-spark"
+            | "gpt-5.2"
+    )
 }
 
 fn dex_catalog_account_models(
@@ -675,6 +688,11 @@ fn catalog_models_for_endpoint(
 ) -> Vec<String> {
     if native_account_owns_codex_gpt_models(account, endpoint) {
         let mut models = native_gpt_models.to_vec();
+        for model in catalog_native_gpt_model_slugs(native_gpt_models) {
+            if !models.iter().any(|seen| seen == &model) {
+                models.push(model);
+            }
+        }
         if models.is_empty() && !account.default_model.trim().is_empty() {
             models.push(account.default_model.trim().to_string());
         }
@@ -748,10 +766,7 @@ fn hide_base_catalog_models_when_account_models_exist(
     }
     models.retain(|model| {
         let slug = model.get("slug").and_then(Value::as_str).unwrap_or("");
-        !matches!(
-            slug,
-            "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex" | "gpt-5.3-codex-spark"
-        )
+        !is_codex_native_text_gpt_model(slug)
     });
 }
 
@@ -1625,9 +1640,27 @@ mod tests {
         );
 
         assert!(models.iter().any(|model| model == "gpt-5.5"));
+        assert!(models.iter().any(|model| model == "gpt-5.4"));
         assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
+        assert!(models.iter().any(|model| model == "gpt-5.3-codex"));
+        assert!(models.iter().any(|model| model == "gpt-5.3-codex-spark"));
+        assert!(models.iter().any(|model| model == "gpt-5.2"));
         assert!(!models.iter().any(|model| model == "gpt-5"));
         assert!(!models.iter().any(|model| model == "gpt-4.1"));
+    }
+
+    #[test]
+    fn native_gpt_catalog_slugs_are_not_limited_by_codex_cache() {
+        let models = catalog_native_gpt_model_slugs(&["gpt-5.5".into(), "gpt-5.4-mini".into()]);
+
+        assert!(models.iter().any(|model| model == "gpt-5.5"));
+        assert!(models.iter().any(|model| model == "gpt-5.4"));
+        assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
+        assert!(models.iter().any(|model| model == "gpt-5.3-codex"));
+        assert!(models.iter().any(|model| model == "gpt-5.3-codex-spark"));
+        assert!(models.iter().any(|model| model == "gpt-5.2"));
+        assert!(!models.iter().any(|model| model == "gpt-image-2"));
+        assert!(!models.iter().any(|model| model == "codex-auto-review"));
     }
 
     #[test]

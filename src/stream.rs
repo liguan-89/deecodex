@@ -102,6 +102,7 @@ struct ResponseToolCallItem {
     item_type: &'static str,
     item_id: String,
     name: Option<String>,
+    namespace: Option<String>,
     server_label: Option<String>,
     arguments: Option<String>,
     input: Option<String>,
@@ -299,12 +300,30 @@ fn normalize_tool_search_name(name: &str) -> &str {
     }
 }
 
+fn split_namespace_tool_name(name: &str) -> (Option<String>, String) {
+    if let Some((namespace, tool_name)) = name.rsplit_once("__") {
+        if !namespace.is_empty() && !tool_name.is_empty() {
+            return (
+                Some(
+                    namespace
+                        .strip_suffix("__")
+                        .unwrap_or(namespace)
+                        .to_string(),
+                ),
+                tool_name.to_string(),
+            );
+        }
+    }
+    (None, name.to_string())
+}
+
 fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> ResponseToolCallItem {
     if name == "local_computer" {
         ResponseToolCallItem {
             item_type: "computer_call",
             item_id: format!("cc_{call_id}"),
             name: None,
+            namespace: None,
             server_label: None,
             arguments: None,
             input: None,
@@ -318,6 +337,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             item_type: "mcp_tool_call",
             item_id: format!("mcp_{call_id}"),
             name: Some(mcp.tool),
+            namespace: None,
             server_label: Some(mcp.server_label),
             arguments: Some(mcp.arguments),
             input: None,
@@ -328,6 +348,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             item_type: "custom_tool_call",
             item_id: format!("ctc_{call_id}"),
             name: Some("apply_patch".into()),
+            namespace: None,
             server_label: None,
             arguments: None,
             input: Some(apply_patch_input_from_arguments(arguments)),
@@ -335,10 +356,12 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
         }
     } else {
         let tool_name = normalize_tool_search_name(name).to_string();
+        let (namespace, tool_name) = split_namespace_tool_name(&tool_name);
         ResponseToolCallItem {
             item_type: "function_call",
             item_id: format!("fc_{call_id}"),
             name: Some(tool_name),
+            namespace,
             server_label: None,
             arguments: Some(arguments.to_string()),
             input: None,
@@ -369,6 +392,9 @@ fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progre
     });
     if let Some(name) = &spec.name {
         item["name"] = json!(name);
+    }
+    if let Some(namespace) = &spec.namespace {
+        item["namespace"] = json!(namespace);
     }
     if let Some(server_label) = &spec.server_label {
         item["server_label"] = json!(server_label);
@@ -1897,6 +1923,21 @@ mod tests {
         assert_eq!(item.item_type, "function_call");
         assert_eq!(item.name.as_deref(), Some("tool_search"));
         assert_eq!(item.arguments.as_deref(), Some(r#"{"query":"电脑"}"#));
+    }
+
+    #[test]
+    fn test_response_tool_call_item_namespace_function() {
+        let item = response_tool_call_item(
+            "ns1",
+            "mcp__computer_use__get_app_state",
+            r#"{"app":"抖音"}"#,
+        );
+        assert_eq!(item.item_type, "function_call");
+        assert_eq!(item.name.as_deref(), Some("get_app_state"));
+        assert_eq!(item.namespace.as_deref(), Some("mcp__computer_use"));
+        let json = response_tool_call_json("ns1", &item, false);
+        assert_eq!(json["name"], "get_app_state");
+        assert_eq!(json["namespace"], "mcp__computer_use");
     }
 
     #[test]

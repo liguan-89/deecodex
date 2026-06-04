@@ -695,6 +695,179 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
 }
 
 #[tokio::test]
+async fn codex_router_falls_back_gpt54_to_mini_for_computer_intent() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_gpt54_mini","object":"response","status":"completed","model":"gpt-5.4-mini","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.4",
+                        "stream":true,
+                        "input":"使用 Computer Use 打开抖音 app，播放第一个视频",
+                        "tools":[
+                            {"type":"function","name":"exec_command"},
+                            {"type":"function","name":"view_image"},
+                            {"type":"web_search_preview"},
+                            {"type":"image_generation"}
+                        ]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["model"], "gpt-5.4-mini");
+        let tools = captured[0].body["tools"].as_array().unwrap();
+        assert!(!tools
+            .iter()
+            .any(|tool| tool["type"] == "computer_use_preview"));
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/codex-router/v1/responses")
+        .unwrap();
+    assert_eq!(entry.account_id, "router-responses");
+    assert_eq!(entry.model, "gpt-5.4-mini");
+    let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
+    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["model_fallback"]["from_model"], "gpt-5.4");
+    assert_eq!(trace["model_fallback"]["to_model"], "gpt-5.4-mini");
+    assert_eq!(
+        trace["model_fallback"]["reason"],
+        "computer_use_gpt54_native_helper"
+    );
+}
+
+#[tokio::test]
+async fn codex_router_patches_missing_namespace_before_responses_bypass() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not be used"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_namespace_ok","object":"response","status":"completed","model":"gpt-5.4-mini","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "deepseek",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("deepseek-chat"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let app = build_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{
+                        "model":"gpt-5.4-mini",
+                        "stream":true,
+                        "input":[
+                            {
+                                "type":"function_call",
+                                "name":"get_app_state",
+                                "arguments":"{\"app\":\"抖音\"}",
+                                "call_id":"call_app_state"
+                            },
+                            {
+                                "type":"function_call_output",
+                                "call_id":"call_app_state",
+                                "output":"unsupported call: get_app_state"
+                            },
+                            {
+                                "type":"message",
+                                "role":"user",
+                                "content":"继续"
+                            }
+                        ],
+                        "tools":[{
+                            "type":"namespace",
+                            "name":"mcp__computer_use",
+                            "tools":[{"type":"function","name":"get_app_state"}]
+                        }]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    let captured = responses_captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/responses");
+    assert_eq!(captured[0].body["input"][0]["name"], "get_app_state");
+    assert_eq!(
+        captured[0].body["input"][0]["namespace"],
+        "mcp__computer_use"
+    );
+}
+
+#[tokio::test]
 async fn codex_router_routes_nested_computer_intent_text_to_responses_account() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,

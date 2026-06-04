@@ -704,6 +704,23 @@ fn normalize_tool_search_name(name: &str) -> &str {
     }
 }
 
+fn split_namespace_tool_name(name: &str) -> (Option<String>, String) {
+    if let Some((namespace, tool_name)) = name.rsplit_once("__") {
+        if !namespace.is_empty() && !tool_name.is_empty() {
+            return (
+                Some(
+                    namespace
+                        .strip_suffix("__")
+                        .unwrap_or(namespace)
+                        .to_string(),
+                ),
+                tool_name.to_string(),
+            );
+        }
+    }
+    (None, name.to_string())
+}
+
 fn convert_tool_search_tool(tool: &Value) -> Value {
     let obj = tool.as_object();
     let description = obj
@@ -1137,6 +1154,7 @@ pub fn from_chat_response(
             id: Some(item_id),
             call_id: None,
             name: None,
+            namespace: None,
             server_label: None,
             arguments: None,
             input: None,
@@ -1158,6 +1176,7 @@ pub fn from_chat_response(
             id: Some(item_id),
             call_id: None,
             name: None,
+            namespace: None,
             server_label: None,
             arguments: None,
             input: None,
@@ -1196,6 +1215,11 @@ pub fn from_chat_response(
         } else {
             None
         };
+        let (namespace, function_name) = if is_computer_call || is_mcp_call || is_apply_patch {
+            (None, name.to_string())
+        } else {
+            split_namespace_tool_name(name)
+        };
         let item_id = if is_computer_call {
             format!("cc_{}", call_id)
         } else if is_mcp_call {
@@ -1224,8 +1248,9 @@ pub fn from_chat_response(
             } else if let Some(mcp) = &mcp {
                 Some(mcp.tool.clone())
             } else {
-                Some(name.to_string())
+                Some(function_name)
             },
+            namespace,
             server_label: mcp.as_ref().map(|mcp| mcp.server_label.clone()),
             arguments: if is_computer_call {
                 None
@@ -1776,6 +1801,44 @@ mod tests {
         assert_eq!(
             resp.output[0].arguments.as_deref(),
             Some("{\"cmd\":\"pwd\"}")
+        );
+    }
+
+    #[test]
+    fn test_blocking_namespace_tool_call_keeps_namespace() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    reasoning_details: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "call_app_state",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp__computer_use__get_app_state",
+                            "arguments": "{\"app\":\"抖音\"}"
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_ns".into(), "deepseek-v4-pro", chat_resp);
+        assert_eq!(resp.output.len(), 1);
+        assert_eq!(resp.output[0].kind, "function_call");
+        assert_eq!(
+            resp.output[0].namespace.as_deref(),
+            Some("mcp__computer_use")
+        );
+        assert_eq!(resp.output[0].name.as_deref(), Some("get_app_state"));
+        assert_eq!(
+            resp.output[0].arguments.as_deref(),
+            Some("{\"app\":\"抖音\"}")
         );
     }
 
