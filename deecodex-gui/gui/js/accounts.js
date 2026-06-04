@@ -153,7 +153,7 @@ function accountRuntimeBadge(a) {
   const labels = {
     active: '',
     error: '错误',
-    cooling_down: '冷却',
+    cooling_down: '错误',
     quota_exceeded: '配额',
   };
   const label = labels[status] || '';
@@ -207,11 +207,11 @@ function runtimeStatusLabel(status) {
   const labels = {
     active: '正常',
     error: '错误',
-    cooling_down: '冷却',
+    cooling_down: '错误',
     quota_exceeded: '配额耗尽',
     Active: '正常',
     Error: '错误',
-    CoolingDown: '冷却',
+    CoolingDown: '错误',
     QuotaExceeded: '配额耗尽',
   };
   return labels[status] || status || '正常';
@@ -281,7 +281,7 @@ function renderCodexOfficialRuntimePanel(a) {
       <span>${esc(officialRuntimeSummaryText(a))}</span>
     </div>
     <div class="official-runtime-actions">
-      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除冷却</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除运行态限制</button>` : ''}
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="resetAccountRuntime('${accountId}')">重置运行态</button>` : ''}
     </div>
     <div class="official-quota-panel" id="official-quota-${accountId}">
@@ -316,9 +316,9 @@ function runtimeModelEmptyText(a) {
   const failed = Number(runtime.failed || 0);
   const quota = officialQuotaSnapshot(a);
   if (success || failed || quota) {
-    return '暂无模型级冷却；账号级请求和额度状态见上方统计，当前没有单模型限制。';
+    return '暂无模型级限制；账号级请求和额度状态见上方统计，当前没有单模型限制。';
   }
-  return '暂无模型级冷却；尚无请求记录，当前按可用处理。';
+  return '暂无模型级限制；尚无请求记录，当前按可用处理。';
 }
 
 function officialAccountEligibility(a) {
@@ -327,7 +327,7 @@ function officialAccountEligibility(a) {
   const retry = Number(runtime.next_retry_after || 0);
   const now = Math.floor(Date.now() / 1000);
   if (!routing.anchor_enabled) return '锚点停用';
-  if (retry && retry > now) return `${runtimeStatusLabel(runtime.status)}中`;
+  if ((runtime.status || 'active') === 'quota_exceeded' && retry && retry > now) return '配额恢复中';
   if ((runtime.status || 'active') === 'error') return '最近错误';
   return routing.execution_enabled ? '锚点+执行' : '登录态锚点';
 }
@@ -459,7 +459,7 @@ function renderOfficialPoolOverview(list) {
       <strong title="${escAttr(pools)}">${esc(pools || 'codex-official')}</strong>
     </div>
     <div>
-      <span>冷却/停用</span>
+      <span>限制/停用</span>
       <strong>${unavailable}</strong>
     </div>
     <div>
@@ -478,13 +478,13 @@ function routerReasonLabel(reason) {
     routing_disabled: '已停用',
     pool_mismatch: '非同池',
     no_supported_endpoint: '未映射',
-    cooling_down: '冷却中',
+    cooling_down: '旧运行态记录',
     account_quota_cooling: '账号额度冷却',
-    account_cooling_down: '账号冷却',
-    account_retry_wait: '账号等待恢复',
+    account_cooling_down: '旧账号运行态',
+    account_retry_wait: '旧账号运行态',
     model_quota_cooling: '模型额度冷却',
-    model_cooling_down: '模型冷却',
-    model_retry_wait: '模型等待恢复',
+    model_cooling_down: '旧模型运行态',
+    model_retry_wait: '旧模型运行态',
     capability_mismatch: '能力不匹配',
     attempt_failed: '本次已失败',
     recent_account_error: '账号近期错误',
@@ -3027,11 +3027,11 @@ async function switchAccount(id) {
 async function clearAccountCooldown(id) {
   try {
     await invoke('clear_account_cooldown', { id });
-    showToast('已清除账号冷却', 'success');
+    showToast('已清除运行态限制', 'success');
     await loadAccountsData();
     refreshEditingAccountAfterManagement(id);
   } catch (e) {
-    showToast('清除冷却失败: ' + e, 'error');
+    showToast('清除运行态限制失败: ' + e, 'error');
   }
 }
 

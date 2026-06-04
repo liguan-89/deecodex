@@ -883,6 +883,16 @@ fn patch_router_model_fallback_trace(route_trace: Option<String>, event: Value) 
     serde_json::to_string(&trace).ok()
 }
 
+fn patch_route_trace_field(route_trace: Option<String>, key: &str, value: Value) -> Option<String> {
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert(key.into(), value);
+    }
+    serde_json::to_string(&trace).ok()
+}
+
 fn apply_gpt54_fallback_to_selection(
     mut selection: AccountRouteSelection,
     requested_model: &str,
@@ -2092,6 +2102,89 @@ fn router_tool_requirements_from_input(
     }
 }
 
+fn router_requirements_have_input_computer_signal(requirements: &RouterToolRequirements) -> bool {
+    requirements
+        .labels
+        .iter()
+        .any(|label| label.starts_with("input.") && label.contains("computer"))
+}
+
+fn response_tools_have_computer_tool(tools: &[Value]) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|typ| {
+                matches!(
+                    typ,
+                    "computer_use" | "computer_use_preview" | "browser_use" | "browser"
+                )
+            })
+    })
+}
+
+fn default_computer_use_tool() -> Value {
+    json!({
+        "type": "computer_use_preview",
+        "display_width": 1024,
+        "display_height": 768,
+    })
+}
+
+fn patch_body_tools_field(
+    body: &axum::body::Bytes,
+    tools: &[Value],
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("tools".into(), Value::Array(tools.to_vec()));
+    }
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn inject_computer_use_tool_for_router(
+    req: &mut ResponsesRequest,
+    body: &mut axum::body::Bytes,
+    route_selection: &mut AccountRouteSelection,
+    requirements: Option<&RouterToolRequirements>,
+) {
+    let Some(requirements) = requirements else {
+        return;
+    };
+    if !route_selection.requires_computer
+        || !endpoint_is_native_router_executor(&route_selection.endpoint)
+        || !router_requirements_have_input_computer_signal(requirements)
+    {
+        return;
+    }
+    if response_tools_have_computer_tool(&req.tools) {
+        return;
+    }
+
+    req.tools.push(default_computer_use_tool());
+    match patch_body_tools_field(body, &req.tools) {
+        Ok(updated) => {
+            *body = updated;
+            route_selection.route_trace = patch_route_trace_field(
+                route_selection.route_trace.take(),
+                "computer_tool_injection",
+                json!({
+                    "action": "inject_computer_use_preview",
+                    "reason": "input_computer_signal_without_tool",
+                    "tool_count": req.tools.len(),
+                }),
+            );
+            tracing::info!(
+                model = %req.model,
+                "DEX Router 为 Computer Use 文字意图注入 computer_use_preview 工具"
+            );
+        }
+        Err(err) => {
+            warn!("DEX Router 注入 computer_use_preview 工具失败，继续使用原请求体: {err}");
+        }
+    }
+}
+
 fn router_latest_input_computer_signal(
     items: &[Value],
 ) -> Option<(NativeRouteSignal, &'static str)> {
@@ -2868,18 +2961,14 @@ struct RuntimeBlock {
 }
 
 fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Option<RuntimeBlock> {
-    if !runtime_retry_ready(account.runtime_state.next_retry_after, now)
-        && !runtime_state_is_transient_upstream_error(
-            &account.runtime_state.status,
-            &account.runtime_state.status_message,
-        )
+    if matches!(
+        account.runtime_state.status,
+        AccountRuntimeStatus::QuotaExceeded
+    ) && !runtime_retry_ready(account.runtime_state.next_retry_after, now)
     {
-        let reason = match account.runtime_state.status {
-            AccountRuntimeStatus::QuotaExceeded => "account_quota_cooling",
-            AccountRuntimeStatus::CoolingDown => "account_cooling_down",
-            _ => "account_retry_wait",
-        };
-        return Some(RuntimeBlock { reason });
+        return Some(RuntimeBlock {
+            reason: "account_quota_cooling",
+        });
     }
 
     account
@@ -2887,17 +2976,14 @@ fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Opt
         .model_states
         .get(mapped_model)
         .and_then(|state| {
-            if runtime_retry_ready(state.next_retry_after, now)
-                || runtime_state_is_transient_upstream_error(&state.status, &state.status_message)
+            if matches!(state.status, AccountRuntimeStatus::QuotaExceeded)
+                && !runtime_retry_ready(state.next_retry_after, now)
             {
-                None
+                Some(RuntimeBlock {
+                    reason: "model_quota_cooling",
+                })
             } else {
-                let reason = match state.status {
-                    AccountRuntimeStatus::QuotaExceeded => "model_quota_cooling",
-                    AccountRuntimeStatus::CoolingDown => "model_cooling_down",
-                    _ => "model_retry_wait",
-                };
-                Some(RuntimeBlock { reason })
+                None
             }
         })
 }
@@ -3094,7 +3180,7 @@ where
         let _ = context
             .request_history
             .record(record_from_context(
-                &context.history_context,
+                &history_context_with_sse_observation(&context.history_context, &usage),
                 context.response_id,
                 context.model,
                 status.into(),
@@ -3108,6 +3194,41 @@ where
             .await;
     };
     axum::body::Body::from_stream(body_stream)
+}
+
+fn history_context_with_sse_observation(
+    context: &HistoryContext,
+    usage: &SseUsageObservation,
+) -> HistoryContext {
+    let mut context = context.clone();
+    let force_native = route_trace_force_native_responses(&context.route_trace);
+    let native_tool_not_emitted = force_native && !usage.saw_computer_call;
+    let observation = usage.observation_value(native_tool_not_emitted);
+    let original_trace = context.route_trace.clone();
+    context.route_trace = patch_route_trace_field(
+        Some(original_trace.clone()),
+        "bypass_observation",
+        observation,
+    )
+    .unwrap_or(original_trace);
+    if native_tool_not_emitted {
+        warn!(
+            route_key = %context.codex_router_session_key.as_deref().unwrap_or(""),
+            "DEX Router 原生 Responses 请求完成，但响应流未产出 computer_call"
+        );
+    }
+    context
+}
+
+fn route_trace_force_native_responses(route_trace: &str) -> bool {
+    serde_json::from_str::<Value>(route_trace)
+        .ok()
+        .and_then(|trace| {
+            trace
+                .get("session_route_force_native_responses")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 fn sse_bytes_have_native_signal(bytes: &[u8]) -> bool {
@@ -3449,6 +3570,12 @@ struct SseUsageObservation {
     input_tokens: u32,
     output_tokens: u32,
     cache_hit: bool,
+    saw_native_signal: bool,
+    saw_computer_call: bool,
+    saw_computer_call_output: bool,
+    saw_screenshot: bool,
+    saw_error_event: bool,
+    event_error_message: Option<String>,
 }
 
 impl SseUsageObservation {
@@ -3488,7 +3615,76 @@ impl SseUsageObservation {
             self.output_tokens = output;
         }
         self.cache_hit |= hit;
+        self.observe_native_value(&value);
     }
+
+    fn observe_native_value(&mut self, value: &Value) {
+        self.saw_computer_call |= json_value_has_type(value, &["computer_call"]);
+        self.saw_computer_call_output |= json_value_has_type(value, &["computer_call_output"]);
+        self.saw_screenshot |= json_value_has_key(value, "screenshot");
+        self.saw_native_signal |= self.saw_computer_call
+            || self.saw_computer_call_output
+            || self.saw_screenshot
+            || crate::codex_router_session::response_has_native_signal(value);
+        if let Some(message) = sse_error_message_from_value(value) {
+            self.saw_error_event = true;
+            if self.event_error_message.is_none() {
+                self.event_error_message = Some(truncate_router_failure_message(&message));
+            }
+        }
+    }
+
+    fn observation_value(&self, native_tool_not_emitted: bool) -> Value {
+        json!({
+            "native_signal": self.saw_native_signal,
+            "computer_call": self.saw_computer_call,
+            "computer_call_output": self.saw_computer_call_output,
+            "screenshot": self.saw_screenshot,
+            "error_event": self.saw_error_event,
+            "error_event_message": self.event_error_message,
+            "native_tool_not_emitted": native_tool_not_emitted,
+        })
+    }
+}
+
+fn json_value_has_type(value: &Value, expected: &[&str]) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(|item| json_value_has_type(item, expected)),
+        Value::Object(map) => {
+            map.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|typ| expected.contains(&typ))
+                || map
+                    .values()
+                    .any(|value| json_value_has_type(value, expected))
+        }
+        _ => false,
+    }
+}
+
+fn json_value_has_key(value: &Value, key: &str) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(|item| json_value_has_key(item, key)),
+        Value::Object(map) => {
+            map.contains_key(key) || map.values().any(|value| json_value_has_key(value, key))
+        }
+        _ => false,
+    }
+}
+
+fn sse_error_message_from_value(value: &Value) -> Option<String> {
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    if !event_type.contains("error") && value.get("error").is_none() {
+        return None;
+    }
+    let error = value.get("error").unwrap_or(value);
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
 }
 
 fn extract_proxy_response_usage(bytes: &[u8]) -> (u32, u32, bool) {
@@ -6220,18 +6416,21 @@ async fn handle_responses_for_route_with_router_anchor(
         route_selection,
         _start,
         session_route_decision.as_ref(),
+        router_tool_requirements.as_ref(),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_responses_for_selection(
     state: AppState,
     mut req: ResponsesRequest,
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
-    route_selection: AccountRouteSelection,
+    mut route_selection: AccountRouteSelection,
     start: Instant,
     session_route_decision: Option<&DexRouterSessionRouteDecision>,
+    router_tool_requirements: Option<&RouterToolRequirements>,
 ) -> Response {
     let endpoint = route_selection.endpoint.clone();
     if let Some(model) = route_selection.explicit_model.as_deref() {
@@ -6242,6 +6441,14 @@ async fn handle_responses_for_selection(
                 warn!("DEX 账号模型直选请求体模型替换失败，继续使用解析后的请求模型: {err}")
             }
         }
+    }
+    if route_surface == AccountRouteSurface::CodexRouter {
+        inject_computer_use_tool_for_router(
+            &mut req,
+            &mut body,
+            &mut route_selection,
+            router_tool_requirements,
+        );
     }
     let model = req.model.clone();
     if endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial {
@@ -6427,6 +6634,7 @@ async fn handle_codex_router_non_stream_with_fallback(
             selection.clone(),
             Instant::now(),
             session_route_decision.as_ref(),
+            tool_requirements.as_ref(),
         )
         .await;
 
@@ -8123,6 +8331,21 @@ fn runtime_message_from_response_body(status: StatusCode, body: &Value) -> Strin
         .unwrap_or(fallback)
 }
 
+fn runtime_message_from_response_text(status: StatusCode, body: &str) -> String {
+    let fallback = format!("HTTP {}", status.as_u16());
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return fallback;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return runtime_message_from_response_body(status, &value);
+    }
+    if trimmed.starts_with('<') {
+        return fallback;
+    }
+    truncate_router_failure_message(trimmed)
+}
+
 async fn bypass_stream_forward(
     BypassArgs {
         state,
@@ -8270,12 +8493,13 @@ async fn bypass_stream_forward(
 
     if !status.is_success() {
         let retry_after = retry_after_secs(resp.headers());
-        let error_body = resp.text().await.unwrap_or_default();
+        let raw_error_body = resp.text().await.unwrap_or_default();
+        let history_error_msg = runtime_message_from_response_text(status, &raw_error_body);
         runtime_feedback
             .failure(
                 &model,
                 status.as_u16(),
-                format!("HTTP {}", status.as_u16()),
+                history_error_msg.clone(),
                 retry_after,
             )
             .await;
@@ -8290,15 +8514,15 @@ async fn bypass_stream_forward(
                 0,
                 start.elapsed().as_millis() as u64,
                 url,
-                format!("HTTP {}", status.as_u16()),
+                history_error_msg,
                 false,
             ))
             .await;
         // 上游可能返回 HTML，转为 JSON 错误
-        let error_body = if error_body.trim_start().starts_with('<') {
+        let error_body = if raw_error_body.trim_start().starts_with('<') {
             format!("upstream returned HTTP {}", status.as_u16())
         } else {
-            error_body
+            raw_error_body
         };
         return (
             status,
@@ -8581,6 +8805,11 @@ async fn bypass_send_request(
                     .and_then(|u| u.as_object())
                     .map(is_cache_hit)
                     .unwrap_or(false);
+                let history_error_msg = if status.is_success() {
+                    String::new()
+                } else {
+                    runtime_message_from_response_body(status, &response_body)
+                };
                 state
                     .request_history
                     .record(record_from_context(
@@ -8597,7 +8826,7 @@ async fn bypass_send_request(
                         output_tokens,
                         start.elapsed().as_millis() as u64,
                         url,
-                        String::new(),
+                        history_error_msg.clone(),
                         cache_hit,
                     ))
                     .await;
@@ -8610,12 +8839,7 @@ async fn bypass_send_request(
                     runtime_feedback.success(&model).await;
                 } else {
                     runtime_feedback
-                        .failure(
-                            &model,
-                            status.as_u16(),
-                            runtime_message_from_response_body(status, &response_body),
-                            retry_after,
-                        )
+                        .failure(&model, status.as_u16(), history_error_msg, retry_after)
                         .await;
                 }
             }
@@ -11184,12 +11408,30 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_skips_cooled_account() {
+    fn dex_router_keeps_non_quota_retry_account_eligible() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut cooled = router_responses_account("cooled", "pool-a", 100, 1);
+        cooled.runtime_state.status = AccountRuntimeStatus::CoolingDown;
+        cooled.runtime_state.status_message = "HTTP 401".into();
         cooled.runtime_state.next_retry_after = Some(2_000);
         let ready = router_responses_account("ready", "pool-a", 10, 1);
         let store = router_store(vec![active, cooled, ready], "active");
+
+        let (account, _) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "cooled");
+    }
+
+    #[test]
+    fn dex_router_skips_quota_exceeded_account() {
+        let active = router_responses_account("active", "pool-a", 0, 1);
+        let mut quota = router_responses_account("quota", "pool-a", 100, 1);
+        quota.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
+        quota.runtime_state.status_message = "HTTP 429".into();
+        quota.runtime_state.next_retry_after = Some(2_000);
+        let ready = router_responses_account("ready", "pool-a", 10, 1);
+        let store = router_store(vec![active, quota, ready], "active");
 
         let (account, _) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
@@ -11225,7 +11467,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_skips_model_level_cooldown() {
+    fn dex_router_keeps_non_quota_model_retry_eligible() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut model_cooled = router_responses_account("model-cooled", "pool-a", 100, 1);
         model_cooled.runtime_state.model_states.insert(
@@ -11240,6 +11482,30 @@ mod tests {
         );
         let ready = router_responses_account("ready", "pool-a", 10, 1);
         let store = router_store(vec![active, model_cooled, ready], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "model-cooled");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+    }
+
+    #[test]
+    fn dex_router_skips_model_level_quota() {
+        let active = router_responses_account("active", "pool-a", 0, 1);
+        let mut model_quota = router_responses_account("model-quota", "pool-a", 100, 1);
+        model_quota.runtime_state.model_states.insert(
+            "gpt-5".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::QuotaExceeded,
+                status_message: "HTTP 429".into(),
+                next_retry_after: Some(2_000),
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        let ready = router_responses_account("ready", "pool-a", 10, 1);
+        let store = router_store(vec![active, model_quota, ready], "active");
 
         let (account, endpoint) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
@@ -11636,8 +11902,8 @@ mod tests {
         model_cooled.runtime_state.model_states.insert(
             "gpt-5".into(),
             crate::accounts::AccountModelRuntimeState {
-                status: AccountRuntimeStatus::CoolingDown,
-                status_message: "模型暂时不可用".into(),
+                status: AccountRuntimeStatus::QuotaExceeded,
+                status_message: "模型额度耗尽".into(),
                 next_retry_after: Some(1_800),
                 quota: Default::default(),
                 updated_at: 1_000,
@@ -11660,8 +11926,8 @@ mod tests {
             .iter()
             .find(|candidate| candidate["account_id"] == "model-cooled")
             .unwrap();
-        assert_eq!(model["reason"], "model_cooling_down");
-        assert_eq!(model["model_runtime_message"], "模型暂时不可用");
+        assert_eq!(model["reason"], "model_quota_cooling");
+        assert_eq!(model["model_runtime_message"], "模型额度耗尽");
         assert_eq!(model["model_runtime_next_retry_after"], 1_800);
     }
 
@@ -11860,8 +12126,10 @@ mod tests {
                 expires_at: 1_600,
             },
         );
-        let mut requirements = RouterToolRequirements::default();
-        requirements.native_signal = NativeRouteSignal::WeakContinuation;
+        let mut requirements = RouterToolRequirements {
+            native_signal: NativeRouteSignal::WeakContinuation,
+            ..Default::default()
+        };
         requirements.add_label("input.weak_continuation");
 
         let decision = update_codex_router_session_route_state(
@@ -12389,11 +12657,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_official_selector_skips_cooled_account() {
-        let mut cooled = official_codex_account("cooled", 100, 1);
-        cooled.runtime_state.next_retry_after = Some(2_000);
+    fn codex_official_selector_skips_quota_exceeded_account() {
+        let mut quota = official_codex_account("quota", 100, 1);
+        quota.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
+        quota.runtime_state.next_retry_after = Some(2_000);
         let ready = official_codex_account("ready", 10, 1);
-        let store = official_store(vec![cooled, ready], "cooled");
+        let store = official_store(vec![quota, ready], "quota");
 
         let (account, _) = select_codex_official_account_endpoint(
             &store,
@@ -12481,6 +12750,7 @@ mod tests {
     #[test]
     fn codex_official_selector_returns_none_when_none_ready() {
         let mut active = official_codex_account("active", 0, 1);
+        active.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
         active.runtime_state.next_retry_after = Some(2_000);
         let mut other = official_codex_account("other", 0, 1);
         other.runtime_state.model_states.insert(

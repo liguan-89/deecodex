@@ -573,7 +573,7 @@ assert(officialDetail.includes('official-runtime-summary'));
 assert(officialDetail.includes('official-quota-panel'));
 assert(officialDetail.includes('5h'));
 assert(officialDetail.includes('94%'));
-assert(officialDetail.includes('配额耗尽中'));
+assert(officialDetail.includes('配额恢复中'));
 assert(officialDetail.includes('runtime-state-grid'));
 assert(officialDetail.includes('runtime-model-row'));
 assert(officialDetail.includes('HTTP 429'));

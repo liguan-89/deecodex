@@ -656,8 +656,8 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/responses");
         let tools = captured[0].body["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
-        assert!(!tools
+        assert_eq!(tools.len(), 4);
+        assert!(tools
             .iter()
             .any(|tool| tool["type"] == "computer_use_preview"));
     }
@@ -679,6 +679,10 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
         .unwrap()
         .iter()
         .any(|label| label == "input.computer_intent"));
+    assert_eq!(
+        trace["computer_tool_injection"]["action"],
+        "inject_computer_use_preview"
+    );
     let chat_candidate = trace["candidates"]
         .as_array()
         .unwrap()
@@ -764,6 +768,10 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
         let captured = responses_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/responses");
+        let tools = captured[0].body["tools"].as_array().unwrap();
+        assert!(tools
+            .iter()
+            .any(|tool| tool["type"] == "computer_use_preview"));
     }
 
     let entries = request_history
@@ -783,6 +791,10 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
         .unwrap()
         .iter()
         .any(|label| label == "input.computer_intent"));
+    assert_eq!(
+        trace["computer_tool_injection"]["action"],
+        "inject_computer_use_preview"
+    );
 }
 
 #[tokio::test]
@@ -1267,7 +1279,7 @@ async fn codex_router_chat_then_computer_use_replays_previous_local_response_bef
             "使用 Computer Use 打开浏览器"
         );
     }
-    assert!(responses_captured.lock().unwrap().len() >= 1);
+    assert!(!responses_captured.lock().unwrap().is_empty());
     assert_eq!(chat_captured.lock().unwrap().len(), 1);
 }
 
@@ -1610,7 +1622,7 @@ async fn codex_router_non_stream_does_not_fallback_after_non_retryable_failure()
 }
 
 #[tokio::test]
-async fn codex_router_stream_preflight_reroutes_unhealthy_candidate_before_send() {
+async fn codex_router_stream_keeps_recent_failure_candidate_sendable() {
     let sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"stream ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n";
     let (unhealthy_upstream, unhealthy_captured) = capture_sse_request_upstream(sse_body).await;
     let (healthy_upstream, healthy_captured) = capture_sse_request_upstream(sse_body).await;
@@ -1659,14 +1671,14 @@ async fn codex_router_stream_preflight_reroutes_unhealthy_candidate_before_send(
 
     assert_eq!(response.status(), StatusCode::OK);
     let _ = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(unhealthy_captured.lock().unwrap().len(), 0);
     {
-        let captured = healthy_captured.lock().unwrap();
+        let captured = unhealthy_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].path, "/chat/completions");
         assert_eq!(captured[0].body["model"], "deepseek-chat");
         assert_eq!(captured[0].body["stream"], true);
     }
+    assert_eq!(healthy_captured.lock().unwrap().len(), 0);
 
     let entries = request_history
         .list(10, &deecodex::request_history::HistoryFilter::default())
@@ -1675,21 +1687,16 @@ async fn codex_router_stream_preflight_reroutes_unhealthy_candidate_before_send(
         .iter()
         .find(|entry| entry.request_path == "/codex-router/v1/responses")
         .unwrap();
-    assert_eq!(entry.account_id, "router-healthy");
+    assert_eq!(entry.account_id, "router-unhealthy");
     let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
-    assert_eq!(trace["selected"]["account_id"], "router-healthy");
-    assert_eq!(trace["stream_preflight"]["action"], "rerouted");
-    assert_eq!(
-        trace["stream_preflight"]["from"]["account_id"],
-        "router-unhealthy"
-    );
-    let blocked = trace["candidates"]
+    assert_eq!(trace["selected"]["account_id"], "router-unhealthy");
+    let candidate = trace["candidates"]
         .as_array()
         .unwrap()
         .iter()
         .find(|candidate| candidate["account_id"] == "router-unhealthy")
         .unwrap();
-    assert_eq!(blocked["reason"], "stream_preflight_risk");
+    assert_eq!(candidate["reason"], "ready");
 }
 
 #[tokio::test]

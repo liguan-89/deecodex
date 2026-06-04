@@ -829,6 +829,23 @@ impl Account {
         }
     }
 
+    fn normalize_non_quota_runtime_cooldowns(&mut self) {
+        if matches!(self.runtime_state.status, AccountRuntimeStatus::CoolingDown)
+            && !self.runtime_state.quota.exceeded
+        {
+            self.runtime_state.status = AccountRuntimeStatus::Error;
+            self.runtime_state.next_retry_after = None;
+            self.runtime_state.quota = AccountQuotaState::default();
+        }
+        for state in self.runtime_state.model_states.values_mut() {
+            if matches!(state.status, AccountRuntimeStatus::CoolingDown) && !state.quota.exceeded {
+                state.status = AccountRuntimeStatus::Error;
+                state.next_retry_after = None;
+                state.quota = AccountQuotaState::default();
+            }
+        }
+    }
+
     fn normalize_unsupported_image_policy_default(&mut self) {
         for endpoint in &mut self.endpoints {
             if endpoint.vision.unsupported_image_policy == UnsupportedImagePolicy::Reject {
@@ -856,6 +873,7 @@ impl Account {
         self.normalize_mimo_codex_model_profiles();
         self.normalize_unsupported_image_policy_default();
         self.normalize_runtime_image_capability_failures();
+        self.normalize_non_quota_runtime_cooldowns();
         if let Some(first) = self.endpoints.first().cloned() {
             self.sync_legacy_from_endpoint(&first);
         }
@@ -1051,16 +1069,7 @@ pub fn runtime_cooldown_for_status(
     let now = now_secs();
     let mut quota = AccountQuotaState::default();
     let (status, wait_secs, backoff_level) = match status_code {
-        401..=403 => (
-            AccountRuntimeStatus::CoolingDown,
-            Some(30 * 60),
-            previous_backoff_level,
-        ),
-        404 => (
-            AccountRuntimeStatus::CoolingDown,
-            Some(12 * 60 * 60),
-            previous_backoff_level,
-        ),
+        401..=404 => (AccountRuntimeStatus::Error, None, previous_backoff_level),
         429 => {
             let (wait, next_level) = match retry_after_secs.filter(|v| *v > 0) {
                 Some(wait) => (wait, previous_backoff_level),
@@ -2837,6 +2846,43 @@ mod tests {
         assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
         assert!(cooldown.next_retry_after.is_some());
         assert!(!cooldown.quota.exceeded);
+    }
+
+    #[test]
+    fn auth_and_not_found_errors_do_not_create_local_cooldown() {
+        for status in [401, 403, 404] {
+            let cooldown = runtime_cooldown_for_status(status, Some(30), 0);
+
+            assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
+            assert!(cooldown.next_retry_after.is_none());
+            assert!(!cooldown.quota.exceeded);
+        }
+    }
+
+    #[test]
+    fn normalize_clears_legacy_non_quota_runtime_cooldown() {
+        let mut account = legacy_account(true);
+        account.runtime_state.status = AccountRuntimeStatus::CoolingDown;
+        account.runtime_state.status_message = "HTTP 401".into();
+        account.runtime_state.next_retry_after = Some(2_000);
+        account.runtime_state.model_states.insert(
+            "gpt-5.5".into(),
+            AccountModelRuntimeState {
+                status: AccountRuntimeStatus::CoolingDown,
+                status_message: "HTTP 404".into(),
+                next_retry_after: Some(2_000),
+                quota: AccountQuotaState::default(),
+                updated_at: 1_000,
+            },
+        );
+
+        account.normalize_v2();
+
+        assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Error);
+        assert!(account.runtime_state.next_retry_after.is_none());
+        let model = account.runtime_state.model_states.get("gpt-5.5").unwrap();
+        assert_eq!(model.status, AccountRuntimeStatus::Error);
+        assert!(model.next_retry_after.is_none());
     }
 
     #[test]
