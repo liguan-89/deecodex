@@ -592,9 +592,9 @@ async fn codex_router_routes_computer_input_output_to_responses_account() {
 }
 
 #[tokio::test]
-async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
+async fn codex_router_plain_computer_intent_keeps_chat_route_without_native_signal() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
-        r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        r#"{"choices":[{"message":{"role":"assistant","content":"chat handles weak intent"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
     )
     .await;
     let (responses_upstream, responses_captured) = capture_any_json_upstream(
@@ -648,13 +648,17 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["id"], "resp_computer_intent");
+    assert_eq!(
+        json["output"][0]["content"][0]["text"],
+        "chat handles weak intent"
+    );
 
-    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+    assert_eq!(responses_captured.lock().unwrap().len(), 0);
     {
-        let captured = responses_captured.lock().unwrap();
+        let captured = chat_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].path, "/chat/completions");
         let tools = captured[0].body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 3);
         assert!(!tools
@@ -669,29 +673,17 @@ async fn codex_router_routes_computer_intent_first_turn_to_responses_account() {
         .iter()
         .find(|entry| entry.request_path == "/codex-router/v1/responses")
         .unwrap();
-    assert_eq!(entry.account_id, "router-responses");
+    assert_eq!(entry.account_id, "router-chat");
     let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
-    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["selected"]["account_id"], "router-chat");
     assert_eq!(trace["tool_requirements"]["computer"], true);
-    assert_eq!(trace["tool_requirements"]["requires_computer"], true);
+    assert_eq!(trace["tool_requirements"]["requires_computer"], false);
     assert!(trace["tool_requirements"]["labels"]
         .as_array()
         .unwrap()
         .iter()
         .any(|label| label == "input.computer_intent"));
     assert!(trace.get("computer_tool_injection").is_none());
-    let chat_candidate = trace["candidates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|candidate| candidate["account_id"] == "router-chat")
-        .unwrap();
-    assert_eq!(chat_candidate["reason"], "capability_mismatch");
-    assert!(chat_candidate["capability_gaps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|gap| gap == "computer"));
 }
 
 #[tokio::test]
@@ -740,6 +732,7 @@ async fn codex_router_falls_back_gpt54_to_gpt55_for_computer_intent() {
                             {"type":"function","name":"exec_command"},
                             {"type":"function","name":"view_image"},
                             {"type":"web_search_preview"},
+                            {"type":"computer_use_preview"},
                             {"type":"image_generation"}
                         ]
                     }"#,
@@ -759,7 +752,7 @@ async fn codex_router_falls_back_gpt54_to_gpt55_for_computer_intent() {
         assert_eq!(captured[0].path, "/responses");
         assert_eq!(captured[0].body["model"], "gpt-5.5");
         let tools = captured[0].body["tools"].as_array().unwrap();
-        assert!(!tools
+        assert!(tools
             .iter()
             .any(|tool| tool["type"] == "computer_use_preview"));
     }
@@ -868,7 +861,7 @@ async fn codex_router_patches_missing_namespace_before_responses_bypass() {
 }
 
 #[tokio::test]
-async fn codex_router_routes_nested_computer_intent_text_to_responses_account() {
+async fn codex_router_nested_plain_computer_intent_keeps_chat_route() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"choices":[{"message":{"role":"assistant","content":"chat should not decide computer use"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
     )
@@ -931,13 +924,17 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["id"], "resp_nested_computer_intent");
+    assert_eq!(
+        json["output"][0]["content"][0]["text"],
+        "chat should not decide computer use"
+    );
 
-    assert_eq!(chat_captured.lock().unwrap().len(), 0);
+    assert_eq!(chat_captured.lock().unwrap().len(), 1);
+    assert_eq!(responses_captured.lock().unwrap().len(), 0);
     {
-        let captured = responses_captured.lock().unwrap();
+        let captured = chat_captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].path, "/chat/completions");
         let tools = captured[0].body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 3);
         assert!(!tools
@@ -952,11 +949,11 @@ async fn codex_router_routes_nested_computer_intent_text_to_responses_account() 
         .iter()
         .find(|entry| entry.request_path == "/codex-router/v1/responses")
         .unwrap();
-    assert_eq!(entry.account_id, "router-responses");
+    assert_eq!(entry.account_id, "router-chat");
     let trace: Value = serde_json::from_str(&entry.route_trace).unwrap();
-    assert_eq!(trace["selected"]["account_id"], "router-responses");
+    assert_eq!(trace["selected"]["account_id"], "router-chat");
     assert_eq!(trace["tool_requirements"]["computer"], true);
-    assert_eq!(trace["tool_requirements"]["requires_computer"], true);
+    assert_eq!(trace["tool_requirements"]["requires_computer"], false);
     assert!(trace["tool_requirements"]["labels"]
         .as_array()
         .unwrap()
@@ -997,7 +994,7 @@ async fn codex_router_keeps_computer_session_on_native_responses_track() {
     let app = build_router(state);
 
     for body in [
-        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false}"#,
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
         r#"{"model":"gpt-5","input":"刚才页面是什么状态？","store":false}"#,
         r#"{"model":"gpt-5","input":"继续点击第一个视频","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
     ] {
@@ -1079,7 +1076,7 @@ async fn codex_router_response_computer_call_refreshes_native_track_for_weak_con
     let app = build_router(state);
 
     for body in [
-        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false}"#,
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开抖音 app","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
         r#"{"model":"gpt-5","input":"继续","store":false}"#,
     ] {
         let response = app
@@ -1154,7 +1151,7 @@ async fn codex_router_without_session_key_keeps_single_turn_routing() {
     let app = build_router(state);
 
     for body in [
-        r#"{"model":"gpt-5","input":"使用 Computer Use 打开应用","store":false}"#,
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开应用","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
         r#"{"model":"gpt-5","input":"普通文本追问","store":false}"#,
     ] {
         let response = app
@@ -1220,7 +1217,7 @@ async fn codex_router_uses_session_id_when_thread_id_is_missing() {
     let app = build_router(state);
 
     for body in [
-        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false}"#,
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
         r#"{"model":"gpt-5","input":"刚才打开了吗？","store":false}"#,
     ] {
         let response = app
@@ -1291,7 +1288,7 @@ async fn codex_router_observe_window_returns_to_free_routing() {
     let app = build_router(state);
 
     for body in [
-        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false}"#,
+        r#"{"model":"gpt-5","input":"使用 Computer Use 打开浏览器","store":false,"tools":[{"type":"computer_use_preview"}]}"#,
         r#"{"model":"gpt-5","input":"纯文本追问 1","store":false}"#,
         r#"{"model":"gpt-5","input":"纯文本追问 2","store":false}"#,
         r#"{"model":"gpt-5","input":"纯文本追问 3","store":false}"#,
@@ -1398,7 +1395,8 @@ async fn codex_router_chat_then_computer_use_replays_previous_local_response_bef
                     r#"{{
                             "model":"gpt-5",
                             "previous_response_id":"{round1_id}",
-                            "input":"使用 Computer Use 打开浏览器"
+                            "input":"使用 Computer Use 打开浏览器",
+                            "tools":[{{"type":"computer_use_preview"}}]
                         }}"#
                 )))
                 .unwrap(),
@@ -1580,6 +1578,102 @@ async fn codex_router_explicit_chat_model_strips_plain_image_without_native_help
     assert!(sent.contains("识别图片"));
     assert!(!sent.contains("data:image/png"));
     assert!(!sent.contains("input_image"));
+}
+
+#[tokio::test]
+async fn codex_router_session_anchor_returns_plain_gpt_helper_turns_to_selected_chat_model() {
+    let (chat_upstream, chat_captured) = capture_any_json_upstream(
+        r#"{"id":"chatcmpl_anchor","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}"#,
+    )
+    .await;
+    let (responses_upstream, responses_captured) = capture_any_json_upstream(
+        r#"{"id":"resp_anchor","object":"response","status":"completed","model":"gpt-5.5","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}"#,
+    )
+    .await;
+    let state = test_state();
+    let chat = router_test_account(
+        "router-chat",
+        "minimax",
+        EndpointKind::OpenAiChat,
+        &chat_upstream,
+        100,
+        Some("MiniMax-M3"),
+    );
+    let responses = router_test_account(
+        "router-responses",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &responses_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![chat, responses], "router-chat").await;
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+    let slug = deecodex::codex_config::encode_dex_account_model_slug(
+        "router-chat",
+        "ep-router-chat",
+        "MiniMax-M3",
+    );
+
+    for body in [
+        format!(r#"{{"model":"{slug}","input":"普通首轮","store":false}}"#),
+        r#"{"model":"gpt-5.4-mini","input":"普通辅助轮","store":false}"#.to_string(),
+        r#"{"model":"gpt-5.4-mini","input":[{"type":"computer_call_output","call_id":"call_1","screenshot":"data:image/png;base64,abc"}],"store":false}"#.to_string(),
+        r#"{"model":"gpt-5.5","input":"工具后普通轮","store":false}"#.to_string(),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/codex-router/v1/responses")
+                    .method(Method::POST)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("thread-id", "thread-main-anchor")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    {
+        let captured = chat_captured.lock().unwrap();
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0].body["model"], "MiniMax-M3");
+        assert_eq!(captured[1].body["model"], "MiniMax-M3");
+        assert_eq!(captured[2].body["model"], "MiniMax-M3");
+    }
+    {
+        let captured = responses_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["model"], "gpt-5.4-mini");
+        assert_eq!(captured[0].body["input"][0]["type"], "computer_call_output");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let traces: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry.request_path == "/codex-router/v1/responses")
+        .map(|entry| serde_json::from_str(&entry.route_trace).unwrap())
+        .collect();
+    assert!(traces
+        .iter()
+        .any(|trace| trace["explicit_model_selection"] == true));
+    assert!(traces
+        .iter()
+        .any(|trace| trace["session_main_model_anchor"] == true
+            && trace["upstream_model"] == "MiniMax-M3"));
+    assert!(traces.iter().any(
+        |trace| trace["selected"]["account_id"] == "router-responses"
+            && trace["tool_requirements"]["requires_computer"] == true
+    ));
 }
 
 #[tokio::test]
@@ -4109,6 +4203,44 @@ async fn test_translate_stream_cache_store_and_replay() {
     assert_eq!(replay_events[2].0, "response.output_text.delta");
     assert_eq!(replay_events[2].1["delta"], "Cached response");
     assert_eq!(replay_events.last().unwrap().0, "response.completed");
+}
+
+#[tokio::test]
+async fn test_translate_stream_accepts_usage_chunk_missing_prompt_tokens() {
+    let sse_body = build_sse_body(vec![
+        r#"data: {"choices":[{"delta":{"content":"MiniMax ok"},"finish_reason":null}]}"#,
+        r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":2,"total_tokens":2}}"#,
+        "data: [DONE]",
+    ]);
+
+    let url = start_mock_sse(sse_body).await;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let args = make_stream_args(client, url.as_str(), false, None, None);
+    let bytes = axum::body::to_bytes(
+        translate_stream(args).into_response().into_body(),
+        usize::MAX,
+    )
+    .await
+    .unwrap();
+    let events = parse_sse_events(&bytes);
+
+    assert_eq!(events.last().unwrap().0, "response.completed");
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.0 == "response.failed"
+                && event.1.to_string().contains("prompt_tokens"))
+    );
+    let completed = events
+        .iter()
+        .find(|event| event.0 == "response.completed")
+        .unwrap();
+    assert_eq!(completed.1["response"]["usage"]["input_tokens"], 0);
+    assert_eq!(completed.1["response"]["usage"]["output_tokens"], 2);
 }
 
 #[tokio::test]

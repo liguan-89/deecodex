@@ -219,8 +219,11 @@ pub struct ChatChoice {
 #[allow(dead_code)] // reserved fields for upstream API compat
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatUsage {
+    #[serde(default)]
     pub prompt_tokens: u32,
+    #[serde(default)]
     pub completion_tokens: u32,
+    #[serde(default)]
     pub total_tokens: u32,
     /// DeepSeek returns nested token breakdown inside completion_tokens_details
     #[serde(default)]

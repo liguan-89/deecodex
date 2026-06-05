@@ -1,7 +1,7 @@
 //! Codex 线程聚合模块。
 //!
 //! 读取 Codex 本地 state_*.sqlite 中 threads 表，提供跨 provider 的会话聚合功能。
-//! 支持「迁移」：将所有非 deecodex 线程的 model_provider 改为 "deecodex"，
+//! 支持「迁移」：将所有非当前 DEX provider 线程的 model_provider 改为当前注入 provider，
 //! 以及「还原」：从备份恢复原始 model_provider 值。
 //!
 //! 迁移前自动备份，还原后自动清理备份。全程不破坏 Codex 原有数据。
@@ -60,6 +60,7 @@ pub struct MigrationDiff {
 pub struct ThreadStatus {
     pub summary: Vec<ProviderSummary>,
     pub total: usize,
+    pub managed_provider: String,
     pub migrated: bool,
     pub non_deecodex_count: usize,
     pub provider_unified_count: usize,
@@ -118,6 +119,10 @@ struct RolloutTokenUsage {
     model_context_window: Option<i64>,
     last_total_tokens: Option<i64>,
     path: PathBuf,
+}
+
+fn current_thread_provider() -> &'static str {
+    crate::codex_config::managed_model_provider()
 }
 
 /// 查找 Codex 的 state SQLite 数据库。
@@ -230,12 +235,13 @@ pub fn desktop_recent_backup_path(data_dir: &Path) -> PathBuf {
 pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    let target_provider = current_thread_provider();
 
     let summary = get_provider_summary(&db_path)?;
     let total: usize = summary.iter().map(|s| s.count).sum();
     let non_deecodex_count: usize = summary
         .iter()
-        .filter(|s| s.provider != "deecodex")
+        .filter(|s| s.provider != target_provider)
         .map(|s| s.count)
         .sum();
     let visibility = get_visibility_status(&db_path)?;
@@ -245,6 +251,7 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
     Ok(ThreadStatus {
         summary,
         total,
+        managed_provider: target_provider.to_string(),
         migrated,
         non_deecodex_count,
         provider_unified_count: visibility.provider_unified_count,
@@ -270,7 +277,7 @@ pub fn list_all() -> Result<Vec<ThreadInfo>> {
     list_threads(&db_path)
 }
 
-/// 迁移：将所有非 deecodex 线程的 model_provider 改为 "deecodex"。
+/// 迁移：将所有非当前 DEX provider 线程的 model_provider 改为当前注入 provider。
 /// 迁移前自动备份原始值到 `data_dir/thread_migration_backup.json`。
 pub fn migrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
@@ -303,7 +310,7 @@ pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
     )
 }
 
-/// 校准迁移备份：移除已删除的线程，追加新增的非 deecodex 线程。
+/// 校准迁移备份：移除已删除的线程，追加新增的非当前 DEX provider 线程。
 #[allow(dead_code)]
 pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
@@ -856,27 +863,32 @@ fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
 
 fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let provider = current_thread_provider();
     let provider_unified_count = query_count(
         &conn,
-        "SELECT COUNT(*) FROM threads WHERE model_provider = 'deecodex'",
+        "SELECT COUNT(*) FROM threads WHERE model_provider = ?1",
+        rusqlite::params![provider],
     )?;
     let codex_visible_count = query_count(
         &conn,
         "SELECT COUNT(*) FROM threads
-         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) <> ''",
+         WHERE archived = 0 AND model_provider = ?1 AND TRIM(preview) <> ''",
+        rusqlite::params![provider],
     )?;
     let missing_preview_count = query_count(
         &conn,
         "SELECT COUNT(*) FROM threads
-         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) = ''",
+         WHERE archived = 0 AND model_provider = ?1 AND TRIM(preview) = ''",
+        rusqlite::params![provider],
     )?;
     let missing_user_event_count = query_count(
         &conn,
         "SELECT COUNT(*) FROM threads
-         WHERE model_provider = 'deecodex'
+         WHERE model_provider = ?1
            AND archived = 0
            AND has_user_event = 0
            AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
+        rusqlite::params![provider],
     )?;
     let current_cwd = std::env::current_dir()
         .ok()
@@ -888,10 +900,10 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
         conn.query_row(
             "SELECT COUNT(*) FROM threads
              WHERE archived = 0
-               AND model_provider = 'deecodex'
+               AND model_provider = ?1
                AND TRIM(preview) <> ''
-               AND cwd = ?1",
-            rusqlite::params![current_cwd],
+               AND cwd = ?2",
+            rusqlite::params![provider, current_cwd],
             |row| row.get::<_, usize>(0),
         )?
     };
@@ -899,12 +911,12 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(NULLIF(TRIM(source), ''), '(空)'), COUNT(*)
          FROM threads
-         WHERE archived = 0 AND model_provider = 'deecodex' AND TRIM(preview) <> ''
+         WHERE archived = 0 AND model_provider = ?1 AND TRIM(preview) <> ''
          GROUP BY source
          ORDER BY COUNT(*) DESC",
     )?;
     let source_summary = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![provider], |row| {
             Ok(ThreadSourceSummary {
                 source: row.get(0)?,
                 count: row.get(1)?,
@@ -929,8 +941,11 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
     })
 }
 
-fn query_count(conn: &Connection, sql: &str) -> Result<usize> {
-    conn.query_row(sql, [], |row| row.get::<_, usize>(0))
+fn query_count<P>(conn: &Connection, sql: &str, params: P) -> Result<usize>
+where
+    P: rusqlite::Params,
+{
+    conn.query_row(sql, params, |row| row.get::<_, usize>(0))
         .with_context(|| format!("执行统计失败: {sql}"))
 }
 
@@ -1180,38 +1195,39 @@ fn token_count_info(event: &Value) -> Option<&Value> {
 }
 
 fn repair_thread_visibility(conn: &Connection) -> Result<usize> {
+    let provider = current_thread_provider();
     let mut fixed = 0usize;
     fixed += conn
         .execute(
             "UPDATE threads
              SET preview = first_user_message
-             WHERE model_provider = 'deecodex'
+             WHERE model_provider = ?1
                AND archived = 0
                AND TRIM(preview) = ''
                AND TRIM(first_user_message) <> ''",
-            [],
+            rusqlite::params![provider],
         )
         .context("补齐 Codex 线程 preview(first_user_message) 失败")?;
     fixed += conn
         .execute(
             "UPDATE threads
              SET preview = title
-             WHERE model_provider = 'deecodex'
+             WHERE model_provider = ?1
                AND archived = 0
                AND TRIM(preview) = ''
                AND TRIM(title) <> ''",
-            [],
+            rusqlite::params![provider],
         )
         .context("补齐 Codex 线程 preview(title) 失败")?;
     fixed += conn
         .execute(
             "UPDATE threads
              SET has_user_event = 1
-             WHERE model_provider = 'deecodex'
+             WHERE model_provider = ?1
                AND archived = 0
                AND has_user_event = 0
                AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
-            [],
+            rusqlite::params![provider],
         )
         .context("补齐 Codex 线程 has_user_event 失败")?;
 
@@ -1240,17 +1256,18 @@ fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn repair_desktop_project_metadata(conn: &Connection) -> Result<usize> {
+    let provider = current_thread_provider();
     let cwd_rows: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT cwd
              FROM threads
-             WHERE model_provider = 'deecodex'
+             WHERE model_provider = ?1
                AND archived = 0
                AND TRIM(preview) <> ''
                AND TRIM(cwd) <> ''",
         )?;
         let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map(rusqlite::params![provider], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows
     };
@@ -1274,16 +1291,16 @@ fn repair_desktop_project_metadata(conn: &Connection) -> Result<usize> {
                  SET git_sha = ?1,
                      git_branch = COALESCE(?2, git_branch),
                      git_origin_url = COALESCE(?3, git_origin_url)
-                 WHERE model_provider = 'deecodex'
+                 WHERE model_provider = ?4
                    AND archived = 0
                    AND TRIM(preview) <> ''
-                   AND cwd = ?4
+                   AND cwd = ?5
                    AND (
                      COALESCE(git_sha, '') != ?1
                      OR (?2 IS NOT NULL AND COALESCE(git_branch, '') != ?2)
                      OR (?3 IS NOT NULL AND COALESCE(git_origin_url, '') != ?3)
                    )",
-                rusqlite::params![git_sha, git_branch, git_origin_url, cwd],
+                rusqlite::params![git_sha, git_branch, git_origin_url, provider, cwd],
             )
             .with_context(|| format!("修复 Codex Desktop 项目元数据失败: {cwd}"))?;
         fixed += changed;
@@ -1489,6 +1506,7 @@ fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<Strin
 }
 
 fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> {
+    let provider = current_thread_provider();
     let mut column_stmt = conn.prepare("PRAGMA table_info(threads)")?;
     let columns: HashSet<String> = column_stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -1506,7 +1524,7 @@ fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> 
     let sql = format!(
         "SELECT id, cwd
          FROM threads
-         WHERE model_provider = 'deecodex'
+         WHERE model_provider = ?1
            AND source = 'vscode'
            AND archived = 0
            AND TRIM(preview) <> ''
@@ -1515,7 +1533,7 @@ fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> 
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![provider], |row| {
             Ok(DesktopThreadRow {
                 id: row.get(0)?,
                 cwd: row.get(1)?,
@@ -1993,10 +2011,11 @@ fn backup_non_deecodex_threads(
     conn: &Connection,
     backup_path: &Path,
 ) -> Result<Vec<(String, String)>> {
+    let target_provider = current_thread_provider();
     let mut stmt =
-        conn.prepare("SELECT id, model_provider FROM threads WHERE model_provider != 'deecodex'")?;
+        conn.prepare("SELECT id, model_provider FROM threads WHERE model_provider != ?1")?;
     let non_unified: Vec<(String, String)> = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![target_provider], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2027,6 +2046,7 @@ fn backup_non_deecodex_threads(
 }
 
 fn unify_remaining_non_deecodex(conn: &Connection, backup_path: &Path) -> Result<usize> {
+    let target_provider = current_thread_provider();
     let non_unified = backup_non_deecodex_threads(conn, backup_path)?;
     if non_unified.is_empty() {
         return Ok(0);
@@ -2034,17 +2054,19 @@ fn unify_remaining_non_deecodex(conn: &Connection, backup_path: &Path) -> Result
 
     let changed = conn
         .execute(
-            "UPDATE threads SET model_provider = 'deecodex' WHERE model_provider != 'deecodex'",
-            [],
+            "UPDATE threads SET model_provider = ?1 WHERE model_provider != ?1",
+            rusqlite::params![target_provider],
         )
         .context("兜底统一 Codex 线程 provider 失败")?;
     if changed < non_unified.len() {
         tracing::warn!(
-            "兜底统一: 发现 {} 条非 deecodex 线程，仅更新 {changed} 条",
-            non_unified.len()
+            target_provider,
+            changed,
+            expected = non_unified.len(),
+            "兜底统一 Codex 线程 provider 未完全成功"
         );
     } else {
-        tracing::info!("兜底统一 {changed} 条 Codex 线程到 deecodex");
+        tracing::info!(target_provider, changed, "兜底统一 Codex 线程 provider");
     }
     Ok(changed)
 }
@@ -2090,6 +2112,7 @@ fn do_migrate(
     _cwd_backup_path: &Path,
     desktop_recent_backup_path: &Path,
 ) -> Result<MigrationDiff> {
+    let target_provider = current_thread_provider();
     let before = get_provider_summary(db_path)?;
 
     let conn = Connection::open(db_path)?;
@@ -2103,8 +2126,8 @@ fn do_migrate(
     let mut changed = 0usize;
     for (id, _) in &new_originals {
         match conn.execute(
-            "UPDATE threads SET model_provider = 'deecodex' WHERE id = ?1 AND model_provider != 'deecodex'",
-            rusqlite::params![id],
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider != ?1",
+            rusqlite::params![target_provider, id],
         ) {
             Ok(n) => changed += n,
             Err(e) => {
@@ -2127,7 +2150,8 @@ fn do_migrate(
         tracing::warn!("迁移: {changed} 条成功, {skipped} 条因锁冲突跳过，下次迁移会自动重试");
     } else {
         tracing::info!(
-            "已迁移 {changed} 条线程到 deecodex，备份条目数 {}",
+            target_provider,
+            "已迁移 {changed} 条线程到当前 DEX provider，备份条目数 {}",
             new_originals.len()
         );
     }
@@ -2153,6 +2177,7 @@ fn do_calibrate(
     _cwd_backup_path: &Path,
     desktop_recent_backup_path: &Path,
 ) -> Result<MigrationDiff> {
+    let target_provider = current_thread_provider();
     let before = get_provider_summary(db_path)?;
 
     if !backup_path.exists() {
@@ -2211,7 +2236,7 @@ fn do_calibrate(
         originals.iter().map(|(id, _)| id.clone()).collect();
     let new_originals: Vec<(String, String)> = current_threads
         .into_iter()
-        .filter(|(id, provider)| provider != "deecodex" && !backed_up_ids.contains(id))
+        .filter(|(id, provider)| provider != target_provider && !backed_up_ids.contains(id))
         .collect();
     let added = new_originals.len();
     if added > 0 {
@@ -2225,8 +2250,8 @@ fn do_calibrate(
     let mut migrated = 0usize;
     for (id, _) in &originals {
         match conn.execute(
-            "UPDATE threads SET model_provider = 'deecodex' WHERE id = ?1 AND model_provider != 'deecodex'",
-            rusqlite::params![id],
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider != ?1",
+            rusqlite::params![target_provider, id],
         ) {
             Ok(n) => migrated += n,
             Err(e) => {
@@ -2245,9 +2270,12 @@ fn do_calibrate(
     let after = get_provider_summary(db_path)?;
     let skipped = originals.len().saturating_sub(migrated);
     if migrated > 0 || removed > 0 {
-        tracing::info!("已校准 {migrated} 条线程到 deecodex，清理 {removed} 条备份记录");
+        tracing::info!(
+            target_provider,
+            "已校准 {migrated} 条线程到当前 DEX provider，清理 {removed} 条备份记录"
+        );
     }
-    if skipped > 0 && after.iter().any(|s| s.provider != "deecodex") {
+    if skipped > 0 && after.iter().any(|s| s.provider != target_provider) {
         tracing::warn!("校准: {migrated} 条成功，仍有线程未统一，下次校准会自动重试");
     }
 
@@ -2727,10 +2755,11 @@ mod tests {
         let dir = temp_test_dir("thread-calibrate");
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
+        let target_provider = current_thread_provider();
         create_test_threads_db(
             &db_path,
             &[
-                ("kept", "deecodex"),
+                ("kept", target_provider),
                 ("new-claude", "claude"),
                 ("new-codex", "codex"),
             ],
@@ -2757,7 +2786,7 @@ mod tests {
 
         let after = get_provider_summary(&db_path).expect("provider summary");
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].provider, "deecodex");
+        assert_eq!(after[0].provider, target_provider);
         assert_eq!(after[0].count, 3);
 
         let backup_json = std::fs::read_to_string(&backup_path).expect("read backup");
@@ -2884,11 +2913,12 @@ mod tests {
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let target_provider = current_thread_provider();
         create_test_threads_db_with_rows(
             &db_path,
             &[(
                 "already-unified",
-                "deecodex",
+                target_provider,
                 "标题兜底",
                 "",
                 "",
@@ -2930,6 +2960,7 @@ mod tests {
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let target_provider = current_thread_provider();
         create_test_threads_db_with_rows(
             &db_path,
             &[(
@@ -2961,8 +2992,44 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read provider");
-        assert_eq!(provider, "deecodex");
+        assert_eq!(provider, target_provider);
         assert!(backup_path.exists());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn calibrate_preview_unifies_legacy_deecodex_to_current_provider() {
+        let dir = temp_test_dir("thread-calibrate-preview-provider");
+        let db_path = dir.join("state_test.sqlite");
+        let backup_path = dir.join("thread_migration_backup.json");
+        let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let target_provider = current_thread_provider();
+        create_test_threads_db(
+            &db_path,
+            &[
+                ("legacy-stable", "deecodex"),
+                ("codex-native", "codex"),
+                ("current", target_provider),
+            ],
+        );
+
+        let diff = do_calibrate(
+            &db_path,
+            &backup_path,
+            &cwd_backup_path,
+            &desktop_recent_backup_path(&dir),
+        )
+        .expect("calibrate threads");
+
+        let after = get_provider_summary(&db_path).expect("provider summary");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].provider, target_provider);
+        assert_eq!(after[0].count, 3);
+        assert_eq!(
+            diff.changed_count,
+            if target_provider == "deecodex" { 1 } else { 2 }
+        );
 
         std::fs::remove_dir_all(dir).ok();
     }
@@ -2973,12 +3040,13 @@ mod tests {
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let target_provider = current_thread_provider();
         create_test_threads_db_with_rows(
             &db_path,
             &[
                 (
                     "thread-a",
-                    "deecodex",
+                    target_provider,
                     "标题 A",
                     "预览 A",
                     "",
@@ -2988,7 +3056,7 @@ mod tests {
                 ),
                 (
                     "thread-b",
-                    "deecodex",
+                    target_provider,
                     "标题 B",
                     "预览 B",
                     "",
@@ -2998,7 +3066,7 @@ mod tests {
                 ),
                 (
                     "projectless",
-                    "deecodex",
+                    target_provider,
                     "标题 C",
                     "预览 C",
                     "",
@@ -3071,11 +3139,12 @@ mod tests {
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
         let project = "/tmp/order-project";
+        let target_provider = current_thread_provider();
         create_test_threads_db_with_rows(
             &db_path,
             &[(
                 "ordered-thread",
-                "deecodex",
+                target_provider,
                 "标题",
                 "预览",
                 "",

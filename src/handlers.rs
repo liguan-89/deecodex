@@ -55,9 +55,7 @@ pub const CODEX_OFFICIAL_BASE_URL: &str = "https://chatgpt.com/backend-api/codex
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_NATIVE_HELPER_MODEL: &str = "gpt-5.5";
-const NATIVE_HELPER_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 const GPT54_MODEL: &str = "gpt-5.4";
-const GPT54_FALLBACK_MODEL: &str = "gpt-5.4-mini";
 const GPT54_COMPUTER_FALLBACK_MODEL: &str = "gpt-5.5";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
@@ -218,6 +216,8 @@ struct AccountRouteSelection {
     requires_computer: bool,
     explicit_model: Option<String>,
     explicit_account_model: bool,
+    session_main_model_anchor: bool,
+    main_model_anchor_to_record: Option<crate::codex_router_session::MainModelAnchor>,
 }
 
 #[derive(Clone, Debug)]
@@ -339,7 +339,7 @@ impl RouterToolRequirements {
     fn set_native_signal(&mut self, signal: NativeRouteSignal, label: impl Into<String>) {
         self.native_signal = self.native_signal.max(signal);
         self.has_computer = true;
-        if signal >= NativeRouteSignal::TextIntent {
+        if signal >= NativeRouteSignal::StrongNative {
             self.requires_computer = true;
         }
         self.add_label(label);
@@ -353,7 +353,7 @@ impl RouterToolRequirements {
     }
 
     fn is_weak_computer_intent(&self) -> bool {
-        self.requires_computer && self.native_signal == NativeRouteSignal::TextIntent
+        self.has_computer && self.native_signal == NativeRouteSignal::TextIntent
     }
 }
 
@@ -716,6 +716,7 @@ async fn resolve_account_endpoint_for_response(
     requested_model: &str,
     tool_requirements: Option<&RouterToolRequirements>,
     external_anchor: Option<&CodexRouterExternalAnchor>,
+    session_main_model_anchor: Option<&crate::codex_router_session::MainModelAnchor>,
 ) -> Result<AccountRouteSelection, Response> {
     refresh_account_store_from_disk(state).await;
 
@@ -734,6 +735,25 @@ async fn resolve_account_endpoint_for_response(
         }
     }
 
+    if route_surface == AccountRouteSurface::CodexRouter
+        && codex_router_native_direct_model(requested_model)
+        && !tool_requirements.is_some_and(|requirements| {
+            requirements.native_signal >= NativeRouteSignal::StrongNative
+        })
+    {
+        if let Some(anchor) = session_main_model_anchor {
+            let store = state.account_store.read().await.clone();
+            let store = codex_router_store_with_external_anchor(store, external_anchor);
+            return resolve_session_main_model_anchor_selection(
+                &store,
+                requested_model,
+                anchor,
+                tool_requirements,
+            )
+            .map_err(|response| *response);
+        }
+    }
+
     if route_surface != AccountRouteSurface::CodexRouter {
         let (account, endpoint) =
             active_account_endpoint_for_route(state, route_surface, Some(requested_model)).await;
@@ -744,6 +764,8 @@ async fn resolve_account_endpoint_for_response(
             requires_computer: false,
             explicit_model: None,
             explicit_account_model: false,
+            session_main_model_anchor: false,
+            main_model_anchor_to_record: None,
         });
     }
 
@@ -779,6 +801,8 @@ async fn resolve_account_endpoint_for_response(
                 }),
                 explicit_model: (effective_model != requested_model).then_some(effective_model),
                 explicit_account_model: false,
+                session_main_model_anchor: false,
+                main_model_anchor_to_record: None,
             })
         }
         None => Err(codex_router_pool_unavailable_response(
@@ -849,10 +873,6 @@ fn router_effective_model(requested_model: &str, endpoint: &EndpointConfig) -> S
         .to_string()
 }
 
-fn gpt54_recent_upstream_error(account: &Account, now: u64) -> bool {
-    model_recent_transient_upstream_error(account, GPT54_MODEL, now)
-}
-
 fn model_recent_transient_upstream_error(account: &Account, model: &str, now: u64) -> bool {
     account
         .runtime_state
@@ -875,7 +895,6 @@ fn native_helper_model_candidates(selected_model: &str) -> Vec<String> {
     if selected_model != GPT54_MODEL && codex_router_native_direct_model(selected_model) {
         push_model(&mut models, selected_model.to_string());
     }
-    push_model(&mut models, NATIVE_HELPER_FALLBACK_MODEL.into());
     push_model(&mut models, DEFAULT_NATIVE_HELPER_MODEL.into());
     models
 }
@@ -968,8 +987,10 @@ fn resolve_explicit_dex_account_model_selection(
     };
     let now = crate::accounts::now_secs();
     let upstream_model = model_ref.model.clone();
-    if tool_requirements.is_some_and(|requirements| requirements.requires_computer)
-        && !endpoint_is_native_router_executor(&endpoint)
+    if tool_requirements.is_some_and(|requirements| {
+        requirements.requires_computer
+            && requirements.native_signal >= NativeRouteSignal::StrongNative
+    }) && !endpoint_is_native_router_executor(&endpoint)
     {
         return resolve_explicit_chat_model_native_helper_selection(
             store,
@@ -1003,6 +1024,12 @@ fn resolve_explicit_dex_account_model_selection(
         "selected_model": model_ref.model,
         "upstream_model": upstream_model,
     });
+    let main_model_anchor_to_record = Some(crate::codex_router_session::MainModelAnchor {
+        account_id: account.id.clone(),
+        endpoint_id: endpoint.id.clone(),
+        model: model_ref.model.clone(),
+        endpoint_kind: endpoint_kind_slug(&endpoint.kind).to_string(),
+    });
     Ok(Some(AccountRouteSelection {
         account,
         endpoint,
@@ -1011,7 +1038,73 @@ fn resolve_explicit_dex_account_model_selection(
             .is_some_and(|requirements| requirements.requires_computer),
         explicit_model: Some(model_ref.model),
         explicit_account_model: true,
+        session_main_model_anchor: false,
+        main_model_anchor_to_record,
     }))
+}
+
+fn resolve_session_main_model_anchor_selection(
+    store: &AccountStore,
+    requested_model: &str,
+    anchor: &crate::codex_router_session::MainModelAnchor,
+    tool_requirements: Option<&RouterToolRequirements>,
+) -> Result<AccountRouteSelection, Box<Response>> {
+    let Some(account) = store.accounts.iter().find(|account| {
+        account.id == anchor.account_id
+            && account.client_kind.is_codex()
+            && account.client_surface == AccountClientSurface::Desktop
+    }) else {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            "DEX Router 会话主模型账号不存在，请在 Codex 模型列表重新选择账号模型",
+            "dex_router_session_anchor_account_missing",
+        )));
+    };
+    let Some(endpoint) = account
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == anchor.endpoint_id)
+        .cloned()
+    else {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            "DEX Router 会话主模型端点不存在，请在 Codex 模型列表重新选择账号模型",
+            "dex_router_session_anchor_endpoint_missing",
+        )));
+    };
+    let now = crate::accounts::now_secs();
+    if let Some(block) = account_runtime_block(account, &anchor.model, now) {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            format!(
+                "会话主模型「{} / {}」当前不可用：{}",
+                account.name, anchor.model, block.reason
+            ),
+            "dex_router_session_anchor_runtime_blocked",
+        )));
+    }
+
+    let mut account = account.clone();
+    account.sync_legacy_from_endpoint(&endpoint);
+    let trace = json!({
+        "requested_model": requested_model,
+        "session_main_model_anchor": true,
+        "selected_account_id": account.id,
+        "selected_account_name": account.name,
+        "selected_endpoint_id": endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&endpoint.kind),
+        "anchor_endpoint_kind": anchor.endpoint_kind,
+        "selected_model": anchor.model,
+        "upstream_model": anchor.model,
+        "tool_requirements": router_tool_requirements_value(tool_requirements),
+    });
+    Ok(AccountRouteSelection {
+        account,
+        endpoint,
+        route_trace: serde_json::to_string(&trace).ok(),
+        requires_computer: false,
+        explicit_model: Some(anchor.model.clone()),
+        explicit_account_model: false,
+        session_main_model_anchor: true,
+        main_model_anchor_to_record: None,
+    })
 }
 
 fn explicit_native_helper_model(selected_model: &str) -> String {
@@ -1145,6 +1238,13 @@ fn resolve_explicit_chat_model_native_helper_selection(
         requires_computer: true,
         explicit_model: Some(helper_model),
         explicit_account_model: true,
+        session_main_model_anchor: false,
+        main_model_anchor_to_record: Some(crate::codex_router_session::MainModelAnchor {
+            account_id: main_account.id.clone(),
+            endpoint_id: main_endpoint.id.clone(),
+            model: selected_model.to_string(),
+            endpoint_kind: endpoint_kind_slug(&main_endpoint.kind).to_string(),
+        }),
     })
 }
 
@@ -1200,6 +1300,13 @@ fn explicit_chat_model_native_helper_fallback_selection(
         requires_computer: false,
         explicit_model: Some(context.selected_model.to_string()),
         explicit_account_model: true,
+        session_main_model_anchor: false,
+        main_model_anchor_to_record: Some(crate::codex_router_session::MainModelAnchor {
+            account_id: context.main_account.id.clone(),
+            endpoint_id: context.main_endpoint.id.clone(),
+            model: context.selected_model.to_string(),
+            endpoint_kind: endpoint_kind_slug(&context.main_endpoint.kind).to_string(),
+        }),
     })
 }
 
@@ -2183,6 +2290,11 @@ fn router_tool_requirements_from_input(
     }
 
     if let Some((signal, label)) = signal {
+        let signal = if signal == NativeRouteSignal::TextIntent && requirements.has_computer {
+            NativeRouteSignal::StrongNative
+        } else {
+            signal
+        };
         requirements.set_native_signal(signal, label);
     }
 }
@@ -2503,7 +2615,10 @@ fn update_codex_router_session_route(
     let route_key = route_key?;
     if let (Some(requirements), Some(input)) = (requirements.as_deref_mut(), input) {
         if requirements.native_signal == NativeRouteSignal::None
-            && state.codex_router_sessions.contains_key(&route_key)
+            && state
+                .codex_router_sessions
+                .get(&route_key)
+                .is_some_and(|state| state.observe_remaining > 0)
         {
             if let Some(label) = router_input_weak_continuation_signal(input) {
                 requirements.native_signal = NativeRouteSignal::WeakContinuation;
@@ -2519,6 +2634,46 @@ fn update_codex_router_session_route(
     )
 }
 
+fn codex_router_session_main_model_anchor(
+    sessions: &crate::codex_router_session::RouteStateMap,
+    route_key: Option<&str>,
+) -> Option<crate::codex_router_session::MainModelAnchor> {
+    let route_key = route_key?;
+    sessions
+        .get(route_key)
+        .and_then(|state| state.main_model_anchor.clone())
+}
+
+fn record_codex_router_session_main_model_anchor(
+    sessions: &crate::codex_router_session::RouteStateMap,
+    route_key: Option<&str>,
+    selection: &AccountRouteSelection,
+) {
+    let Some(route_key) = route_key else {
+        return;
+    };
+    let Some(anchor) = selection.main_model_anchor_to_record.clone() else {
+        return;
+    };
+    let mut state = sessions
+        .get(route_key)
+        .map(|state| state.clone())
+        .unwrap_or(crate::codex_router_session::RouteState {
+            observe_remaining: 0,
+            expires_at: 0,
+            main_model_anchor: None,
+        });
+    state.main_model_anchor = Some(anchor.clone());
+    sessions.insert(route_key.to_string(), state);
+    tracing::info!(
+        session_route_key = %route_key,
+        account_id = %anchor.account_id,
+        endpoint_id = %anchor.endpoint_id,
+        model = %anchor.model,
+        "DEX Router 已记录会话主模型锚点"
+    );
+}
+
 fn update_codex_router_session_route_state(
     sessions: &crate::codex_router_session::RouteStateMap,
     route_key: Option<String>,
@@ -2531,7 +2686,7 @@ fn update_codex_router_session_route_state(
         .map(|requirements| requirements.native_signal)
         .unwrap_or(NativeRouteSignal::None);
 
-    if native_signal >= NativeRouteSignal::TextIntent {
+    if native_signal >= NativeRouteSignal::StrongNative {
         let reason = requirements
             .as_ref()
             .and_then(|requirements| {
@@ -2545,6 +2700,9 @@ fn update_codex_router_session_route_state(
         let route_state = crate::codex_router_session::RouteState {
             observe_remaining: crate::codex_router_session::NATIVE_OBSERVE_TURNS,
             expires_at: now.saturating_add(crate::codex_router_session::NATIVE_OBSERVE_TTL_SECS),
+            main_model_anchor: sessions
+                .get(&route_key)
+                .and_then(|state| state.main_model_anchor.clone()),
         };
         sessions.insert(route_key.clone(), route_state.clone());
         return Some(DexRouterSessionRouteDecision {
@@ -2569,9 +2727,41 @@ fn update_codex_router_session_route_state(
         });
     };
 
-    if entry.expires_at <= now {
+    let existing_anchor = entry.main_model_anchor.clone();
+    if existing_anchor.is_some() && native_signal < NativeRouteSignal::StrongNative {
         drop(entry);
-        sessions.remove(&route_key);
+        sessions.insert(
+            route_key.clone(),
+            crate::codex_router_session::RouteState {
+                observe_remaining: 0,
+                expires_at: 0,
+                main_model_anchor: existing_anchor,
+            },
+        );
+        return Some(DexRouterSessionRouteDecision {
+            key: route_key,
+            state: "free",
+            reason: "main_model_anchor_plain_turn".into(),
+            observe_remaining: 0,
+            expires_at: None,
+            force_native_responses: false,
+        });
+    }
+
+    if entry.observe_remaining > 0 && entry.expires_at <= now {
+        drop(entry);
+        if let Some(anchor) = existing_anchor {
+            sessions.insert(
+                route_key.clone(),
+                crate::codex_router_session::RouteState {
+                    observe_remaining: 0,
+                    expires_at: 0,
+                    main_model_anchor: Some(anchor),
+                },
+            );
+        } else {
+            sessions.remove(&route_key);
+        }
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
             state: "free",
@@ -2588,6 +2778,9 @@ fn update_codex_router_session_route_state(
                 observe_remaining: crate::codex_router_session::NATIVE_OBSERVE_TURNS,
                 expires_at: now
                     .saturating_add(crate::codex_router_session::NATIVE_OBSERVE_TTL_SECS),
+                main_model_anchor: sessions
+                    .get(&route_key)
+                    .and_then(|state| state.main_model_anchor.clone()),
             };
             drop(entry);
             if let Some(requirements) = requirements {
@@ -2604,8 +2797,31 @@ fn update_codex_router_session_route_state(
                 force_native_responses: true,
             });
         }
+        let existing_anchor = entry.main_model_anchor.clone();
+        if entry.expires_at == 0 && existing_anchor.is_some() {
+            drop(entry);
+            return Some(DexRouterSessionRouteDecision {
+                key: route_key,
+                state: "free",
+                reason: "main_model_anchor_only".into(),
+                observe_remaining: 0,
+                expires_at: None,
+                force_native_responses: false,
+            });
+        }
         drop(entry);
-        sessions.remove(&route_key);
+        if let Some(anchor) = existing_anchor {
+            sessions.insert(
+                route_key.clone(),
+                crate::codex_router_session::RouteState {
+                    observe_remaining: 0,
+                    expires_at: 0,
+                    main_model_anchor: Some(anchor),
+                },
+            );
+        } else {
+            sessions.remove(&route_key);
+        }
         return Some(DexRouterSessionRouteDecision {
             key: route_key,
             state: "native_released",
@@ -2632,6 +2848,9 @@ fn update_codex_router_session_route_state(
         crate::codex_router_session::RouteState {
             observe_remaining,
             expires_at,
+            main_model_anchor: sessions
+                .get(&route_key)
+                .and_then(|state| state.main_model_anchor.clone()),
         },
     );
     Some(DexRouterSessionRouteDecision {
@@ -6307,7 +6526,11 @@ async fn handle_migrate_threads_api(State(state): State<AppState>) -> Response {
         Ok(diff) => Json(serde_json::json!({
             "ok": true,
             "diff": diff,
-            "message": format!("已迁移 {} 条线程到 deecodex", diff.changed_count),
+            "message": format!(
+                "已迁移 {} 条线程到 {}",
+                diff.changed_count,
+                crate::codex_config::managed_model_provider()
+            ),
         }))
         .into_response(),
         Err(e) => (
@@ -6433,19 +6656,26 @@ async fn handle_responses_for_route_with_router_anchor(
     };
     let model = req.model.clone();
     let explicit_dex_account_model = codex_config::decode_dex_account_model_slug(&model).is_some();
+    let codex_router_route_key = (route_surface == AccountRouteSurface::CodexRouter)
+        .then(|| codex_router_session_route_key(&headers))
+        .flatten();
     let mut router_tool_requirements = (route_surface == AccountRouteSurface::CodexRouter
         || explicit_dex_account_model)
         .then(|| router_tool_requirements(&req));
     let session_route_decision = if route_surface == AccountRouteSurface::CodexRouter {
         update_codex_router_session_route(
             &state,
-            codex_router_session_route_key(&headers),
+            codex_router_route_key.clone(),
             router_tool_requirements.as_mut(),
             Some(&req.input),
         )
     } else {
         None
     };
+    let session_main_model_anchor = codex_router_session_main_model_anchor(
+        &state.codex_router_sessions,
+        codex_router_route_key.as_deref(),
+    );
     if let Some(requirements) = router_tool_requirements.as_ref() {
         let input_labels: Vec<&str> = requirements
             .labels
@@ -6467,10 +6697,16 @@ async fn handle_responses_for_route_with_router_anchor(
         &model,
         router_tool_requirements.as_ref(),
         external_anchor.as_ref(),
+        session_main_model_anchor.as_ref(),
     )
     .await
     {
         Ok(selection) => {
+            record_codex_router_session_main_model_anchor(
+                &state.codex_router_sessions,
+                codex_router_route_key.as_deref(),
+                &selection,
+            );
             patch_selection_session_route_trace(selection, session_route_decision.as_ref())
         }
         Err(response) => return response,
@@ -6716,6 +6952,7 @@ async fn handle_codex_router_non_stream_with_fallback(
         if status.is_success()
             || !dex_router_retryable_status(status)
             || selection.explicit_account_model
+            || selection.session_main_model_anchor
             || attempt_index >= DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS
         {
             return response;
@@ -6735,34 +6972,6 @@ async fn handle_codex_router_non_stream_with_fallback(
             &failure,
             retryable,
         ));
-
-        if req.model == GPT54_MODEL
-            && !selection.explicit_account_model
-            && endpoint_is_native_router_executor(&selection.endpoint)
-            && account_runtime_ready(
-                &selection.account,
-                GPT54_FALLBACK_MODEL,
-                crate::accounts::now_secs(),
-            )
-        {
-            tracing::warn!(
-                account_id = %selection.account.id,
-                account_name = %selection.account.name,
-                status = failure.status.as_u16(),
-                from_model = GPT54_MODEL,
-                to_model = GPT54_FALLBACK_MODEL,
-                "DEX Router 非流式 gpt-5.4 失败，同请求降级到 gpt-5.4-mini"
-            );
-            selection = apply_gpt54_fallback_to_selection(
-                selection,
-                &req.model,
-                GPT54_FALLBACK_MODEL,
-                "same_request_gpt54_upstream_error",
-            );
-            selection.route_trace =
-                patch_router_fallback_trace(selection.route_trace, &fallback_attempts);
-            continue;
-        }
 
         let Some(next_selection) = resolve_dex_router_retry_selection(
             &state,
@@ -6798,7 +7007,7 @@ fn apply_codex_router_preflight_model_fallback(
     requested_model: &str,
     selection: AccountRouteSelection,
 ) -> AccountRouteSelection {
-    if selection.explicit_account_model {
+    if selection.explicit_account_model || selection.session_main_model_anchor {
         return selection;
     }
     let now = crate::accounts::now_secs();
@@ -6808,8 +7017,6 @@ fn apply_codex_router_preflight_model_fallback(
                 GPT54_COMPUTER_FALLBACK_MODEL,
                 "computer_use_gpt54_native_helper",
             ))
-        } else if gpt54_recent_upstream_error(&selection.account, now) {
-            Some((GPT54_FALLBACK_MODEL, "recent_gpt54_upstream_error"))
         } else {
             None
         };
@@ -6868,6 +7075,8 @@ async fn resolve_dex_router_retry_selection(
                 .is_some_and(|requirements| requirements.requires_computer),
             explicit_model: (effective_model != requested_model).then_some(effective_model),
             explicit_account_model: false,
+            session_main_model_anchor: false,
+            main_model_anchor_to_record: None,
         }
     })
 }
@@ -11762,70 +11971,6 @@ mod tests {
     }
 
     #[test]
-    fn gpt54_fallback_only_after_recent_upstream_error() {
-        let mut account = router_responses_account("responses", "pool-a", 10, 1);
-        let endpoint = account.endpoints[0].clone();
-        assert!(!gpt54_recent_upstream_error(&account, 1_000));
-
-        account.runtime_state.model_states.insert(
-            GPT54_MODEL.into(),
-            crate::accounts::AccountModelRuntimeState {
-                status: AccountRuntimeStatus::Error,
-                status_message: "HTTP 503".into(),
-                next_retry_after: None,
-                quota: Default::default(),
-                updated_at: 1_000,
-            },
-        );
-        assert!(gpt54_recent_upstream_error(&account, 1_100));
-
-        account.runtime_state.model_states.insert(
-            GPT54_FALLBACK_MODEL.into(),
-            crate::accounts::AccountModelRuntimeState {
-                status: AccountRuntimeStatus::Error,
-                status_message:
-                    r#"{"error":{"message":"Service temporarily unavailable"}} event: response.failed"#
-                        .into(),
-                next_retry_after: None,
-                quota: Default::default(),
-                updated_at: 1_050,
-            },
-        );
-        assert!(model_recent_transient_upstream_error(
-            &account,
-            GPT54_FALLBACK_MODEL,
-            1_100
-        ));
-
-        let selection = AccountRouteSelection {
-            account,
-            endpoint,
-            route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
-            requires_computer: true,
-            explicit_model: None,
-            explicit_account_model: false,
-        };
-        let selection = apply_gpt54_fallback_to_selection(
-            selection,
-            GPT54_MODEL,
-            GPT54_FALLBACK_MODEL,
-            "recent_gpt54_upstream_error",
-        );
-        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
-
-        assert_eq!(
-            selection.explicit_model.as_deref(),
-            Some(GPT54_FALLBACK_MODEL)
-        );
-        assert_eq!(trace["model_fallback"]["from_model"], GPT54_MODEL);
-        assert_eq!(trace["model_fallback"]["to_model"], GPT54_FALLBACK_MODEL);
-        assert_eq!(
-            trace["model_fallback"]["reason"],
-            "recent_gpt54_upstream_error"
-        );
-    }
-
-    #[test]
     fn gpt54_computer_use_preflight_falls_back_to_gpt55() {
         let account = router_responses_account("responses", "pool-a", 10, 1);
         let endpoint = account.endpoints[0].clone();
@@ -11836,6 +11981,8 @@ mod tests {
             requires_computer: true,
             explicit_model: None,
             explicit_account_model: false,
+            session_main_model_anchor: false,
+            main_model_anchor_to_record: None,
         };
 
         let selection = apply_codex_router_preflight_model_fallback(GPT54_MODEL, selection);
@@ -11856,8 +12003,18 @@ mod tests {
     }
 
     #[test]
-    fn gpt54_plain_preflight_keeps_requested_model_without_recent_error() {
-        let account = router_responses_account("responses", "pool-a", 10, 1);
+    fn gpt54_plain_preflight_keeps_requested_model_even_after_recent_error() {
+        let mut account = router_responses_account("responses", "pool-a", 10, 1);
+        account.runtime_state.model_states.insert(
+            GPT54_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 503".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: crate::accounts::now_secs(),
+            },
+        );
         let endpoint = account.endpoints[0].clone();
         let selection = AccountRouteSelection {
             account,
@@ -11866,6 +12023,8 @@ mod tests {
             requires_computer: false,
             explicit_model: None,
             explicit_account_model: false,
+            session_main_model_anchor: false,
+            main_model_anchor_to_record: None,
         };
 
         let selection = apply_codex_router_preflight_model_fallback(GPT54_MODEL, selection);
@@ -11907,7 +12066,10 @@ mod tests {
             codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
         let store = router_store(vec![active, responses], "active");
         let requirements = RouterToolRequirements {
+            has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
             ..Default::default()
         };
 
@@ -11934,7 +12096,7 @@ mod tests {
         let store = router_store(vec![active], "active");
         let requirements = RouterToolRequirements {
             has_computer: true,
-            requires_computer: true,
+            requires_computer: false,
             native_signal: NativeRouteSignal::TextIntent,
             labels: vec!["input.computer_intent".into()],
             ..Default::default()
@@ -11950,11 +12112,8 @@ mod tests {
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
         assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
         assert!(!selection.requires_computer);
-        assert_eq!(trace["native_helper_fallback_to_chat"], true);
-        assert_eq!(
-            trace["native_helper_fallback_reason"],
-            "weak_intent_native_helper_unavailable"
-        );
+        assert_eq!(trace["explicit_model_selection"], true);
+        assert!(trace.get("native_helper_fallback_to_chat").is_none());
     }
 
     #[test]
@@ -11999,7 +12158,10 @@ mod tests {
             codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
         let store = router_store(vec![active, responses], "active");
         let requirements = RouterToolRequirements {
+            has_computer: true,
             requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
             ..Default::default()
         };
 
@@ -12019,7 +12181,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_weak_intent_skips_recent_failed_helper_model() {
+    fn dex_router_explicit_chat_model_weak_intent_keeps_main_model() {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
         let mut responses = router_responses_account("responses", "pool-a", 10, 1);
         let now = crate::accounts::now_secs();
@@ -12038,56 +12200,7 @@ mod tests {
         let store = router_store(vec![active, responses], "active");
         let requirements = RouterToolRequirements {
             has_computer: true,
-            requires_computer: true,
-            native_signal: NativeRouteSignal::TextIntent,
-            labels: vec!["input.computer_intent".into()],
-            ..Default::default()
-        };
-
-        let selection =
-            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
-                .unwrap()
-                .unwrap();
-        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
-
-        assert_eq!(selection.account.id, "responses");
-        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
-        assert!(selection.requires_computer);
-        assert_eq!(trace["native_helper_reroute"], true);
-        assert_eq!(trace["native_helper_reason"], "weak_computer_intent");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
-        assert_eq!(
-            trace["native_helper_skipped"][0]["reason"],
-            "recent_transient_upstream_error"
-        );
-        assert_eq!(trace["upstream_model"], "gpt-5.4-mini");
-    }
-
-    #[test]
-    fn dex_router_explicit_chat_model_weak_intent_falls_back_to_chat_when_all_helpers_recently_failed(
-    ) {
-        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
-        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
-        let now = crate::accounts::now_secs();
-        for model in [DEFAULT_NATIVE_HELPER_MODEL, NATIVE_HELPER_FALLBACK_MODEL] {
-            responses.runtime_state.model_states.insert(
-                model.into(),
-                crate::accounts::AccountModelRuntimeState {
-                    status: AccountRuntimeStatus::Error,
-                    status_message: "HTTP 503: Service temporarily unavailable".into(),
-                    next_retry_after: None,
-                    quota: Default::default(),
-                    updated_at: now,
-                },
-            );
-        }
-        let slug =
-            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
-        let store = router_store(vec![active, responses], "active");
-        let requirements = RouterToolRequirements {
-            has_computer: true,
-            requires_computer: true,
+            requires_computer: false,
             native_signal: NativeRouteSignal::TextIntent,
             labels: vec!["input.computer_intent".into()],
             ..Default::default()
@@ -12103,39 +12216,33 @@ mod tests {
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
         assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
         assert!(!selection.requires_computer);
-        assert_eq!(trace["native_helper_fallback_to_chat"], true);
-        assert_eq!(
-            trace["native_helper_fallback_reason"],
-            "weak_intent_native_helper_unavailable"
-        );
-        assert_eq!(trace["native_helper_skipped"].as_array().unwrap().len(), 2);
+        assert_eq!(trace["upstream_model"], "deepseek-v4-pro");
+        assert!(trace.get("native_helper_reroute").is_none());
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_strong_signal_uses_recent_failed_helper_as_last_resort() {
+    fn dex_router_explicit_chat_model_weak_intent_ignores_failed_helpers() {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
         let mut responses = router_responses_account("responses", "pool-a", 10, 1);
         let now = crate::accounts::now_secs();
-        for model in [DEFAULT_NATIVE_HELPER_MODEL, NATIVE_HELPER_FALLBACK_MODEL] {
-            responses.runtime_state.model_states.insert(
-                model.into(),
-                crate::accounts::AccountModelRuntimeState {
-                    status: AccountRuntimeStatus::Error,
-                    status_message: "HTTP 503: Service temporarily unavailable".into(),
-                    next_retry_after: None,
-                    quota: Default::default(),
-                    updated_at: now,
-                },
-            );
-        }
+        responses.runtime_state.model_states.insert(
+            DEFAULT_NATIVE_HELPER_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 503: Service temporarily unavailable".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: now,
+            },
+        );
         let slug =
             codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
         let store = router_store(vec![active, responses], "active");
         let requirements = RouterToolRequirements {
             has_computer: true,
-            requires_computer: true,
-            native_signal: NativeRouteSignal::StrongNative,
-            labels: vec!["input.computer_call_output".into()],
+            requires_computer: false,
+            native_signal: NativeRouteSignal::TextIntent,
+            labels: vec!["input.computer_intent".into()],
             ..Default::default()
         };
 
@@ -12145,22 +12252,41 @@ mod tests {
                 .unwrap();
         let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
 
-        assert_eq!(selection.account.id, "responses");
-        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
-        assert!(selection.requires_computer);
-        assert_eq!(trace["native_helper_reroute"], true);
-        assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
-        assert_eq!(
-            trace["native_helper_skipped"][0]["reason"],
-            "recent_transient_upstream_error"
-        );
-        assert_eq!(trace["native_helper_last_resort"], true);
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(!selection.requires_computer);
+        assert_eq!(trace["upstream_model"], "deepseek-v4-pro");
+        assert!(trace.get("native_helper_skipped").is_none());
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_strong_signal_prefers_clean_helper_model() {
+    fn dex_router_session_main_model_anchor_routes_gpt_helper_name_back_to_real_model() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let responses = router_responses_account("responses", "pool-a", 10, 1);
+        let store = router_store(vec![active, responses], "active");
+        let anchor = crate::codex_router_session::MainModelAnchor {
+            account_id: "active".into(),
+            endpoint_id: "ep-active".into(),
+            model: "deepseek-v4-pro".into(),
+            endpoint_kind: "openai_chat".into(),
+        };
+        let selection =
+            resolve_session_main_model_anchor_selection(&store, "gpt-5.4-mini", &anchor, None)
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(selection.session_main_model_anchor);
+        assert_eq!(trace["session_main_model_anchor"], true);
+        assert_eq!(trace["requested_model"], "gpt-5.4-mini");
+        assert_eq!(trace["upstream_model"], "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_strong_signal_uses_recent_failed_helper_as_last_resort() {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
         let mut responses = router_responses_account("responses", "pool-a", 10, 1);
         let now = crate::accounts::now_secs();
@@ -12193,12 +12319,58 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
         assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
-        assert_eq!(trace["native_helper_last_resort"], false);
+        assert_eq!(
+            trace["native_helper_skipped"][0]["reason"],
+            "recent_transient_upstream_error"
+        );
+        assert_eq!(trace["native_helper_last_resort"], true);
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_strong_signal_does_not_auto_use_gpt54_mini() {
+        let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let now = crate::accounts::now_secs();
+        responses.runtime_state.model_states.insert(
+            DEFAULT_NATIVE_HELPER_MODEL.into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::Error,
+                status_message: "HTTP 503: Service temporarily unavailable".into(),
+                next_retry_after: None,
+                quota: Default::default(),
+                updated_at: now,
+            },
+        );
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active, responses], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "responses");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert!(selection.requires_computer);
+        assert_eq!(trace["native_helper_reroute"], true);
+        assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
+        assert_eq!(trace["native_helper_last_resort"], true);
     }
 
     #[test]
@@ -12488,8 +12660,8 @@ mod tests {
         let mut native_requirements = RouterToolRequirements {
             has_computer: true,
             requires_computer: true,
-            native_signal: NativeRouteSignal::TextIntent,
-            labels: vec!["input.computer_intent".into()],
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
             ..Default::default()
         };
 
@@ -12598,6 +12770,7 @@ mod tests {
             crate::codex_router_session::RouteState {
                 observe_remaining: 0,
                 expires_at: 1_600,
+                main_model_anchor: None,
             },
         );
         let mut requirements = RouterToolRequirements {
@@ -12971,7 +13144,7 @@ mod tests {
         let requirements = router_tool_requirements(&req);
 
         assert!(requirements.has_computer);
-        assert!(requirements.requires_computer);
+        assert!(!requirements.requires_computer);
         assert!(requirements.has_function_tools);
         assert!(requirements.has_image_generation);
         assert!(requirements
@@ -12991,7 +13164,8 @@ mod tests {
 
         let requirements = router_tool_requirements(&req);
 
-        assert!(requirements.requires_computer);
+        assert!(!requirements.requires_computer);
+        assert_eq!(requirements.native_signal, NativeRouteSignal::TextIntent);
         assert_eq!(req.tools, original_tools);
         assert!(!req.tools.iter().any(|tool| {
             tool.get("type")

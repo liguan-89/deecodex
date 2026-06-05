@@ -8,21 +8,22 @@ pub async fn get_threads_status_impl(manager: State<'_, ServerManager>) -> Resul
     let status =
         deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
 
-    // 活跃 provider：迁移后为 "deecodex"，否则取数量最多的 provider
+    let managed_provider = status.managed_provider.clone();
     let active_provider = if status.migrated {
-        "deecodex"
+        managed_provider.clone()
     } else {
         status
             .summary
             .iter()
             .max_by_key(|s| s.count)
-            .map(|s| s.provider.as_str())
-            .unwrap_or("(空)")
+            .map(|s| s.provider.clone())
+            .unwrap_or_else(|| "(空)".to_string())
     };
 
     Ok(json!({
         "summary": status.summary,
         "total": status.total,
+        "managed_provider": managed_provider,
         "non_deecodex_count": status.non_deecodex_count,
         "non_unified_count": status.non_deecodex_count,
         "provider_unified_count": status.provider_unified_count,

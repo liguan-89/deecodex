@@ -6,9 +6,18 @@ pub const NATIVE_OBSERVE_TURNS: u8 = 1;
 pub const NATIVE_OBSERVE_TTL_SECS: u64 = 10 * 60;
 
 #[derive(Clone, Debug)]
+pub struct MainModelAnchor {
+    pub account_id: String,
+    pub endpoint_id: String,
+    pub model: String,
+    pub endpoint_kind: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct RouteState {
     pub observe_remaining: u8,
     pub expires_at: u64,
+    pub main_model_anchor: Option<MainModelAnchor>,
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +40,9 @@ pub fn refresh_native_track(
         RouteState {
             observe_remaining: NATIVE_OBSERVE_TURNS,
             expires_at: now.saturating_add(NATIVE_OBSERVE_TTL_SECS),
+            main_model_anchor: sessions
+                .get(key)
+                .and_then(|state| state.main_model_anchor.clone()),
         },
     );
     ResponseFeedback {
