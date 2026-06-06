@@ -564,6 +564,7 @@ fn normalize_mimo_reasoning(req: &mut ChatRequest) {
 
 const TOOL_EXECUTION_GUARD_MARKER: &str = "工具调用稳定性约束";
 const MIN_TOOL_CALL_GUARD_MARKER: &str = "最小工具调用计数约束";
+const TOOLCHAIN_COVERAGE_GUARD_MARKER: &str = "工具链覆盖完整性约束";
 fn tool_execution_guard(label: &str) -> String {
     format!(
         "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
@@ -631,6 +632,12 @@ fn enforce_min_tool_calls(req: &mut ChatRequest, label: &str) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
         }
     }
+    if let Some(coverage) = pending_toolchain_coverage(&req.messages) {
+        append_toolchain_coverage_guard(req, label, &coverage);
+        if can_override_tool_choice(&req.tool_choice) {
+            req.tool_choice = Some(serde_json::Value::String("required".into()));
+        }
+    }
 }
 
 fn append_min_tool_call_guard(
@@ -657,6 +664,30 @@ fn append_min_tool_call_guard(
     });
 }
 
+fn append_toolchain_coverage_guard(
+    req: &mut ChatRequest,
+    label: &str,
+    coverage: &ToolchainCoverageStatus,
+) {
+    let missing = coverage.missing.join("；");
+    let guard = format!(
+        "【{label} {TOOLCHAIN_COVERAGE_GUARD_MARKER}】用户正在做 Codex 工具链压力测试，当前实际覆盖仍不完整：{missing}。下一条 assistant 响应必须继续发起缺失项对应的真实 tool_calls/function_call，不得输出最终报告、不得声明通过、不得结束。"
+    );
+
+    req.messages.retain(|msg| {
+        !chat_message_text(msg.content.as_ref()).contains(TOOLCHAIN_COVERAGE_GUARD_MARKER)
+    });
+    req.messages.push(ChatMessage {
+        role: "user".into(),
+        content: Some(serde_json::Value::String(guard)),
+        reasoning_content: None,
+        reasoning_details: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    });
+}
+
 pub fn mimo_pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
     pending_min_tool_calls(messages)
 }
@@ -669,6 +700,176 @@ pub fn pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)
         .filter(|msg| msg.role == "tool" && msg.tool_call_id.is_some())
         .count();
     (completed < required).then_some((completed, required))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolchainCoverageStatus {
+    pub missing: Vec<String>,
+}
+
+pub fn pending_toolchain_coverage(messages: &[ChatMessage]) -> Option<ToolchainCoverageStatus> {
+    let requirement = toolchain_coverage_requirement(messages)?;
+    let observed = observed_toolchain_coverage(messages, requirement.user_index);
+    let mut missing = Vec::new();
+
+    if let Some(required) = requirement.min_total_tools {
+        if observed.total_tools < required {
+            missing.push(format!("总工具调用 {}/{}", observed.total_tools, required));
+        }
+    }
+    if requirement.needs_read_thread_terminal && observed.read_thread_terminal < 1 {
+        missing.push("read_thread_terminal 0/1".into());
+    }
+    if let Some(required) = requirement.min_tool_search {
+        if observed.tool_search < required {
+            missing.push(format!("tool_search {}/{}", observed.tool_search, required));
+        }
+    }
+    if let Some(required) = requirement.min_successful_apply_patch {
+        if observed.successful_apply_patch < required {
+            missing.push(format!(
+                "成功 apply_patch {}/{}",
+                observed.successful_apply_patch, required
+            ));
+        }
+    }
+
+    (!missing.is_empty()).then_some(ToolchainCoverageStatus { missing })
+}
+
+struct ToolchainCoverageRequirement {
+    user_index: usize,
+    min_total_tools: Option<usize>,
+    needs_read_thread_terminal: bool,
+    min_tool_search: Option<usize>,
+    min_successful_apply_patch: Option<usize>,
+}
+
+#[derive(Default)]
+struct ObservedToolchainCoverage {
+    total_tools: usize,
+    read_thread_terminal: usize,
+    tool_search: usize,
+    successful_apply_patch: usize,
+}
+
+fn toolchain_coverage_requirement(
+    messages: &[ChatMessage],
+) -> Option<ToolchainCoverageRequirement> {
+    messages.iter().enumerate().rev().find_map(|(index, msg)| {
+        if msg.role != "user" {
+            return None;
+        }
+        let text = chat_message_text(msg.content.as_ref());
+        if text.contains(MIN_TOOL_CALL_GUARD_MARKER)
+            || text.contains(TOOLCHAIN_COVERAGE_GUARD_MARKER)
+        {
+            return None;
+        }
+        let lower = text.to_ascii_lowercase();
+        let pressure_test = (text.contains("压力测试") || lower.contains("stress test"))
+            && (text.contains("工具链") || lower.contains("toolchain"));
+        if !pressure_test {
+            return None;
+        }
+        let min_total_tools = min_tool_calls_from_text(&text);
+        let needs_read_thread_terminal = text.contains("read_thread_terminal");
+        let min_tool_search = text.contains("tool_search").then_some(2);
+        let min_successful_apply_patch = (text.contains("apply_patch")
+            && (text.contains("至少 2") || text.contains("至少2") || lower.contains("at least 2")))
+        .then_some(2);
+        if min_total_tools.is_none()
+            && !needs_read_thread_terminal
+            && min_tool_search.is_none()
+            && min_successful_apply_patch.is_none()
+        {
+            return None;
+        }
+        Some(ToolchainCoverageRequirement {
+            user_index: index,
+            min_total_tools,
+            needs_read_thread_terminal,
+            min_tool_search,
+            min_successful_apply_patch,
+        })
+    })
+}
+
+fn observed_toolchain_coverage(
+    messages: &[ChatMessage],
+    user_index: usize,
+) -> ObservedToolchainCoverage {
+    let mut observed = ObservedToolchainCoverage::default();
+    let mut tool_names_by_call_id = HashMap::new();
+
+    for msg in messages.iter().skip(user_index + 1) {
+        if msg.role == "assistant" {
+            if let Some(calls) = &msg.tool_calls {
+                for call in calls {
+                    let Some(call_id) = call.get("id").and_then(serde_json::Value::as_str) else {
+                        continue;
+                    };
+                    let name = call
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    tool_names_by_call_id.insert(call_id.to_string(), normalize_tool_name(name));
+                }
+            }
+        } else if msg.role == "tool" {
+            let Some(call_id) = msg.tool_call_id.as_deref() else {
+                continue;
+            };
+            let Some(name) = tool_names_by_call_id.get(call_id) else {
+                continue;
+            };
+            observed.total_tools += 1;
+            match name.as_str() {
+                "read_thread_terminal" => observed.read_thread_terminal += 1,
+                "tool_search" => observed.tool_search += 1,
+                "apply_patch" => {
+                    if tool_output_success(msg.content.as_ref()) {
+                        observed.successful_apply_patch += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    observed
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower == "tool_search"
+        || lower == "tool_search_tool"
+        || lower == "tool_search.tool_search_tool"
+        || lower == "tool_search__tool_search_tool"
+        || lower == "functions.tool_search"
+        || lower == "functions__tool_search"
+    {
+        "tool_search".into()
+    } else if lower == "codex_app__read_thread_terminal"
+        || lower == "codex_app.read_thread_terminal"
+        || lower == "codex_app__codex_app__read_thread_terminal"
+    {
+        "read_thread_terminal".into()
+    } else {
+        name.to_string()
+    }
+}
+
+fn tool_output_success(content: Option<&serde_json::Value>) -> bool {
+    let text = chat_message_text(content);
+    let lower = text.to_ascii_lowercase();
+    !lower.contains("[failed]")
+        && !lower.contains("failed")
+        && !text.contains("verification failed")
+        && !text.contains("patch rejected")
+        && !text.contains("No such file")
+        && (lower.contains("success") || lower.contains("exit code: 0"))
 }
 
 fn can_override_tool_choice(choice: &Option<serde_json::Value>) -> bool {
@@ -1059,6 +1260,135 @@ mod tests {
                             && text.contains("必须包含实际 tool_calls")
                     })
         }));
+    }
+
+    #[test]
+    fn minimax_requires_missing_toolchain_coverage_after_minimum_reached() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "MiniMax 工具链兼容性压力测试。必须完成至少 24 次独立工具调用。read_thread_terminal 调用至少 1 次。tool_search 分别搜索 thread 和 browser，各 1 次。apply_patch 修改至少 2 个 txt 文件，追加 PATCH_OK。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..24 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let mut req = ChatRequest {
+            model: "MiniMax-M2.7-highspeed".into(),
+            messages,
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("minimax"), &mut req);
+
+        assert_eq!(req.tool_choice, Some(json!("required")));
+        let guard = req
+            .messages
+            .iter()
+            .rev()
+            .find_map(|msg| msg.content.as_ref().and_then(serde_json::Value::as_str))
+            .expect("expected coverage guard");
+        assert!(guard.contains("MiniMax 工具链覆盖完整性约束"));
+        assert!(guard.contains("read_thread_terminal 0/1"));
+        assert!(guard.contains("tool_search 0/2"));
+        assert!(guard.contains("成功 apply_patch 0/2"));
+    }
+
+    #[test]
+    fn minimax_toolchain_coverage_counts_successful_apply_patch_aliases() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "MiniMax 工具链兼容性压力测试。必须完成至少 4 次独立工具调用。read_thread_terminal 调用至少 1 次。tool_search 分别搜索 thread 和 browser，各 1 次。apply_patch 修改至少 2 个 txt 文件，追加 PATCH_OK。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for (idx, name, output) in [
+            (
+                "0",
+                "apply_patch",
+                "Exit code: 0\nSuccess. Updated the following files:",
+            ),
+            (
+                "1",
+                "apply_patch",
+                "Exit code: 0\nSuccess. Updated the following files:",
+            ),
+            ("2", "codex_app__read_thread_terminal", "ok"),
+            ("3", "tool_search__tool_search_tool", "ok"),
+            ("4", "tool_search", "ok"),
+        ] {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!(output)),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        assert_eq!(pending_toolchain_coverage(&messages), None);
     }
 
     #[test]

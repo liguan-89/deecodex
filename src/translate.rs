@@ -93,7 +93,7 @@ pub fn to_chat_request(
                 let item = &items[i];
                 let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-                if item_type == "function_call" {
+                if is_assistant_tool_call_item(item_type) {
                     let mut grouped: Vec<Value> = Vec::new();
                     let mut reasoning_content: Option<String> = None;
                     let mut reasoning_details: Option<Value> = None;
@@ -101,16 +101,12 @@ pub fn to_chat_request(
 
                     while i < items.len() {
                         let cur = &items[i];
-                        if cur.get("type").and_then(|v| v.as_str()).unwrap_or("") != "function_call"
-                        {
+                        let cur_type = cur.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if !is_assistant_tool_call_item(cur_type) {
                             break;
                         }
                         let call_id = cur.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                        let name = cur.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let args = cur
-                            .get("arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("{}");
+                        let (name, args) = response_item_tool_call_name_and_args(cur_type, cur);
 
                         call_ids.push(call_id.to_string());
 
@@ -771,7 +767,70 @@ fn synthetic_tool_name_for_output(item_type: &str) -> &str {
         "tool_search_output" => "tool_search",
         "computer_call_output" => "local_computer",
         "mcp_tool_call_output" => "local_mcp_call",
+        "custom_tool_call_output" => "apply_patch",
         other => other,
+    }
+}
+
+fn is_assistant_tool_call_item(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call" | "custom_tool_call" | "mcp_tool_call" | "computer_call"
+    )
+}
+
+fn response_item_tool_call_name_and_args(item_type: &str, item: &Value) -> (String, String) {
+    match item_type {
+        "custom_tool_call" => {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("apply_patch")
+                .to_string();
+            let input = item
+                .get("input")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("arguments").and_then(Value::as_str))
+                .unwrap_or("");
+            (name, json!({"input": input}).to_string())
+        }
+        "mcp_tool_call" => {
+            let tool = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let server_label = item
+                .get("server_label")
+                .and_then(Value::as_str)
+                .unwrap_or("remote_mcp");
+            let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            (
+                "local_mcp_call".into(),
+                json!({
+                    "server_label": server_label,
+                    "tool": tool,
+                    "arguments": arguments
+                })
+                .to_string(),
+            )
+        }
+        "computer_call" => {
+            let action = item.get("action").cloned().unwrap_or_else(|| json!({}));
+            ("local_computer".into(), action.to_string())
+        }
+        _ => {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let args = item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or("{}")
+                .to_string();
+            (name, args)
+        }
     }
 }
 
@@ -2331,6 +2390,38 @@ mod tests {
             resp.output[0].arguments.as_deref(),
             Some("{\"query\":\"computer use\"}")
         );
+    }
+
+    #[test]
+    fn test_custom_tool_call_history_is_replayed_as_apply_patch() {
+        let sessions = SessionStore::new();
+        let req = base_req(ResponsesInput::Messages(vec![
+            json!({
+                "type": "custom_tool_call",
+                "call_id": "patch_1",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-old\n+new\n*** End Patch"
+            }),
+            json!({
+                "type": "custom_tool_call_output",
+                "call_id": "patch_1",
+                "output": "Exit code: 0\nSuccess. Updated the following files:\nM /tmp/a.txt\n"
+            }),
+        ]));
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+
+        let assistant = chat
+            .messages
+            .iter()
+            .find(|msg| msg.role == "assistant")
+            .expect("expected assistant tool call");
+        let tool_call = &assistant.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(tool_call["function"]["name"], "apply_patch");
+        assert!(tool_call["function"]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("*** Begin Patch"));
     }
 
     #[test]

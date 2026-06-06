@@ -63,7 +63,8 @@ pub fn normalize_apply_patch_input(input: &str) -> String {
     let has_unified_pair = lines
         .windows(2)
         .any(|pair| pair[0].starts_with("--- ") && pair[1].starts_with("+++ "));
-    if !has_unified_pair {
+    let has_unified_hunk_header = lines.iter().any(|line| is_unified_hunk_header(line));
+    if !has_unified_pair && !has_unified_hunk_header {
         return input.to_string();
     }
 
@@ -86,6 +87,13 @@ pub fn normalize_apply_patch_input(input: &str) -> String {
     while idx < lines.len() {
         let line = lines[idx];
         if line.starts_with("diff --git ") {
+            changed = true;
+            idx += 1;
+            continue;
+        }
+
+        if is_unified_hunk_header(line) {
+            normalized.push("@@".to_string());
             changed = true;
             idx += 1;
             continue;
@@ -120,6 +128,11 @@ pub fn normalize_apply_patch_input(input: &str) -> String {
     } else {
         input.to_string()
     }
+}
+
+fn is_unified_hunk_header(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("@@ -") && trimmed.ends_with("@@") && trimmed.contains(" +")
 }
 
 fn unified_diff_target_path(old_header: &str, new_header: &str) -> Option<String> {
@@ -180,7 +193,7 @@ mod tests {
         assert!(normalized.contains("*** Update File: /tmp/codex-minimax-toolchain-test/file1.txt"));
         assert!(!normalized.contains("--- a/tmp/codex-minimax-toolchain-test/file1.txt"));
         assert!(!normalized.contains("+++ b/tmp/codex-minimax-toolchain-test/file1.txt"));
-        assert!(normalized.contains("@@ -1 +1 @@"));
+        assert!(normalized.contains("@@\n-minimax test"));
     }
 
     #[test]
@@ -204,6 +217,24 @@ mod tests {
         );
         assert!(!normalized.contains("--- a/tmp/demo.txt"));
         assert!(!normalized.contains("+++ b/tmp/demo.txt"));
+    }
+
+    #[test]
+    fn normalize_apply_patch_simplifies_unified_hunk_ranges() {
+        let input = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: /tmp/codex-minimax-toolchain-test/test1.txt\n",
+            "@@ -1 +1 @@\n",
+            "-测试文件1 - minimax工具链测试\n",
+            "+测试文件1 - minimax工具链测试\n",
+            "+PATCH_OK\n",
+            "*** End Patch"
+        );
+
+        let normalized = normalize_apply_patch_input(input);
+
+        assert!(normalized.contains("@@\n-测试文件1"));
+        assert!(!normalized.contains("@@ -1 +1 @@"));
     }
 
     #[test]
