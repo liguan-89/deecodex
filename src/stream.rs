@@ -747,6 +747,7 @@ pub fn translate_stream(
         let mut accumulated_reasoning = String::new();
         let mut accumulated_reasoning_details: Vec<Value> = Vec::new();
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
+        let mimo_pending_minimum = providers::mimo_pending_min_tool_calls(&chat_req.messages);
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
         let mut final_usage: Option<ChatUsage> = None;
@@ -1010,6 +1011,53 @@ pub fn translate_stream(
             "output_tokens": u.completion_tokens,
             "total_tokens": u.total_tokens
         }));
+
+        if let Some((completed, required)) = mimo_pending_minimum {
+            if tool_calls.is_empty() {
+                let message = format!(
+                    "MiMo returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
+                );
+                warn!("{message}");
+                runtime_feedback
+                    .failure(
+                        &model,
+                        reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                        message.clone(),
+                        None,
+                    )
+                    .await;
+                if store_response {
+                    let mut failed = json!({
+                        "id": &response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "model": &model,
+                        "output": [],
+                        "error": {"code": "mimo_min_tool_calls_not_satisfied", "message": message.clone()}
+                    });
+                    merge_response_extra(&mut failed, &response_extra);
+                    sessions.save_response(response_id.clone(), failed);
+                }
+                yield event_with_sequence(
+                    &mut seq,
+                    "response.failed",
+                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "mimo_min_tool_calls_not_satisfied", "message": message}}}),
+                );
+                let _ = request_history.record(history_context.record(
+                    response_id,
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                    model,
+                    "failed".into(),
+                    completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+                    completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+                    start.elapsed().as_millis() as u64,
+                    upstream_url,
+                    "mimo_min_tool_calls_not_satisfied".into(),
+                    history_cache_hit,
+                )).await;
+                return;
+            }
+        }
 
         // Close reasoning item
         if emitted_reasoning_item {
@@ -1556,9 +1604,11 @@ pub fn translate_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::{Account, AccountStore, ACCOUNT_STORE_VERSION};
     use crate::cache::CachedUsage;
     use crate::types::CachedTokenDetails;
     use axum::response::IntoResponse;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn parse_sse_events(body: &[u8]) -> Vec<(String, serde_json::Value)> {
         let text = std::str::from_utf8(body).unwrap();
@@ -1578,6 +1628,82 @@ mod tests {
                 (event_type, data_value)
             })
             .collect()
+    }
+
+    fn base_chat_request(model: &str, messages: Vec<ChatMessage>) -> ChatRequest {
+        ChatRequest {
+            model: model.into(),
+            messages,
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        }
+    }
+
+    fn test_runtime_feedback_sink() -> RuntimeFeedbackSink {
+        let data_dir = Arc::new(
+            std::env::temp_dir().join(format!("deecodex-stream-test-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir_all(data_dir.as_ref()).unwrap();
+        let account = serde_json::from_value::<Account>(json!({
+            "id": "test-account",
+            "name": "Test Account",
+            "provider": "openai",
+            "client_kind": "codex",
+            "client_surface": "desktop",
+            "upstream": "https://api.example.com/v1",
+            "api_key": "test-key",
+            "endpoints": [{
+                "id": "test-endpoint",
+                "name": "Responses",
+                "kind": "open_ai_responses",
+                "base_url": "https://api.example.com/v1"
+            }]
+        }))
+        .unwrap();
+        let store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: Some("test-endpoint".into()),
+            active_by_surface: Default::default(),
+        };
+
+        RuntimeFeedbackSink::new(
+            data_dir,
+            Arc::new(tokio::sync::RwLock::new(store)),
+            Arc::new(tokio::sync::RwLock::new(account)),
+            "test-account".into(),
+        )
+    }
+
+    async fn spawn_sse_server(body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{addr}/v1/chat/completions")
     }
 
     fn assert_sequence_numbers(events: &[(String, serde_json::Value)]) {
@@ -1792,6 +1918,112 @@ mod tests {
             .unwrap()
             .contains("/tmp/test.txt"));
         assert_eq!(events[4].0, "response.completed");
+    }
+
+    #[tokio::test]
+    async fn mimo_pending_minimum_without_tool_calls_fails_stream() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"已完成 18 次调用，还需 6 次。继续执行。\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "必须至少完成 24 次工具调用，没达到 24 次前不能总结、不能结束。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..18 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("mimo-v2.5-pro", messages.clone()),
+            response_id: "resp_mimo_pending".into(),
+            sessions: sessions.clone(),
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "mimo-v2.5-pro".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.output_text.delta"));
+        let failed = events
+            .iter()
+            .find(|(event_type, _)| event_type == "response.failed")
+            .expect("expected response.failed");
+        assert_eq!(
+            failed.1["response"]["error"]["code"],
+            "mimo_min_tool_calls_not_satisfied"
+        );
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+
+        let stored = sessions.get_response("resp_mimo_pending").unwrap();
+        assert_eq!(stored["status"], "failed");
+        assert_eq!(stored["error"]["code"], "mimo_min_tool_calls_not_satisfied");
     }
 
     #[tokio::test]

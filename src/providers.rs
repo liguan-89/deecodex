@@ -617,16 +617,7 @@ fn enforce_mimo_min_tool_calls(req: &mut ChatRequest) {
     if req.tools.is_empty() {
         return;
     }
-    let Some((user_index, required)) = mimo_min_tool_call_requirement(&req.messages) else {
-        return;
-    };
-    let completed = req
-        .messages
-        .iter()
-        .skip(user_index + 1)
-        .filter(|msg| msg.role == "tool" && msg.tool_call_id.is_some())
-        .count();
-    if completed < required {
+    if let Some((completed, required)) = mimo_pending_min_tool_calls(&req.messages) {
         append_mimo_min_tool_call_guard(req, completed, required);
         if can_override_tool_choice(&req.tool_choice) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
@@ -640,11 +631,10 @@ fn append_mimo_min_tool_call_guard(req: &mut ChatRequest, completed: usize, requ
     );
 
     req.messages.retain(|msg| {
-        !(msg.role == "system"
-            && chat_message_text(msg.content.as_ref()).contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER))
+        !chat_message_text(msg.content.as_ref()).contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER)
     });
     req.messages.push(ChatMessage {
-        role: "system".into(),
+        role: "user".into(),
         content: Some(serde_json::Value::String(guard)),
         reasoning_content: None,
         reasoning_details: None,
@@ -652,6 +642,16 @@ fn append_mimo_min_tool_call_guard(req: &mut ChatRequest, completed: usize, requ
         tool_call_id: None,
         name: None,
     });
+}
+
+pub fn mimo_pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
+    let (user_index, required) = mimo_min_tool_call_requirement(messages)?;
+    let completed = messages
+        .iter()
+        .skip(user_index + 1)
+        .filter(|msg| msg.role == "tool" && msg.tool_call_id.is_some())
+        .count();
+    (completed < required).then_some((completed, required))
 }
 
 fn can_override_tool_choice(choice: &Option<serde_json::Value>) -> bool {
@@ -668,6 +668,9 @@ fn mimo_min_tool_call_requirement(messages: &[ChatMessage]) -> Option<(usize, us
             return None;
         }
         let text = chat_message_text(msg.content.as_ref());
+        if text.contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER) {
+            return None;
+        }
         min_tool_calls_from_text(&text).map(|required| (index, required))
     })
 }
@@ -767,10 +770,7 @@ fn merge_extra_system_messages(messages: &mut Vec<crate::types::ChatMessage>) {
         return;
     };
     for idx in (first + 1..messages.len()).rev() {
-        if messages[idx].role == "system"
-            && !chat_message_text(messages[idx].content.as_ref())
-                .contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER)
-        {
+        if messages[idx].role == "system" {
             let removed = messages.remove(idx);
             if let Some(serde_json::Value::String(text)) = removed.content {
                 if let Some(serde_json::Value::String(target)) = &mut messages[first].content {
@@ -1231,7 +1231,7 @@ mod tests {
 
         assert_eq!(req.tool_choice, Some(json!("required")));
         assert!(req.messages.iter().any(|msg| {
-            msg.role == "system"
+            msg.role == "user"
                 && msg
                     .content
                     .as_ref()
@@ -1384,7 +1384,7 @@ mod tests {
             .iter()
             .rev()
             .find(|msg| {
-                msg.role == "system"
+                msg.role == "user"
                     && chat_message_text(msg.content.as_ref()).contains("MiMo 最小工具调用计数约束")
             })
             .and_then(|msg| msg.content.as_ref())
@@ -1447,10 +1447,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            req.messages
-                .iter()
-                .filter(|msg| msg.role == "system")
-                .count(),
+            req.messages.iter().filter(|msg| msg.role == "user").count(),
             2
         );
     }
