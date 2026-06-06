@@ -1689,6 +1689,13 @@ struct PreviewAccountMigration {
     active_links: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PreviewAccountsFingerprint {
+    len: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+}
+
 fn preview_accounts_data_dir_for_formal(data_dir: &Path) -> Option<PathBuf> {
     if runtime_defaults().preview {
         return None;
@@ -1705,6 +1712,42 @@ fn preview_accounts_migration_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join("preview_accounts_migrated.json")
 }
 
+fn preview_accounts_fingerprint(path: &Path) -> Option<PreviewAccountsFingerprint> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let modified = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Some(PreviewAccountsFingerprint {
+        len: metadata.len(),
+        modified_secs: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    })
+}
+
+fn preview_accounts_marker_matches(data_dir: &Path, preview_path: &Path) -> bool {
+    let Some(current) = preview_accounts_fingerprint(preview_path) else {
+        return false;
+    };
+    let marker = preview_accounts_migration_marker_path(data_dir);
+    let Some(marker) = std::fs::read_to_string(marker)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+    else {
+        return false;
+    };
+    let Some(preview) = marker.get("preview_accounts") else {
+        return false;
+    };
+    preview.get("len").and_then(Value::as_u64) == Some(current.len)
+        && preview.get("modified_secs").and_then(Value::as_u64) == Some(current.modified_secs)
+        && preview
+            .get("modified_nanos")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            == Some(current.modified_nanos)
+}
+
 fn account_oauth_token(
     account: &deecodex::accounts::Account,
 ) -> Option<deecodex::oauth_accounts::OAuthToken> {
@@ -1714,85 +1757,31 @@ fn account_oauth_token(
         .and_then(deecodex::oauth_accounts::oauth_token_from_value)
 }
 
-fn same_preview_account_identity(
-    existing: &deecodex::accounts::Account,
-    incoming: &deecodex::accounts::Account,
-) -> bool {
-    if existing.id == incoming.id {
-        return true;
-    }
-    if existing.client_kind != incoming.client_kind
-        || existing.client_surface != incoming.client_surface
-        || existing.provider != incoming.provider
-        || existing.upstream != incoming.upstream
-        || existing.default_model != incoming.default_model
-    {
-        return false;
-    }
-    if !incoming.api_key.trim().is_empty() && existing.api_key == incoming.api_key {
-        return true;
-    }
-    incoming.api_key.trim().is_empty()
-        && existing.api_key.trim().is_empty()
-        && existing.name == incoming.name
-}
-
-fn find_preview_account_duplicate(
-    accounts: &[deecodex::accounts::Account],
-    incoming: &deecodex::accounts::Account,
-) -> Option<usize> {
-    if let Some(token) = account_oauth_token(incoming) {
-        return accounts.iter().position(|existing| {
-            same_oauth_account(
-                existing,
-                &token,
-                &incoming.provider,
-                &incoming.client_kind,
-                &incoming.client_surface,
-            )
-        });
-    }
-    accounts
-        .iter()
-        .position(|existing| same_preview_account_identity(existing, incoming))
-}
-
-fn refresh_existing_oauth_from_preview(
+fn refresh_existing_account_from_preview(
     existing: &mut deecodex::accounts::Account,
     incoming: &deecodex::accounts::Account,
 ) -> bool {
-    if incoming.auth_mode != deecodex::accounts::AccountAuthMode::OAuth
-        && account_oauth_token(incoming).is_none()
-    {
-        return false;
-    }
+    let before = serde_json::to_value(&*existing).unwrap_or_default();
+    let runtime_state = existing.runtime_state.clone();
+    let last_check = existing.last_check.clone();
+    let last_applied_at = existing.last_applied_at;
+    let created_at = existing.created_at;
 
-    let mut changed = false;
-    if existing.api_key != incoming.api_key {
-        existing.api_key = incoming.api_key.clone();
-        changed = true;
-    }
-    if existing.auth_mode != deecodex::accounts::AccountAuthMode::OAuth {
+    *existing = incoming.clone();
+    existing.created_at = created_at;
+    existing.runtime_state = runtime_state;
+    existing.last_check = last_check;
+    existing.last_applied_at = last_applied_at;
+    if account_oauth_token(incoming).is_some() {
         existing.auth_mode = deecodex::accounts::AccountAuthMode::OAuth;
-        changed = true;
     }
+    existing.updated_at = deecodex::accounts::now_secs();
+    existing.normalize_v2();
 
-    for key in ["oauth", "oauth_quota", "auth_mode", "auth_file_name"] {
-        if let Some(value) = incoming.client_options.get(key) {
-            if existing.client_options.get(key) != Some(value) {
-                existing.client_options.insert(key.into(), value.clone());
-                changed = true;
-            }
-        }
-    }
-
-    if existing.endpoints.is_empty() && !incoming.endpoints.is_empty() {
-        existing.endpoints = incoming.endpoints.clone();
-        changed = true;
-    }
+    let after = serde_json::to_value(&*existing).unwrap_or_default();
+    let changed = before != after;
     if changed {
         existing.updated_at = deecodex::accounts::now_secs();
-        existing.normalize_v2();
     }
     changed
 }
@@ -1827,8 +1816,13 @@ fn merge_preview_active_selection(
     selection: SurfaceActiveSelection,
     account_id_map: &HashMap<String, String>,
 ) -> bool {
-    let can_replace_default = key == deecodex::accounts::DEX_ASSISTANT_ACTIVE_KEY;
-    if store.active_by_surface.contains_key(&key) && !can_replace_default {
+    let can_replace_existing = key == deecodex::accounts::DEX_ASSISTANT_ACTIVE_KEY
+        || key
+            == deecodex::accounts::surface_active_key(
+                &AccountClientKind::Codex,
+                &AccountClientSurface::Desktop,
+            );
+    if store.active_by_surface.contains_key(&key) && !can_replace_existing {
         return false;
     }
     let Some(preview_account_id) = selection.account_id.as_deref() else {
@@ -1856,12 +1850,25 @@ fn mark_preview_accounts_migrated(data_dir: &Path, result: &PreviewAccountMigrat
             return;
         }
     }
+    let preview_accounts = preview_accounts_data_dir_for_formal(data_dir)
+        .map(|dir| deecodex::accounts::accounts_file_path(&dir))
+        .and_then(|path| {
+            preview_accounts_fingerprint(&path).map(|fingerprint| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "len": fingerprint.len,
+                    "modified_secs": fingerprint.modified_secs,
+                    "modified_nanos": fingerprint.modified_nanos,
+                })
+            })
+        });
     let content = json!({
         "version": env!("CARGO_PKG_VERSION"),
         "migrated_at": deecodex::accounts::now_secs(),
         "imported": result.imported,
         "refreshed": result.refreshed,
         "active_links": result.active_links,
+        "preview_accounts": preview_accounts,
     });
     if let Err(err) = std::fs::write(&marker, content.to_string()) {
         tracing::warn!("写入预览账号迁移标记失败: {err}");
@@ -1879,8 +1886,7 @@ fn merge_preview_accounts_for_formal(
     if !preview_path.exists() {
         return PreviewAccountMigration::default();
     }
-    let marker = preview_accounts_migration_marker_path(data_dir);
-    if marker.exists() {
+    if preview_accounts_marker_matches(data_dir, &preview_path) {
         return PreviewAccountMigration::default();
     }
 
@@ -1917,23 +1923,20 @@ fn merge_preview_accounts_for_formal(
         incoming.last_check = None;
         incoming.normalize_v2();
 
-        if let Some(index) = find_preview_account_duplicate(&store.accounts, &incoming) {
+        if let Some(index) = store
+            .accounts
+            .iter()
+            .position(|account| account.id == incoming.id)
+        {
             let existing_id = store.accounts[index].id.clone();
             account_id_map.insert(preview_id, existing_id);
-            if refresh_existing_oauth_from_preview(&mut store.accounts[index], &incoming) {
+            if refresh_existing_account_from_preview(&mut store.accounts[index], &incoming) {
                 result.refreshed += 1;
                 result.changed = true;
             }
             continue;
         }
 
-        if store
-            .accounts
-            .iter()
-            .any(|account| account.id == incoming.id)
-        {
-            incoming.id = deecodex::accounts::generate_id();
-        }
         account_id_map.insert(preview_id, incoming.id.clone());
         store.accounts.push(incoming);
         result.imported += 1;
@@ -7321,6 +7324,126 @@ mod tests {
 
         let loaded = deecodex::accounts::load_accounts(&data_dir);
         assert_eq!(loaded.accounts.len(), 2);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn formal_runtime_resyncs_preview_accounts_when_preview_file_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "deecodex-preview-account-resync-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = root.join(".deecodex");
+        let preview_dir = root.join(".deecodex-preview");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&preview_dir).unwrap();
+
+        let mut formal = test_account("formal");
+        formal.client_kind = AccountClientKind::Codex;
+        formal.client_surface = AccountClientSurface::Desktop;
+        formal.provider = "openai".into();
+        formal.endpoints = vec![codex_official_endpoint_config(&formal.id)];
+        formal.endpoints[0].id = "formal-ep".into();
+        formal.endpoints[0].kind = deecodex::accounts::EndpointKind::OpenAiResponses;
+        formal.endpoints[0].template_id = "responses_direct".into();
+        formal.endpoints[0].base_url = "https://formal.example/v1".into();
+        formal.normalize_v2();
+        let formal_store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![formal.clone()],
+            active_id: Some(formal.id.clone()),
+            active_account_id: Some(formal.id.clone()),
+            active_endpoint_id: Some("formal-ep".into()),
+            active_by_surface: HashMap::from([(
+                deecodex::accounts::surface_active_key(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Desktop,
+                ),
+                SurfaceActiveSelection {
+                    account_id: Some(formal.id.clone()),
+                    endpoint_id: Some("formal-ep".into()),
+                },
+            )]),
+        };
+        deecodex::accounts::save_accounts(&data_dir, &formal_store).unwrap();
+
+        let mut preview = test_account("preview-current");
+        preview.client_kind = AccountClientKind::Codex;
+        preview.client_surface = AccountClientSurface::Desktop;
+        preview.provider = "openai".into();
+        preview.name = "Preview OpenAI".into();
+        preview.api_key = "preview-key".into();
+        preview.endpoints = vec![codex_official_endpoint_config(&preview.id)];
+        preview.endpoints[0].id = "preview-ep".into();
+        preview.endpoints[0].kind = deecodex::accounts::EndpointKind::OpenAiResponses;
+        preview.endpoints[0].template_id = "responses_direct".into();
+        preview.endpoints[0].base_url = "https://preview.example/v1".into();
+        preview.endpoints[0].known_models = vec!["gpt-5.5".into()];
+        preview.normalize_v2();
+        let preview_store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![preview.clone()],
+            active_id: Some(preview.id.clone()),
+            active_account_id: Some(preview.id.clone()),
+            active_endpoint_id: Some("preview-ep".into()),
+            active_by_surface: HashMap::from([(
+                deecodex::accounts::surface_active_key(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Desktop,
+                ),
+                SurfaceActiveSelection {
+                    account_id: Some(preview.id.clone()),
+                    endpoint_id: Some("preview-ep".into()),
+                },
+            )]),
+        };
+        deecodex::accounts::save_accounts(&preview_dir, &preview_store).unwrap();
+
+        std::fs::write(
+            preview_accounts_migration_marker_path(&data_dir),
+            json!({
+                "version": "3.4.1",
+                "migrated_at": 1,
+                "imported": 0,
+                "refreshed": 0,
+                "active_links": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let migrated = migrate_or_load_accounts(&data_dir);
+
+        assert!(migrated
+            .accounts
+            .iter()
+            .any(|account| account.id == "preview-current"));
+        assert_eq!(migrated.active_account_id.as_deref(), Some("formal"));
+        assert_eq!(
+            migrated
+                .active_selection_for_surface(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Desktop
+                )
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("preview-current")
+        );
+        assert_eq!(
+            migrated
+                .active_selection_for_surface(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Desktop
+                )
+                .and_then(|selection| selection.endpoint_id.as_deref()),
+            Some("preview-ep")
+        );
+        let marker =
+            std::fs::read_to_string(preview_accounts_migration_marker_path(&data_dir)).unwrap();
+        assert!(marker.contains("preview_accounts"));
 
         let _ = std::fs::remove_dir_all(root);
     }
