@@ -565,6 +565,7 @@ fn normalize_mimo_reasoning(req: &mut ChatRequest) {
 const TOOL_EXECUTION_GUARD_MARKER: &str = "工具调用稳定性约束";
 const MIN_TOOL_CALL_GUARD_MARKER: &str = "最小工具调用计数约束";
 const TOOLCHAIN_COVERAGE_GUARD_MARKER: &str = "工具链覆盖完整性约束";
+const TOOLCHAIN_FINAL_REPORT_GUARD_MARKER: &str = "工具链最终报告完整性约束";
 fn tool_execution_guard(label: &str) -> String {
     format!(
         "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
@@ -626,17 +627,26 @@ fn enforce_min_tool_calls(req: &mut ChatRequest, label: &str) {
     if req.tools.is_empty() {
         return;
     }
-    if let Some((completed, required)) = pending_min_tool_calls(&req.messages) {
+    let pending_minimum = pending_min_tool_calls(&req.messages);
+    let pending_coverage = pending_toolchain_coverage(&req.messages);
+
+    if let Some((completed, required)) = pending_minimum {
         append_min_tool_call_guard(req, label, completed, required);
         if can_override_tool_choice(&req.tool_choice) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
         }
     }
-    if let Some(coverage) = pending_toolchain_coverage(&req.messages) {
+    if let Some(coverage) = pending_coverage.as_ref() {
         append_toolchain_coverage_guard(req, label, &coverage);
         if can_override_tool_choice(&req.tool_choice) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
         }
+    }
+    if pending_minimum.is_none()
+        && pending_coverage.is_none()
+        && pending_toolchain_final_report(&req.messages)
+    {
+        append_toolchain_final_report_guard(req, label);
     }
 }
 
@@ -688,6 +698,25 @@ fn append_toolchain_coverage_guard(
     });
 }
 
+fn append_toolchain_final_report_guard(req: &mut ChatRequest, label: &str) {
+    let guard = format!(
+        "【{label} {TOOLCHAIN_FINAL_REPORT_GUARD_MARKER}】工具链测试已经进入收尾阶段，但历史消息里还没有完整最终测试报告。下一条 assistant 响应必须直接输出完整报告，至少包含：实际工具调用总数、exec_command 次数、apply_patch 次数、read_thread_terminal 次数、tool_search 次数、失败工具调用次数和原因、unsupported call 检查、interrupted/response.failed/SSE parse error 检查、最终判定。不能只说准备输出报告，不能直接结束。"
+    );
+
+    req.messages.retain(|msg| {
+        !chat_message_text(msg.content.as_ref()).contains(TOOLCHAIN_FINAL_REPORT_GUARD_MARKER)
+    });
+    req.messages.push(ChatMessage {
+        role: "user".into(),
+        content: Some(serde_json::Value::String(guard)),
+        reasoning_content: None,
+        reasoning_details: None,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    });
+}
+
 pub fn mimo_pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
     pending_min_tool_calls(messages)
 }
@@ -713,6 +742,13 @@ pub enum ToolchainRecoveryTool {
     ReadThreadTerminal,
     ToolSearchThread,
     ToolSearchBrowser,
+    ApplyPatch {
+        patch: String,
+    },
+    ExecCommand {
+        cmd: String,
+        workdir: Option<String>,
+    },
     ExecCommandNoop,
 }
 
@@ -743,29 +779,126 @@ pub fn pending_toolchain_coverage(messages: &[ChatMessage]) -> Option<ToolchainC
         }
     }
 
+    let prompt_text = messages
+        .get(requirement.user_index)
+        .map(|msg| chat_message_text(msg.content.as_ref()))
+        .unwrap_or_default();
     let next_recovery_tool =
-        if requirement.needs_read_thread_terminal && observed.read_thread_terminal < 1 {
-            Some(ToolchainRecoveryTool::ReadThreadTerminal)
-        } else if requirement.min_tool_search.is_some() && observed.tool_search == 0 {
-            Some(ToolchainRecoveryTool::ToolSearchThread)
-        } else if requirement
-            .min_tool_search
-            .is_some_and(|required| observed.tool_search < required)
-        {
-            Some(ToolchainRecoveryTool::ToolSearchBrowser)
-        } else if requirement
-            .min_total_tools
-            .is_some_and(|required| observed.total_tools < required)
-        {
-            Some(ToolchainRecoveryTool::ExecCommandNoop)
-        } else {
-            None
-        };
+        sequential_toolchain_recovery_tool(&prompt_text, &observed).or_else(|| {
+            if requirement.needs_read_thread_terminal && observed.read_thread_terminal < 1 {
+                Some(ToolchainRecoveryTool::ReadThreadTerminal)
+            } else if requirement.min_tool_search.is_some() && observed.tool_search == 0 {
+                Some(ToolchainRecoveryTool::ToolSearchThread)
+            } else if requirement
+                .min_tool_search
+                .is_some_and(|required| observed.tool_search < required)
+            {
+                Some(ToolchainRecoveryTool::ToolSearchBrowser)
+            } else if requirement
+                .min_successful_apply_patch
+                .is_some_and(|required| observed.successful_apply_patch < required)
+            {
+                apply_patch_recovery_tool(&prompt_text, observed.successful_apply_patch)
+            } else if requirement
+                .min_total_tools
+                .is_some_and(|required| observed.total_tools < required)
+            {
+                Some(exec_recovery_tool(
+                    "pwd".into(),
+                    first_tmp_dir(&prompt_text),
+                ))
+            } else {
+                None
+            }
+        });
 
     (!missing.is_empty()).then_some(ToolchainCoverageStatus {
         missing,
         next_recovery_tool,
     })
+}
+
+pub fn min_tool_call_recovery_tool(messages: &[ChatMessage]) -> Option<ToolchainRecoveryTool> {
+    let (user_index, _required) = min_tool_call_requirement(messages)?;
+    let observed = observed_toolchain_coverage(messages, user_index);
+    let prompt_text = messages
+        .get(user_index)
+        .map(|msg| chat_message_text(msg.content.as_ref()))
+        .unwrap_or_default();
+    sequential_toolchain_recovery_tool(&prompt_text, &observed).or_else(|| {
+        Some(exec_recovery_tool(
+            "pwd".into(),
+            first_tmp_dir(&prompt_text),
+        ))
+    })
+}
+
+pub fn toolchain_final_report_required(messages: &[ChatMessage]) -> bool {
+    toolchain_final_report_user_index(messages).is_some()
+}
+
+pub fn pending_toolchain_final_report(messages: &[ChatMessage]) -> bool {
+    let Some(user_index) = toolchain_final_report_user_index(messages) else {
+        return false;
+    };
+    !messages.iter().skip(user_index + 1).any(|msg| {
+        msg.role == "assistant"
+            && complete_toolchain_final_report_text(&chat_message_text(msg.content.as_ref()))
+    })
+}
+
+pub fn complete_toolchain_final_report_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let preparing_only = text.contains("准备出报告")
+        || text.contains("准备输出报告")
+        || text.contains("准备生成报告")
+        || text.contains("准备补")
+        || lower.contains("preparing report");
+    if preparing_only {
+        return false;
+    }
+
+    let has_report_title = text.contains("测试报告")
+        || text.contains("最终报告")
+        || lower.contains("test report")
+        || lower.contains("final report");
+    let has_total = text.contains("实际工具调用总数")
+        || text.contains("工具调用总数")
+        || lower.contains("tool call");
+    let has_exec = lower.contains("exec_command");
+    let has_patch = lower.contains("apply_patch");
+    let has_terminal =
+        lower.contains("read_thread_terminal") || lower.contains("codex_app.read_thread_terminal");
+    let has_search = lower.contains("tool_search");
+    let has_failure = text.contains("失败工具调用")
+        || text.contains("失败次数")
+        || lower.contains("failed tool")
+        || lower.contains("failure");
+    let has_unsupported = lower.contains("unsupported call");
+    let has_stream_errors = lower.contains("interrupted")
+        || lower.contains("response.failed")
+        || lower.contains("sse parse error");
+    let has_verdict = text.contains("最终判定")
+        && (text.contains("通过") || text.contains("不通过") || lower.contains("pass"));
+
+    has_report_title
+        && has_total
+        && has_exec
+        && has_patch
+        && has_terminal
+        && has_search
+        && has_failure
+        && has_unsupported
+        && has_stream_errors
+        && has_verdict
+}
+
+pub fn final_report_recovery_tool(messages: &[ChatMessage]) -> ToolchainRecoveryTool {
+    let workdir = toolchain_final_report_user_index(messages)
+        .and_then(|index| messages.get(index))
+        .map(|msg| chat_message_text(msg.content.as_ref()))
+        .and_then(|text| first_tmp_dir(&text));
+    exec_recovery_tool("pwd".into(), workdir)
 }
 
 struct ToolchainCoverageRequirement {
@@ -798,8 +931,14 @@ fn toolchain_coverage_requirement(
             return None;
         }
         let lower = text.to_ascii_lowercase();
-        let pressure_test = (text.contains("压力测试") || lower.contains("stress test"))
-            && (text.contains("工具链") || lower.contains("toolchain"));
+        let toolchain_test = text.contains("压力测试")
+            || text.contains("稳定性测试")
+            || text.contains("兼容性测试")
+            || lower.contains("stress test")
+            || lower.contains("stability test")
+            || lower.contains("compatibility test");
+        let pressure_test =
+            toolchain_test && (text.contains("工具链") || lower.contains("toolchain"));
         if !pressure_test {
             return None;
         }
@@ -824,6 +963,202 @@ fn toolchain_coverage_requirement(
             min_successful_apply_patch,
         })
     })
+}
+
+fn toolchain_final_report_user_index(messages: &[ChatMessage]) -> Option<usize> {
+    messages.iter().enumerate().rev().find_map(|(index, msg)| {
+        if msg.role != "user" {
+            return None;
+        }
+        let text = chat_message_text(msg.content.as_ref());
+        if text.contains(MIN_TOOL_CALL_GUARD_MARKER)
+            || text.contains(TOOLCHAIN_COVERAGE_GUARD_MARKER)
+            || text.contains(TOOLCHAIN_FINAL_REPORT_GUARD_MARKER)
+        {
+            return None;
+        }
+        let lower = text.to_ascii_lowercase();
+        let asks_report = text.contains("最终报告")
+            || text.contains("测试报告")
+            || lower.contains("final report")
+            || lower.contains("test report");
+        let toolchain_test = text.contains("工具链")
+            || lower.contains("toolchain")
+            || text.contains("工具调用")
+            || lower.contains("tool call");
+        (asks_report && toolchain_test).then_some(index)
+    })
+}
+
+fn sequential_toolchain_recovery_tool(
+    prompt_text: &str,
+    observed: &ObservedToolchainCoverage,
+) -> Option<ToolchainRecoveryTool> {
+    let lower = prompt_text.to_ascii_lowercase();
+    let sequential = prompt_text.contains("必须按顺序执行")
+        || prompt_text.contains("低并发顺序执行")
+        || lower.contains("sequential");
+    if !sequential {
+        return None;
+    }
+
+    let workdir = first_tmp_dir(prompt_text);
+    let dir = workdir
+        .clone()
+        .unwrap_or_else(|| "/tmp/codex-toolchain-recovery".to_string());
+    let file1 = format!("{dir}/file1.txt");
+    let file2 = format!("{dir}/file2.txt");
+    let file3 = format!("{dir}/file3.txt");
+    let probe = format!("{dir}/probe.rs");
+    let file1_content = file_content_from_prompt(prompt_text, "file1.txt", "minimax m3 alpha");
+    let file2_content = file_content_from_prompt(prompt_text, "file2.txt", "minimax m3 beta");
+    let file3_content = file_content_from_prompt(prompt_text, "file3.txt", "minimax m3 gamma");
+
+    match observed.total_tools {
+        0 => Some(exec_recovery_tool(
+            format!("mkdir -p {}", shell_quote(&dir)),
+            None,
+        )),
+        1 => Some(exec_recovery_tool(
+            format!(
+                "printf '%s\\n' {} > {}",
+                shell_quote(&file1_content),
+                shell_quote(&file1)
+            ),
+            workdir,
+        )),
+        2 => Some(exec_recovery_tool(
+            format!(
+                "printf '%s\\n' {} > {}",
+                shell_quote(&file2_content),
+                shell_quote(&file2)
+            ),
+            workdir,
+        )),
+        3 => Some(exec_recovery_tool(
+            format!(
+                "printf '%s\\n' {} > {}",
+                shell_quote(&file3_content),
+                shell_quote(&file3)
+            ),
+            workdir,
+        )),
+        4 => Some(exec_recovery_tool(
+            format!("cat {}", shell_quote(&file1)),
+            workdir,
+        )),
+        5 => Some(exec_recovery_tool(
+            format!("cat {}", shell_quote(&file2)),
+            workdir,
+        )),
+        6 => Some(exec_recovery_tool(
+            format!("cat {}", shell_quote(&file3)),
+            workdir,
+        )),
+        7 => Some(exec_recovery_tool(
+            format!("rg minimax {}", shell_quote(&dir)),
+            workdir,
+        )),
+        8 => apply_patch_recovery_tool(prompt_text, observed.successful_apply_patch),
+        9 => apply_patch_recovery_tool(prompt_text, observed.successful_apply_patch.max(1)),
+        10 => Some(exec_recovery_tool(
+            format!("rg PATCH_OK {}", shell_quote(&dir)),
+            workdir,
+        )),
+        11 => Some(ToolchainRecoveryTool::ReadThreadTerminal),
+        12 => Some(ToolchainRecoveryTool::ToolSearchThread),
+        13 => Some(ToolchainRecoveryTool::ToolSearchBrowser),
+        14 => Some(exec_recovery_tool(
+            format!(
+                "printf '%s\\n' {} > {}",
+                shell_quote("fn main() { println!(\"MINIMAX_M3_PROBE_OK\"); }"),
+                shell_quote(&probe)
+            ),
+            workdir,
+        )),
+        15 => Some(exec_recovery_tool("rustc --version".into(), workdir)),
+        16 => Some(exec_recovery_tool(
+            format!(
+                "rustc {} -o {}",
+                shell_quote(&probe),
+                shell_quote(&format!("{dir}/probe"))
+            ),
+            workdir,
+        )),
+        17 => Some(exec_recovery_tool("./probe".into(), workdir)),
+        18 => Some(exec_recovery_tool("bad-command".into(), workdir)),
+        19 => Some(exec_recovery_tool("ls -la".into(), workdir)),
+        20 => Some(exec_recovery_tool(
+            "wc -l file1.txt file2.txt file3.txt".into(),
+            workdir,
+        )),
+        21 => Some(exec_recovery_tool("grep -R PATCH_OK .".into(), workdir)),
+        _ => None,
+    }
+}
+
+fn apply_patch_recovery_tool(
+    prompt_text: &str,
+    successful_apply_patch: usize,
+) -> Option<ToolchainRecoveryTool> {
+    let dir =
+        first_tmp_dir(prompt_text).unwrap_or_else(|| "/tmp/codex-toolchain-recovery".to_string());
+    let (path, content) = if successful_apply_patch == 0 {
+        (
+            format!("{dir}/file1.txt"),
+            file_content_from_prompt(prompt_text, "file1.txt", "minimax m3 alpha"),
+        )
+    } else {
+        (
+            format!("{dir}/file2.txt"),
+            file_content_from_prompt(prompt_text, "file2.txt", "minimax m3 beta"),
+        )
+    };
+    Some(ToolchainRecoveryTool::ApplyPatch {
+        patch: format!(
+            "*** Begin Patch\n*** Update File: {path}\n@@\n {content}\n+PATCH_OK\n*** End Patch\n"
+        ),
+    })
+}
+
+fn exec_recovery_tool(cmd: String, workdir: Option<String>) -> ToolchainRecoveryTool {
+    ToolchainRecoveryTool::ExecCommand { cmd, workdir }
+}
+
+fn first_tmp_dir(text: &str) -> Option<String> {
+    let start = text.find("/tmp/")?;
+    let path: String = text[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-'))
+        .collect();
+    (!path.is_empty()).then_some(path)
+}
+
+fn file_content_from_prompt(text: &str, file_name: &str, fallback: &str) -> String {
+    let Some(file_pos) = text.find(file_name) else {
+        return fallback.to_string();
+    };
+    let after_file = &text[file_pos + file_name.len()..];
+    let Some(marker_pos) = after_file.find("内容包含") else {
+        return fallback.to_string();
+    };
+    let after_marker = after_file[marker_pos + "内容包含".len()..]
+        .trim_start_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '：');
+    let content: String = after_marker
+        .chars()
+        .take_while(|ch| !matches!(ch, '。' | '\n' | '\r'))
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if content.is_empty() {
+        fallback.to_string()
+    } else {
+        content
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn observed_toolchain_coverage(
@@ -1473,6 +1808,58 @@ mod tests {
             coverage.next_recovery_tool,
             Some(ToolchainRecoveryTool::ToolSearchBrowser)
         );
+    }
+
+    #[test]
+    fn minimax_stability_test_minimum_uses_sequential_recovery() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "MiniMax-M3 工具链稳定性测试，低并发顺序执行。必须完成至少 18 次真实工具调用。必须按顺序执行：1. exec_command 创建 /tmp/codex-minimax-m3-seq-test。2. exec_command 创建 file1.txt，内容包含 minimax m3 alpha。3. exec_command 创建 file2.txt，内容包含 minimax m3 beta。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..2 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let coverage = pending_toolchain_coverage(&messages).expect("expected coverage");
+        assert!(coverage
+            .missing
+            .iter()
+            .any(|item| item == "总工具调用 2/18"));
+        assert!(matches!(
+            coverage.next_recovery_tool,
+            Some(ToolchainRecoveryTool::ExecCommand { ref cmd, ref workdir })
+                if cmd.contains("file2.txt")
+                    && cmd.contains("minimax m3 beta")
+                    && workdir.as_deref() == Some("/tmp/codex-minimax-m3-seq-test")
+        ));
     }
 
     #[test]

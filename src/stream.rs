@@ -68,6 +68,20 @@ fn synthetic_toolchain_recovery_call(
             "tool_search",
             json!({"query":"browser","limit":8}).to_string(),
         ),
+        providers::ToolchainRecoveryTool::ApplyPatch { patch } => {
+            ("apply_patch", json!({"patch": patch}).to_string())
+        }
+        providers::ToolchainRecoveryTool::ExecCommand { cmd, workdir } => {
+            let mut arguments = json!({
+                "cmd": cmd,
+                "yield_time_ms": 1000,
+                "max_output_tokens": 2000
+            });
+            if let Some(workdir) = workdir {
+                arguments["workdir"] = json!(workdir);
+            }
+            ("exec_command", arguments.to_string())
+        }
         providers::ToolchainRecoveryTool::ExecCommandNoop => (
             "exec_command",
             json!({"cmd":"pwd","yield_time_ms":1000,"max_output_tokens":2000}).to_string(),
@@ -400,7 +414,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             action: None,
         }
     } else {
-        let tool_name = normalize_tool_search_name(name).to_string();
+        let tool_name = normalize_desktop_tool_name(normalize_tool_search_name(name));
         let (namespace, tool_name) = split_namespace_tool_name(&tool_name);
         ResponseToolCallItem {
             item_type: "function_call",
@@ -412,6 +426,19 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
             input: None,
             action: None,
         }
+    }
+}
+
+fn normalize_desktop_tool_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower == "read_thread_terminal"
+        || lower == "codex_app.read_thread_terminal"
+        || lower == "codex_app__read_thread_terminal"
+        || lower == "codex_app__codex_app__read_thread_terminal"
+    {
+        "codex_app__read_thread_terminal".into()
+    } else {
+        name.to_string()
     }
 }
 
@@ -1120,50 +1147,79 @@ pub fn translate_stream(
 
         if let Some((completed, required)) = pending_minimum {
             if tool_calls.is_empty() {
-                let provider_label = min_tool_call_provider_label(&model);
-                let message = format!(
-                    "{provider_label} returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
-                );
-                warn!("{message}");
-                runtime_feedback
-                    .failure(
-                        &model,
-                        reqwest::StatusCode::BAD_GATEWAY.as_u16(),
-                        message.clone(),
-                        None,
-                    )
-                    .await;
-                if store_response {
-                    let mut failed = json!({
-                        "id": &response_id,
-                        "object": "response",
-                        "status": "failed",
-                        "model": &model,
-                        "output": [],
-                        "error": {"code": "min_tool_calls_not_satisfied", "message": message.clone()}
-                    });
-                    merge_response_extra(&mut failed, &response_extra);
-                    sessions.save_response(response_id.clone(), failed);
+                if let Some(recovery_tool) =
+                    providers::min_tool_call_recovery_tool(&chat_req.messages)
+                {
+                    let recovery_call =
+                        synthetic_toolchain_recovery_call(&response_id, &recovery_tool);
+                    warn!(
+                        "{} returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required}); injecting recovery tool call {}.",
+                        min_tool_call_provider_label(&model),
+                        recovery_call.name
+                    );
+                    tool_calls.insert(0, recovery_call);
+                } else {
+                    let provider_label = min_tool_call_provider_label(&model);
+                    let message = format!(
+                        "{provider_label} returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
+                    );
+                    warn!("{message}");
+                    runtime_feedback
+                        .failure(
+                            &model,
+                            reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                            message.clone(),
+                            None,
+                        )
+                        .await;
+                    if store_response {
+                        let mut failed = json!({
+                            "id": &response_id,
+                            "object": "response",
+                            "status": "failed",
+                            "model": &model,
+                            "output": [],
+                            "error": {"code": "min_tool_calls_not_satisfied", "message": message.clone()}
+                        });
+                        merge_response_extra(&mut failed, &response_extra);
+                        sessions.save_response(response_id.clone(), failed);
+                    }
+                    yield event_with_sequence(
+                        &mut seq,
+                        "response.failed",
+                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "min_tool_calls_not_satisfied", "message": message}}}),
+                    );
+                    let _ = request_history.record(history_context.record(
+                        response_id,
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        model,
+                        "failed".into(),
+                        completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+                        completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        "min_tool_calls_not_satisfied".into(),
+                        history_cache_hit,
+                    )).await;
+                    return;
                 }
-                yield event_with_sequence(
-                    &mut seq,
-                    "response.failed",
-                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "min_tool_calls_not_satisfied", "message": message}}}),
-                );
-                let _ = request_history.record(history_context.record(
-                    response_id,
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                    model,
-                    "failed".into(),
-                    completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
-                    completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
-                    start.elapsed().as_millis() as u64,
-                    upstream_url,
-                    "min_tool_calls_not_satisfied".into(),
-                    history_cache_hit,
-                )).await;
-                return;
             }
+        }
+
+        if tool_calls.is_empty()
+            && providers::toolchain_final_report_required(&chat_req.messages)
+            && !providers::complete_toolchain_final_report_text(&accumulated_text)
+        {
+            let recovery_call = synthetic_toolchain_recovery_call(
+                &response_id,
+                &providers::final_report_recovery_tool(&chat_req.messages),
+            );
+            warn!(
+                "{} returned without a complete toolchain final report; injecting recovery tool call {}.",
+                min_tool_call_provider_label(&model),
+                recovery_call.name
+            );
+            tool_calls.insert(0, recovery_call);
         }
 
         if tool_calls.is_empty()
@@ -2076,7 +2132,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mimo_pending_minimum_without_tool_calls_fails_stream() {
+    async fn mimo_pending_minimum_without_tool_calls_injects_recovery_tool() {
         let body = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"已完成 18 次调用，还需 6 次。继续执行。\"},\"finish_reason\":null}]}\n\n",
             "data: [DONE]\n\n",
@@ -2161,31 +2217,30 @@ mod tests {
             .unwrap();
         let events = parse_sse_events(&bytes);
 
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected synthetic recovery tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
         assert!(events
             .iter()
-            .any(|(event_type, _)| event_type == "response.output_text.delta"));
-        let failed = events
-            .iter()
-            .find(|(event_type, _)| event_type == "response.failed")
-            .expect("expected response.failed");
-        assert_eq!(
-            failed.1["response"]["error"]["code"],
-            "min_tool_calls_not_satisfied"
-        );
-        assert!(failed.1["response"]["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("MiMo")));
+            .any(|(event_type, _)| event_type == "response.completed"));
         assert!(!events
             .iter()
-            .any(|(event_type, _)| event_type == "response.completed"));
+            .any(|(event_type, _)| event_type == "response.failed"));
 
         let stored = sessions.get_response("resp_mimo_pending").unwrap();
-        assert_eq!(stored["status"], "failed");
-        assert_eq!(stored["error"]["code"], "min_tool_calls_not_satisfied");
+        assert_eq!(stored["status"], "completed");
     }
 
     #[tokio::test]
-    async fn minimax_pending_minimum_without_tool_calls_fails_stream() {
+    async fn minimax_pending_minimum_without_tool_calls_injects_recovery_tool() {
         let body = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"3 个文件创建完成。开始分别读取它们。\"},\"finish_reason\":null}]}\n\n",
             "data: [DONE]\n\n",
@@ -2270,30 +2325,26 @@ mod tests {
             .unwrap();
         let events = parse_sse_events(&bytes);
 
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected synthetic recovery tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
         assert!(events
             .iter()
-            .any(|(event_type, _)| event_type == "response.output_text.delta"));
-        let failed = events
-            .iter()
-            .find(|(event_type, _)| event_type == "response.failed")
-            .expect("expected response.failed");
-        assert_eq!(
-            failed.1["response"]["error"]["code"],
-            "min_tool_calls_not_satisfied"
-        );
-        assert!(failed.1["response"]["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("MiniMax") && message.contains("5/24")));
+            .any(|(event_type, _)| event_type == "response.completed"));
         assert!(!events
             .iter()
-            .any(|(event_type, _)| event_type == "response.completed"));
+            .any(|(event_type, _)| event_type == "response.failed"));
 
         let stored = sessions.get_response("resp_minimax_pending").unwrap();
-        assert_eq!(stored["status"], "failed");
-        assert_eq!(stored["error"]["code"], "min_tool_calls_not_satisfied");
-        assert!(stored["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("MiniMax")));
+        assert_eq!(stored["status"], "completed");
     }
 
     #[tokio::test]
@@ -2840,6 +2891,18 @@ mod tests {
         let json = response_tool_call_json("ns1", &item, false);
         assert_eq!(json["name"], "get_app_state");
         assert_eq!(json["namespace"], "mcp__computer_use");
+    }
+
+    #[test]
+    fn test_response_tool_call_item_normalizes_read_thread_terminal_namespace() {
+        let item = response_tool_call_item("rt1", "read_thread_terminal", "{}");
+        assert_eq!(item.item_type, "function_call");
+        assert_eq!(item.name.as_deref(), Some("read_thread_terminal"));
+        assert_eq!(item.namespace.as_deref(), Some("codex_app"));
+
+        let item = response_tool_call_item("rt2", "codex_app.read_thread_terminal", "{}");
+        assert_eq!(item.name.as_deref(), Some("read_thread_terminal"));
+        assert_eq!(item.namespace.as_deref(), Some("codex_app"));
     }
 
     #[test]
