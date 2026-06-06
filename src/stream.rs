@@ -52,6 +52,35 @@ fn needs_non_empty_final_message_guard(model: &str) -> bool {
     lower.contains("minimax") || lower.contains("mimo")
 }
 
+fn synthetic_toolchain_recovery_call(
+    response_id: &str,
+    tool: &providers::ToolchainRecoveryTool,
+) -> ToolCallAccum {
+    let (name, arguments) = match tool {
+        providers::ToolchainRecoveryTool::ReadThreadTerminal => {
+            ("codex_app__read_thread_terminal", "{}".to_string())
+        }
+        providers::ToolchainRecoveryTool::ToolSearchThread => (
+            "tool_search",
+            json!({"query":"thread","limit":8}).to_string(),
+        ),
+        providers::ToolchainRecoveryTool::ToolSearchBrowser => (
+            "tool_search",
+            json!({"query":"browser","limit":8}).to_string(),
+        ),
+        providers::ToolchainRecoveryTool::ExecCommandNoop => (
+            "exec_command",
+            json!({"cmd":"pwd","yield_time_ms":1000,"max_output_tokens":2000}).to_string(),
+        ),
+    };
+
+    ToolCallAccum {
+        id: format!("call_{response_id}_toolchain_recovery"),
+        name: name.into(),
+        arguments,
+    }
+}
+
 fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
@@ -1031,50 +1060,61 @@ pub fn translate_stream(
 
         if let Some(coverage) = providers::pending_toolchain_coverage(&chat_req.messages) {
             if tool_calls.is_empty() {
-                let provider_label = min_tool_call_provider_label(&model);
-                let message = format!(
-                    "{provider_label} returned without tool calls before satisfying the required toolchain coverage: {}.",
-                    coverage.missing.join("; ")
-                );
-                warn!("{message}");
-                runtime_feedback
-                    .failure(
-                        &model,
-                        reqwest::StatusCode::BAD_GATEWAY.as_u16(),
-                        message.clone(),
-                        None,
-                    )
-                    .await;
-                if store_response {
-                    let mut failed = json!({
-                        "id": &response_id,
-                        "object": "response",
-                        "status": "failed",
-                        "model": &model,
-                        "output": [],
-                        "error": {"code": "toolchain_coverage_not_satisfied", "message": message.clone()}
-                    });
-                    merge_response_extra(&mut failed, &response_extra);
-                    sessions.save_response(response_id.clone(), failed);
+                if let Some(recovery_tool) = coverage.next_recovery_tool.as_ref() {
+                    let recovery_call =
+                        synthetic_toolchain_recovery_call(&response_id, recovery_tool);
+                    warn!(
+                        "{} returned without tool calls before satisfying coverage; injecting recovery tool call {}.",
+                        min_tool_call_provider_label(&model),
+                        recovery_call.name
+                    );
+                    tool_calls.insert(0, recovery_call);
+                } else {
+                    let provider_label = min_tool_call_provider_label(&model);
+                    let message = format!(
+                        "{provider_label} returned without tool calls before satisfying the required toolchain coverage: {}.",
+                        coverage.missing.join("; ")
+                    );
+                    warn!("{message}");
+                    runtime_feedback
+                        .failure(
+                            &model,
+                            reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                            message.clone(),
+                            None,
+                        )
+                        .await;
+                    if store_response {
+                        let mut failed = json!({
+                            "id": &response_id,
+                            "object": "response",
+                            "status": "failed",
+                            "model": &model,
+                            "output": [],
+                            "error": {"code": "toolchain_coverage_not_satisfied", "message": message.clone()}
+                        });
+                        merge_response_extra(&mut failed, &response_extra);
+                        sessions.save_response(response_id.clone(), failed);
+                    }
+                    yield event_with_sequence(
+                        &mut seq,
+                        "response.failed",
+                        json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "toolchain_coverage_not_satisfied", "message": message}}}),
+                    );
+                    let _ = request_history.record(history_context.record(
+                        response_id,
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        model,
+                        "failed".into(),
+                        completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+                        completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+                        start.elapsed().as_millis() as u64,
+                        upstream_url,
+                        "toolchain_coverage_not_satisfied".into(),
+                        history_cache_hit,
+                    )).await;
+                    return;
                 }
-                yield event_with_sequence(
-                    &mut seq,
-                    "response.failed",
-                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "toolchain_coverage_not_satisfied", "message": message}}}),
-                );
-                let _ = request_history.record(history_context.record(
-                    response_id,
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                    model,
-                    "failed".into(),
-                    completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
-                    completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
-                    start.elapsed().as_millis() as u64,
-                    upstream_url,
-                    "toolchain_coverage_not_satisfied".into(),
-                    history_cache_hit,
-                )).await;
-                return;
             }
         }
 
@@ -2410,7 +2450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn minimax_missing_toolchain_coverage_without_tool_calls_fails_stream() {
+    async fn minimax_missing_toolchain_coverage_without_tool_calls_injects_recovery_tool() {
         let body = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"测试通过。\"},\"finish_reason\":null}]}\n\n",
             "data: [DONE]\n\n",
@@ -2495,20 +2535,142 @@ mod tests {
             .unwrap();
         let events = parse_sse_events(&bytes);
 
-        let failed = events
-            .iter()
-            .find(|(event_type, _)| event_type == "response.failed")
-            .expect("expected response.failed");
-        assert_eq!(
-            failed.1["response"]["error"]["code"],
-            "toolchain_coverage_not_satisfied"
-        );
-        let message = failed.1["response"]["error"]["message"].as_str().unwrap();
-        assert!(message.contains("read_thread_terminal 0/1"));
-        assert!(message.contains("tool_search 0/2"));
         assert!(!events
             .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected synthetic recovery tool call");
+        assert_eq!(tool_done.1["item"]["namespace"], "codex_app");
+        assert_eq!(tool_done.1["item"]["name"], "read_thread_terminal");
+        assert_eq!(tool_done.1["item"]["arguments"], "{}");
+        let completed = events
+            .iter()
+            .find(|(event_type, _)| event_type == "response.completed")
+            .expect("expected response.completed");
+        assert!(completed.1["response"]["output"]
+            .as_array()
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"] == "function_call"
+                        && item["namespace"] == "codex_app"
+                        && item["name"] == "read_thread_terminal"
+                })
+            }));
+    }
+
+    #[tokio::test]
+    async fn minimax_missing_tool_search_coverage_injects_thread_search() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"继续。\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "MiniMax 工具链兼容性压力测试。必须完成至少 24 次独立工具调用。read_thread_terminal 调用至少 1 次。tool_search 分别搜索 thread 和 browser，各 1 次。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..24 {
+            let name = if idx == 0 {
+                "codex_app__read_thread_terminal"
+            } else {
+                "exec_command"
+            };
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("MiniMax-M2.7-highspeed", messages.clone()),
+            response_id: "resp_minimax_missing_tool_search".into(),
+            sessions,
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "MiniMax-M2.7-highspeed".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+                    && payload["item"]["name"] == "tool_search"
+            })
+            .expect("expected synthetic tool_search call");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"query\":\"thread\"")));
+        assert!(events
+            .iter()
             .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
     }
 
     #[tokio::test]

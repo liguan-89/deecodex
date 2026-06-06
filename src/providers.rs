@@ -705,6 +705,15 @@ pub fn pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolchainCoverageStatus {
     pub missing: Vec<String>,
+    pub next_recovery_tool: Option<ToolchainRecoveryTool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolchainRecoveryTool {
+    ReadThreadTerminal,
+    ToolSearchThread,
+    ToolSearchBrowser,
+    ExecCommandNoop,
 }
 
 pub fn pending_toolchain_coverage(messages: &[ChatMessage]) -> Option<ToolchainCoverageStatus> {
@@ -734,7 +743,29 @@ pub fn pending_toolchain_coverage(messages: &[ChatMessage]) -> Option<ToolchainC
         }
     }
 
-    (!missing.is_empty()).then_some(ToolchainCoverageStatus { missing })
+    let next_recovery_tool =
+        if requirement.needs_read_thread_terminal && observed.read_thread_terminal < 1 {
+            Some(ToolchainRecoveryTool::ReadThreadTerminal)
+        } else if requirement.min_tool_search.is_some() && observed.tool_search == 0 {
+            Some(ToolchainRecoveryTool::ToolSearchThread)
+        } else if requirement
+            .min_tool_search
+            .is_some_and(|required| observed.tool_search < required)
+        {
+            Some(ToolchainRecoveryTool::ToolSearchBrowser)
+        } else if requirement
+            .min_total_tools
+            .is_some_and(|required| observed.total_tools < required)
+        {
+            Some(ToolchainRecoveryTool::ExecCommandNoop)
+        } else {
+            None
+        };
+
+    (!missing.is_empty()).then_some(ToolchainCoverageStatus {
+        missing,
+        next_recovery_tool,
+    })
 }
 
 struct ToolchainCoverageRequirement {
@@ -1334,6 +1365,11 @@ mod tests {
         assert!(guard.contains("read_thread_terminal 0/1"));
         assert!(guard.contains("tool_search 0/2"));
         assert!(guard.contains("成功 apply_patch 0/2"));
+        let coverage = pending_toolchain_coverage(&req.messages).expect("expected coverage");
+        assert_eq!(
+            coverage.next_recovery_tool,
+            Some(ToolchainRecoveryTool::ReadThreadTerminal)
+        );
     }
 
     #[test]
@@ -1389,6 +1425,54 @@ mod tests {
         }
 
         assert_eq!(pending_toolchain_coverage(&messages), None);
+    }
+
+    #[test]
+    fn minimax_toolchain_coverage_recovers_tool_search_in_order() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "MiniMax 工具链兼容性压力测试。必须完成至少 24 次独立工具调用。read_thread_terminal 调用至少 1 次。tool_search 分别搜索 thread 和 browser，各 1 次。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for (idx, name) in [
+            ("0", "codex_app__read_thread_terminal"),
+            ("1", "tool_search"),
+        ] {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let coverage = pending_toolchain_coverage(&messages).expect("expected coverage");
+        assert_eq!(
+            coverage.next_recovery_tool,
+            Some(ToolchainRecoveryTool::ToolSearchBrowser)
+        );
     }
 
     #[test]
