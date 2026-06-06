@@ -637,7 +637,7 @@ fn enforce_min_tool_calls(req: &mut ChatRequest, label: &str) {
         }
     }
     if let Some(coverage) = pending_coverage.as_ref() {
-        append_toolchain_coverage_guard(req, label, &coverage);
+        append_toolchain_coverage_guard(req, label, coverage);
         if can_override_tool_choice(&req.tool_choice) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
         }
@@ -1194,10 +1194,8 @@ fn observed_toolchain_coverage(
             match name.as_str() {
                 "read_thread_terminal" => observed.read_thread_terminal += 1,
                 "tool_search" => observed.tool_search += 1,
-                "apply_patch" => {
-                    if tool_output_success(msg.content.as_ref()) {
-                        observed.successful_apply_patch += 1;
-                    }
+                "apply_patch" if tool_output_success(msg.content.as_ref()) => {
+                    observed.successful_apply_patch += 1;
                 }
                 _ => {}
             }

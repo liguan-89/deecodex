@@ -487,10 +487,11 @@ mod tests {
 
         assert_eq!(upstream, "https://assistant.example/v1");
         assert_eq!(api_key, "sk-assistant");
-        assert_eq!(
-            model_map.get("gpt-5.5").map(String::as_str),
-            Some("assistant-model")
-        );
+        assert!(model_map.is_empty());
+
+        let store = deecodex::accounts::load_accounts(&data_dir);
+        let endpoint = store.active_endpoint_for_dex_assistant().unwrap();
+        assert_eq!(endpoint.known_models, vec!["assistant-model"]);
 
         let _ = std::fs::remove_dir_all(data_dir);
     }

@@ -7512,6 +7512,11 @@ mod tests {
             "https://selected.example/v1"
         );
         assert_eq!(state.api_key.read().await.as_str(), "account-key");
+        assert!(state.model_map.read().await.is_empty());
+        let store = state.account_store.read().await;
+        let endpoint = store.active_endpoint().unwrap();
+        assert_eq!(endpoint.known_models, vec!["upstream-model"]);
+        drop(store);
         assert_eq!(
             state
                 .model_map
@@ -7519,7 +7524,7 @@ mod tests {
                 .await
                 .get("gpt-5")
                 .map(String::as_str),
-            Some("upstream-model")
+            None
         );
         assert_eq!(
             state

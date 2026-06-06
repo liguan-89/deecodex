@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "DEX AI Preview",
+  "productName": "DEX AI",
   "version": "3.4.0",
-  "identifier": "com.deecodex.app.preview",
-  "mainBinaryName": "dex-ai-preview",
+  "identifier": "com.deecodex.app",
+  "mainBinaryName": "deecodex-gui",
   "build": {
     "frontendDist": "gui"
   },
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "DEX AI Preview",
+        "title": "DEX AI",
         "width": 1000,
         "height": 650,
         "resizable": true,
