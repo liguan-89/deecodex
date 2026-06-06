@@ -522,6 +522,7 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
     } else if profile.slug == "mimo" {
         normalize_mimo_reasoning(req);
         append_mimo_tool_execution_guard(req);
+        enforce_mimo_min_tool_calls(req);
     }
 
     if caps.web_search_tool {
@@ -609,6 +610,94 @@ fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
             name: None,
         },
     );
+}
+
+fn enforce_mimo_min_tool_calls(req: &mut ChatRequest) {
+    if req.tools.is_empty() || !can_override_tool_choice(&req.tool_choice) {
+        return;
+    }
+    let Some((user_index, required)) = mimo_min_tool_call_requirement(&req.messages) else {
+        return;
+    };
+    let completed = req
+        .messages
+        .iter()
+        .skip(user_index + 1)
+        .filter(|msg| msg.role == "tool" && msg.tool_call_id.is_some())
+        .count();
+    if completed < required {
+        req.tool_choice = Some(serde_json::Value::String("required".into()));
+    }
+}
+
+fn can_override_tool_choice(choice: &Option<serde_json::Value>) -> bool {
+    match choice {
+        None => true,
+        Some(serde_json::Value::String(value)) => matches!(value.as_str(), "auto" | "none"),
+        _ => false,
+    }
+}
+
+fn mimo_min_tool_call_requirement(messages: &[ChatMessage]) -> Option<(usize, usize)> {
+    messages.iter().enumerate().rev().find_map(|(index, msg)| {
+        if msg.role != "user" {
+            return None;
+        }
+        let text = chat_message_text(msg.content.as_ref());
+        min_tool_calls_from_text(&text).map(|required| (index, required))
+    })
+}
+
+fn chat_message_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+fn min_tool_calls_from_text(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    let has_tool_word = text.contains("工具调用")
+        || lower.contains("tool call")
+        || lower.contains("tool invocation");
+    if !has_tool_word || !(text.contains("至少") || lower.contains("at least")) {
+        return None;
+    }
+    ascii_numbers(text)
+        .into_iter()
+        .filter(|number| (1..=100).contains(number))
+        .max()
+}
+
+fn ascii_numbers(text: &str) -> Vec<usize> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            if let Ok(number) = current.parse::<usize>() {
+                numbers.push(number);
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        if let Ok(number) = current.parse::<usize>() {
+            numbers.push(number);
+        }
+    }
+    numbers
 }
 
 fn minimax_model_supports_reasoning_split(model: &str) -> bool {
@@ -1052,6 +1141,176 @@ mod tests {
 
         let system = req.messages[0].content.as_ref().unwrap().as_str().unwrap();
         assert_eq!(system.matches("MiMo 工具调用稳定性约束").count(), 1);
+    }
+
+    #[test]
+    fn mimo_requires_more_tool_calls_when_minimum_not_reached() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("至少执行 15 次独立工具调用，不要合并成一个大脚本。")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..11 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages,
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        assert_eq!(req.tool_choice, Some(json!("required")));
+    }
+
+    #[test]
+    fn mimo_allows_summary_when_minimum_tool_calls_reached() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("至少执行 15 次独立工具调用，不要合并成一个大脚本。")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..15 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages,
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        assert_eq!(req.tool_choice, None);
+    }
+
+    #[test]
+    fn mimo_keeps_explicit_tool_choice_when_minimum_not_reached() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: Some(json!("至少执行 15 次独立工具调用。")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: Some(json!({
+                "type": "function",
+                "function": {"name": "exec_command"}
+            })),
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        assert_eq!(
+            req.tool_choice
+                .as_ref()
+                .and_then(|choice| choice.get("function"))
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str),
+            Some("exec_command")
+        );
     }
 
     #[test]
