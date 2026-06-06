@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::ChatRequest;
+use crate::types::{ChatMessage, ChatRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -521,6 +521,7 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
         }
     } else if profile.slug == "mimo" {
         normalize_mimo_reasoning(req);
+        append_mimo_tool_execution_guard(req);
     }
 
     if caps.web_search_tool {
@@ -556,6 +557,58 @@ fn normalize_mimo_reasoning(req: &mut ChatRequest) {
     if kind != "enabled" && kind != "disabled" {
         map.insert("type".into(), serde_json::Value::String("enabled".into()));
     }
+}
+
+const MIMO_TOOL_EXECUTION_GUARD: &str = "【MiMo 工具调用稳定性约束】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。";
+
+fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
+    if req.tools.is_empty() {
+        return;
+    }
+    if req.messages.iter().any(|msg| {
+        msg.role == "system"
+            && msg
+                .content
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| text.contains("MiMo 工具调用稳定性约束"))
+    }) {
+        return;
+    }
+
+    if let Some(system) = req.messages.iter_mut().find(|msg| msg.role == "system") {
+        match &mut system.content {
+            Some(serde_json::Value::String(text)) => {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(MIMO_TOOL_EXECUTION_GUARD);
+            }
+            Some(serde_json::Value::Array(parts)) => {
+                parts.push(serde_json::json!({
+                    "type": "text",
+                    "text": MIMO_TOOL_EXECUTION_GUARD
+                }));
+            }
+            _ => {
+                system.content = Some(serde_json::Value::String(MIMO_TOOL_EXECUTION_GUARD.into()));
+            }
+        }
+        return;
+    }
+
+    req.messages.insert(
+        0,
+        ChatMessage {
+            role: "system".into(),
+            content: Some(serde_json::Value::String(MIMO_TOOL_EXECUTION_GUARD.into())),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    );
 }
 
 fn minimax_model_supports_reasoning_split(model: &str) -> bool {
@@ -888,6 +941,117 @@ mod tests {
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
         assert_eq!(req.reasoning_split, None);
+    }
+
+    #[test]
+    fn mimo_tool_requests_get_execution_guard() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![ChatMessage {
+                role: "system".into(),
+                content: Some(json!("base system")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        let system = req.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(system.contains("base system"));
+        assert!(system.contains("MiMo 工具调用稳定性约束"));
+        assert!(system.contains("必须直接继续发起下一次工具调用"));
+    }
+
+    #[test]
+    fn mimo_without_tools_does_not_get_execution_guard() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![ChatMessage {
+                role: "system".into(),
+                content: Some(json!("base system")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        let system = req.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(!system.contains("MiMo 工具调用稳定性约束"));
+    }
+
+    #[test]
+    fn mimo_execution_guard_is_not_duplicated() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![ChatMessage {
+                role: "system".into(),
+                content: Some(json!(MIMO_TOOL_EXECUTION_GUARD)),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        let system = req.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert_eq!(system.matches("MiMo 工具调用稳定性约束").count(), 1);
     }
 
     #[test]
