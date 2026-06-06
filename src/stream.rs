@@ -614,8 +614,8 @@ pub fn translate_stream(
                     providers::strip_web_search_tool(&mut fallback_req);
                 }
                 if disable_thinking_retry {
-                fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
-                fallback_req.reasoning_effort = None;
+                    fallback_req.thinking = Some(serde_json::json!({"type": "disabled"}));
+                    fallback_req.reasoning_effort = None;
                 }
                 fallback_req
             } else {
@@ -913,7 +913,7 @@ pub fn translate_stream(
                 return;
             }
             if allow_missing_done {
-                // 部分兼容接口（如 MiniMax）会干净结束 SSE 但不发送 [DONE]。
+                // 部分兼容接口（如 MiniMax/MiMo）会干净结束 SSE 但不发送 [DONE]。
                 stream_completed = true;
             } else {
                 let message = "upstream stream ended without [DONE]".to_string();

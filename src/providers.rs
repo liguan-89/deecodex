@@ -267,6 +267,7 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
                 reasoning: ReasoningMode::DeepSeek,
                 web_search_tool: true,
                 vision_input: true,
+                allow_missing_done: true,
                 ..Default::default()
             },
         ),
@@ -518,6 +519,8 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
         if minimax_model_supports_reasoning_split(&req.model) {
             req.reasoning_split = Some(true);
         }
+    } else if profile.slug == "mimo" {
+        normalize_mimo_reasoning(req);
     }
 
     if caps.web_search_tool {
@@ -537,6 +540,21 @@ fn normalize_minimax_thinking(thinking: &mut Option<serde_json::Value>) {
     };
     if map.get("type").and_then(serde_json::Value::as_str) == Some("enabled") {
         map.insert("type".into(), serde_json::Value::String("adaptive".into()));
+    }
+}
+
+fn normalize_mimo_reasoning(req: &mut ChatRequest) {
+    if req.reasoning_effort.as_deref() == Some("max") {
+        req.reasoning_effort = Some("high".into());
+    }
+    let Some(serde_json::Value::Object(map)) = &mut req.thinking else {
+        return;
+    };
+    let Some(kind) = map.get("type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if kind != "enabled" && kind != "disabled" {
+        map.insert("type".into(), serde_json::Value::String("enabled".into()));
     }
 }
 
@@ -730,7 +748,7 @@ mod tests {
         assert!(!profile_by_slug("deepseek").capabilities.allow_missing_done);
         assert!(!profile_by_slug("kimi").capabilities.allow_missing_done);
         assert!(profile_by_slug("minimax").capabilities.allow_missing_done);
-        assert!(!profile_by_slug("mimo").capabilities.allow_missing_done);
+        assert!(profile_by_slug("mimo").capabilities.allow_missing_done);
         assert!(!profile_by_slug("glm").capabilities.allow_missing_done);
         assert!(!profile_by_slug("custom").capabilities.allow_missing_done);
     }
@@ -796,6 +814,7 @@ mod tests {
         assert!(mimo.capabilities.web_search_tool);
         assert!(!mimo.capabilities.web_search_options);
         assert!(mimo.capabilities.vision_input);
+        assert!(mimo.capabilities.allow_missing_done);
 
         let mut req = ChatRequest {
             model: "mimo-v2.5-pro".into(),
@@ -841,6 +860,34 @@ mod tests {
         assert_eq!(web_search["max_keyword"], 3);
         assert_eq!(web_search["force_search"], true);
         assert_eq!(web_search["limit"], 1);
+    }
+
+    #[test]
+    fn mimo_profile_keeps_thinking_but_clamps_unsupported_max_effort() {
+        let mut req = ChatRequest {
+            model: "mimo-v2.5-pro".into(),
+            messages: vec![],
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: Some("max".into()),
+            thinking: Some(json!({"type":"adaptive"})),
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: Some(true),
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("mimo"), &mut req);
+
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(req.thinking, Some(json!({"type":"enabled"})));
+        assert_eq!(req.reasoning_split, None);
     }
 
     #[test]
