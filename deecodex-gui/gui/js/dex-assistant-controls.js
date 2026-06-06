@@ -182,7 +182,7 @@ var DEX_MUTATE_TOOLS = {
   'add_account': '账号已添加',
   'update_account': '账号已更新',
   'delete_account': '账号已删除',
-  'migrate_threads': '线程已迁移',
+  'migrate_threads': '线程已归一',
   'restore_threads': '线程已还原',
   'calibrate_threads': '线程已校准',
   'run_upgrade': '升级完成',

@@ -32,6 +32,45 @@ pub(crate) fn managed_model_provider() -> &'static str {
     }
 }
 
+pub(crate) fn is_managed_model_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim(),
+        DEECODEX_PROVIDER | DEECODEX_CLI_PROVIDER | DEECODEX_DESKTOP_PROVIDER | DEX_ROUTER_PROVIDER
+    )
+}
+
+pub(crate) fn active_managed_model_provider() -> String {
+    let fallback = managed_model_provider().to_string();
+    let Some(path) = codex_config_path() else {
+        return fallback;
+    };
+    if !path.exists() {
+        return fallback;
+    }
+
+    match read_config_file(&path).and_then(|content| managed_model_provider_from_config(&content)) {
+        Ok(Some(provider)) => provider,
+        Ok(None) => fallback,
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                "读取 Codex 当前 provider 失败，回退到默认 DEX provider: {err}"
+            );
+            fallback
+        }
+    }
+}
+
+fn managed_model_provider_from_config(content: &str) -> Result<Option<String>> {
+    let doc: toml_edit::DocumentMut = content.parse()?;
+    Ok(doc
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|provider| is_managed_model_provider(provider))
+        .map(ToString::to_string))
+}
+
 pub(crate) fn managed_model_provider_route_prefix() -> &'static str {
     if tech_preview_router_enabled() {
         "/codex-router/v1"
@@ -348,7 +387,7 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
     if doc
         .get("model_provider")
         .and_then(|v| v.as_str())
-        .is_some_and(|provider| provider == DEECODEX_PROVIDER || provider == DEX_ROUTER_PROVIDER)
+        .is_some_and(is_managed_model_provider)
     {
         doc.remove("model_provider");
         removed = true;

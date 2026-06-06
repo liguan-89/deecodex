@@ -1,17 +1,15 @@
-//! Codex 线程聚合模块。
+//! Codex 桌面线程归一模块。
 //!
-//! 读取 Codex 本地 state_*.sqlite 中 threads 表，提供跨 provider 的会话聚合功能。
-//! 支持「迁移」：将所有非当前 DEX provider 线程的 model_provider 改为当前注入 provider，
-//! 以及「还原」：从备份恢复原始 model_provider 值。
-//!
-//! 迁移前自动备份，还原后自动清理备份。全程不破坏 Codex 原有数据。
+//! 读取 Codex 本地 state_*.sqlite 中 threads 表，将 Codex Desktop 主线程
+//! (`source = 'vscode'`) 的 model_provider 归一到当前 Codex 配置里的 DEX provider。
+//! 旧迁移备份、还原和校准入口仅保留兼容，不属于启动自动归一主路径。
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,12 +37,15 @@ pub struct ProviderSummary {
     pub count: usize,
 }
 
-/// 迁移/还原前后的差异对比。
+/// 线程归一/还原前后的差异对比。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrationDiff {
     pub before: Vec<ProviderSummary>,
     pub after: Vec<ProviderSummary>,
+    pub target_provider: String,
     pub changed_count: usize,
+    pub rollout_metadata_fixed_count: usize,
+    pub remaining_non_unified_count: usize,
     pub visibility_fixed_count: usize,
     pub desktop_project_fixed_count: usize,
     pub desktop_recent_fixed_count: usize,
@@ -52,16 +53,18 @@ pub struct MigrationDiff {
     pub desktop_recent_pending_count: usize,
     pub desktop_project_repair_blocked: bool,
     pub desktop_recent_repair_blocked: bool,
+    pub codex_desktop_running: bool,
     pub cwd_aligned_count: usize,
 }
 
-/// 是否已有迁移备份（即迁移操作已执行过）。
+/// 是否已有旧迁移备份。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadStatus {
     pub summary: Vec<ProviderSummary>,
     pub total: usize,
     pub managed_provider: String,
     pub migrated: bool,
+    pub codex_desktop_running: bool,
     pub non_deecodex_count: usize,
     pub provider_unified_count: usize,
     pub codex_visible_count: usize,
@@ -121,8 +124,12 @@ struct RolloutTokenUsage {
     path: PathBuf,
 }
 
-fn current_thread_provider() -> &'static str {
-    crate::codex_config::managed_model_provider()
+fn current_thread_provider() -> String {
+    crate::codex_config::active_managed_model_provider()
+}
+
+fn desktop_thread_filter_sql() -> &'static str {
+    "source = 'vscode'"
 }
 
 /// 查找 Codex 的 state SQLite 数据库。
@@ -231,7 +238,7 @@ pub fn desktop_recent_backup_path(data_dir: &Path) -> PathBuf {
     data_dir.join("thread_desktop_recent_backup.json")
 }
 
-/// 获取当前状态：各 provider 线程数、是否已迁移。
+/// 获取当前状态：各 provider 线程数、待归一桌面线程数、旧迁移备份状态。
 pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
@@ -239,20 +246,19 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
 
     let summary = get_provider_summary(&db_path)?;
     let total: usize = summary.iter().map(|s| s.count).sum();
-    let non_deecodex_count: usize = summary
-        .iter()
-        .filter(|s| s.provider != target_provider)
-        .map(|s| s.count)
-        .sum();
+    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let non_deecodex_count = count_non_unified_desktop_threads(&conn, &target_provider)?;
     let visibility = get_visibility_status(&db_path)?;
     let migrated = backup_path(data_dir).exists();
     let context_window = get_context_window_status(&home);
+    let codex_desktop_running = is_codex_desktop_running_for_db(&db_path);
 
     Ok(ThreadStatus {
         summary,
         total,
-        managed_provider: target_provider.to_string(),
+        managed_provider: target_provider,
         migrated,
+        codex_desktop_running,
         non_deecodex_count,
         provider_unified_count: visibility.provider_unified_count,
         codex_visible_count: visibility.codex_visible_count,
@@ -277,18 +283,17 @@ pub fn list_all() -> Result<Vec<ThreadInfo>> {
     list_threads(&db_path)
 }
 
-/// 迁移：将所有非当前 DEX provider 线程的 model_provider 改为当前注入 provider。
-/// 迁移前自动备份原始值到 `data_dir/thread_migration_backup.json`。
-pub fn migrate(data_dir: &Path) -> Result<MigrationDiff> {
+/// 归一：将 Codex Desktop 主线程的 model_provider 改为当前 Codex 配置里的 provider。
+pub fn migrate(_data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
 
-    do_migrate(
-        &db_path,
-        &backup_path(data_dir),
-        &cwd_backup_path(data_dir),
-        &desktop_recent_backup_path(data_dir),
-    )
+    do_normalize_desktop_threads(&db_path)
+}
+
+/// 打开 DEX 时静默执行的幂等归一：只统一 Codex Desktop 主线程。
+pub fn normalize_desktop_threads(data_dir: &Path) -> Result<MigrationDiff> {
+    migrate(data_dir)
 }
 
 /// 还原：从备份恢复原始 model_provider 值。
@@ -1613,11 +1618,235 @@ fn is_live_codex_desktop_state(global_path: &Path) -> bool {
 
     let output = Command::new("pgrep")
         .arg("-f")
-        .arg(r"/Applications/Codex\.app/Contents/MacOS/Codex($| )")
+        .arg(
+            r"/Applications/Codex\.app/Contents/(MacOS/Codex($| )|Frameworks/.*/Helpers/Codex \((Service|Renderer)\)\.app/Contents/MacOS/Codex \((Service|Renderer)\)|Resources/codex app-server($| ))",
+        )
         .output();
     output
         .map(|output| output.status.success() && !output.stdout.is_empty())
         .unwrap_or(false)
+}
+
+fn is_codex_desktop_running_for_db(db_path: &Path) -> bool {
+    codex_global_state_path(db_path)
+        .as_deref()
+        .is_some_and(is_live_codex_desktop_state)
+}
+
+fn count_non_unified_provider(conn: &Connection, target_provider: &str) -> Result<usize> {
+    query_count(
+        conn,
+        "SELECT COUNT(*) FROM threads WHERE model_provider != ?1",
+        rusqlite::params![target_provider],
+    )
+}
+
+fn count_non_unified_desktop_threads(conn: &Connection, target_provider: &str) -> Result<usize> {
+    let sql = format!(
+        "SELECT COUNT(*) FROM threads WHERE model_provider != ?1 AND {}",
+        desktop_thread_filter_sql()
+    );
+    query_count(conn, &sql, rusqlite::params![target_provider])
+}
+
+fn normalize_desktop_thread_providers(conn: &Connection, target_provider: &str) -> Result<usize> {
+    let sql = format!(
+        "UPDATE threads SET model_provider = ?1 WHERE model_provider != ?1 AND {}",
+        desktop_thread_filter_sql()
+    );
+    conn.execute(&sql, rusqlite::params![target_provider])
+        .context("归一 Codex Desktop 线程 provider 失败")
+}
+
+fn normalize_desktop_rollout_metadata(
+    db_path: &Path,
+    conn: &Connection,
+    target_provider: &str,
+) -> Result<usize> {
+    let columns = thread_table_columns(conn)?;
+    if !columns.contains("rollout_path") {
+        return Ok(0);
+    }
+
+    let Some(home) = state_db_home(db_path) else {
+        tracing::warn!(
+            db = %db_path.display(),
+            "无法确定 Codex HOME，跳过 rollout 元数据归一"
+        );
+        return Ok(0);
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT id, rollout_path
+         FROM threads
+         WHERE source = 'vscode'
+           AND TRIM(COALESCE(rollout_path, '')) <> ''",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    let mut fixed = 0usize;
+    for (thread_id, rollout_path) in rows {
+        let path = PathBuf::from(&rollout_path);
+        match normalize_rollout_session_meta_provider(&home, &thread_id, &path, target_provider) {
+            Ok(true) => fixed += 1,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(
+                    thread_id,
+                    rollout_path = %path.display(),
+                    "归一 Codex rollout 元数据失败: {err}"
+                );
+            }
+        }
+    }
+    Ok(fixed)
+}
+
+fn state_db_home(db_path: &Path) -> Option<PathBuf> {
+    let codex_dir = db_path.parent()?;
+    if codex_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == ".codex")
+    {
+        return codex_dir.parent().map(Path::to_path_buf);
+    }
+    crate::config::home_dir()
+}
+
+fn thread_table_columns(conn: &Connection) -> Result<HashSet<String>> {
+    let mut column_stmt = conn.prepare("PRAGMA table_info(threads)")?;
+    let columns = column_stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    Ok(columns)
+}
+
+fn normalize_rollout_session_meta_provider(
+    home: &Path,
+    thread_id: &str,
+    path: &Path,
+    target_provider: &str,
+) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !is_safe_codex_rollout_path(home, path) {
+        tracing::warn!(
+            thread_id,
+            rollout_path = %path.display(),
+            "跳过不在 Codex sessions 目录内的 rollout 元数据归一"
+        );
+        return Ok(false);
+    }
+
+    let initial_meta = std::fs::metadata(path)
+        .with_context(|| format!("读取 rollout 元数据失败: {}", path.display()))?;
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("打开 rollout 文件失败: {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    if reader.read_line(&mut first_line)? == 0 {
+        return Ok(false);
+    }
+
+    let line_ending = if first_line.ends_with("\r\n") {
+        "\r\n"
+    } else if first_line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    let json_line = first_line.trim_end_matches(['\r', '\n']);
+    let mut meta: Value = serde_json::from_str(json_line)
+        .with_context(|| format!("解析 rollout 首行 JSON 失败: {}", path.display()))?;
+
+    if meta.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Ok(false);
+    }
+    let Some(payload) = meta.get_mut("payload").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+    if payload
+        .get("source")
+        .and_then(Value::as_str)
+        .is_some_and(|source| source != "vscode")
+    {
+        return Ok(false);
+    }
+    if payload
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id != thread_id)
+    {
+        tracing::warn!(
+            thread_id,
+            rollout_path = %path.display(),
+            "rollout 首行线程 ID 不匹配，跳过元数据归一"
+        );
+        return Ok(false);
+    }
+    if payload
+        .get("model_provider")
+        .and_then(Value::as_str)
+        .is_some_and(|provider| provider == target_provider)
+    {
+        return Ok(false);
+    }
+
+    payload.insert(
+        "model_provider".to_string(),
+        Value::String(target_provider.to_string()),
+    );
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = path.with_file_name(format!(
+        ".{}.deecodex-normalize-{}-{nonce}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("rollout.jsonl"),
+        std::process::id()
+    ));
+    let result = (|| -> Result<()> {
+        let mut tmp = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .with_context(|| format!("创建 rollout 临时文件失败: {}", tmp_path.display()))?;
+        tmp.set_permissions(initial_meta.permissions())?;
+        write!(
+            tmp,
+            "{}{}",
+            serde_json::to_string(&meta).context("序列化 rollout 首行失败")?,
+            line_ending
+        )?;
+        std::io::copy(&mut reader, &mut tmp)?;
+        tmp.flush()?;
+
+        let current_meta = std::fs::metadata(path)
+            .with_context(|| format!("重新读取 rollout 元数据失败: {}", path.display()))?;
+        if current_meta.len() != initial_meta.len()
+            || current_meta.modified().ok() != initial_meta.modified().ok()
+        {
+            anyhow::bail!("rollout 文件写入期间发生变化，跳过本次归一");
+        }
+
+        std::fs::rename(&tmp_path, path)
+            .with_context(|| format!("替换 rollout 文件失败: {}", path.display()))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result.map(|_| true)
 }
 
 fn desktop_project_candidates(
@@ -2015,7 +2244,7 @@ fn backup_non_deecodex_threads(
     let mut stmt =
         conn.prepare("SELECT id, model_provider FROM threads WHERE model_provider != ?1")?;
     let non_unified: Vec<(String, String)> = stmt
-        .query_map(rusqlite::params![target_provider], |row| {
+        .query_map(rusqlite::params![target_provider.as_str()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -2055,7 +2284,7 @@ fn unify_remaining_non_deecodex(conn: &Connection, backup_path: &Path) -> Result
     let changed = conn
         .execute(
             "UPDATE threads SET model_provider = ?1 WHERE model_provider != ?1",
-            rusqlite::params![target_provider],
+            rusqlite::params![target_provider.as_str()],
         )
         .context("兜底统一 Codex 线程 provider 失败")?;
     if changed < non_unified.len() {
@@ -2106,67 +2335,57 @@ fn restore_thread_cwds(conn: &Connection, cwd_backup_path: &Path) -> Result<usiz
     Ok(restored)
 }
 
-fn do_migrate(
-    db_path: &Path,
-    backup_path: &Path,
-    _cwd_backup_path: &Path,
-    desktop_recent_backup_path: &Path,
-) -> Result<MigrationDiff> {
+fn do_normalize_desktop_threads(db_path: &Path) -> Result<MigrationDiff> {
     let target_provider = current_thread_provider();
     let before = get_provider_summary(db_path)?;
+    let codex_desktop_running = is_codex_desktop_running_for_db(db_path);
 
     let conn = Connection::open(db_path)?;
-    // 设置 busy timeout 以应对 Codex 持有的 WAL 写锁
+    // 设置 busy timeout 以应对 Codex 持有的写锁；不切换 journal_mode，避免无变更时改动数据库模式。
     conn.pragma_update(None, "busy_timeout", "5000")?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
 
-    let new_originals = backup_non_deecodex_threads(&conn, backup_path)?;
-
-    // 逐条 UPDATE 以避免 WAL 锁冲突导致整批失败
-    let mut changed = 0usize;
-    for (id, _) in &new_originals {
-        match conn.execute(
-            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider != ?1",
-            rusqlite::params![target_provider, id],
-        ) {
-            Ok(n) => changed += n,
-            Err(e) => {
-                tracing::warn!("迁移线程 {id} 失败: {e}");
-            }
-        }
-    }
-    changed += unify_remaining_non_deecodex(&conn, backup_path)?;
-    let visibility_fixed_count = repair_thread_visibility(&conn)?;
-    let metadata_fixed_count = repair_desktop_project_metadata(&conn)?;
-    let desktop_project_repair = repair_desktop_project_index(db_path, &conn)?;
-    let desktop_recent_repair =
-        repair_desktop_recent_visibility(db_path, &conn, desktop_recent_backup_path)?;
-    let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
-
+    let remaining_before = count_non_unified_desktop_threads(&conn, &target_provider)?;
+    let changed = normalize_desktop_thread_providers(&conn, &target_provider)?;
+    let rollout_metadata_fixed_count =
+        normalize_desktop_rollout_metadata(db_path, &conn, &target_provider)?;
     let after = get_provider_summary(db_path)?;
+    let remaining_non_unified_count = count_non_unified_desktop_threads(&conn, &target_provider)?;
 
-    let skipped = new_originals.len().saturating_sub(changed);
-    if skipped > 0 {
-        tracing::warn!("迁移: {changed} 条成功, {skipped} 条因锁冲突跳过，下次迁移会自动重试");
-    } else {
+    if remaining_non_unified_count > 0 {
+        tracing::warn!(
+            target_provider,
+            changed,
+            rollout_metadata_fixed_count,
+            remaining_non_unified_count,
+            "Codex Desktop 线程归一后仍有未统一线程"
+        );
+    } else if changed > 0 || rollout_metadata_fixed_count > 0 {
         tracing::info!(
             target_provider,
-            "已迁移 {changed} 条线程到当前 DEX provider，备份条目数 {}",
-            new_originals.len()
+            changed,
+            rollout_metadata_fixed_count,
+            before = remaining_before,
+            "已归一 Codex Desktop 线程到当前 provider"
         );
+    } else {
+        tracing::debug!(target_provider, "Codex Desktop 线程已处于当前 provider");
     }
 
     Ok(MigrationDiff {
         before,
         after,
+        target_provider,
         changed_count: changed,
-        visibility_fixed_count,
-        desktop_project_fixed_count,
-        desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
-        desktop_project_pending_count: desktop_project_repair.pending_count,
-        desktop_recent_pending_count: desktop_recent_repair.pending_count,
-        desktop_project_repair_blocked: desktop_project_repair.blocked,
-        desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+        rollout_metadata_fixed_count,
+        remaining_non_unified_count,
+        visibility_fixed_count: 0,
+        desktop_project_fixed_count: 0,
+        desktop_recent_fixed_count: 0,
+        desktop_project_pending_count: 0,
+        desktop_recent_pending_count: 0,
+        desktop_project_repair_blocked: false,
+        desktop_recent_repair_blocked: false,
+        codex_desktop_running,
         cwd_aligned_count: 0,
     })
 }
@@ -2179,11 +2398,18 @@ fn do_calibrate(
 ) -> Result<MigrationDiff> {
     let target_provider = current_thread_provider();
     let before = get_provider_summary(db_path)?;
+    let codex_desktop_running = is_codex_desktop_running_for_db(db_path);
 
     if !backup_path.exists() {
         let conn = Connection::open(db_path)?;
         conn.pragma_update(None, "busy_timeout", "5000")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        let remaining_before = count_non_unified_provider(&conn, &target_provider)?;
+        if codex_desktop_running && remaining_before > 0 {
+            anyhow::bail!(
+                "Codex Desktop 正在运行，暂不校准 {remaining_before} 条线程；请完全退出 Codex Desktop 后再重试，避免 Desktop 运行态把 provider 写回旧值"
+            );
+        }
         let migrated = unify_remaining_non_deecodex(&conn, backup_path)?;
         let visibility_fixed_count = repair_thread_visibility(&conn)?;
         let metadata_fixed_count = repair_desktop_project_metadata(&conn)?;
@@ -2192,10 +2418,14 @@ fn do_calibrate(
             repair_desktop_recent_visibility(db_path, &conn, desktop_recent_backup_path)?;
         let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
         let after = get_provider_summary(db_path)?;
+        let remaining_non_unified_count = count_non_unified_provider(&conn, &target_provider)?;
         return Ok(MigrationDiff {
             before,
             after,
+            target_provider,
             changed_count: migrated,
+            rollout_metadata_fixed_count: 0,
+            remaining_non_unified_count,
             visibility_fixed_count,
             desktop_project_fixed_count,
             desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
@@ -2203,6 +2433,7 @@ fn do_calibrate(
             desktop_recent_pending_count: desktop_recent_repair.pending_count,
             desktop_project_repair_blocked: desktop_project_repair.blocked,
             desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+            codex_desktop_running,
             cwd_aligned_count: 0,
         });
     }
@@ -2214,6 +2445,12 @@ fn do_calibrate(
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "busy_timeout", "5000")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    let remaining_before = count_non_unified_provider(&conn, &target_provider)?;
+    if codex_desktop_running && remaining_before > 0 {
+        anyhow::bail!(
+            "Codex Desktop 正在运行，暂不校准 {remaining_before} 条线程；请完全退出 Codex Desktop 后再重试，避免 Desktop 运行态把 provider 写回旧值"
+        );
+    }
 
     let current_threads: Vec<(String, String)> = {
         let mut stmt = conn.prepare("SELECT id, model_provider FROM threads")?;
@@ -2236,7 +2473,7 @@ fn do_calibrate(
         originals.iter().map(|(id, _)| id.clone()).collect();
     let new_originals: Vec<(String, String)> = current_threads
         .into_iter()
-        .filter(|(id, provider)| provider != target_provider && !backed_up_ids.contains(id))
+        .filter(|(id, provider)| provider != &target_provider && !backed_up_ids.contains(id))
         .collect();
     let added = new_originals.len();
     if added > 0 {
@@ -2251,7 +2488,7 @@ fn do_calibrate(
     for (id, _) in &originals {
         match conn.execute(
             "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider != ?1",
-            rusqlite::params![target_provider, id],
+            rusqlite::params![target_provider.as_str(), id],
         ) {
             Ok(n) => migrated += n,
             Err(e) => {
@@ -2268,6 +2505,7 @@ fn do_calibrate(
     let desktop_project_fixed_count = metadata_fixed_count + desktop_project_repair.fixed_count;
 
     let after = get_provider_summary(db_path)?;
+    let remaining_non_unified_count = count_non_unified_provider(&conn, &target_provider)?;
     let skipped = originals.len().saturating_sub(migrated);
     if migrated > 0 || removed > 0 {
         tracing::info!(
@@ -2282,7 +2520,10 @@ fn do_calibrate(
     Ok(MigrationDiff {
         before,
         after,
+        target_provider,
         changed_count: migrated + removed,
+        rollout_metadata_fixed_count: 0,
+        remaining_non_unified_count,
         visibility_fixed_count,
         desktop_project_fixed_count,
         desktop_recent_fixed_count: desktop_recent_repair.fixed_count,
@@ -2290,6 +2531,7 @@ fn do_calibrate(
         desktop_recent_pending_count: desktop_recent_repair.pending_count,
         desktop_project_repair_blocked: desktop_project_repair.blocked,
         desktop_recent_repair_blocked: desktop_recent_repair.blocked,
+        codex_desktop_running,
         cwd_aligned_count: 0,
     })
 }
@@ -2301,6 +2543,8 @@ fn do_restore(
     desktop_recent_backup_path: &Path,
 ) -> Result<MigrationDiff> {
     let before = get_provider_summary(db_path)?;
+    let target_provider = current_thread_provider();
+    let codex_desktop_running = is_codex_desktop_running_for_db(db_path);
 
     let backup_json = std::fs::read_to_string(backup_path).context("读取迁移备份文件失败")?;
     let originals: Vec<(String, String)> =
@@ -2343,11 +2587,15 @@ fn do_restore(
         restore_desktop_recent_timestamps(&conn, desktop_recent_backup_path)?;
 
     let after = get_provider_summary(db_path)?;
+    let remaining_non_unified_count = count_non_unified_provider(&conn, &target_provider)?;
 
     Ok(MigrationDiff {
         before,
         after,
+        target_provider,
         changed_count: restored,
+        rollout_metadata_fixed_count: 0,
+        remaining_non_unified_count,
         visibility_fixed_count: 0,
         desktop_project_fixed_count: 0,
         desktop_recent_fixed_count,
@@ -2355,6 +2603,7 @@ fn do_restore(
         desktop_recent_pending_count: 0,
         desktop_project_repair_blocked: false,
         desktop_recent_repair_blocked: false,
+        codex_desktop_running,
         cwd_aligned_count: cwd_restored,
     })
 }
@@ -2751,6 +3000,108 @@ mod tests {
     }
 
     #[test]
+    fn migrate_normalizes_desktop_rollout_session_meta_provider() {
+        let dir = temp_test_dir("thread-rollout-metadata");
+        let codex_dir = dir.join(".codex");
+        let sessions_dir = codex_dir.join("sessions/2026/06/06");
+        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        let rollout_path = sessions_dir.join("rollout-2026-06-06T00-00-00-desktop.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"desktop","source":"vscode","model_provider":"deecodex"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#,
+                "\n"
+            ),
+        )
+        .expect("write desktop rollout");
+        let cli_rollout_path = sessions_dir.join("rollout-2026-06-06T00-00-00-cli.jsonl");
+        std::fs::write(
+            &cli_rollout_path,
+            r#"{"type":"session_meta","payload":{"id":"cli","source":"cli","model_provider":"deecodex"}}"#,
+        )
+        .expect("write cli rollout");
+
+        let db_path = codex_dir.join("state_10.sqlite");
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                preview TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                rollout_path TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'vscode',
+                cwd TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "INSERT INTO threads (id, model_provider, rollout_path, source, preview, cwd)
+             VALUES (?1, 'deecodex', ?2, 'vscode', '桌面预览', '/tmp/desktop')",
+            params!["desktop", rollout_path.to_string_lossy().to_string()],
+        )
+        .expect("insert desktop thread");
+        conn.execute(
+            "INSERT INTO threads (id, model_provider, rollout_path, source, preview, cwd)
+             VALUES (?1, 'deecodex', ?2, 'cli', 'CLI 预览', '/tmp/cli')",
+            params!["cli", cli_rollout_path.to_string_lossy().to_string()],
+        )
+        .expect("insert cli thread");
+        drop(conn);
+
+        let target_provider = current_thread_provider();
+        let diff = do_normalize_desktop_threads(&db_path).expect("normalize desktop threads");
+        assert_eq!(diff.changed_count, 1);
+        assert_eq!(diff.rollout_metadata_fixed_count, 1);
+        assert_eq!(diff.remaining_non_unified_count, 0);
+
+        let conn = Connection::open(&db_path).expect("reopen db");
+        let desktop_provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = 'desktop'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read desktop provider");
+        let cli_provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = 'cli'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read cli provider");
+        assert_eq!(desktop_provider, target_provider);
+        assert_eq!(cli_provider, "deecodex");
+
+        let first_line = std::fs::read_to_string(&rollout_path)
+            .expect("read desktop rollout")
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let meta: Value = serde_json::from_str(&first_line).expect("parse desktop meta");
+        assert_eq!(
+            meta["payload"]["model_provider"].as_str(),
+            Some(target_provider.as_str())
+        );
+        let cli_meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(&cli_rollout_path).unwrap())
+                .expect("parse cli meta");
+        assert_eq!(
+            cli_meta["payload"]["model_provider"].as_str(),
+            Some("deecodex")
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn calibrate_appends_new_threads_and_unifies_provider() {
         let dir = temp_test_dir("thread-calibrate");
         let db_path = dir.join("state_test.sqlite");
@@ -2759,7 +3110,7 @@ mod tests {
         create_test_threads_db(
             &db_path,
             &[
-                ("kept", target_provider),
+                ("kept", &target_provider),
                 ("new-claude", "claude"),
                 ("new-codex", "codex"),
             ],
@@ -2806,17 +3157,23 @@ mod tests {
     }
 
     #[test]
-    fn migrate_repairs_codex_visibility_without_changing_source_or_cwd() {
+    fn migrate_normalizes_only_desktop_thread_provider_without_repairs() {
         let dir = temp_test_dir("thread-migrate-visibility");
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let target_provider = current_thread_provider();
+        let other_provider = if target_provider == "deecodex" {
+            "dex_router"
+        } else {
+            "deecodex"
+        };
         create_test_threads_db_with_rows(
             &db_path,
             &[
                 (
                     "needs-preview",
-                    "custom",
+                    other_provider,
                     "标题兜底",
                     "",
                     "首条用户消息",
@@ -2826,7 +3183,7 @@ mod tests {
                 ),
                 (
                     "keeps-source-cwd",
-                    "deecodex",
+                    other_provider,
                     "已有标题",
                     "",
                     "",
@@ -2836,7 +3193,7 @@ mod tests {
                 ),
                 (
                     "archived-preview",
-                    "deecodex",
+                    other_provider,
                     "归档标题",
                     "",
                     "归档消息",
@@ -2847,62 +3204,68 @@ mod tests {
             ],
         );
 
-        let diff = do_migrate(
-            &db_path,
-            &backup_path,
-            &cwd_backup_path,
-            &desktop_recent_backup_path(&dir),
-        )
-        .expect("migrate threads");
-        assert_eq!(diff.changed_count, 1);
-        assert_eq!(diff.visibility_fixed_count, 4);
+        let diff = do_normalize_desktop_threads(&db_path).expect("migrate threads");
+        assert_eq!(diff.changed_count, 2);
+        assert_eq!(diff.visibility_fixed_count, 0);
+        assert_eq!(diff.desktop_project_fixed_count, 0);
+        assert_eq!(diff.desktop_recent_fixed_count, 0);
+        assert_eq!(diff.remaining_non_unified_count, 0);
         assert_eq!(diff.cwd_aligned_count, 0);
 
         let conn = Connection::open(&db_path).expect("open db");
-        let row: (String, i32, String, String) = conn
+        let row: (String, String, i32, String, String) = conn
             .query_row(
-                "SELECT preview, has_user_event, source, cwd FROM threads WHERE id = 'needs-preview'",
+                "SELECT model_provider, preview, has_user_event, source, cwd FROM threads WHERE id = 'needs-preview'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("read row");
         assert_eq!(
             row,
-            ("首条用户消息".into(), 1, "vscode".into(), "/tmp/a".into())
+            (
+                target_provider.clone(),
+                "".into(),
+                0_i32,
+                "vscode".into(),
+                "/tmp/a".into()
+            )
         );
 
-        let keeps: (String, String) = conn
+        let keeps: (String, String, String) = conn
             .query_row(
-                "SELECT source, cwd FROM threads WHERE id = 'keeps-source-cwd'",
+                "SELECT model_provider, source, cwd FROM threads WHERE id = 'keeps-source-cwd'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read source cwd");
+        assert_eq!(
+            keeps,
+            (other_provider.into(), "cli".into(), "/tmp/b".into())
+        );
+
+        let archived: (String, String) = conn
+            .query_row(
+                "SELECT model_provider, cwd FROM threads WHERE id = 'archived-preview'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .expect("read source cwd");
-        assert_eq!(keeps, ("cli".into(), "/tmp/b".into()));
-
-        let archived_cwd: String = conn
-            .query_row(
-                "SELECT cwd FROM threads WHERE id = 'archived-preview'",
-                [],
-                |row| row.get(0),
-            )
             .expect("read archived cwd");
-        assert_eq!(archived_cwd, "/tmp/c");
+        assert_eq!(archived, (target_provider, "/tmp/c".into()));
 
         let stage1_count: usize = conn
             .query_row("SELECT COUNT(*) FROM stage1_outputs", [], |row| row.get(0))
             .expect("stage1 count");
         assert_eq!(stage1_count, 0);
+        assert!(!backup_path.exists());
         assert!(!cwd_backup_path.exists());
-
-        let provider_backup: Vec<(String, String)> = serde_json::from_str(
-            &std::fs::read_to_string(&backup_path).expect("read provider backup"),
-        )
-        .expect("parse provider backup");
-        assert_eq!(
-            provider_backup,
-            vec![("needs-preview".to_string(), "custom".to_string())]
-        );
 
         std::fs::remove_dir_all(dir).ok();
     }
@@ -2918,7 +3281,7 @@ mod tests {
             &db_path,
             &[(
                 "already-unified",
-                target_provider,
+                &target_provider,
                 "标题兜底",
                 "",
                 "",
@@ -3010,7 +3373,7 @@ mod tests {
             &[
                 ("legacy-stable", "deecodex"),
                 ("codex-native", "codex"),
-                ("current", target_provider),
+                ("current", &target_provider),
             ],
         );
 
@@ -3046,7 +3409,7 @@ mod tests {
             &[
                 (
                     "thread-a",
-                    target_provider,
+                    &target_provider,
                     "标题 A",
                     "预览 A",
                     "",
@@ -3056,7 +3419,7 @@ mod tests {
                 ),
                 (
                     "thread-b",
-                    target_provider,
+                    &target_provider,
                     "标题 B",
                     "预览 B",
                     "",
@@ -3066,7 +3429,7 @@ mod tests {
                 ),
                 (
                     "projectless",
-                    target_provider,
+                    &target_provider,
                     "标题 C",
                     "预览 C",
                     "",
@@ -3144,7 +3507,7 @@ mod tests {
             &db_path,
             &[(
                 "ordered-thread",
-                target_provider,
+                &target_provider,
                 "标题",
                 "预览",
                 "",

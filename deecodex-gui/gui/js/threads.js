@@ -202,23 +202,38 @@ function renderCodexThreadActions(status) {
   const sourceTitle = sourceSummary ? ` title="${escAttr('来源: ' + sourceSummary)}"` : '';
   const desktopBlocked = !!status.desktop_project_repair_blocked;
   const recentBlocked = !!status.desktop_recent_repair_blocked;
+  const desktopRunning = !!status.codex_desktop_running;
   const desktopPending = Number(status.desktop_project_pending_count || 0);
   const recentPending = Number(status.desktop_recent_pending_count || 0);
   const missingPreview = Number(status.missing_preview_count || 0);
   const missingUserEvent = Number(status.missing_user_event_count || 0);
-  const actionNeeded = pendingUnified > 0 || desktopPending > 0 || missingPreview > 0 || missingUserEvent > 0;
+  const actionNeeded = pendingUnified > 0;
   const migrateDisabled = actionNeeded ? '' : ' disabled';
   const desktopTitle = desktopBlocked
-    ? ' title="Codex Desktop 正在运行，项目索引会被运行态状态覆盖；退出 Codex Desktop 后再聚合可写入"'
+    ? ' title="Codex Desktop 正在运行，项目索引写入可能被运行态状态覆盖；线程归一仍会直接执行"'
     : '';
   const recentTitle = recentBlocked
     ? ' title="Codex Desktop 正在运行；Recent 仅做只读统计，不改写线程时间"'
     : ' title="Codex Desktop 侧边栏首屏只加载最近 20 条；这里仅统计项目线程是否已进入该窗口，不改写线程时间"';
+  const notes = [];
+  if (pendingUnified > 0) {
+    notes.push(`还有 ${pendingUnified} 条 Codex Desktop 线程不属于当前归属 ${active}；打开 DEX 会自动归一，也可点击“立即归一”重试。`);
+  }
+  if (desktopBlocked) {
+    notes.push(`Codex Desktop 正在运行，${desktopPending} 条项目索引可能被运行态覆盖；线程归一只改 provider，不写项目索引。`);
+  }
+  if (recentPending > 0) {
+    notes.push(`Codex Desktop 最近列表首屏只加载 20 条，${recentPending} 条项目线程未进入首屏；这不会删除线程。`);
+  }
+  const noteHtml = notes.length
+    ? `<div class="thread-source-note source-warn codex-thread-status-note"><strong>归一提示</strong><span>${notes.map(item => esc(item)).join('；')}</span></div>`
+    : '';
   return `<div class="codex-thread-tools codex-thread-strip">
     <div class="codex-thread-meta">
       <span class="codex-thread-label">Codex 专属操作</span>
       <span class="tag tag-current">归属: ${esc(active)}</span>
-      <span class="tag tag-other">待统一: ${pendingUnified}</span>
+      ${desktopRunning ? '<span class="tag tag-warning">Codex Desktop运行中</span>' : ''}
+      <span class="tag ${pendingUnified ? 'tag-warning' : 'tag-other'}">待统一: ${pendingUnified}</span>
       <span class="tag tag-current"${sourceTitle}>已统一: ${Number(status.provider_unified_count || 0)}</span>
       <span class="tag tag-current">Codex 可见: ${Number(status.codex_visible_count || 0)}</span>
       <span class="tag tag-other">当前项目: ${Number(status.current_cwd_visible_count || 0)}</span>
@@ -231,11 +246,11 @@ function renderCodexThreadActions(status) {
       ${renderContextWindowTags(status)}
     </div>
     <div class="codex-thread-tool-row">
-      <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateDisabled}>聚合 Codex 线程</button>
-      <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()"${restoreDisabled}>还原 Codex 隔离</button>
+      <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateDisabled}>立即归一</button>
+      <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()"${restoreDisabled}>旧备份还原</button>
       <button class="btn btn-ghost thread-strip-refresh" onclick="refreshThreads()" title="刷新线程" aria-label="刷新线程">${threadLineActionIcon('thread-refresh')}</button>
     </div>
-  </div>`;
+  </div>${noteHtml}`;
 }
 
 function renderThreadSourceDiagnostics(sources) {
@@ -319,30 +334,27 @@ function formatThreadFullTime(value) {
 }
 
 async function doMigrate() {
-  if (!await showConfirm('确定要聚合 Codex 线程吗？\n\n将统一 Codex 线程归属并修复 Desktop 首页可见字段；其他客户端历史不会被改写。')) return;
+  if (!await showConfirm('确定要立即归一 Codex Desktop 线程吗？\n\n会把 Codex 桌面版线程统一到当前 Codex 配置的 provider；CLI、subagent 和其他客户端历史不会被改写。')) return;
 
   const btn = document.getElementById('btnMigrate');
   if (btn) btn.disabled = true;
-  showToast('聚合中...', 'info');
+  showToast('归一中...', 'info');
 
   try {
     const diff = await invoke('migrate_threads');
-    const fixed = Number(diff.visibility_fixed_count || 0);
-    const desktopFixed = Number(diff.desktop_project_fixed_count || 0);
-    const pending = Number(diff.desktop_project_pending_count || 0);
-    const recentPending = Number(diff.desktop_recent_pending_count || 0);
-    const blocked = !!diff.desktop_project_repair_blocked || !!diff.desktop_recent_repair_blocked;
-    const suffix = blocked
-      ? `，桌面项目索引待写 ${pending} 条，Recent 未进首屏 ${recentPending} 条；请完全退出 Codex Desktop 后再聚合`
-      : `，桌面项目修复 ${desktopFixed} 条，Recent 只读统计 ${recentPending} 条未进首屏`;
+    const remaining = Number(diff.remaining_non_unified_count || 0);
+    const target = diff.target_provider || '当前归属';
     const changed = Number(diff.changed_count || 0);
-    const message = changed || fixed || desktopFixed || pending
-      ? `已聚合 ${changed} 条 Codex 线程，可见性修复 ${fixed} 项${suffix}`
+    const rolloutFixed = Number(diff.rollout_metadata_fixed_count || 0);
+    const remainingText = remaining ? `，仍有 ${remaining} 条未统一` : '，已全部统一';
+    const rolloutText = rolloutFixed ? `，修复 ${rolloutFixed} 个线程元数据` : '';
+    const message = changed || rolloutFixed || remaining
+      ? `已归一 ${changed} 条 Codex Desktop 线程到 ${target}${rolloutText}${remainingText}`
       : '已检查 Codex 线程，无需变更';
-    showToast(message, blocked ? 'warning' : 'success');
+    showToast(message, remaining ? 'warning' : 'success');
     await refreshThreads();
   } catch (err) {
-    showToast('聚合失败: ' + err, 'error');
+    showToast('归一失败: ' + err, 'error');
   } finally {
     if (btn) btn.disabled = false;
   }

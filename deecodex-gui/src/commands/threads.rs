@@ -9,16 +9,7 @@ pub async fn get_threads_status_impl(manager: State<'_, ServerManager>) -> Resul
         deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
 
     let managed_provider = status.managed_provider.clone();
-    let active_provider = if status.migrated {
-        managed_provider.clone()
-    } else {
-        status
-            .summary
-            .iter()
-            .max_by_key(|s| s.count)
-            .map(|s| s.provider.clone())
-            .unwrap_or_else(|| "(空)".to_string())
-    };
+    let active_provider = managed_provider.clone();
 
     Ok(json!({
         "summary": status.summary,
@@ -40,6 +31,7 @@ pub async fn get_threads_status_impl(manager: State<'_, ServerManager>) -> Resul
         "source_summary": status.source_summary,
         "context_window": status.context_window,
         "migrated": status.migrated,
+        "codex_desktop_running": status.codex_desktop_running,
         "calibration_needed": false,
         "active_provider": active_provider,
     }))
@@ -65,7 +57,14 @@ pub async fn list_client_threads_impl(manager: State<'_, ServerManager>) -> Resu
 
 pub async fn migrate_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("迁移失败: {e}"))?;
+    let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("归一失败: {e}"))?;
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn normalize_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = deecodex::codex_threads::normalize_desktop_threads(&data_dir)
+        .map_err(|e| format!("归一失败: {e}"))?;
     serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
 }
 

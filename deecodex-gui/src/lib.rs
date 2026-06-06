@@ -263,6 +263,54 @@ fn load_env() {
     }
 }
 
+fn normalize_codex_desktop_threads_once(data_dir: &std::path::Path, phase: &str) {
+    match deecodex::codex_threads::normalize_desktop_threads(data_dir) {
+        Ok(diff) => {
+            if diff.changed_count > 0
+                || diff.rollout_metadata_fixed_count > 0
+                || diff.remaining_non_unified_count > 0
+            {
+                tracing::info!(
+                    target_provider = %diff.target_provider,
+                    changed = diff.changed_count,
+                    rollout_metadata_fixed = diff.rollout_metadata_fixed_count,
+                    remaining = diff.remaining_non_unified_count,
+                    phase,
+                    "Codex Desktop 线程启动归一完成"
+                );
+            } else {
+                tracing::debug!(
+                    target_provider = %diff.target_provider,
+                    phase,
+                    "Codex Desktop 线程启动归一无需变更"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(phase, "Codex Desktop 线程启动归一失败: {err}");
+        }
+    }
+}
+
+fn normalize_codex_desktop_threads_on_startup(data_dir: &std::path::Path) {
+    normalize_codex_desktop_threads_once(data_dir, "startup");
+}
+
+fn schedule_codex_desktop_thread_normalization(data_dir: std::path::PathBuf) {
+    for (phase, delay_secs) in [
+        ("startup-delay-5s", 5_u64),
+        ("startup-delay-20s", 20),
+        ("startup-delay-60s", 60),
+        ("startup-delay-180s", 180),
+    ] {
+        let data_dir = data_dir.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            normalize_codex_desktop_threads_once(&data_dir, phase);
+        });
+    }
+}
+
 pub fn run() {
     if beta_trial_expired() {
         show_startup_blocking_alert(
@@ -329,6 +377,9 @@ pub fn run() {
                 .unwrap_or_else(|_| "deecodex=info".into()),
         )
         .init();
+
+    normalize_codex_desktop_threads_on_startup(&args.data_dir);
+    schedule_codex_desktop_thread_normalization(args.data_dir.clone());
 
     tauri::Builder::default()
         .setup(|app| {
@@ -551,6 +602,7 @@ pub fn run() {
             commands::get_thread_sources,
             commands::list_client_threads,
             commands::migrate_threads,
+            commands::normalize_threads,
             commands::restore_threads,
             commands::calibrate_threads,
             commands::get_thread_content,

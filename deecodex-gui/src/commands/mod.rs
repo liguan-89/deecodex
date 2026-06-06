@@ -6250,6 +6250,11 @@ pub async fn migrate_threads(manager: State<'_, ServerManager>) -> Result<Value,
 }
 
 #[tauri::command]
+pub async fn normalize_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    threads::normalize_threads_impl(manager).await
+}
+
+#[tauri::command]
 pub async fn restore_threads(manager: State<'_, ServerManager>) -> Result<Value, String> {
     threads::restore_threads_impl(manager).await
 }

@@ -89,8 +89,8 @@ const codexActions = context.renderCodexThreadActions({
 });
 assert(codexActions.includes('codex-thread-strip'));
 assert(codexActions.includes('Codex 专属操作'));
-assert(codexActions.includes('聚合 Codex 线程'));
-assert(codexActions.includes('还原 Codex 隔离'));
+assert(codexActions.includes('立即归一'));
+assert(codexActions.includes('旧备份还原'));
 
 const diagnostics = context.renderThreadSourceDiagnostics(sources);
 assert(!diagnostics.includes('OpenClaw'));

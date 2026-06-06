@@ -720,8 +720,11 @@ pub(super) fn dex_export_report_impl() -> Result<Value, String> {
     match deecodex::codex_threads::status(data_dir) {
         Ok(s) => {
             report.push_str(&format!("- 线程总数: {}\n", s.total));
-            report.push_str(&format!("- 已迁移: {}\n", s.migrated));
-            report.push_str(&format!("- 非 deecodex 线程: {}\n", s.non_deecodex_count));
+            report.push_str(&format!("- 存在旧迁移备份: {}\n", s.migrated));
+            report.push_str(&format!(
+                "- 待归一 Codex Desktop 线程: {}\n",
+                s.non_deecodex_count
+            ));
         }
         Err(e) => report.push_str(&format!("- 获取失败: {}\n", e)),
     }

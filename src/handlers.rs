@@ -59,7 +59,9 @@ const GPT54_MODEL: &str = "gpt-5.4";
 const GPT54_COMPUTER_FALLBACK_MODEL: &str = "gpt-5.5";
 static CODEX_OFFICIAL_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
 static DEX_ROUTER_POOL_CURSOR: AtomicU64 = AtomicU64::new(0);
+static CODEX_DESKTOP_THREAD_NORMALIZE_AT: AtomicU64 = AtomicU64::new(0);
 const DEX_ROUTER_MAX_NON_STREAM_ATTEMPTS: usize = 3;
+const CODEX_DESKTOP_THREAD_NORMALIZE_INTERVAL_SECS: u64 = 15;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -6527,15 +6529,15 @@ async fn handle_migrate_threads_api(State(state): State<AppState>) -> Response {
             "ok": true,
             "diff": diff,
             "message": format!(
-                "已迁移 {} 条线程到 {}",
+                "已归一 {} 条 Codex Desktop 线程到 {}",
                 diff.changed_count,
-                crate::codex_config::managed_model_provider()
+                diff.target_provider
             ),
         }))
         .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "ok": false, "message": format!("迁移失败: {e}") })),
+            Json(serde_json::json!({ "ok": false, "message": format!("归一失败: {e}") })),
         )
             .into_response(),
     }
@@ -6617,6 +6619,60 @@ async fn handle_responses_dex_assistant(
     handle_responses_for_route(state, body, AccountRouteSurface::DexAssistant).await
 }
 
+fn maybe_schedule_codex_desktop_thread_normalization(
+    state: &AppState,
+    route_surface: AccountRouteSurface,
+) {
+    if !matches!(
+        route_surface,
+        AccountRouteSurface::CodexDesktop | AccountRouteSurface::CodexRouter
+    ) {
+        return;
+    }
+
+    let now = crate::accounts::now_secs();
+    let last = CODEX_DESKTOP_THREAD_NORMALIZE_AT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < CODEX_DESKTOP_THREAD_NORMALIZE_INTERVAL_SECS {
+        return;
+    }
+    if CODEX_DESKTOP_THREAD_NORMALIZE_AT
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let data_dir = state.data_dir.clone();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            crate::codex_threads::normalize_desktop_threads(data_dir.as_ref())
+        })
+        .await;
+        match result {
+            Ok(Ok(diff)) => {
+                if diff.changed_count > 0
+                    || diff.rollout_metadata_fixed_count > 0
+                    || diff.remaining_non_unified_count > 0
+                {
+                    tracing::info!(
+                        target_provider = %diff.target_provider,
+                        changed = diff.changed_count,
+                        rollout_metadata_fixed = diff.rollout_metadata_fixed_count,
+                        remaining = diff.remaining_non_unified_count,
+                        "Codex Desktop 请求触发线程归一完成"
+                    );
+                }
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("Codex Desktop 请求触发线程归一失败: {err}");
+            }
+            Err(err) => {
+                tracing::warn!("Codex Desktop 请求触发线程归一任务失败: {err}");
+            }
+        }
+    });
+}
+
 async fn handle_responses_for_route(
     state: AppState,
     body: axum::body::Bytes,
@@ -6639,6 +6695,7 @@ async fn handle_responses_for_route_with_router_anchor(
     route_surface: AccountRouteSurface,
     external_anchor: Option<CodexRouterExternalAnchor>,
 ) -> Response {
+    maybe_schedule_codex_desktop_thread_normalization(&state, route_surface);
     let _start = std::time::Instant::now();
     let req: ResponsesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,

@@ -33,6 +33,7 @@ async function init() {
   initTransientScrollbars();
   loadNav();
   switchPanel('status');
+  normalizeThreadsOnStartup();
   await Promise.all([loadStatus(), loadConfig(), loadAccountsData()]);
   if (currentPanel === 'status') renderPanel('status');
 
@@ -60,6 +61,23 @@ async function init() {
   appRefreshTimer = setInterval(async () => {
     if (currentPanel === 'status') await loadStatus();
   }, 10000);
+}
+
+async function normalizeThreadsOnStartup() {
+  try {
+    const diff = await invoke('normalize_threads');
+    const changed = Number(diff?.changed_count || 0);
+    const rolloutFixed = Number(diff?.rollout_metadata_fixed_count || 0);
+    const remaining = Number(diff?.remaining_non_unified_count || 0);
+    if (changed || rolloutFixed || remaining) {
+      console.info('[deecodex] Codex Desktop 线程已自动归一', diff);
+      if (currentPanel === 'threads') await refreshThreads();
+    }
+    return diff;
+  } catch (error) {
+    console.warn('[deecodex] Codex Desktop 线程自动归一失败:', error);
+    return null;
+  }
 }
 
 function isWindowDragBlocked(target) {
