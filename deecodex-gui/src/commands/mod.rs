@@ -35,7 +35,7 @@ use tauri::{State, WebviewWindow};
 
 use deecodex::accounts::{
     AccountClientKind, AccountClientSurface, AccountStore, DevPipelineToolMode,
-    DevPipelineTriggerMode,
+    DevPipelineTriggerMode, SurfaceActiveSelection,
 };
 use deecodex::config::Args;
 use deecodex::handlers;
@@ -1680,6 +1680,293 @@ async fn service_endpoint_for_manager(manager: &ServerManager) -> (String, u16) 
     }
 }
 
+#[derive(Debug, Default)]
+struct PreviewAccountMigration {
+    processed: bool,
+    changed: bool,
+    imported: usize,
+    refreshed: usize,
+    active_links: usize,
+}
+
+fn preview_accounts_data_dir_for_formal(data_dir: &Path) -> Option<PathBuf> {
+    if runtime_defaults().preview {
+        return None;
+    }
+    if data_dir.file_name().and_then(|name| name.to_str()) != Some(".deecodex") {
+        return None;
+    }
+    data_dir
+        .parent()
+        .map(|parent| parent.join(".deecodex-preview"))
+}
+
+fn preview_accounts_migration_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("preview_accounts_migrated.json")
+}
+
+fn account_oauth_token(
+    account: &deecodex::accounts::Account,
+) -> Option<deecodex::oauth_accounts::OAuthToken> {
+    account
+        .client_options
+        .get("oauth")
+        .and_then(deecodex::oauth_accounts::oauth_token_from_value)
+}
+
+fn same_preview_account_identity(
+    existing: &deecodex::accounts::Account,
+    incoming: &deecodex::accounts::Account,
+) -> bool {
+    if existing.id == incoming.id {
+        return true;
+    }
+    if existing.client_kind != incoming.client_kind
+        || existing.client_surface != incoming.client_surface
+        || existing.provider != incoming.provider
+        || existing.upstream != incoming.upstream
+        || existing.default_model != incoming.default_model
+    {
+        return false;
+    }
+    if !incoming.api_key.trim().is_empty() && existing.api_key == incoming.api_key {
+        return true;
+    }
+    incoming.api_key.trim().is_empty()
+        && existing.api_key.trim().is_empty()
+        && existing.name == incoming.name
+}
+
+fn find_preview_account_duplicate(
+    accounts: &[deecodex::accounts::Account],
+    incoming: &deecodex::accounts::Account,
+) -> Option<usize> {
+    if let Some(token) = account_oauth_token(incoming) {
+        return accounts.iter().position(|existing| {
+            same_oauth_account(
+                existing,
+                &token,
+                &incoming.provider,
+                &incoming.client_kind,
+                &incoming.client_surface,
+            )
+        });
+    }
+    accounts
+        .iter()
+        .position(|existing| same_preview_account_identity(existing, incoming))
+}
+
+fn refresh_existing_oauth_from_preview(
+    existing: &mut deecodex::accounts::Account,
+    incoming: &deecodex::accounts::Account,
+) -> bool {
+    if incoming.auth_mode != deecodex::accounts::AccountAuthMode::OAuth
+        && account_oauth_token(incoming).is_none()
+    {
+        return false;
+    }
+
+    let mut changed = false;
+    if existing.api_key != incoming.api_key {
+        existing.api_key = incoming.api_key.clone();
+        changed = true;
+    }
+    if existing.auth_mode != deecodex::accounts::AccountAuthMode::OAuth {
+        existing.auth_mode = deecodex::accounts::AccountAuthMode::OAuth;
+        changed = true;
+    }
+
+    for key in ["oauth", "oauth_quota", "auth_mode", "auth_file_name"] {
+        if let Some(value) = incoming.client_options.get(key) {
+            if existing.client_options.get(key) != Some(value) {
+                existing.client_options.insert(key.into(), value.clone());
+                changed = true;
+            }
+        }
+    }
+
+    if existing.endpoints.is_empty() && !incoming.endpoints.is_empty() {
+        existing.endpoints = incoming.endpoints.clone();
+        changed = true;
+    }
+    if changed {
+        existing.updated_at = deecodex::accounts::now_secs();
+        existing.normalize_v2();
+    }
+    changed
+}
+
+fn mapped_preview_endpoint_id(
+    store: &AccountStore,
+    account_id: &str,
+    preview_endpoint_id: Option<String>,
+) -> Option<String> {
+    let account = store
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)?;
+    preview_endpoint_id
+        .filter(|endpoint_id| {
+            account
+                .endpoints
+                .iter()
+                .any(|endpoint| &endpoint.id == endpoint_id)
+        })
+        .or_else(|| {
+            account
+                .endpoints
+                .first()
+                .map(|endpoint| endpoint.id.clone())
+        })
+}
+
+fn merge_preview_active_selection(
+    store: &mut AccountStore,
+    key: String,
+    selection: SurfaceActiveSelection,
+    account_id_map: &HashMap<String, String>,
+) -> bool {
+    let can_replace_default = key == deecodex::accounts::DEX_ASSISTANT_ACTIVE_KEY;
+    if store.active_by_surface.contains_key(&key) && !can_replace_default {
+        return false;
+    }
+    let Some(preview_account_id) = selection.account_id.as_deref() else {
+        return false;
+    };
+    let Some(account_id) = account_id_map.get(preview_account_id).cloned() else {
+        return false;
+    };
+    let endpoint_id = mapped_preview_endpoint_id(store, &account_id, selection.endpoint_id);
+    store.active_by_surface.insert(
+        key,
+        SurfaceActiveSelection {
+            account_id: Some(account_id),
+            endpoint_id,
+        },
+    );
+    true
+}
+
+fn mark_preview_accounts_migrated(data_dir: &Path, result: &PreviewAccountMigration) {
+    let marker = preview_accounts_migration_marker_path(data_dir);
+    if let Some(parent) = marker.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!("创建预览账号迁移标记目录失败: {err}");
+            return;
+        }
+    }
+    let content = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "migrated_at": deecodex::accounts::now_secs(),
+        "imported": result.imported,
+        "refreshed": result.refreshed,
+        "active_links": result.active_links,
+    });
+    if let Err(err) = std::fs::write(&marker, content.to_string()) {
+        tracing::warn!("写入预览账号迁移标记失败: {err}");
+    }
+}
+
+fn merge_preview_accounts_for_formal(
+    data_dir: &Path,
+    store: &mut AccountStore,
+) -> PreviewAccountMigration {
+    let Some(preview_data_dir) = preview_accounts_data_dir_for_formal(data_dir) else {
+        return PreviewAccountMigration::default();
+    };
+    let preview_path = deecodex::accounts::accounts_file_path(&preview_data_dir);
+    if !preview_path.exists() {
+        return PreviewAccountMigration::default();
+    }
+    let marker = preview_accounts_migration_marker_path(data_dir);
+    if marker.exists() {
+        return PreviewAccountMigration::default();
+    }
+
+    let mut preview_store = match std::fs::read_to_string(&preview_path)
+        .ok()
+        .and_then(|content| deecodex::accounts::parse_account_store(&content).ok())
+    {
+        Some(store) => store,
+        None => {
+            tracing::warn!(
+                "预览版账号文件不可读取，跳过迁移: {}",
+                preview_path.display()
+            );
+            return PreviewAccountMigration::default();
+        }
+    };
+    preview_store.normalize_v2();
+    if preview_store.accounts.is_empty() {
+        return PreviewAccountMigration {
+            processed: true,
+            ..Default::default()
+        };
+    }
+
+    let mut result = PreviewAccountMigration {
+        processed: true,
+        ..Default::default()
+    };
+    let mut account_id_map: HashMap<String, String> = HashMap::new();
+
+    for mut incoming in preview_store.accounts {
+        let preview_id = incoming.id.clone();
+        incoming.runtime_state = Default::default();
+        incoming.last_check = None;
+        incoming.normalize_v2();
+
+        if let Some(index) = find_preview_account_duplicate(&store.accounts, &incoming) {
+            let existing_id = store.accounts[index].id.clone();
+            account_id_map.insert(preview_id, existing_id);
+            if refresh_existing_oauth_from_preview(&mut store.accounts[index], &incoming) {
+                result.refreshed += 1;
+                result.changed = true;
+            }
+            continue;
+        }
+
+        if store
+            .accounts
+            .iter()
+            .any(|account| account.id == incoming.id)
+        {
+            incoming.id = deecodex::accounts::generate_id();
+        }
+        account_id_map.insert(preview_id, incoming.id.clone());
+        store.accounts.push(incoming);
+        result.imported += 1;
+        result.changed = true;
+    }
+
+    for (key, selection) in preview_store.active_by_surface {
+        if merge_preview_active_selection(store, key, selection, &account_id_map) {
+            result.active_links += 1;
+            result.changed = true;
+        }
+    }
+
+    if store.active_account_id.is_none() {
+        if let Some(preview_active_id) = preview_store.active_account_id.or(preview_store.active_id)
+        {
+            if let Some(account_id) = account_id_map.get(&preview_active_id).cloned() {
+                let endpoint_id = mapped_preview_endpoint_id(
+                    store,
+                    &account_id,
+                    preview_store.active_endpoint_id,
+                );
+                store.active_id = Some(account_id.clone());
+                store.active_account_id = Some(account_id);
+                store.active_endpoint_id = endpoint_id;
+                result.changed = true;
+            }
+        }
+    }
+
+    result
+}
+
 /// 执行首次启动迁移：如果 accounts.json 不存在，从旧配置和 Codex config 迁移账号。
 /// 返回迁移后的 AccountStore（已持久化）。
 fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
@@ -1699,9 +1986,20 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             Some(store) => store,
             None => return deecodex::accounts::load_accounts(data_dir),
         };
+        let preview_migration = merge_preview_accounts_for_formal(data_dir, &mut store);
         store.normalize_v2();
         if let Err(e) = deecodex::accounts::save_accounts(data_dir, &store) {
             tracing::warn!("保存规范化后的账号文件失败: {e}");
+        } else if preview_migration.processed {
+            mark_preview_accounts_migrated(data_dir, &preview_migration);
+            if preview_migration.changed {
+                tracing::info!(
+                    "已从预览版账号库迁移账号: imported={}, refreshed={}, active_links={}",
+                    preview_migration.imported,
+                    preview_migration.refreshed,
+                    preview_migration.active_links
+                );
+            }
         }
         return store;
     }
@@ -1796,8 +2094,18 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
         }
     }
 
+    let mut store = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        active_id: accounts.first().map(|account| account.id.clone()),
+        active_account_id: accounts.first().map(|account| account.id.clone()),
+        active_endpoint_id: None,
+        active_by_surface: HashMap::new(),
+        accounts,
+    };
+    let preview_migration = merge_preview_accounts_for_formal(data_dir, &mut store);
+
     // c. 都没有 → 创建默认 OpenRouter 空账号
-    if accounts.is_empty() {
+    if store.accounts.is_empty() {
         let presets = get_provider_presets();
         let openrouter = presets.iter().find(|p| p.slug == "openrouter").unwrap();
         let default = Account {
@@ -1850,23 +2158,19 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
             endpoints: Vec::new(),
         };
         tracing::info!("创建默认 OpenRouter 空账号");
-        accounts.push(default);
+        store.active_id = Some(default.id.clone());
+        store.active_account_id = Some(default.id.clone());
+        store.accounts.push(default);
     }
-
-    let mut store = AccountStore {
-        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
-        active_id: Some(accounts[0].id.clone()),
-        active_account_id: Some(accounts[0].id.clone()),
-        active_endpoint_id: None,
-        active_by_surface: HashMap::new(),
-        accounts,
-    };
     store.normalize_v2();
 
     // 持久化
     if let Err(e) = deecodex::accounts::save_accounts(data_dir, &store) {
         tracing::warn!("保存迁移后的账号文件失败: {e}");
     } else {
+        if preview_migration.processed {
+            mark_preview_accounts_migrated(data_dir, &preview_migration);
+        }
         tracing::info!("首次迁移完成，已保存 {} 个账号", store.accounts.len());
     }
 
@@ -6904,6 +7208,121 @@ mod tests {
             &token,
             &AccountClientSurface::Desktop
         ));
+    }
+
+    #[test]
+    fn formal_runtime_imports_preview_oauth_accounts() {
+        let root = std::env::temp_dir().join(format!(
+            "deecodex-preview-account-migration-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = root.join(".deecodex");
+        let preview_dir = root.join(".deecodex-preview");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&preview_dir).unwrap();
+
+        let mut formal = test_account("formal");
+        formal.normalize_v2();
+        let formal_store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![formal.clone()],
+            active_id: Some(formal.id.clone()),
+            active_account_id: Some(formal.id.clone()),
+            active_endpoint_id: formal.endpoints.first().map(|endpoint| endpoint.id.clone()),
+            active_by_surface: HashMap::new(),
+        };
+        deecodex::accounts::save_accounts(&data_dir, &formal_store).unwrap();
+
+        let token = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "preview-access".into(),
+            refresh_token: "preview-refresh".into(),
+            id_token: String::new(),
+            email: "preview@example.com".into(),
+            account_id: "acct_preview".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+        let mut preview_account = codex_account_from_imported_token(
+            token,
+            "preview.json",
+            AccountClientSurface::Desktop,
+            100,
+        );
+        preview_account.id = "preview-oauth".into();
+        preview_account.endpoints[0].id = "preview-ep".into();
+        let preview_store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![preview_account.clone()],
+            active_id: Some(preview_account.id.clone()),
+            active_account_id: Some(preview_account.id.clone()),
+            active_endpoint_id: Some("preview-ep".into()),
+            active_by_surface: HashMap::from([
+                (
+                    deecodex::accounts::surface_active_key(
+                        &AccountClientKind::Codex,
+                        &AccountClientSurface::Desktop,
+                    ),
+                    SurfaceActiveSelection {
+                        account_id: Some(preview_account.id.clone()),
+                        endpoint_id: Some("preview-ep".into()),
+                    },
+                ),
+                (
+                    deecodex::accounts::DEX_ASSISTANT_ACTIVE_KEY.into(),
+                    SurfaceActiveSelection {
+                        account_id: Some(preview_account.id.clone()),
+                        endpoint_id: Some("preview-ep".into()),
+                    },
+                ),
+            ]),
+        };
+        deecodex::accounts::save_accounts(&preview_dir, &preview_store).unwrap();
+
+        let migrated = migrate_or_load_accounts(&data_dir);
+
+        assert_eq!(migrated.active_account_id.as_deref(), Some("formal"));
+        let imported = migrated
+            .accounts
+            .iter()
+            .find(|account| account.id == "preview-oauth")
+            .unwrap();
+        assert_eq!(
+            imported.auth_mode,
+            deecodex::accounts::AccountAuthMode::OAuth
+        );
+        assert_eq!(imported.api_key, "preview-access");
+        assert_eq!(
+            account_oauth_token(imported)
+                .as_ref()
+                .map(|token| token.refresh_token.as_str()),
+            Some("preview-refresh")
+        );
+        assert_eq!(
+            migrated
+                .active_selection_for_surface(
+                    &AccountClientKind::Codex,
+                    &AccountClientSurface::Desktop
+                )
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("preview-oauth")
+        );
+        assert_eq!(
+            migrated
+                .active_selection_for_dex_assistant()
+                .and_then(|selection| selection.account_id.as_deref()),
+            Some("preview-oauth")
+        );
+        assert!(preview_accounts_migration_marker_path(&data_dir).exists());
+
+        let loaded = deecodex::accounts::load_accounts(&data_dir);
+        assert_eq!(loaded.accounts.len(), 2);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
