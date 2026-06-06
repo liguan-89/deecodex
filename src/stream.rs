@@ -36,6 +36,17 @@ fn chat_usage_cache_hit(usage: &ChatUsage) -> bool {
     prompt_cache_hit > 0 || prompt_cached > 0
 }
 
+fn min_tool_call_provider_label(model: &str) -> &'static str {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("minimax") {
+        "MiniMax"
+    } else if lower.contains("mimo") {
+        "MiMo"
+    } else {
+        "upstream model"
+    }
+}
+
 fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
@@ -747,7 +758,7 @@ pub fn translate_stream(
         let mut accumulated_reasoning = String::new();
         let mut accumulated_reasoning_details: Vec<Value> = Vec::new();
         let mut tool_calls: BTreeMap<usize, ToolCallAccum> = BTreeMap::new();
-        let mimo_pending_minimum = providers::mimo_pending_min_tool_calls(&chat_req.messages);
+        let pending_minimum = providers::pending_min_tool_calls(&chat_req.messages);
         let mut emitted_message_item = false;
         let mut emitted_reasoning_item = false;
         let mut final_usage: Option<ChatUsage> = None;
@@ -1012,10 +1023,11 @@ pub fn translate_stream(
             "total_tokens": u.total_tokens
         }));
 
-        if let Some((completed, required)) = mimo_pending_minimum {
+        if let Some((completed, required)) = pending_minimum {
             if tool_calls.is_empty() {
+                let provider_label = min_tool_call_provider_label(&model);
                 let message = format!(
-                    "MiMo returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
+                    "{provider_label} returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
                 );
                 warn!("{message}");
                 runtime_feedback
@@ -1033,7 +1045,7 @@ pub fn translate_stream(
                         "status": "failed",
                         "model": &model,
                         "output": [],
-                        "error": {"code": "mimo_min_tool_calls_not_satisfied", "message": message.clone()}
+                        "error": {"code": "min_tool_calls_not_satisfied", "message": message.clone()}
                     });
                     merge_response_extra(&mut failed, &response_extra);
                     sessions.save_response(response_id.clone(), failed);
@@ -1041,7 +1053,7 @@ pub fn translate_stream(
                 yield event_with_sequence(
                     &mut seq,
                     "response.failed",
-                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "mimo_min_tool_calls_not_satisfied", "message": message}}}),
+                    json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "min_tool_calls_not_satisfied", "message": message}}}),
                 );
                 let _ = request_history.record(history_context.record(
                     response_id,
@@ -1052,7 +1064,7 @@ pub fn translate_stream(
                     completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
                     start.elapsed().as_millis() as u64,
                     upstream_url,
-                    "mimo_min_tool_calls_not_satisfied".into(),
+                    "min_tool_calls_not_satisfied".into(),
                     history_cache_hit,
                 )).await;
                 return;
@@ -2015,15 +2027,130 @@ mod tests {
             .expect("expected response.failed");
         assert_eq!(
             failed.1["response"]["error"]["code"],
-            "mimo_min_tool_calls_not_satisfied"
+            "min_tool_calls_not_satisfied"
         );
+        assert!(failed.1["response"]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("MiMo")));
         assert!(!events
             .iter()
             .any(|(event_type, _)| event_type == "response.completed"));
 
         let stored = sessions.get_response("resp_mimo_pending").unwrap();
         assert_eq!(stored["status"], "failed");
-        assert_eq!(stored["error"]["code"], "mimo_min_tool_calls_not_satisfied");
+        assert_eq!(stored["error"]["code"], "min_tool_calls_not_satisfied");
+    }
+
+    #[tokio::test]
+    async fn minimax_pending_minimum_without_tool_calls_fails_stream() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"3 个文件创建完成。开始分别读取它们。\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "必须至少完成 24 次工具调用，没达到 24 次前不能总结、不能结束。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..5 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("MiniMax-M3", messages.clone()),
+            response_id: "resp_minimax_pending".into(),
+            sessions: sessions.clone(),
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "MiniMax-M3".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.output_text.delta"));
+        let failed = events
+            .iter()
+            .find(|(event_type, _)| event_type == "response.failed")
+            .expect("expected response.failed");
+        assert_eq!(
+            failed.1["response"]["error"]["code"],
+            "min_tool_calls_not_satisfied"
+        );
+        assert!(failed.1["response"]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("MiniMax") && message.contains("5/24")));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+
+        let stored = sessions.get_response("resp_minimax_pending").unwrap();
+        assert_eq!(stored["status"], "failed");
+        assert_eq!(stored["error"]["code"], "min_tool_calls_not_satisfied");
+        assert!(stored["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("MiniMax")));
     }
 
     #[tokio::test]

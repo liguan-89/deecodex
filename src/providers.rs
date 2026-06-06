@@ -519,10 +519,12 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
         if minimax_model_supports_reasoning_split(&req.model) {
             req.reasoning_split = Some(true);
         }
+        append_tool_execution_guard(req, "MiniMax");
+        enforce_min_tool_calls(req, "MiniMax");
     } else if profile.slug == "mimo" {
         normalize_mimo_reasoning(req);
-        append_mimo_tool_execution_guard(req);
-        enforce_mimo_min_tool_calls(req);
+        append_tool_execution_guard(req, "MiMo");
+        enforce_min_tool_calls(req, "MiMo");
     }
 
     if caps.web_search_tool {
@@ -560,20 +562,26 @@ fn normalize_mimo_reasoning(req: &mut ChatRequest) {
     }
 }
 
-const MIMO_TOOL_EXECUTION_GUARD: &str = "【MiMo 工具调用稳定性约束】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。";
-const MIMO_MIN_TOOL_CALL_GUARD_MARKER: &str = "MiMo 最小工具调用计数约束";
+const TOOL_EXECUTION_GUARD_MARKER: &str = "工具调用稳定性约束";
+const MIN_TOOL_CALL_GUARD_MARKER: &str = "最小工具调用计数约束";
+fn tool_execution_guard(label: &str) -> String {
+    format!(
+        "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
+    )
+}
 
-fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
+fn append_tool_execution_guard(req: &mut ChatRequest, label: &str) {
     if req.tools.is_empty() {
         return;
     }
+    let guard = tool_execution_guard(label);
     if req.messages.iter().any(|msg| {
         msg.role == "system"
             && msg
                 .content
                 .as_ref()
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|text| text.contains("MiMo 工具调用稳定性约束"))
+                .is_some_and(|text| text.contains(&guard))
     }) {
         return;
     }
@@ -584,16 +592,16 @@ fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
                 if !text.is_empty() {
                     text.push_str("\n\n");
                 }
-                text.push_str(MIMO_TOOL_EXECUTION_GUARD);
+                text.push_str(&guard);
             }
             Some(serde_json::Value::Array(parts)) => {
                 parts.push(serde_json::json!({
                     "type": "text",
-                    "text": MIMO_TOOL_EXECUTION_GUARD
+                    "text": guard
                 }));
             }
             _ => {
-                system.content = Some(serde_json::Value::String(MIMO_TOOL_EXECUTION_GUARD.into()));
+                system.content = Some(serde_json::Value::String(guard));
             }
         }
         return;
@@ -603,7 +611,7 @@ fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
         0,
         ChatMessage {
             role: "system".into(),
-            content: Some(serde_json::Value::String(MIMO_TOOL_EXECUTION_GUARD.into())),
+            content: Some(serde_json::Value::String(guard)),
             reasoning_content: None,
             reasoning_details: None,
             tool_calls: None,
@@ -613,25 +621,30 @@ fn append_mimo_tool_execution_guard(req: &mut ChatRequest) {
     );
 }
 
-fn enforce_mimo_min_tool_calls(req: &mut ChatRequest) {
+fn enforce_min_tool_calls(req: &mut ChatRequest, label: &str) {
     if req.tools.is_empty() {
         return;
     }
-    if let Some((completed, required)) = mimo_pending_min_tool_calls(&req.messages) {
-        append_mimo_min_tool_call_guard(req, completed, required);
+    if let Some((completed, required)) = pending_min_tool_calls(&req.messages) {
+        append_min_tool_call_guard(req, label, completed, required);
         if can_override_tool_choice(&req.tool_choice) {
             req.tool_choice = Some(serde_json::Value::String("required".into()));
         }
     }
 }
 
-fn append_mimo_min_tool_call_guard(req: &mut ChatRequest, completed: usize, required: usize) {
+fn append_min_tool_call_guard(
+    req: &mut ChatRequest,
+    label: &str,
+    completed: usize,
+    required: usize,
+) {
     let guard = format!(
-        "【{MIMO_MIN_TOOL_CALL_GUARD_MARKER}】用户明确要求至少 {required} 次真实工具调用；当前只收到 {completed}/{required} 次工具输出。下一条 assistant 响应必须包含实际 tool_calls/function_call，不能只输出阶段标题、进度说明、测试报告或总结；未达到 {required} 次前不得结束。"
+        "【{label} {MIN_TOOL_CALL_GUARD_MARKER}】用户明确要求至少 {required} 次真实工具调用；当前只收到 {completed}/{required} 次工具输出。下一条 assistant 响应必须包含实际 tool_calls/function_call，不能只输出阶段标题、进度说明、测试报告或总结；未达到 {required} 次前不得结束。"
     );
 
     req.messages.retain(|msg| {
-        !chat_message_text(msg.content.as_ref()).contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER)
+        !chat_message_text(msg.content.as_ref()).contains(MIN_TOOL_CALL_GUARD_MARKER)
     });
     req.messages.push(ChatMessage {
         role: "user".into(),
@@ -645,7 +658,11 @@ fn append_mimo_min_tool_call_guard(req: &mut ChatRequest, completed: usize, requ
 }
 
 pub fn mimo_pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
-    let (user_index, required) = mimo_min_tool_call_requirement(messages)?;
+    pending_min_tool_calls(messages)
+}
+
+pub fn pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
+    let (user_index, required) = min_tool_call_requirement(messages)?;
     let completed = messages
         .iter()
         .skip(user_index + 1)
@@ -662,13 +679,13 @@ fn can_override_tool_choice(choice: &Option<serde_json::Value>) -> bool {
     }
 }
 
-fn mimo_min_tool_call_requirement(messages: &[ChatMessage]) -> Option<(usize, usize)> {
+fn min_tool_call_requirement(messages: &[ChatMessage]) -> Option<(usize, usize)> {
     messages.iter().enumerate().rev().find_map(|(index, msg)| {
         if msg.role != "user" {
             return None;
         }
         let text = chat_message_text(msg.content.as_ref());
-        if text.contains(MIMO_MIN_TOOL_CALL_GUARD_MARKER) {
+        if text.contains(MIN_TOOL_CALL_GUARD_MARKER) {
             return None;
         }
         min_tool_calls_from_text(&text).map(|required| (index, required))
@@ -969,6 +986,82 @@ mod tests {
     }
 
     #[test]
+    fn minimax_requires_more_tool_calls_when_minimum_not_reached() {
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "必须至少完成 24 次工具调用，没达到 24 次前不能总结、不能结束。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        for idx in 0..5 {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: Some(vec![json!({
+                    "id": format!("call_{idx}"),
+                    "type": "function",
+                    "function": {"name": "exec_command", "arguments": "{}"}
+                })]),
+                tool_call_id: None,
+                name: None,
+            });
+            messages.push(ChatMessage {
+                role: "tool".into(),
+                content: Some(json!("ok")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(format!("call_{idx}")),
+                name: None,
+            });
+        }
+
+        let mut req = ChatRequest {
+            model: "MiniMax-M3".into(),
+            messages,
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("minimax"), &mut req);
+
+        assert_eq!(req.tool_choice, Some(json!("required")));
+        assert!(req.messages.iter().any(|msg| {
+            msg.role == "user"
+                && msg
+                    .content
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| {
+                        text.contains("MiniMax 最小工具调用计数约束")
+                            && text.contains("5/24")
+                            && text.contains("必须包含实际 tool_calls")
+                    })
+        }));
+    }
+
+    #[test]
     fn mimo_profile_uses_xiaomi_url_and_keeps_supported_reasoning_fields() {
         let mimo = profile_by_slug("mimo");
         assert_eq!(
@@ -1139,7 +1232,7 @@ mod tests {
             model: "mimo-v2.5-pro".into(),
             messages: vec![ChatMessage {
                 role: "system".into(),
-                content: Some(json!(MIMO_TOOL_EXECUTION_GUARD)),
+                content: Some(json!(tool_execution_guard("MiMo"))),
                 reasoning_content: None,
                 reasoning_details: None,
                 tool_calls: None,
