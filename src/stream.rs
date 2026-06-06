@@ -52,6 +52,76 @@ fn needs_non_empty_final_message_guard(model: &str) -> bool {
     lower.contains("minimax") || lower.contains("mimo")
 }
 
+fn should_recover_promised_tool_call(model: &str, text: &str) -> bool {
+    if !needs_non_empty_final_message_guard(model) {
+        return false;
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    let promises_next_action = [
+        "让我重写",
+        "让我运行",
+        "让我执行",
+        "让我看看",
+        "让我查看",
+        "让我修复",
+        "让我生成",
+        "我来重写",
+        "我来运行",
+        "我来执行",
+        "我来查看",
+        "我来修复",
+        "现在运行",
+        "现在执行",
+        "现在生成",
+        "现在让我",
+        "接下来运行",
+        "接下来执行",
+        "开始运行",
+        "开始执行",
+        "开始分别读取",
+        "直接用视觉分析来标注",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+        || [
+            "let me run",
+            "let me execute",
+            "let me check",
+            "let me inspect",
+            "let me fix",
+            "let me rewrite",
+            "now i'll run",
+            "now i will run",
+            "i'll run",
+            "i will run",
+            "i'll execute",
+            "i will execute",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    if !promises_next_action {
+        return false;
+    }
+
+    let final_answer_markers = [
+        "已完成",
+        "已经完成",
+        "完成了",
+        "最终",
+        "报告",
+        "结果如下",
+        "保存在",
+        "以下是",
+    ];
+    !final_answer_markers
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
 fn synthetic_toolchain_recovery_call(
     response_id: &str,
     tool: &providers::ToolchainRecoveryTool,
@@ -1222,6 +1292,19 @@ pub fn translate_stream(
             tool_calls.insert(0, recovery_call);
         }
 
+        if tool_calls.is_empty() && should_recover_promised_tool_call(&model, &accumulated_text) {
+            let recovery_call = synthetic_toolchain_recovery_call(
+                &response_id,
+                &providers::ToolchainRecoveryTool::ExecCommandNoop,
+            );
+            warn!(
+                "{} promised a follow-up tool action without tool calls; injecting recovery tool call {}.",
+                min_tool_call_provider_label(&model),
+                recovery_call.name
+            );
+            tool_calls.insert(0, recovery_call);
+        }
+
         if tool_calls.is_empty()
             && needs_non_empty_final_message_guard(&model)
             && accumulated_text.trim().is_empty()
@@ -2344,6 +2427,90 @@ mod tests {
             .any(|(event_type, _)| event_type == "response.failed"));
 
         let stored = sessions.get_response("resp_minimax_pending").unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn mimo_promised_script_action_without_tool_calls_injects_recovery_tool() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"新的 mediapipe API 已经改用 FaceLandmarker，需要下载模型文件。让我重写脚本。\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!(
+                "请分析图片并标注五官坐标，必要时创建脚本生成标注图。"
+            )),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("mimo-v2.5", messages.clone()),
+            response_id: "resp_mimo_promised_action".into(),
+            sessions: sessions.clone(),
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "mimo-v2.5".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected synthetic recovery tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions.get_response("resp_mimo_promised_action").unwrap();
         assert_eq!(stored["status"], "completed");
     }
 

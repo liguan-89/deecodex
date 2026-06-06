@@ -568,7 +568,7 @@ const TOOLCHAIN_COVERAGE_GUARD_MARKER: &str = "工具链覆盖完整性约束";
 const TOOLCHAIN_FINAL_REPORT_GUARD_MARKER: &str = "工具链最终报告完整性约束";
 fn tool_execution_guard(label: &str) -> String {
     format!(
-        "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、编译运行或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
+        "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、下载/生成文件、编译运行、查看结果、修复输出或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。凡是出现“让我运行/让我看看/我来修复/现在生成/接下来执行”这类承诺下一步的表述，必须在同一条 assistant 响应中携带实际 tool_calls/function_call。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
     )
 }
 
