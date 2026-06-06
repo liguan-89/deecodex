@@ -975,7 +975,10 @@ function renderField(f) {
         </div>`;
       break;
     case 'select':
-      const opts = (f.options || []).map(o => `<option value="${escAttr(o)}" ${String(val) === o ? 'selected' : ''}>${esc(o)}</option>`).join('');
+      const opts = (f.options || []).map(o => {
+        const label = (f.optionLabels && f.optionLabels[o]) || o;
+        return `<option value="${escAttr(o)}" ${String(val) === o ? 'selected' : ''}>${esc(label)}</option>`;
+      }).join('');
       inputHtml = `<select id="field_${f.key}" name="${f.key}">${opts}</select>`;
       break;
     case 'json':

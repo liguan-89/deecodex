@@ -82,6 +82,7 @@ pub struct DiagnosticContext {
     pub model_map: String,
     pub codex_auto_inject: bool,
     pub codex_persistent_inject: bool,
+    pub codex_router_mode: String,
     #[allow(dead_code)]
     pub codex_launch_with_cdp: bool,
     #[allow(dead_code)]
@@ -99,6 +100,7 @@ impl From<&Args> for DiagnosticContext {
             model_map: args.model_map.clone(),
             codex_auto_inject: args.codex_auto_inject,
             codex_persistent_inject: args.codex_persistent_inject,
+            codex_router_mode: crate::config::normalize_codex_router_mode(&args.codex_router_mode),
             codex_launch_with_cdp: args.codex_launch_with_cdp,
             cdp_port: args.cdp_port,
         }
@@ -769,12 +771,12 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
         .get("model_provider")
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
-    let expected_provider = codex_config::managed_model_provider();
+    let expected_provider = codex_config::managed_model_provider_for_mode(&ctx.codex_router_mode);
     let expected_base = format!(
         "http://{}:{}{}",
         crate::config::client_url_host(&ctx.host),
         ctx.port,
-        codex_config::managed_model_provider_route_prefix()
+        codex_config::managed_model_provider_route_prefix_for_mode(&ctx.codex_router_mode)
     );
 
     let has_expected_section = doc
@@ -907,6 +909,9 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
 fn check_injection_status(ctx: &DiagnosticContext) -> DiagnosticItem {
     let auto = ctx.codex_auto_inject;
     let persistent = ctx.codex_persistent_inject;
+    let expected_provider = codex_config::managed_model_provider_for_mode(&ctx.codex_router_mode);
+    let expected_route_prefix =
+        codex_config::managed_model_provider_route_prefix_for_mode(&ctx.codex_router_mode);
 
     // 检查 Codex 配置中的实际注入状态
     let injected = codex_config::codex_config_path()
@@ -920,14 +925,15 @@ fn check_injection_status(ctx: &DiagnosticContext) -> DiagnosticItem {
                 .get("model_provider")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            Some(provider == "deecodex")
+            Some(provider == expected_provider)
         })
         .unwrap_or(false);
 
     let base_expected = format!(
-        "http://{}:{}/v1",
+        "http://{}:{}{}",
         crate::config::client_url_host(&ctx.host),
-        ctx.port
+        ctx.port,
+        expected_route_prefix
     );
 
     let base_matches = codex_config::codex_config_path()
@@ -938,7 +944,7 @@ fn check_injection_status(ctx: &DiagnosticContext) -> DiagnosticItem {
             let content = codex_config::read_config_file(&p).ok()?;
             let doc: toml_edit::DocumentMut = content.parse().ok()?;
             doc.get("model_providers")
-                .and_then(|mp| mp.get("deecodex"))
+                .and_then(|mp| mp.get(expected_provider))
                 .and_then(|d| d.get("base_url"))
                 .and_then(|v| v.as_str())
                 .map(|u| u == base_expected)
@@ -1445,7 +1451,7 @@ fn find_port_occupant(port: u16) -> Option<String> {
 
 // ── 11. Codex 配置一致性 ─────────────────────────────────────────────────────
 
-fn check_codex_config_consistency(_ctx: &DiagnosticContext) -> DiagnosticItem {
+fn check_codex_config_consistency(ctx: &DiagnosticContext) -> DiagnosticItem {
     let Some(config_path) = codex_config::codex_config_path() else {
         return DiagnosticItem {
             status: Status::Info,
@@ -1498,7 +1504,7 @@ fn check_codex_config_consistency(_ctx: &DiagnosticContext) -> DiagnosticItem {
         .and_then(|v| v.as_str())
         .unwrap_or("(未设置)");
 
-    let expected_provider = codex_config::managed_model_provider();
+    let expected_provider = codex_config::managed_model_provider_for_mode(&ctx.codex_router_mode);
     let has_expected_section = doc
         .get("model_providers")
         .and_then(|mp| mp.get(expected_provider))
@@ -2417,6 +2423,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: crate::config::CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 4448,
             prompts_dir: std::path::PathBuf::from("prompts"),
@@ -2741,6 +2748,7 @@ mod tests {
             model_map: "{}".into(),
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: crate::config::CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
         }

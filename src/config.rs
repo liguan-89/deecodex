@@ -4,6 +4,8 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
+pub const CODEX_ROUTER_MODE_API: &str = "api";
+pub const CODEX_ROUTER_MODE_SMART: &str = "smart";
 
 pub fn default_host() -> String {
     DEFAULT_HOST.to_string()
@@ -69,6 +71,30 @@ pub fn format_host_port(host: &str, port: u16) -> String {
         format!("[{normalized}]:{port}")
     } else {
         format!("{normalized}:{port}")
+    }
+}
+
+pub fn normalize_codex_router_mode(mode: &str) -> String {
+    let normalized = mode.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "smart" | "router" | "dex_router" | "intelligent" | "账号登录" | "智能路由" | "1"
+        | "true" | "yes" | "on" => CODEX_ROUTER_MODE_SMART.to_string(),
+        _ => CODEX_ROUTER_MODE_API.to_string(),
+    }
+}
+
+pub fn codex_router_mode_is_smart(mode: &str) -> bool {
+    normalize_codex_router_mode(mode) == CODEX_ROUTER_MODE_SMART
+}
+
+pub fn default_codex_router_mode() -> String {
+    if let Ok(value) = std::env::var("DEECODEX_TECH_PREVIEW_ROUTER") {
+        return normalize_codex_router_mode(&value);
+    }
+    if env!("CARGO_PKG_VERSION").contains("preview") {
+        CODEX_ROUTER_MODE_SMART.to_string()
+    } else {
+        CODEX_ROUTER_MODE_API.to_string()
     }
 }
 
@@ -152,6 +178,15 @@ pub struct Args {
         default_value = "false"
     )]
     pub codex_persistent_inject: bool,
+
+    /// Codex 路由模式：api 使用传统 API Key 代理；smart 使用账号登录态智能路由。
+    #[serde(default = "default_codex_router_mode")]
+    #[arg(
+        long = "codex-router-mode",
+        env = "DEECODEX_CODEX_ROUTER_MODE",
+        default_value_t = default_codex_router_mode()
+    )]
+    pub codex_router_mode: String,
 
     /// 启动 deecodex 时自动启动 Codex 桌面版（带 CDP 调试端口）。
     #[arg(
@@ -424,6 +459,11 @@ impl Args {
                     false,
                     file.codex_persistent_inject,
                 ),
+                codex_router_mode: normalize_codex_router_mode(&pick_str(
+                    &normalize_codex_router_mode(&self.codex_router_mode),
+                    &default_codex_router_mode(),
+                    &normalize_codex_router_mode(&file.codex_router_mode),
+                )),
                 codex_launch_with_cdp: pick(
                     self.codex_launch_with_cdp,
                     false,
@@ -560,6 +600,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),
@@ -602,6 +643,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),
@@ -640,6 +682,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),

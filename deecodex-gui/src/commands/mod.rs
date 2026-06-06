@@ -1401,6 +1401,8 @@ pub struct GuiConfig {
     pub chinese_thinking: bool,
     pub codex_auto_inject: bool,
     pub codex_persistent_inject: bool,
+    #[serde(default = "deecodex::config::default_codex_router_mode")]
+    pub codex_router_mode: String,
     pub vision_upstream: String,
     pub vision_api_key: String,
     pub vision_model: String,
@@ -1436,6 +1438,7 @@ impl From<Args> for GuiConfig {
             chinese_thinking: a.chinese_thinking,
             codex_auto_inject: a.codex_auto_inject,
             codex_persistent_inject: a.codex_persistent_inject,
+            codex_router_mode: deecodex::config::normalize_codex_router_mode(&a.codex_router_mode),
             vision_upstream: a.vision_upstream,
             vision_api_key: a.vision_api_key,
             vision_model: a.vision_model,
@@ -1626,6 +1629,7 @@ pub(crate) fn load_args() -> Args {
                     chinese_thinking: false,
                     codex_auto_inject: true,
                     codex_persistent_inject: false,
+                    codex_router_mode: deecodex::config::default_codex_router_mode(),
                     prompts_dir: "prompts".into(),
                     data_dir: defaults.data_dir,
                     token_anomaly_prompt_max: 200000,
@@ -2421,11 +2425,13 @@ async fn sync_active_account_to_running_state(
     let host = manager.host.lock().await.clone();
     let port = *manager.port.lock().await;
     let data_dir = manager.data_dir.lock().await.clone();
-    deecodex::codex_config::inject_with_host_and_data_dir(
+    let args = load_args();
+    deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
         &host,
         port,
         target.context_window_override,
         Some(&data_dir),
+        &args.codex_router_mode,
     );
 
     tracing::info!("已同步运行中账号: {} ({})", target.name, target.provider);
@@ -2462,11 +2468,12 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     if args.codex_auto_inject && !args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject_with_host_and_data_dir(
+        deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
             &host,
             port,
             load_active_account_context_window(&args.data_dir),
             Some(&args.data_dir),
+            &args.codex_router_mode,
         );
     }
 
@@ -2732,6 +2739,9 @@ fn save_config_inner(
     sync_data_dir_env_file(&data_dir, "DEECODEX_UPSTREAM", &account_config.upstream);
     sync_data_dir_env_file(&data_dir, "DEECODEX_API_KEY", &account_config.api_key);
     sync_data_dir_env_file(&data_dir, "DEECODEX_MODEL_MAP", &account_config.model_map);
+    let codex_router_mode =
+        deecodex::config::normalize_codex_router_mode(&config.codex_router_mode);
+    sync_data_dir_env_file(&data_dir, "DEECODEX_CODEX_ROUTER_MODE", &codex_router_mode);
 
     let args = Args {
         command: None,
@@ -2749,6 +2759,7 @@ fn save_config_inner(
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_router_mode,
         prompts_dir: config.prompts_dir.into(),
         data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
@@ -2779,11 +2790,12 @@ fn save_config_inner(
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject_with_host_and_data_dir(
+        deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
             &inject_host,
             inject_port,
             cw,
             Some(&args.data_dir),
+            &args.codex_router_mode,
         );
     } else {
         deecodex::codex_config::remove();
@@ -2832,6 +2844,7 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
@@ -2888,6 +2901,7 @@ pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
@@ -2934,6 +2948,7 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
         token_anomaly_prompt_max: config.token_anomaly_prompt_max,
@@ -5417,7 +5432,14 @@ async fn refresh_codex_model_catalog_after_fetch(
     let host = manager.host.lock().await.clone();
     let port = *manager.port.lock().await;
     let cw = load_active_account_context_window(data_dir);
-    deecodex::codex_config::inject_with_host_and_data_dir(&host, port, cw, Some(data_dir));
+    let args = load_args();
+    deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
+        &host,
+        port,
+        cw,
+        Some(data_dir),
+        &args.codex_router_mode,
+    );
 }
 
 fn endpoint_kind_is_codex_official(kind: &str) -> bool {
@@ -7025,6 +7047,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_router_mode: deecodex::config::CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
             prompts_dir: PathBuf::from("prompts"),

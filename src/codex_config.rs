@@ -14,18 +14,12 @@ const DEECODEX_CLI_PROVIDER: &str = "deecodex_cli";
 const DEECODEX_DESKTOP_PROVIDER: &str = "deecodex_desktop";
 const DEX_ROUTER_PROVIDER: &str = "dex_router";
 
-pub(crate) fn tech_preview_router_enabled() -> bool {
-    std::env::var("DEECODEX_TECH_PREVIEW_ROUTER")
-        .ok()
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").contains("preview"))
+pub(crate) fn managed_model_provider() -> &'static str {
+    managed_model_provider_for_mode(&crate::config::default_codex_router_mode())
 }
 
-pub(crate) fn managed_model_provider() -> &'static str {
-    if tech_preview_router_enabled() {
+pub(crate) fn managed_model_provider_for_mode(codex_router_mode: &str) -> &'static str {
+    if crate::config::codex_router_mode_is_smart(codex_router_mode) {
         DEX_ROUTER_PROVIDER
     } else {
         DEECODEX_PROVIDER
@@ -71,8 +65,10 @@ fn managed_model_provider_from_config(content: &str) -> Result<Option<String>> {
         .map(ToString::to_string))
 }
 
-pub(crate) fn managed_model_provider_route_prefix() -> &'static str {
-    if tech_preview_router_enabled() {
+pub(crate) fn managed_model_provider_route_prefix_for_mode(
+    codex_router_mode: &str,
+) -> &'static str {
+    if crate::config::codex_router_mode_is_smart(codex_router_mode) {
         "/codex-router/v1"
     } else {
         "/v1"
@@ -213,6 +209,22 @@ pub fn inject_with_host_and_data_dir(
     context_window_override: Option<u32>,
     data_dir: Option<&std::path::Path>,
 ) {
+    inject_with_host_and_data_dir_for_mode(
+        host,
+        port,
+        context_window_override,
+        data_dir,
+        &crate::config::default_codex_router_mode(),
+    );
+}
+
+pub fn inject_with_host_and_data_dir_for_mode(
+    host: &str,
+    port: u16,
+    context_window_override: Option<u32>,
+    data_dir: Option<&std::path::Path>,
+    codex_router_mode: &str,
+) {
     let Some(path) = codex_config_path() else {
         info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
         return;
@@ -231,8 +243,20 @@ pub fn inject_with_host_and_data_dir(
         }
     }
 
+    let include_account_models = crate::config::codex_router_mode_is_smart(codex_router_mode);
     let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
-    let catalog = match generate_context_catalog(context_window_override, &active_model, data_dir) {
+    let active_model =
+        if !include_account_models && decode_dex_account_model_slug(&active_model).is_some() {
+            "gpt-5.5".to_string()
+        } else {
+            active_model
+        };
+    let catalog = match generate_context_catalog(
+        context_window_override,
+        &active_model,
+        data_dir,
+        include_account_models,
+    ) {
         Ok(catalog) => Some(catalog),
         Err(e) => {
             warn!("生成上下文模型目录失败: {e}");
@@ -252,6 +276,7 @@ pub fn inject_with_host_and_data_dir(
         context_window_override,
         catalog_path,
         model_context_window,
+        codex_router_mode,
     ) {
         Ok(true) => info!("已将 deecodex 配置注入 codex config.toml ({url_host}:{port})"),
         Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新服务地址"),
@@ -282,17 +307,21 @@ fn do_inject(
     context_window_override: Option<u32>,
     catalog_path: Option<&std::path::Path>,
     model_context_window: Option<i64>,
+    codex_router_mode: &str,
 ) -> Result<bool> {
     let content = read_config_file(path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
 
-    let active_provider = managed_model_provider();
+    let active_provider = managed_model_provider_for_mode(codex_router_mode);
     let already_exists = doc
         .get("model_providers")
         .and_then(|mp| mp.get(active_provider))
         .is_some();
 
     doc["model_provider"] = toml_edit::value(active_provider);
+    if !crate::config::codex_router_mode_is_smart(codex_router_mode) {
+        reset_account_model_selection_for_api_mode(&mut doc);
+    }
 
     // 确保 model_providers 是常规表（非内联表），避免与用户自定义 provider 冲突
     if doc.get("model_providers").is_none() {
@@ -325,15 +354,20 @@ fn do_inject(
         "/codex-desktop/v1",
         false,
     );
-    if tech_preview_router_enabled() {
+    if crate::config::codex_router_mode_is_smart(codex_router_mode) {
         write_deecodex_provider(
             doc.as_table_mut(),
             DEX_ROUTER_PROVIDER,
             url_host,
             port,
-            managed_model_provider_route_prefix(),
+            managed_model_provider_route_prefix_for_mode(codex_router_mode),
             true,
         );
+    } else if let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(|providers| providers.as_table_mut())
+    {
+        providers.remove(DEX_ROUTER_PROVIDER);
     }
 
     if let Some(catalog_path) = catalog_path {
@@ -359,6 +393,16 @@ fn do_inject(
 
     std::fs::write(path, doc.to_string())?;
     Ok(!already_exists)
+}
+
+fn reset_account_model_selection_for_api_mode(doc: &mut toml_edit::DocumentMut) {
+    let selected_model = doc
+        .get("model")
+        .and_then(|model| model.as_str())
+        .unwrap_or_default();
+    if decode_dex_account_model_slug(selected_model).is_some() {
+        doc["model"] = toml_edit::value("gpt-5.5");
+    }
 }
 
 fn write_deecodex_provider(
@@ -572,6 +616,7 @@ fn generate_context_catalog(
     context_window_override: Option<u32>,
     active_model: &str,
     data_dir: Option<&std::path::Path>,
+    include_account_models: bool,
 ) -> Result<GeneratedCatalog> {
     let Some(codex_home) = codex_home_dir() else {
         return Err(anyhow!("无法确定 HOME 目录"));
@@ -589,10 +634,14 @@ fn generate_context_catalog(
     };
 
     let codex_model_slugs = catalog_model_slugs(&catalog);
-    let account_models = data_dir
-        .map(|data_dir| dex_catalog_account_models(data_dir, &codex_model_slugs))
-        .transpose()?
-        .unwrap_or_default();
+    let account_models = if include_account_models {
+        data_dir
+            .map(|data_dir| dex_catalog_account_models(data_dir, &codex_model_slugs))
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let catalog_out = build_context_catalog(catalog, context_window_override, &account_models)?;
     let model_context_window = context_window_override
         .map(|window| (window as u64).min(i64::MAX as u64) as i64)
@@ -1351,39 +1400,22 @@ mod tests {
             None,
             Some(&catalog_path),
             Some(272_000),
+            crate::config::CODEX_ROUTER_MODE_API,
         )
         .unwrap();
         assert!(changed);
 
         let fixed = std::fs::read_to_string(&path).unwrap();
-        assert!(fixed.contains(&format!(
-            "model_provider = \"{}\"",
-            managed_model_provider()
-        )));
+        assert!(fixed.contains("model_provider = \"deecodex\""));
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
         assert!(doc
             .get("model_providers")
             .and_then(|providers| providers.get("deecodex"))
             .is_some());
-        if tech_preview_router_enabled() {
-            let router = doc
-                .get("model_providers")
-                .and_then(|providers| providers.get("dex_router"))
-                .unwrap();
-            assert_eq!(
-                router
-                    .get("base_url")
-                    .and_then(|value| value.as_str())
-                    .unwrap(),
-                "http://127.0.0.1:4446/codex-router/v1"
-            );
-            assert_eq!(
-                router
-                    .get("requires_openai_auth")
-                    .and_then(|value| value.as_bool()),
-                Some(true)
-            );
-        }
+        assert!(doc
+            .get("model_providers")
+            .and_then(|providers| providers.get("dex_router"))
+            .is_none());
         assert!(fixed.contains("model_catalog_json"));
         assert!(fixed.contains(&catalog_path.to_string_lossy().to_string()));
         assert!(fixed.contains("model_context_window = 272000"));
@@ -1402,6 +1434,7 @@ mod tests {
             Some(1_000_000),
             Some(&catalog_path),
             Some(1_000_000),
+            crate::config::CODEX_ROUTER_MODE_API,
         )
         .unwrap();
 
@@ -1409,6 +1442,73 @@ mod tests {
         assert!(fixed.contains("model_catalog_json"));
         assert!(fixed.contains("model_context_window = 1000000"));
         assert!(fixed.contains("model_auto_compact_token_limit = 900000"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn inject_smart_mode_writes_dex_router_provider() {
+        let path = write_temp_config("");
+        let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
+        do_inject(
+            &path,
+            "127.0.0.1",
+            4446,
+            None,
+            Some(&catalog_path),
+            Some(272_000),
+            crate::config::CODEX_ROUTER_MODE_SMART,
+        )
+        .unwrap();
+
+        let fixed = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
+        assert_eq!(
+            doc.get("model_provider").and_then(|value| value.as_str()),
+            Some("dex_router")
+        );
+        let router = doc
+            .get("model_providers")
+            .and_then(|providers| providers.get("dex_router"))
+            .unwrap();
+        assert_eq!(
+            router.get("base_url").and_then(|value| value.as_str()),
+            Some("http://127.0.0.1:4446/codex-router/v1")
+        );
+        assert_eq!(
+            router
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn inject_api_mode_resets_dex_account_model_selection() {
+        let account_slug = encode_dex_account_model_slug("acct_1", "ep_1", "deepseek-v4-pro");
+        let path = write_temp_config(&format!("model = \"{account_slug}\"\n"));
+        let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
+        do_inject(
+            &path,
+            "127.0.0.1",
+            4446,
+            None,
+            Some(&catalog_path),
+            Some(272_000),
+            crate::config::CODEX_ROUTER_MODE_API,
+        )
+        .unwrap();
+
+        let fixed = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
+        assert_eq!(
+            doc.get("model").and_then(|value| value.as_str()),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            doc.get("model_provider").and_then(|value| value.as_str()),
+            Some("deecodex")
+        );
         cleanup(&path);
     }
 
