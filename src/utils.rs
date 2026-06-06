@@ -58,6 +58,94 @@ pub fn limit_function_call_outputs(response: &mut Value, max_tool_calls: usize) 
     }
 }
 
+pub fn normalize_apply_patch_input(input: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let has_unified_pair = lines
+        .windows(2)
+        .any(|pair| pair[0].starts_with("--- ") && pair[1].starts_with("+++ "));
+    if !has_unified_pair {
+        return input.to_string();
+    }
+
+    let has_patch_action = lines.iter().any(|line| {
+        line.starts_with("*** Update File:")
+            || line.starts_with("*** Add File:")
+            || line.starts_with("*** Delete File:")
+    });
+    let has_begin = lines.iter().any(|line| line.trim() == "*** Begin Patch");
+    let has_end = lines.iter().any(|line| line.trim() == "*** End Patch");
+    let mut changed = false;
+    let mut normalized = Vec::new();
+
+    if !has_begin {
+        normalized.push("*** Begin Patch".to_string());
+        changed = true;
+    }
+
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if line.starts_with("diff --git ") {
+            changed = true;
+            idx += 1;
+            continue;
+        }
+
+        if line.starts_with("--- ") && idx + 1 < lines.len() && lines[idx + 1].starts_with("+++ ") {
+            if !has_patch_action {
+                if let Some(path) = unified_diff_target_path(line, lines[idx + 1]) {
+                    normalized.push(format!("*** Update File: {path}"));
+                }
+            }
+            changed = true;
+            idx += 2;
+            continue;
+        }
+
+        normalized.push(line.to_string());
+        idx += 1;
+    }
+
+    if !has_end {
+        normalized.push("*** End Patch".to_string());
+        changed = true;
+    }
+
+    if changed {
+        let mut result = normalized.join("\n");
+        if input.ends_with('\n') {
+            result.push('\n');
+        }
+        result
+    } else {
+        input.to_string()
+    }
+}
+
+fn unified_diff_target_path(old_header: &str, new_header: &str) -> Option<String> {
+    unified_diff_header_path(new_header).or_else(|| unified_diff_header_path(old_header))
+}
+
+fn unified_diff_header_path(header: &str) -> Option<String> {
+    let path = header
+        .strip_prefix("--- ")
+        .or_else(|| header.strip_prefix("+++ "))?
+        .split_whitespace()
+        .next()?;
+    if path == "/dev/null" {
+        return None;
+    }
+
+    let mut path = path.trim_matches('"').to_string();
+    if let Some(stripped) = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")) {
+        path = stripped.to_string();
+    }
+    if path.starts_with("tmp/") {
+        path.insert(0, '/');
+    }
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +161,49 @@ mod tests {
             response,
             json!({"status": "completed", "output": [{"type": "text", "text": "hello"}]})
         );
+    }
+
+    #[test]
+    fn normalize_apply_patch_converts_unified_diff_headers() {
+        let input = concat!(
+            "*** Begin Patch\n",
+            "--- a/tmp/codex-minimax-toolchain-test/file1.txt\n",
+            "+++ b/tmp/codex-minimax-toolchain-test/file1.txt\n",
+            "@@ -1 +1 @@\n",
+            "-minimax test\n",
+            "+PATCH_OK minimax test\n",
+            "*** End Patch"
+        );
+
+        let normalized = normalize_apply_patch_input(input);
+
+        assert!(normalized.contains("*** Update File: /tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!normalized.contains("--- a/tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!normalized.contains("+++ b/tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(normalized.contains("@@ -1 +1 @@"));
+    }
+
+    #[test]
+    fn normalize_apply_patch_removes_unified_headers_after_update_file() {
+        let input = concat!(
+            "*** Begin Patch\n",
+            "*** Update File: /tmp/demo.txt\n",
+            "--- a/tmp/demo.txt\n",
+            "+++ b/tmp/demo.txt\n",
+            "@@\n",
+            "-old\n",
+            "+new\n",
+            "*** End Patch"
+        );
+
+        let normalized = normalize_apply_patch_input(input);
+
+        assert_eq!(
+            normalized.matches("*** Update File: /tmp/demo.txt").count(),
+            1
+        );
+        assert!(!normalized.contains("--- a/tmp/demo.txt"));
+        assert!(!normalized.contains("+++ b/tmp/demo.txt"));
     }
 
     #[test]

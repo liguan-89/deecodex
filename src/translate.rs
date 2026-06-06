@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use tracing::info;
 
-use crate::{session::SessionStore, types::*};
+use crate::{session::SessionStore, types::*, utils::normalize_apply_patch_input};
 
 /// Result of converting a Responses API request into a Chat Completions request.
 pub struct TranslatedRequest {
@@ -1335,7 +1335,7 @@ fn tool_arguments_string(value: &Value) -> String {
 }
 
 fn apply_patch_input_from_arguments(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
+    let input = serde_json::from_str::<Value>(arguments)
         .ok()
         .and_then(|value| {
             value
@@ -1344,7 +1344,8 @@ fn apply_patch_input_from_arguments(arguments: &str) -> String {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| arguments.to_string())
+        .unwrap_or_else(|| arguments.to_string());
+    normalize_apply_patch_input(&input)
 }
 
 fn chat_message_content_text(content: Option<&Value>) -> String {
@@ -1878,6 +1879,49 @@ mod tests {
             resp.output[0].input.as_deref(),
             Some("*** Begin Patch\n*** End Patch")
         );
+    }
+
+    #[test]
+    fn test_blocking_apply_patch_call_normalizes_unified_diff() {
+        let chat_resp = ChatResponse {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: None,
+                    reasoning_content: None,
+                    reasoning_details: None,
+                    tool_calls: Some(vec![json!({
+                        "id": "patch_123",
+                        "type": "function",
+                        "function": {
+                            "name": "apply_patch",
+                            "arguments": json!({
+                                "patch": concat!(
+                                    "*** Begin Patch\n",
+                                    "--- a/tmp/codex-minimax-toolchain-test/file1.txt\n",
+                                    "+++ b/tmp/codex-minimax-toolchain-test/file1.txt\n",
+                                    "@@ -1 +1 @@\n",
+                                    "-minimax test\n",
+                                    "+PATCH_OK minimax test\n",
+                                    "*** End Patch"
+                                )
+                            })
+                            .to_string()
+                        }
+                    })]),
+                    tool_call_id: None,
+                    name: None,
+                },
+            }],
+            usage: None,
+        };
+
+        let (resp, _) = from_chat_response("resp_patch".into(), "MiniMax-M2.7", chat_resp);
+        let input = resp.output[0].input.as_deref().unwrap();
+
+        assert!(input.contains("*** Update File: /tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!input.contains("--- a/tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!input.contains("+++ b/tmp/codex-minimax-toolchain-test/file1.txt"));
     }
 
     #[test]

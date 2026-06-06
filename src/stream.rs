@@ -23,7 +23,7 @@ use crate::{
     session::SessionStore,
     token_anomaly::TokenTracker,
     types::{format_usage, ChatMessage, ChatRequest, ChatStreamChunk, ChatUsage, ModelMap},
-    utils::merge_response_extra,
+    utils::{merge_response_extra, normalize_apply_patch_input},
 };
 
 fn chat_usage_cache_hit(usage: &ChatUsage) -> bool {
@@ -45,6 +45,11 @@ fn min_tool_call_provider_label(model: &str) -> &'static str {
     } else {
         "upstream model"
     }
+}
+
+fn needs_non_empty_final_message_guard(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.contains("minimax") || lower.contains("mimo")
 }
 
 fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
@@ -382,7 +387,7 @@ fn response_tool_call_item(call_id: &str, name: &str, arguments: &str) -> Respon
 }
 
 fn apply_patch_input_from_arguments(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
+    let input = serde_json::from_str::<Value>(arguments)
         .ok()
         .and_then(|value| {
             value
@@ -391,7 +396,8 @@ fn apply_patch_input_from_arguments(arguments: &str) -> String {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| arguments.to_string())
+        .unwrap_or_else(|| arguments.to_string());
+    normalize_apply_patch_input(&input)
 }
 
 fn response_tool_call_json(call_id: &str, spec: &ResponseToolCallItem, in_progress: bool) -> Value {
@@ -1069,6 +1075,55 @@ pub fn translate_stream(
                 )).await;
                 return;
             }
+        }
+
+        if tool_calls.is_empty()
+            && needs_non_empty_final_message_guard(&model)
+            && accumulated_text.trim().is_empty()
+            && accumulated_reasoning.trim().is_empty()
+        {
+            let provider_label = min_tool_call_provider_label(&model);
+            let message =
+                format!("{provider_label} returned an empty final response without tool calls.");
+            warn!("{message}");
+            runtime_feedback
+                .failure(
+                    &model,
+                    reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                    message.clone(),
+                    None,
+                )
+                .await;
+            if store_response {
+                let mut failed = json!({
+                    "id": &response_id,
+                    "object": "response",
+                    "status": "failed",
+                    "model": &model,
+                    "output": [],
+                    "error": {"code": "empty_final_response", "message": message.clone()}
+                });
+                merge_response_extra(&mut failed, &response_extra);
+                sessions.save_response(response_id.clone(), failed);
+            }
+            yield event_with_sequence(
+                &mut seq,
+                "response.failed",
+                json!({"type": "response.failed", "response": {"id": &response_id, "status": "failed", "error": {"code": "empty_final_response", "message": message}}}),
+            );
+            let _ = request_history.record(history_context.record(
+                response_id,
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                model,
+                "failed".into(),
+                completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+                completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+                start.elapsed().as_millis() as u64,
+                upstream_url,
+                "empty_final_response".into(),
+                history_cache_hit,
+            )).await;
+            return;
         }
 
         // Close reasoning item
@@ -2154,6 +2209,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn minimax_empty_final_response_fails_stream() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("输出完整测试报告。")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("MiniMax-M2.7", messages.clone()),
+            response_id: "resp_minimax_empty".into(),
+            sessions: sessions.clone(),
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "MiniMax-M2.7".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        let failed = events
+            .iter()
+            .find(|(event_type, _)| event_type == "response.failed")
+            .expect("expected response.failed");
+        assert_eq!(
+            failed.1["response"]["error"]["code"],
+            "empty_final_response"
+        );
+        assert!(failed.1["response"]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("MiniMax")));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+
+        let stored = sessions.get_response("resp_minimax_empty").unwrap();
+        assert_eq!(stored["status"], "failed");
+        assert_eq!(stored["error"]["code"], "empty_final_response");
+    }
+
+    #[tokio::test]
     async fn test_cached_empty_response() {
         let sessions = SessionStore::new();
         let cached = CachedResponse {
@@ -2270,6 +2405,29 @@ mod tests {
         assert_eq!(item.name.as_deref(), Some("apply_patch"));
         assert_eq!(item.arguments, None);
         assert_eq!(item.input.as_deref(), Some("diff"));
+    }
+
+    #[test]
+    fn test_response_tool_call_item_apply_patch_normalizes_unified_diff() {
+        let args = json!({
+            "patch": concat!(
+                "*** Begin Patch\n",
+                "--- a/tmp/codex-minimax-toolchain-test/file1.txt\n",
+                "+++ b/tmp/codex-minimax-toolchain-test/file1.txt\n",
+                "@@ -1 +1 @@\n",
+                "-minimax test\n",
+                "+PATCH_OK minimax test\n",
+                "*** End Patch"
+            )
+        })
+        .to_string();
+
+        let item = response_tool_call_item("p1", "apply_patch", &args);
+        let input = item.input.as_deref().unwrap();
+
+        assert!(input.contains("*** Update File: /tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!input.contains("--- a/tmp/codex-minimax-toolchain-test/file1.txt"));
+        assert!(!input.contains("+++ b/tmp/codex-minimax-toolchain-test/file1.txt"));
     }
 
     #[test]
