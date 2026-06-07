@@ -74,15 +74,37 @@ fn should_recover_promised_tool_call(model: &str, text: &str) -> bool {
         "我来执行",
         "我来查看",
         "我来修复",
+        "我来创建",
+        "我来写",
+        "我来写完整",
+        "我会创建",
+        "我会修改",
+        "我会修复",
+        "我开始写",
+        "我开始修复",
         "现在运行",
         "现在执行",
         "现在生成",
         "现在让我",
+        "现在开始",
         "接下来运行",
         "接下来执行",
         "开始运行",
         "开始执行",
+        "开始创建",
+        "开始修改",
+        "开始写入",
+        "开始写完整",
+        "开始动手",
         "开始分别读取",
+        "继续执行",
+        "继续修复",
+        "马上执行",
+        "马上写",
+        "马上开始",
+        "逐一修复",
+        "逐个修复",
+        "一次性写完",
         "直接用视觉分析来标注",
     ]
     .iter()
@@ -1983,7 +2005,8 @@ mod tests {
         )
     }
 
-    async fn spawn_sse_server(body: &'static str) -> String {
+    async fn spawn_sse_server(body: impl Into<String>) -> String {
+        let body = body.into();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1998,6 +2021,84 @@ mod tests {
             socket.write_all(response.as_bytes()).await.unwrap();
         });
         format!("http://{addr}/v1/chat/completions")
+    }
+
+    async fn stream_events_for_text(
+        model: &str,
+        response_id: &str,
+        text: &str,
+    ) -> (Vec<(String, serde_json::Value)>, SessionStore) {
+        let body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content": text},"finish_reason":null}]})
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("请完成任务；如果需要操作文件或命令，必须调用工具。")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request(model, messages.clone()),
+            response_id: response_id.into(),
+            sessions: sessions.clone(),
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: model.into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (parse_sse_events(&bytes), sessions)
+    }
+
+    fn assert_has_exec_recovery_tool(events: &[(String, serde_json::Value)]) {
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected synthetic recovery tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
     }
 
     fn assert_sequence_numbers(events: &[(String, serde_json::Value)]) {
@@ -2512,6 +2613,76 @@ mod tests {
 
         let stored = sessions.get_response("resp_mimo_promised_action").unwrap();
         assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn mimo_promised_incremental_fix_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "mimo-v2.5-pro",
+            "resp_mimo_promised_incremental_fix",
+            "现在我有准确的行号了，逐一修复：",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_mimo_promised_incremental_fix")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_promised_full_write_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_promised_full_write",
+            "我开始写完整的游戏代码。这个文件会比较长，我会一次性写完。",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_minimax_promised_full_write")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_normal_final_answer_without_tool_calls_does_not_inject_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_final_answer",
+            "已完成。文件保存在 /tmp/game.html。",
+        )
+        .await;
+
+        assert!(!events.iter().any(|(event_type, payload)| {
+            event_type == "response.output_item.done" && payload["item"]["type"] == "function_call"
+        }));
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions.get_response("resp_minimax_final_answer").unwrap();
+        assert_eq!(stored["status"], "completed");
+        assert_eq!(stored["output"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
