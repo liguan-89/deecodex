@@ -10034,6 +10034,58 @@ body {
   background: var(--green);
 }
 
+.client-dock-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  z-index: 12;
+  width: max-content;
+  max-width: 168px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 13px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 420;
+  font-variation-settings: "wght" 420;
+  line-height: 1.32;
+  letter-spacing: 0;
+  opacity: 0;
+  pointer-events: none;
+  white-space: normal;
+  transform: translate(-50%, 2px) scale(0.98);
+  transform-origin: 50% 100%;
+  transition:
+    opacity 140ms ease,
+    transform 180ms cubic-bezier(.2,.9,.25,1.18),
+    visibility 0s linear 140ms;
+  visibility: hidden;
+}
+
+.client-dock-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.client-dock-item:hover .client-dock-bubble,
+.client-dock-item:focus-visible .client-dock-bubble {
+  opacity: 1;
+  transform: translate(-50%, -4px) scale(1);
+  transition-delay: 90ms;
+  visibility: visible;
+}
+
 .client-dock-state-row {
   display: inline-grid;
   grid-template-columns: repeat(3, 7px);
@@ -10147,6 +10199,13 @@ body {
 
 [data-theme="light"] .client-dock-runtime.live {
   background: #3f7f67;
+}
+
+[data-theme="light"] .client-dock-bubble {
+  border-color: rgba(29,29,31,0.10);
+  background: rgba(255,255,255,0.98);
+  color: #28303a;
+  box-shadow: 0 12px 26px rgba(20,24,30,0.11);
 }
 
 [data-theme="light"] .client-dock-state-dot {
@@ -11197,6 +11256,7 @@ body {
 
 [data-theme="light"] .status-overview-shell .client-dock-grid {
   gap: clamp(18px, 3.2vw, 42px);
+  padding-top: 44px;
 }
 
 [data-theme="light"] .status-overview-shell .client-dock-item {
@@ -17460,6 +17520,7 @@ body {
 
 [data-theme="dark"] .status-overview-shell .client-dock-grid {
   gap: clamp(18px, 3.2vw, 42px);
+  padding-top: 44px;
 }
 
 [data-theme="dark"] .status-overview-shell .client-dock-item {
@@ -17502,6 +17563,13 @@ body {
 
 [data-theme="dark"] .status-overview-shell .client-dock-runtime {
   border-color: var(--content-bg);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-bubble {
+  border-color: rgba(218, 226, 240, 0.13);
+  background: #171c25;
+  color: var(--text-primary);
+  box-shadow: 0 14px 28px rgba(0,0,0,0.28);
 }
 
 [data-theme="dark"] .status-overview-shell .client-dock-label {

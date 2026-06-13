@@ -93,12 +93,23 @@ assert(dock.includes('handleClientDockClick'));
 assert(dock.includes('client-dock-state-dot install'));
 assert(dock.includes('client-dock-state-dot account'));
 assert(dock.includes('client-dock-state-dot runtime'));
+assert(dock.includes('client-dock-bubble'));
+assert(dock.includes('把任务交给我，我去仓库里跑一圈。'));
+assert(dock.includes('把任务交给我，我去仓库里跑一圈。（桌面版）'));
+assert(dock.includes('先读懂代码，再稳稳下手。'));
+assert(dock.includes('先读懂代码，再稳稳下手。（桌面版）'));
+assert(dock.includes('我不是只会聊天，我会真的做事。'));
+assert(dock.includes('我会记住项目，也会越跑越顺。'));
+assert(!dock.includes('title="Codex CLI"'));
 
 const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'app.css'), 'utf8');
 assert(css.includes('.client-dock-state-row'));
 assert(css.includes('visibility: hidden'));
 assert(css.includes('.client-dock-item:hover .client-dock-state-row'));
 assert(css.includes('visibility: visible'));
+assert(css.includes('.client-dock-bubble'));
+assert(css.includes('.client-dock-item:hover .client-dock-bubble'));
+assert(css.includes('padding-top: 44px'));
 
 context.window._clientLifecycleMap.codex_desktop = { runtime: { running: true } };
 assert.strictEqual(context.statusClientProcessRunning('codex_desktop'), true);

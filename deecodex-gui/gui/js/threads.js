@@ -70,49 +70,9 @@ function threadSourceTone(source) {
   return 'warn';
 }
 
-function formatThreadTokenCount(value) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return '—';
-  if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${Math.round(n / 1000)}K`;
-  return String(Math.round(n));
-}
-
-function renderContextWindowTags(status) {
-  const context = status?.context_window || {};
-  const windowTokens = Number(
-    context.latest_rollout_model_context_window
-    || context.effective_model_context_window
-    || context.configured_model_context_window
-    || context.catalog_model_context_window
-    || 0
-  );
-  const usedTokens = Number(context.latest_rollout_last_total_tokens || 0);
-  const source = context.latest_rollout_token_usage_found ? 'rollout' : (windowTokens ? 'config' : '—');
-  const sourceTone = context.latest_rollout_token_usage_found ? 'tag-current' : (windowTokens ? 'tag-warning' : 'tag-other');
-  const titleParts = [];
-  if (context.active_model) titleParts.push(`模型: ${context.active_model}`);
-  if (context.configured_model_context_window) titleParts.push(`配置: ${formatThreadTokenCount(context.configured_model_context_window)}`);
-  if (context.catalog_model_context_window) titleParts.push(`目录: ${formatThreadTokenCount(context.catalog_model_context_window)}`);
-  if (context.effective_model_context_window) titleParts.push(`有效: ${formatThreadTokenCount(context.effective_model_context_window)}`);
-  if (context.latest_rollout_path) titleParts.push(`rollout: ${context.latest_rollout_path}`);
-  const title = titleParts.length ? ` title="${escAttr(titleParts.join('\n'))}"` : '';
-  return `
-      <span class="tag tag-current"${title}>上下文: ${formatThreadTokenCount(windowTokens)}</span>
-      <span class="tag tag-current">最近已用: ${formatThreadTokenCount(usedTokens)}</span>
-      <span class="tag ${sourceTone}"${title}>Token源: ${esc(source)}</span>`;
-}
-
 function renderThreads() {
   return `<div class="page-header threads-page-header">
     <h2>线程聚合</h2>
-  </div>
-  <div class="threads-console">
-    <div class="threads-summary" id="threadsSummary">
-      <div class="threads-stat"><div class="stat-value thread-summary-value">—</div><div class="stat-label thread-summary-label">总线程</div></div>
-      <div class="threads-stat other"><div class="stat-value thread-summary-value">—</div><div class="stat-label thread-summary-label">可读源</div></div>
-      <div class="threads-stat migrated"><div class="stat-value thread-summary-value">全部</div><div class="stat-label thread-summary-label">当前筛选</div></div>
-    </div>
   </div>
   <div id="threadClientSwitcher" class="thread-source-switcher"></div>
   <div id="codexThreadActions" class="codex-thread-actions"></div>
@@ -136,13 +96,6 @@ async function refreshThreads() {
     const sources = Array.isArray(unified?.sources) ? unified.sources : [];
     const list = Array.isArray(unified?.threads) ? unified.threads : [];
     _threadsData = { sources, list, codexStatus };
-
-    const cards = document.querySelectorAll('#threadsSummary .stat-value');
-    if (cards.length >= 3) {
-      cards[0].textContent = unified?.total ?? list.length;
-      cards[1].textContent = `${sources.filter(s => s.available).length}/${sources.length || 0}`;
-      cards[2].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
-    }
 
     const switcher = document.getElementById('threadClientSwitcher');
     if (switcher) switcher.innerHTML = renderThreadClientSwitcher(sources, list.length);
@@ -196,37 +149,16 @@ function renderCodexThreadActions(status) {
   const pendingUnified = Number(status.non_deecodex_count ?? status.non_unified_count ?? 0);
   const restoreDisabled = !status.migrated ? ' disabled' : '';
   const active = status.active_provider || '—';
-  const sourceSummary = Array.isArray(status.source_summary)
-    ? status.source_summary.map(item => `${item.source || '—'} ${Number(item.count || 0)}`).join(' · ')
-    : '';
-  const sourceTitle = sourceSummary ? ` title="${escAttr('来源: ' + sourceSummary)}"` : '';
   const desktopBlocked = !!status.desktop_project_repair_blocked;
-  const recentBlocked = !!status.desktop_recent_repair_blocked;
   const desktopRunning = !!status.codex_desktop_running;
   const desktopPending = Number(status.desktop_project_pending_count || 0);
-  const recentPending = Number(status.desktop_recent_pending_count || 0);
-  const missingPreview = Number(status.missing_preview_count || 0);
-  const missingUserEvent = Number(status.missing_user_event_count || 0);
   const actionNeeded = pendingUnified > 0;
   const migrateDisabled = actionNeeded ? '' : ' disabled';
   const desktopTitle = desktopBlocked
-    ? ' title="Codex Desktop 正在运行，项目索引写入可能被运行态状态覆盖；线程归一仍会直接执行"'
+    ? ' title="Codex Desktop 正在运行，项目索引写入可能被运行态覆盖；退出 Codex 后再归一更稳"'
     : '';
-  const recentTitle = recentBlocked
-    ? ' title="Codex Desktop 正在运行；Recent 仅做只读统计，不改写线程时间"'
-    : ' title="Codex Desktop 侧边栏首屏只加载最近 20 条；这里仅统计项目线程是否已进入该窗口，不改写线程时间"';
-  const notes = [];
-  if (pendingUnified > 0) {
-    notes.push(`还有 ${pendingUnified} 条 Codex Desktop 线程不属于当前归属 ${active}；打开 DEX 会自动归一，也可点击“立即归一”重试。`);
-  }
-  if (desktopBlocked) {
-    notes.push(`Codex Desktop 正在运行，${desktopPending} 条项目索引可能被运行态覆盖；线程归一只改 provider，不写项目索引。`);
-  }
-  if (recentPending > 0) {
-    notes.push(`Codex Desktop 最近列表首屏只加载 20 条，${recentPending} 条项目线程未进入首屏；这不会删除线程。`);
-  }
-  const noteHtml = notes.length
-    ? `<div class="thread-source-note source-warn codex-thread-status-note"><strong>归一提示</strong><span>${notes.map(item => esc(item)).join('；')}</span></div>`
+  const desktopIndexTag = desktopPending > 0
+    ? `<span class="tag tag-warning"${desktopTitle}>索引待同步: ${desktopPending}</span>`
     : '';
   return `<div class="codex-thread-tools codex-thread-strip">
     <div class="codex-thread-meta">
@@ -234,23 +166,16 @@ function renderCodexThreadActions(status) {
       <span class="tag tag-current">归属: ${esc(active)}</span>
       ${desktopRunning ? '<span class="tag tag-warning">Codex Desktop运行中</span>' : ''}
       <span class="tag ${pendingUnified ? 'tag-warning' : 'tag-other'}">待统一: ${pendingUnified}</span>
-      <span class="tag tag-current"${sourceTitle}>已统一: ${Number(status.provider_unified_count || 0)}</span>
+      <span class="tag tag-current">已统一: ${Number(status.provider_unified_count || 0)}</span>
       <span class="tag tag-current">Codex 可见: ${Number(status.codex_visible_count || 0)}</span>
-      <span class="tag tag-other">当前项目: ${Number(status.current_cwd_visible_count || 0)}</span>
-      <span class="tag ${desktopBlocked ? 'tag-warning' : 'tag-current'}"${desktopTitle}>桌面索引: ${Number(status.desktop_project_indexed_count || 0)}</span>
-      <span class="tag ${desktopPending ? 'tag-warning' : 'tag-other'}"${desktopTitle}>待写索引: ${desktopPending}</span>
-      <span class="tag ${recentPending ? 'tag-warning' : 'tag-current'}"${recentTitle}>Recent可见: ${Number(status.desktop_recent_visible_count || 0)}</span>
-      <span class="tag tag-other"${recentTitle}>Recent未进首屏: ${recentPending}</span>
-      <span class="tag tag-other">缺预览: ${missingPreview}</span>
-      <span class="tag tag-other">缺用户事件: ${missingUserEvent}</span>
-      ${renderContextWindowTags(status)}
+      ${desktopIndexTag}
     </div>
     <div class="codex-thread-tool-row">
       <button class="btn btn-primary" id="btnMigrate" onclick="doMigrate()"${migrateDisabled}>立即归一</button>
       <button class="btn btn-ghost" id="btnRestore" onclick="doRestore()"${restoreDisabled}>旧备份还原</button>
       <button class="btn btn-ghost thread-strip-refresh" onclick="refreshThreads()" title="刷新线程" aria-label="刷新线程">${threadLineActionIcon('thread-refresh')}</button>
     </div>
-  </div>${noteHtml}`;
+  </div>`;
 }
 
 function renderThreadSourceDiagnostics(sources) {
@@ -306,8 +231,6 @@ function renderThreadRows(list) {
 function selectThreadClient(kind) {
   selectedThreadClientKind = kind === 'all' ? 'all' : normalizeThreadClientKind(kind);
   if (_threadsData) {
-    const cards = document.querySelectorAll('#threadsSummary .stat-value');
-    if (cards.length >= 3) cards[2].textContent = selectedThreadClientKind === 'all' ? '全部' : threadClientLabel(selectedThreadClientKind);
     const switcher = document.getElementById('threadClientSwitcher');
     if (switcher) switcher.innerHTML = renderThreadClientSwitcher(_threadsData.sources, _threadsData.list.length);
     const codexActions = document.getElementById('codexThreadActions');

@@ -238,6 +238,23 @@ function statusClientIcon(item) {
   return icon;
 }
 
+function statusClientWelcomeText(item, lifecycle) {
+  if (lifecycle && lifecycle.installed === false) {
+    return '还没接入，先把我请进来。';
+  }
+  const key = item.iconKind || item.accountKind || item.slug;
+  const copy = {
+    codex: '把任务交给我，我去仓库里跑一圈。',
+    claude_code: '先读懂代码，再稳稳下手。',
+    openclaw: '我不是只会聊天，我会真的做事。',
+    hermes: '我会记住项目，也会越跑越顺。',
+  };
+  const text = copy[key] || '准备好了，随时开工。';
+  return item.slug === 'codex_desktop' || item.slug === 'claude_desktop'
+    ? `${text}（桌面版）`
+    : text;
+}
+
 function renderStatusClientDock(gatewayRunning) {
   return `<section class="gateway-panel client-dock-panel" aria-label="客户端运行控制">
     <div class="gateway-section-title client-dock-title">客户端接入</div>
@@ -247,8 +264,10 @@ function renderStatusClientDock(gatewayRunning) {
         const label = item.label || clientKindUiLabel(item.accountKind);
         const info = statusClientInfo(kind, gatewayRunning);
         const lifecycle = statusClientLifecycleMeta(kind, info);
-        return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" oncontextmenu="handleClientDockContextMenu(event, '${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
+        const welcome = statusClientWelcomeText(item, lifecycle);
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" oncontextmenu="handleClientDockContextMenu(event, '${escAttr(kind)}')" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
+            <span class="client-dock-bubble" aria-hidden="true">${esc(welcome)}</span>
             <span class="client-dock-icon">${statusClientIcon(item)}</span>
             <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
           </span>

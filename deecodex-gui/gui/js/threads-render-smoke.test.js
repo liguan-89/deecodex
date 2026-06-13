@@ -24,6 +24,11 @@ vm.createContext(context);
 const source = fs.readFileSync(path.join(__dirname, 'threads.js'), 'utf8');
 vm.runInContext(source, context, { filename: 'threads.js' });
 
+const pageHtml = context.renderThreads();
+assert(!pageHtml.includes('总线程'));
+assert(!pageHtml.includes('可读源'));
+assert(!pageHtml.includes('当前筛选'));
+
 const sources = [
   { client_kind: 'codex', client_label: 'Codex', count: 2, available: true, scan_paths: ['/tmp/.codex'], diagnostics: [] },
   { client_kind: 'claude_code', client_label: 'Claude Code', count: 1, available: true, scan_paths: ['/tmp/.claude/projects'], diagnostics: [] },
@@ -86,11 +91,31 @@ const codexActions = context.renderCodexThreadActions({
   non_unified_count: 2,
   calibration_needed: false,
   active_provider: 'deecodex',
+  provider_unified_count: 110,
+  codex_visible_count: 110,
+  codex_desktop_running: true,
+  desktop_project_pending_count: 8,
+  desktop_project_repair_blocked: true,
+  missing_preview_count: 3,
+  missing_user_event_count: 13,
+  desktop_recent_pending_count: 27,
+  context_window: {
+    latest_rollout_model_context_window: 258000,
+    latest_rollout_last_total_tokens: 132000,
+    latest_rollout_token_usage_found: true,
+  },
 });
 assert(codexActions.includes('codex-thread-strip'));
 assert(codexActions.includes('Codex 专属操作'));
 assert(codexActions.includes('立即归一'));
 assert(codexActions.includes('旧备份还原'));
+assert(codexActions.includes('索引待同步: 8'));
+assert(!codexActions.includes('上下文'));
+assert(!codexActions.includes('最近已用'));
+assert(!codexActions.includes('Token源'));
+assert(!codexActions.includes('Recent'));
+assert(!codexActions.includes('缺预览'));
+assert(!codexActions.includes('缺用户事件'));
 
 const diagnostics = context.renderThreadSourceDiagnostics(sources);
 assert(!diagnostics.includes('OpenClaw'));
