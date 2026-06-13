@@ -47,101 +47,19 @@ fn min_tool_call_provider_label(model: &str) -> &'static str {
     }
 }
 
-fn needs_non_empty_final_message_guard(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    lower.contains("minimax") || lower.contains("mimo")
+fn task_loop_provider_label(model: &str, guard_label: Option<&str>) -> String {
+    guard_label
+        .map(str::to_string)
+        .unwrap_or_else(|| min_tool_call_provider_label(model).to_string())
 }
 
-fn should_recover_promised_tool_call(model: &str, text: &str) -> bool {
-    if !needs_non_empty_final_message_guard(model) {
-        return false;
-    }
-    let text = text.trim();
-    if text.is_empty() {
-        return false;
-    }
-    let lower = text.to_ascii_lowercase();
-    let promises_next_action = [
-        "让我重写",
-        "让我运行",
-        "让我执行",
-        "让我看看",
-        "让我查看",
-        "让我修复",
-        "让我生成",
-        "我来重写",
-        "我来运行",
-        "我来执行",
-        "我来查看",
-        "我来修复",
-        "我来创建",
-        "我来写",
-        "我来写完整",
-        "我会创建",
-        "我会修改",
-        "我会修复",
-        "我开始写",
-        "我开始修复",
-        "现在运行",
-        "现在执行",
-        "现在生成",
-        "现在让我",
-        "现在开始",
-        "接下来运行",
-        "接下来执行",
-        "开始运行",
-        "开始执行",
-        "开始创建",
-        "开始修改",
-        "开始写入",
-        "开始写完整",
-        "开始动手",
-        "开始分别读取",
-        "继续执行",
-        "继续修复",
-        "马上执行",
-        "马上写",
-        "马上开始",
-        "逐一修复",
-        "逐个修复",
-        "一次性写完",
-        "直接用视觉分析来标注",
-    ]
-    .iter()
-    .any(|marker| text.contains(marker))
-        || [
-            "let me run",
-            "let me execute",
-            "let me check",
-            "let me inspect",
-            "let me fix",
-            "let me rewrite",
-            "now i'll run",
-            "now i will run",
-            "i'll run",
-            "i will run",
-            "i'll execute",
-            "i will execute",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker));
-    if !promises_next_action {
-        return false;
-    }
+fn needs_non_empty_final_message_guard(model: &str, guard_label: Option<&str>) -> bool {
+    guard_label.is_some() || providers::task_loop_guard_applies_to_identifier(model)
+}
 
-    let final_answer_markers = [
-        "已完成",
-        "已经完成",
-        "完成了",
-        "最终",
-        "报告",
-        "结果如下",
-        "保存在",
-        "以下是",
-    ];
-    !final_answer_markers
-        .iter()
-        .any(|marker| text.contains(marker))
+fn should_recover_promised_tool_call(model: &str, guard_label: Option<&str>, text: &str) -> bool {
+    needs_non_empty_final_message_guard(model, guard_label)
+        && providers::should_recover_promised_tool_call_text(text)
 }
 
 fn synthetic_toolchain_recovery_call(
@@ -227,6 +145,7 @@ pub struct StreamArgs {
     pub codex_router_sessions: Option<crate::codex_router_session::RouteStateMap>,
     pub upstream_url: String,
     pub allow_missing_done: bool,
+    pub task_loop_guard_label: Option<String>,
     pub runtime_feedback: RuntimeFeedbackSink,
     pub start: std::time::Instant,
 }
@@ -715,6 +634,7 @@ pub fn translate_stream(
         codex_router_sessions,
         upstream_url,
         allow_missing_done,
+        task_loop_guard_label,
         runtime_feedback,
         start,
     } = args;
@@ -1189,7 +1109,8 @@ pub fn translate_stream(
                     );
                     tool_calls.insert(0, recovery_call);
                 } else {
-                    let provider_label = min_tool_call_provider_label(&model);
+                    let provider_label =
+                        task_loop_provider_label(&model, task_loop_guard_label.as_deref());
                     let message = format!(
                         "{provider_label} returned without tool calls before satisfying the required toolchain coverage: {}.",
                         coverage.missing.join("; ")
@@ -1251,7 +1172,8 @@ pub fn translate_stream(
                     );
                     tool_calls.insert(0, recovery_call);
                 } else {
-                    let provider_label = min_tool_call_provider_label(&model);
+                    let provider_label =
+                        task_loop_provider_label(&model, task_loop_guard_label.as_deref());
                     let message = format!(
                         "{provider_label} returned text without tool calls before satisfying the minimum tool-call requirement ({completed}/{required})."
                     );
@@ -1306,32 +1228,43 @@ pub fn translate_stream(
                 &response_id,
                 &providers::final_report_recovery_tool(&chat_req.messages),
             );
+            let provider_label =
+                task_loop_provider_label(&model, task_loop_guard_label.as_deref());
             warn!(
                 "{} returned without a complete toolchain final report; injecting recovery tool call {}.",
-                min_tool_call_provider_label(&model),
-                recovery_call.name
-            );
-            tool_calls.insert(0, recovery_call);
-        }
-
-        if tool_calls.is_empty() && should_recover_promised_tool_call(&model, &accumulated_text) {
-            let recovery_call = synthetic_toolchain_recovery_call(
-                &response_id,
-                &providers::ToolchainRecoveryTool::ExecCommandNoop,
-            );
-            warn!(
-                "{} promised a follow-up tool action without tool calls; injecting recovery tool call {}.",
-                min_tool_call_provider_label(&model),
+                provider_label,
                 recovery_call.name
             );
             tool_calls.insert(0, recovery_call);
         }
 
         if tool_calls.is_empty()
-            && needs_non_empty_final_message_guard(&model)
+            && should_recover_promised_tool_call(
+                &model,
+                task_loop_guard_label.as_deref(),
+                &accumulated_text,
+            )
+        {
+            let recovery_call = synthetic_toolchain_recovery_call(
+                &response_id,
+                &providers::ToolchainRecoveryTool::ExecCommandNoop,
+            );
+            let provider_label =
+                task_loop_provider_label(&model, task_loop_guard_label.as_deref());
+            warn!(
+                "{} promised a follow-up tool action without tool calls; injecting recovery tool call {}.",
+                provider_label,
+                recovery_call.name
+            );
+            tool_calls.insert(0, recovery_call);
+        }
+
+        if tool_calls.is_empty()
+            && needs_non_empty_final_message_guard(&model, task_loop_guard_label.as_deref())
             && accumulated_text.trim().is_empty()
         {
-            let provider_label = min_tool_call_provider_label(&model);
+            let provider_label =
+                task_loop_provider_label(&model, task_loop_guard_label.as_deref());
             let message =
                 format!("{provider_label} returned an empty visible final response without tool calls.");
             warn!("{message}");
@@ -2075,6 +2008,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2390,6 +2324,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2498,6 +2433,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2582,6 +2518,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2662,6 +2599,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deepseek_promised_tool_action_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "deepseek-v4-pro",
+            "resp_deepseek_promised_action",
+            "我来运行测试并检查失败原因。",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_deepseek_promised_action")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn mimo_promised_open_action_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "mimo-v2.5-pro",
+            "resp_mimo_promised_open_action",
+            "我将打开目标应用并使用工具完成下一步。",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_mimo_promised_open_action")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
     async fn minimax_normal_final_answer_without_tool_calls_does_not_inject_recovery_tool() {
         let (events, sessions) = stream_events_for_text(
             "MiniMax-M3",
@@ -2734,6 +2717,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2814,6 +2798,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -2913,6 +2898,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };
@@ -3032,6 +3018,7 @@ mod tests {
             codex_router_sessions: None,
             upstream_url,
             allow_missing_done: false,
+            task_loop_guard_label: None,
             runtime_feedback: test_runtime_feedback_sink(),
             start: std::time::Instant::now(),
         };

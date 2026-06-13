@@ -238,8 +238,11 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "MiniMax Chat Completions/OpenAI 兼容接口",
             "https://api.minimaxi.com/v1",
             vec![
+                "MiniMax-M3[1m]",
                 "MiniMax-M3",
+                "MiniMax-M2.7[1m]",
                 "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed[1m]",
                 "MiniMax-M2.7-highspeed",
                 "MiniMax-M2.5",
                 "MiniMax-M2.5-highspeed",
@@ -260,7 +263,15 @@ pub fn get_provider_profiles() -> Vec<ProviderProfile> {
             "MiMo",
             "小米 MiMo，支持 Anthropic 兼容接口与 OpenAI 兼容接口",
             "https://token-plan-cn.xiaomimimo.com/v1",
-            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-pro"],
+            vec![
+                "mimo-v2.5-pro[1m]",
+                "mimo-v2.5-pro",
+                "mimo-v2.5[1m]",
+                "mimo-v2.5",
+                "mimo-v2-omni",
+                "mimo-v2-pro[1m]",
+                "mimo-v2-pro",
+            ],
             "MIMO_API_KEY",
             ProviderCapabilities {
                 parallel_tool_calls: false,
@@ -514,17 +525,20 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
             req.thinking = None;
         }
     }
+    let task_loop_guard_label = task_loop_guard_label(profile);
+
     if profile.slug == "minimax" {
         normalize_minimax_thinking(&mut req.thinking);
         if minimax_model_supports_reasoning_split(&req.model) {
             req.reasoning_split = Some(true);
         }
-        append_tool_execution_guard(req, "MiniMax");
-        enforce_min_tool_calls(req, "MiniMax");
     } else if profile.slug == "mimo" {
         normalize_mimo_reasoning(req);
-        append_tool_execution_guard(req, "MiMo");
-        enforce_min_tool_calls(req, "MiMo");
+    }
+
+    if let Some(label) = task_loop_guard_label {
+        append_tool_execution_guard(req, label);
+        enforce_min_tool_calls(req, label);
     }
 
     if caps.web_search_tool {
@@ -566,9 +580,189 @@ const TOOL_EXECUTION_GUARD_MARKER: &str = "工具调用稳定性约束";
 const MIN_TOOL_CALL_GUARD_MARKER: &str = "最小工具调用计数约束";
 const TOOLCHAIN_COVERAGE_GUARD_MARKER: &str = "工具链覆盖完整性约束";
 const TOOLCHAIN_FINAL_REPORT_GUARD_MARKER: &str = "工具链最终报告完整性约束";
+
+pub fn task_loop_guard_label(profile: &ProviderProfile) -> Option<&str> {
+    if profile.wire_protocol != WireProtocol::ChatCompletions || !profile.capabilities.tools {
+        return None;
+    }
+    if matches!(profile.slug.as_str(), "openai" | "codex") {
+        return None;
+    }
+    Some(profile.label.as_str())
+}
+
+pub fn task_loop_guard_applies_to_identifier(identifier: &str) -> bool {
+    let lower = identifier.to_ascii_lowercase();
+    [
+        "minimax",
+        "mimo",
+        "deepseek",
+        "qwen",
+        "kimi",
+        "moonshot",
+        "glm",
+        "longcat",
+        "openrouter",
+        "custom",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    let promises_next_action = [
+        "让我重写",
+        "让我运行",
+        "让我执行",
+        "让我看看",
+        "让我查看",
+        "让我检查",
+        "让我修复",
+        "让我生成",
+        "让我打开",
+        "让我点击",
+        "让我搜索",
+        "让我调用",
+        "让我使用",
+        "我来重写",
+        "我来运行",
+        "我来执行",
+        "我来查看",
+        "我来检查",
+        "我来修复",
+        "我来创建",
+        "我来写",
+        "我来写完整",
+        "我来打开",
+        "我来点击",
+        "我来搜索",
+        "我来调用",
+        "我来使用",
+        "我会创建",
+        "我会修改",
+        "我会修复",
+        "我会运行",
+        "我会执行",
+        "我会查看",
+        "我会检查",
+        "我会打开",
+        "我会点击",
+        "我会搜索",
+        "我会调用",
+        "我会使用",
+        "我将运行",
+        "我将执行",
+        "我将查看",
+        "我将检查",
+        "我将打开",
+        "我将点击",
+        "我将搜索",
+        "我将调用",
+        "我将使用",
+        "我需要运行",
+        "我需要执行",
+        "我需要查看",
+        "我需要检查",
+        "我需要打开",
+        "我需要点击",
+        "我需要调用",
+        "接下来我会",
+        "接下来我将",
+        "下一步",
+        "我开始写",
+        "我开始修复",
+        "现在运行",
+        "现在执行",
+        "现在生成",
+        "现在让我",
+        "现在开始",
+        "接下来运行",
+        "接下来执行",
+        "接下来检查",
+        "开始运行",
+        "开始执行",
+        "开始创建",
+        "开始修改",
+        "开始写入",
+        "开始写完整",
+        "开始动手",
+        "开始分别读取",
+        "继续执行",
+        "继续修复",
+        "继续检查",
+        "马上执行",
+        "马上写",
+        "马上开始",
+        "逐一修复",
+        "逐个修复",
+        "一次性写完",
+        "直接用视觉分析来标注",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+        || [
+            "let me run",
+            "let me execute",
+            "let me check",
+            "let me inspect",
+            "let me fix",
+            "let me rewrite",
+            "now i'll run",
+            "now i will run",
+            "i'll run",
+            "i will run",
+            "i'll execute",
+            "i will execute",
+            "i'll use",
+            "i will use",
+            "i'll open",
+            "i will open",
+            "i'll click",
+            "i will click",
+            "i'll check",
+            "i will check",
+            "i'll inspect",
+            "i will inspect",
+            "i'll fix",
+            "i will fix",
+            "need to run",
+            "need to execute",
+            "need to use",
+            "need to open",
+            "need to click",
+            "continue by",
+            "next i'll",
+            "next i will",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    if !promises_next_action {
+        return false;
+    }
+
+    let final_answer_markers = [
+        "已完成",
+        "已经完成",
+        "完成了",
+        "最终",
+        "报告",
+        "结果如下",
+        "保存在",
+        "以下是",
+    ];
+    !final_answer_markers
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
 fn tool_execution_guard(label: &str) -> String {
     format!(
-        "【{label} {TOOL_EXECUTION_GUARD_MARKER}】当用户请求执行工具链、测试工具、读写文件、下载/生成文件、编译运行、查看结果、修复输出或连续步骤时，如果还存在未完成的工具步骤，必须直接继续发起下一次工具调用；不要只输出阶段标题、步骤说明或总结后结束。凡是出现“让我运行/让我看看/我来修复/现在生成/接下来执行”这类承诺下一步的表述，必须在同一条 assistant 响应中携带实际 tool_calls/function_call。只有确认所有必要工具调用都已完成，并且失败命令后的恢复/验证也完成后，才可以输出最终总结。"
+        "【{label} {TOOL_EXECUTION_GUARD_MARKER}】你正在 Codex/DEX AI 的工具调用状态机里执行任务。只要任务还没有真正完成，就不要输出面向用户的自然语言回复；自然语言回复且不携带 tool_calls/function_call 会被客户端视为任务结束。不要发送任何不带工具调用的中间回复。需要继续读写文件、执行命令、查看结果、修复错误、操作电脑或完成连续步骤时，必须直接继续发起实际 tool_calls/function_call。凡是出现“让我运行/让我看看/我来修复/现在生成/接下来执行”这类承诺下一步的表述，必须在同一条 assistant 响应中携带实际工具调用。只有确认所有必要工具调用、失败恢复和验证都完成后，才可以输出最终总结。"
     )
 }
 
@@ -1310,7 +1504,12 @@ fn ascii_numbers(text: &str) -> Vec<usize> {
 }
 
 fn minimax_model_supports_reasoning_split(model: &str) -> bool {
-    model.trim().eq_ignore_ascii_case("MiniMax-M3")
+    let model = model.trim();
+    let model = model
+        .strip_suffix("[1m]")
+        .or_else(|| model.strip_suffix("[1M]"))
+        .unwrap_or(model);
+    model.eq_ignore_ascii_case("MiniMax-M3")
 }
 
 fn adapt_web_search_tool(req: &mut ChatRequest) {
@@ -1548,6 +1747,95 @@ mod tests {
         assert_eq!(req.parallel_tool_calls, None);
         assert_eq!(req.web_search_options, None);
         assert!(!req.tools.is_empty());
+        assert!(req.messages.iter().any(|msg| {
+            msg.role == "system"
+                && chat_message_text(msg.content.as_ref()).contains(TOOL_EXECUTION_GUARD_MARKER)
+        }));
+    }
+
+    #[test]
+    fn deepseek_chat_tools_get_task_loop_guard() {
+        let deepseek = profile_by_slug("deepseek");
+        let mut req = ChatRequest {
+            model: "deepseek-v4-pro".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: Some(json!("请读取文件并修复问题")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&deepseek, &mut req);
+
+        let system = req
+            .messages
+            .iter()
+            .find(|msg| msg.role == "system")
+            .expect("expected system guard");
+        let text = chat_message_text(system.content.as_ref());
+        assert!(text.contains("DeepSeek"));
+        assert!(text.contains(TOOL_EXECUTION_GUARD_MARKER));
+        assert!(text.contains("自然语言回复且不携带 tool_calls/function_call"));
+    }
+
+    #[test]
+    fn openai_chat_tools_do_not_get_task_loop_guard() {
+        let openai = profile_by_slug("openai");
+        let mut req = ChatRequest {
+            model: "gpt-4.1".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: Some(json!("请读取文件")),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            tools: vec![
+                json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
+            ],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: None,
+            thinking: None,
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            user: None,
+            stream_options: None,
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&openai, &mut req);
+
+        assert!(!req.messages.iter().any(|msg| {
+            msg.role == "system"
+                && chat_message_text(msg.content.as_ref()).contains(TOOL_EXECUTION_GUARD_MARKER)
+        }));
     }
 
     #[test]
@@ -1869,7 +2157,15 @@ mod tests {
         );
         assert_eq!(
             mimo.known_models,
-            vec!["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-pro"]
+            vec![
+                "mimo-v2.5-pro[1m]",
+                "mimo-v2.5-pro",
+                "mimo-v2.5[1m]",
+                "mimo-v2.5",
+                "mimo-v2-omni",
+                "mimo-v2-pro[1m]",
+                "mimo-v2-pro"
+            ]
         );
         assert_eq!(mimo.capabilities.reasoning, ReasoningMode::DeepSeek);
         assert!(mimo.capabilities.web_search_tool);
@@ -1987,7 +2283,8 @@ mod tests {
         let system = req.messages[0].content.as_ref().unwrap().as_str().unwrap();
         assert!(system.contains("base system"));
         assert!(system.contains("MiMo 工具调用稳定性约束"));
-        assert!(system.contains("必须直接继续发起下一次工具调用"));
+        assert!(system.contains("不要输出面向用户的自然语言回复"));
+        assert!(system.contains("必须直接继续发起实际 tool_calls/function_call"));
     }
 
     #[test]

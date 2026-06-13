@@ -178,14 +178,14 @@ const context = {
       label: 'MiniMax',
       description: 'MiniMax',
       default_upstream: 'https://api.minimaxi.com/v1',
-      known_models: ['MiniMax-M2.7'],
+      known_models: ['MiniMax-M3[1m]', 'MiniMax-M3', 'MiniMax-M2.7-highspeed[1m]', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.7[1m]', 'MiniMax-M2.7'],
     },
     {
       slug: 'mimo',
       label: 'MiMo',
       description: 'MiMo',
       default_upstream: 'https://token-plan-cn.xiaomimimo.com/v1',
-      known_models: ['mimo-v2-omni', 'mimo-v2-pro', 'mimo-v2.5', 'mimo-v2.5-pro'],
+      known_models: ['mimo-v2.5-pro[1m]', 'mimo-v2.5-pro', 'mimo-v2.5[1m]', 'mimo-v2.5', 'mimo-v2-omni', 'mimo-v2-pro[1m]', 'mimo-v2-pro'],
     },
     {
       slug: 'longcat',
@@ -389,9 +389,7 @@ context.accountsData.router_status_scenarios = [
 ];
 context.selectedClientSurface = 'desktop';
 const routerDesktopOverview = context.renderRouterStatusOverview();
-assert(routerDesktopOverview.includes('Primary Router'));
-assert(routerDesktopOverview.includes('router-scenario-chip ok'));
-assert(routerDesktopOverview.includes('2/2'));
+assert.strictEqual(routerDesktopOverview, '');
 context.selectedClientSurface = 'cli';
 
 context.accountsView = 'add';
@@ -844,12 +842,15 @@ assert.strictEqual(context.clientProviderDefaults('claude_code', 'kimi').default
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').upstream, 'https://api.minimaxi.com/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'minimax').api_key_env, 'ANTHROPIC_API_KEY');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').upstream, 'https://token-plan-cn.xiaomimimo.com/anthropic');
-assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro');
+assert.strictEqual(context.clientProviderDefaults('claude_code', 'mimo').default_model, 'mimo-v2.5-pro[1m]');
 assert.deepStrictEqual(Array.from(context.clientProviderDefaults('claude_code', 'mimo').known_models), [
+  'mimo-v2.5-pro[1m]',
   'mimo-v2.5-pro',
+  'mimo-v2.5[1m]',
   'mimo-v2.5',
-  'mimo-v2-omni',
+  'mimo-v2-pro[1m]',
   'mimo-v2-pro',
+  'mimo-v2-omni',
 ]);
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').upstream, 'https://api.longcat.chat/anthropic');
 assert.strictEqual(context.clientProviderDefaults('claude_code', 'longcat').default_model, 'LongCat-Flash-Chat');

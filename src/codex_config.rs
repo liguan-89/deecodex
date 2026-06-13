@@ -225,8 +225,22 @@ pub fn inject_with_host_and_data_dir_for_mode(
     data_dir: Option<&std::path::Path>,
     codex_router_mode: &str,
 ) {
+    sync_codex_integration(CodexIntegrationSyncOptions {
+        host,
+        port,
+        context_window_override,
+        data_dir,
+        codex_router_mode,
+        reason: "legacy_inject",
+    });
+}
+
+pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
     let Some(path) = codex_config_path() else {
-        info!("跳过 Codex 配置注入: 无法确定 HOME 目录");
+        info!(
+            reason = options.reason,
+            "跳过 Codex 集成同步: 无法确定 HOME 目录"
+        );
         return;
     };
     if !path.exists() {
@@ -236,14 +250,16 @@ pub fn inject_with_host_and_data_dir_for_mode(
             }
         } else {
             info!(
-                "跳过 Codex 配置注入: 未检测到 Codex 安装 ({} 不存在)",
+                reason = options.reason,
+                "跳过 Codex 集成同步: 未检测到 Codex 安装 ({} 不存在)",
                 path.display()
             );
             return;
         }
     }
 
-    let include_account_models = crate::config::codex_router_mode_is_smart(codex_router_mode);
+    let include_account_models =
+        crate::config::codex_router_mode_is_smart(options.codex_router_mode);
     let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
     let active_model =
         if !include_account_models && decode_dex_account_model_slug(&active_model).is_some() {
@@ -252,19 +268,19 @@ pub fn inject_with_host_and_data_dir_for_mode(
             active_model
         };
     let catalog = match generate_context_catalog(
-        context_window_override,
+        options.context_window_override,
         &active_model,
-        data_dir,
+        options.data_dir,
         include_account_models,
     ) {
         Ok(catalog) => Some(catalog),
         Err(e) => {
-            warn!("生成上下文模型目录失败: {e}");
+            warn!(reason = options.reason, "生成 Codex 模型目录失败: {e}");
             None
         }
     };
 
-    let url_host = crate::config::client_url_host(host);
+    let url_host = crate::config::client_url_host(options.host);
     let catalog_path = catalog.as_ref().map(|catalog| catalog.path.as_path());
     let model_context_window = catalog
         .as_ref()
@@ -272,15 +288,45 @@ pub fn inject_with_host_and_data_dir_for_mode(
     match do_inject(
         &path,
         &url_host,
-        port,
-        context_window_override,
+        options.port,
+        options.context_window_override,
         catalog_path,
         model_context_window,
-        codex_router_mode,
+        options.codex_router_mode,
     ) {
-        Ok(true) => info!("已将 deecodex 配置注入 codex config.toml ({url_host}:{port})"),
-        Ok(false) => info!("codex config.toml 已包含 deecodex 配置，已更新服务地址"),
-        Err(e) => warn!("注入 codex 配置失败: {e}"),
+        Ok(true) => {
+            if let Some(catalog) = catalog.as_ref() {
+                info!(
+                    reason = options.reason,
+                    model_count = catalog.model_count,
+                    account_model_count = catalog.account_model_count,
+                    "已同步 Codex 集成并写入 DEX provider ({url_host}:{})",
+                    options.port
+                );
+            } else {
+                info!(
+                    reason = options.reason,
+                    "已同步 Codex 集成并写入 DEX provider ({url_host}:{})", options.port
+                );
+            }
+        }
+        Ok(false) => {
+            if let Some(catalog) = catalog.as_ref() {
+                info!(
+                    reason = options.reason,
+                    model_count = catalog.model_count,
+                    account_model_count = catalog.account_model_count,
+                    "已同步 Codex 集成并更新服务地址 ({url_host}:{})",
+                    options.port
+                );
+            } else {
+                info!(
+                    reason = options.reason,
+                    "已同步 Codex 集成并更新服务地址 ({url_host}:{})", options.port
+                );
+            }
+        }
+        Err(e) => warn!(reason = options.reason, "同步 Codex 集成失败: {e}"),
     }
 }
 
@@ -488,6 +534,17 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
 struct GeneratedCatalog {
     path: std::path::PathBuf,
     model_context_window: Option<i64>,
+    model_count: usize,
+    account_model_count: usize,
+}
+
+pub struct CodexIntegrationSyncOptions<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub context_window_override: Option<u32>,
+    pub data_dir: Option<&'a std::path::Path>,
+    pub codex_router_mode: &'a str,
+    pub reason: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -646,6 +703,23 @@ fn generate_context_catalog(
     let model_context_window = context_window_override
         .map(|window| (window as u64).min(i64::MAX as u64) as i64)
         .or_else(|| resolve_model_context_window(&catalog_out, active_model));
+    let model_count = catalog_out
+        .get("models")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let account_model_count = catalog_out
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|model| {
+            model
+                .get("slug")
+                .and_then(Value::as_str)
+                .is_some_and(|slug| slug.starts_with(DEX_ACCOUNT_MODEL_SLUG_PREFIX))
+        })
+        .count();
     let json = serde_json::to_string_pretty(&catalog_out)
         .map_err(|e| anyhow!("序列化模型目录失败: {e}"))?;
     std::fs::write(&catalog_path, json)
@@ -665,6 +739,8 @@ fn generate_context_catalog(
     Ok(GeneratedCatalog {
         path: catalog_path,
         model_context_window,
+        model_count,
+        account_model_count,
     })
 }
 
@@ -749,6 +825,8 @@ fn dex_catalog_account_models(
                 .filter(|model| !model.is_empty())
                 .collect::<std::collections::BTreeSet<_>>();
             for model in models {
+                let context_window_override =
+                    account_model_context_window_override(account, endpoint, &model);
                 values.push(DexCatalogAccountModel {
                     account_id: account.id.clone(),
                     endpoint_id: endpoint.id.clone(),
@@ -757,14 +835,31 @@ fn dex_catalog_account_models(
                     endpoint_kind: endpoint.kind.clone(),
                     provider: account.provider.clone(),
                     model,
-                    context_window_override: endpoint
-                        .context_window_override
-                        .or(account.context_window_override),
+                    context_window_override,
                 });
             }
         }
     }
     Ok(values)
+}
+
+fn account_model_context_window_override(
+    account: &crate::accounts::Account,
+    endpoint: &crate::accounts::EndpointConfig,
+    model: &str,
+) -> Option<u32> {
+    endpoint
+        .context_window_override
+        .or(account.context_window_override)
+        .or_else(|| one_m_context_window_for_model(model))
+}
+
+fn one_m_context_window_for_model(model: &str) -> Option<u32> {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .ends_with("[1m]")
+        .then_some(1_000_000)
 }
 
 fn catalog_models_for_endpoint(
@@ -925,6 +1020,7 @@ fn prepend_dex_account_catalog_models(
             model["max_context_window"] = Value::from(window);
         } else {
             ensure_model_context_fields(&mut model);
+            cap_account_model_max_context_window(&mut model);
         }
         model["availability_nux"] = Value::Null;
         account_entries.push(model);
@@ -1096,6 +1192,19 @@ fn ensure_model_context_fields(model: &mut Value) {
         if let Some(context_window) = model.get("context_window").cloned() {
             model["max_context_window"] = context_window;
         }
+    }
+}
+
+fn cap_account_model_max_context_window(model: &mut Value) {
+    let Some(context_window) = model.get("context_window").and_then(Value::as_u64) else {
+        return;
+    };
+    let max_context_window = model
+        .get("max_context_window")
+        .and_then(Value::as_u64)
+        .unwrap_or(context_window);
+    if max_context_window > context_window {
+        model["max_context_window"] = Value::from(context_window);
     }
 }
 
@@ -1513,6 +1622,57 @@ mod tests {
     }
 
     #[test]
+    fn inject_api_mode_removes_smart_router_provider() {
+        let account_slug = encode_dex_account_model_slug("acct_1", "ep_1", "deepseek-v4-pro");
+        let path = write_temp_config(&format!(
+            r#"model = "{account_slug}"
+model_provider = "dex_router"
+
+[model_providers.dex_router]
+base_url = "http://127.0.0.1:4446/codex-router/v1"
+name = "dex_router"
+requires_openai_auth = true
+wire_api = "responses"
+"#
+        ));
+        let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
+        do_inject(
+            &path,
+            "127.0.0.1",
+            4446,
+            None,
+            Some(&catalog_path),
+            Some(272_000),
+            crate::config::CODEX_ROUTER_MODE_API,
+        )
+        .unwrap();
+
+        let fixed = std::fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
+        assert_eq!(
+            doc.get("model").and_then(|value| value.as_str()),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            doc.get("model_provider").and_then(|value| value.as_str()),
+            Some("deecodex")
+        );
+        assert!(doc
+            .get("model_providers")
+            .and_then(|providers| providers.get("dex_router"))
+            .is_none());
+        let provider = doc
+            .get("model_providers")
+            .and_then(|providers| providers.get("deecodex"))
+            .unwrap();
+        assert_eq!(
+            provider.get("base_url").and_then(|value| value.as_str()),
+            Some("http://127.0.0.1:4446/v1")
+        );
+        cleanup(&path);
+    }
+
+    #[test]
     fn context_catalog_preserves_cached_window_without_override() {
         let input = serde_json::json!({
             "fetched_at": "ignored",
@@ -1613,6 +1773,7 @@ mod tests {
         let appended = &models[0];
         assert_eq!(appended["display_name"], "GPT-5.5 Proxy");
         assert_eq!(appended["context_window"], 128_000);
+        assert_eq!(appended["max_context_window"], 128_000);
         assert_eq!(
             decode_dex_account_model_slug(appended["slug"].as_str().unwrap())
                 .unwrap()
@@ -1620,6 +1781,21 @@ mod tests {
             "gpt-5.5-proxy"
         );
         assert_eq!(models[1]["display_name"], "DeepSeek V4 Pro");
+        assert_eq!(models[1]["context_window"], 272000);
+        assert_eq!(models[1]["max_context_window"], 272000);
+    }
+
+    #[test]
+    fn account_model_with_one_m_suffix_keeps_one_m_context_window() {
+        assert_eq!(
+            one_m_context_window_for_model("mimo-v2.5-pro[1m]"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            one_m_context_window_for_model("MiniMax-M3[1m]"),
+            Some(1_000_000)
+        );
+        assert_eq!(one_m_context_window_for_model("deepseek-v4-pro"), None);
     }
 
     #[test]
@@ -1664,6 +1840,10 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0]["display_name"], "OpenAI 桌面版 账号 / GPT-5.5");
         assert_eq!(models[1]["display_name"], "OpenAI 备用账号 / GPT-5.5");
+        assert_eq!(models[0]["context_window"], 272000);
+        assert_eq!(models[0]["max_context_window"], 272000);
+        assert_eq!(models[1]["context_window"], 272000);
+        assert_eq!(models[1]["max_context_window"], 272000);
     }
 
     #[test]

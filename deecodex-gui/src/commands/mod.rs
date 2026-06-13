@@ -1353,8 +1353,10 @@ async fn create_oauth_account(
         {
             sync_active_account_to_running_state(manager, &store, &account).await?;
         } else {
-            sync_account_store_to_running_state(manager, &store).await;
+            sync_account_store_and_codex_catalog(manager, &store, "oauth_account_save").await;
         }
+    } else if account.client_kind.is_codex() {
+        sync_account_store_and_codex_catalog(manager, &store, "oauth_account_save").await;
     } else {
         sync_account_store_to_running_state(manager, &store).await;
     }
@@ -2363,6 +2365,37 @@ async fn sync_account_store_to_running_state(manager: &ServerManager, store: &Ac
     }
 }
 
+async fn sync_codex_integration_for_manager(manager: &ServerManager, reason: &'static str) {
+    let args = load_args();
+    if !(args.codex_auto_inject || args.codex_persistent_inject) {
+        tracing::info!(reason = reason, "跳过 Codex 模型目录刷新: Codex 注入未启用");
+        return;
+    }
+
+    let (host, port) = service_endpoint_for_manager(manager).await;
+    let data_dir = manager.data_dir.lock().await.clone();
+    deecodex::codex_config::fix();
+    deecodex::codex_config::sync_codex_integration(
+        deecodex::codex_config::CodexIntegrationSyncOptions {
+            host: &host,
+            port,
+            context_window_override: load_active_account_context_window(&data_dir),
+            data_dir: Some(&data_dir),
+            codex_router_mode: &args.codex_router_mode,
+            reason,
+        },
+    );
+}
+
+async fn sync_account_store_and_codex_catalog(
+    manager: &ServerManager,
+    store: &AccountStore,
+    reason: &'static str,
+) {
+    sync_account_store_to_running_state(manager, store).await;
+    sync_codex_integration_for_manager(manager, reason).await;
+}
+
 async fn sync_account_mutation_to_running_state(
     manager: &ServerManager,
     store: &AccountStore,
@@ -2382,6 +2415,7 @@ async fn sync_active_account_to_running_state(
     target: &deecodex::accounts::Account,
 ) -> Result<(), String> {
     let Some(app_state) = running_app_state(manager).await else {
+        sync_codex_integration_for_manager(manager, "active_account_sync").await;
         return Ok(());
     };
 
@@ -2422,17 +2456,7 @@ async fn sync_active_account_to_running_state(
     *app_state.active_account.write().await = target.clone();
     *app_state.account_store.write().await = store.clone();
 
-    let host = manager.host.lock().await.clone();
-    let port = *manager.port.lock().await;
-    let data_dir = manager.data_dir.lock().await.clone();
-    let args = load_args();
-    deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
-        &host,
-        port,
-        target.context_window_override,
-        Some(&data_dir),
-        &args.codex_router_mode,
-    );
+    sync_codex_integration_for_manager(manager, "active_account_sync").await;
 
     tracing::info!("已同步运行中账号: {} ({})", target.name, target.provider);
     Ok(())
@@ -2466,14 +2490,17 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         .await
         .map_err(|e| format!("无法绑定服务地址 {addr}: {e}"))?;
 
-    if args.codex_auto_inject && !args.codex_persistent_inject {
+    if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
-        deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
-            &host,
-            port,
-            load_active_account_context_window(&args.data_dir),
-            Some(&args.data_dir),
-            &args.codex_router_mode,
+        deecodex::codex_config::sync_codex_integration(
+            deecodex::codex_config::CodexIntegrationSyncOptions {
+                host: &host,
+                port,
+                context_window_override: load_active_account_context_window(&args.data_dir),
+                data_dir: Some(&args.data_dir),
+                codex_router_mode: &args.codex_router_mode,
+                reason: "service_start",
+            },
         );
     }
 
@@ -2790,12 +2817,15 @@ fn save_config_inner(
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         let cw = load_active_account_context_window(&args.data_dir);
-        deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
-            &inject_host,
-            inject_port,
-            cw,
-            Some(&args.data_dir),
-            &args.codex_router_mode,
+        deecodex::codex_config::sync_codex_integration(
+            deecodex::codex_config::CodexIntegrationSyncOptions {
+                host: &inject_host,
+                port: inject_port,
+                context_window_override: cw,
+                data_dir: Some(&args.data_dir),
+                codex_router_mode: &args.codex_router_mode,
+                reason: "config_save",
+            },
         );
     } else {
         deecodex::codex_config::remove();
@@ -3228,6 +3258,8 @@ pub async fn add_account(
             || store.active_account_id.as_deref() == Some(&new_account.id))
     {
         sync_active_account_to_running_state(&manager, &store, &new_account).await?;
+    } else if new_account.client_kind.is_codex() {
+        sync_account_store_and_codex_catalog(&manager, &store, "account_add").await;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
     }
@@ -3323,6 +3355,8 @@ pub async fn dex_quick_configure_client(
             || store.active_account_id.as_deref() == Some(&account.id))
     {
         sync_active_account_to_running_state(&manager, &store, &account).await?;
+    } else if account.client_kind.is_codex() {
+        sync_account_store_and_codex_catalog(&manager, &store, "quick_configure_account").await;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
     }
@@ -3422,8 +3456,13 @@ pub async fn update_account(
             || store.active_account_id.as_deref() == Some(&account.id))
     {
         sync_active_account_to_running_state(&manager, &store, &account).await?;
+    } else if account.client_kind.is_codex() {
+        sync_account_store_and_codex_catalog(&manager, &store, "account_update").await;
     } else {
         sync_account_store_to_running_state(&manager, &store).await;
+        // 非 Codex 账号变更也可能影响智能路由模型目录（如 Claude Code 账号模型），
+        // 需要同步刷新 Codex 集成。
+        sync_codex_integration_for_manager(&manager, "non_codex_account_update").await;
     }
 
     let selected_endpoint = endpoint_for_legacy.as_ref();
@@ -3547,7 +3586,7 @@ pub async fn delete_account(
     if let Some(next_active_account) = next_active_account {
         sync_active_account_to_running_state(&manager, &store, &next_active_account).await?;
     } else {
-        sync_account_store_to_running_state(&manager, &store).await;
+        sync_account_store_and_codex_catalog(&manager, &store, "account_delete").await;
     }
 
     Ok(json!({"success": true}))
@@ -3601,7 +3640,7 @@ pub(crate) async fn switch_account_inner(
     {
         sync_active_account_to_running_state(manager, &store, &target).await?;
     } else {
-        sync_account_store_to_running_state(manager, &store).await;
+        sync_account_store_and_codex_catalog(manager, &store, "account_switch").await;
     }
 
     Ok(account_to_value_with_endpoint(
@@ -3665,6 +3704,7 @@ pub async fn reset_account_runtime_state(
 
 /// 更新官方账号池路由参数。默认用于 Codex 官方账号池，也可预留给后续分池。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn set_account_routing(
     manager: State<'_, ServerManager>,
     id: String,
@@ -3673,6 +3713,7 @@ pub async fn set_account_routing(
     pool: Option<String>,
     priority: Option<i64>,
     weight: Option<u32>,
+    native_computer_policy: Option<String>,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
     let (store, account) = mutate_account_store(&data_dir, "保存账号失败", |store| {
@@ -3705,6 +3746,9 @@ pub async fn set_account_routing(
         }
         if let Some(weight) = weight {
             routing.weight = weight.clamp(1, 100);
+        }
+        if let Some(native_computer_policy) = native_computer_policy {
+            routing.native_computer_policy = native_computer_policy;
         }
         let routing = routing.normalized();
         deecodex::accounts::set_account_routing_options(account, routing);
@@ -3842,6 +3886,7 @@ pub async fn import_auth_json_accounts(
                 }
             }
         }
+        sync_codex_integration_for_manager(&manager, "auth_json_import").await;
         for (account_id, client_kind, details) in imported_events {
             append_account_event(
                 &data_dir,
@@ -3902,7 +3947,7 @@ pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Va
         .ok_or_else(|| "Codex config.toml 中未找到可导入的第三方 provider 配置".to_string())?;
     imported.normalize_v2();
 
-    let (_store, imported) = mutate_account_store(&data_dir, "保存账号失败", |store| {
+    let (store, imported) = mutate_account_store(&data_dir, "保存账号失败", |store| {
         // 检查是否已存在相同 upstream + key 的账号
         let is_duplicate = store
             .accounts
@@ -3929,6 +3974,7 @@ pub async fn import_codex_config(manager: State<'_, ServerManager>) -> Result<Va
         store.accounts.push(imported.clone());
         Ok(imported.clone())
     })?;
+    sync_account_store_and_codex_catalog(&manager, &store, "codex_config_import").await;
 
     Ok(account_to_value(&imported))
 }
@@ -5258,7 +5304,7 @@ pub async fn switch_endpoint(
     {
         sync_active_account_to_running_state(&manager, &store, &account).await?;
     } else {
-        sync_account_store_to_running_state(&manager, &store).await;
+        sync_account_store_and_codex_catalog(&manager, &store, "endpoint_switch").await;
     }
     Ok(json!({
         "account": account_to_value_with_endpoint(&account, Some(&endpoint)),
@@ -5433,12 +5479,15 @@ async fn refresh_codex_model_catalog_after_fetch(
     let port = *manager.port.lock().await;
     let cw = load_active_account_context_window(data_dir);
     let args = load_args();
-    deecodex::codex_config::inject_with_host_and_data_dir_for_mode(
-        &host,
-        port,
-        cw,
-        Some(data_dir),
-        &args.codex_router_mode,
+    deecodex::codex_config::sync_codex_integration(
+        deecodex::codex_config::CodexIntegrationSyncOptions {
+            host: &host,
+            port,
+            context_window_override: cw,
+            data_dir: Some(data_dir),
+            codex_router_mode: &args.codex_router_mode,
+            reason: "model_fetch",
+        },
     );
 }
 

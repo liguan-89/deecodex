@@ -875,15 +875,16 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind((host.as_str(), args.port)).await?;
 
     // 注入 deecodex 配置到 codex 的 config.toml
-    if args.codex_auto_inject && !args.codex_persistent_inject {
+    if args.codex_auto_inject || args.codex_persistent_inject {
         codex_config::fix();
-        codex_config::inject_with_host_and_data_dir_for_mode(
-            &host,
-            args.port,
-            None,
-            Some(&args.data_dir),
-            &args.codex_router_mode,
-        );
+        codex_config::sync_codex_integration(codex_config::CodexIntegrationSyncOptions {
+            host: &host,
+            port: args.port,
+            context_window_override: None,
+            data_dir: Some(&args.data_dir),
+            codex_router_mode: &args.codex_router_mode,
+            reason: "service_start",
+        });
     }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口

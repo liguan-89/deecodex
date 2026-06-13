@@ -131,6 +131,7 @@ struct BlockingArgs<'a> {
     req: &'a ResponsesRequest,
     history_context: HistoryContext,
     runtime_feedback: RuntimeFeedbackSink,
+    task_loop_guard_label: Option<String>,
     start: Instant,
 }
 
@@ -216,6 +217,7 @@ struct AccountRouteSelection {
     endpoint: EndpointConfig,
     route_trace: Option<String>,
     requires_computer: bool,
+    strip_native_computer_toolchain: bool,
     explicit_model: Option<String>,
     explicit_account_model: bool,
     session_main_model_anchor: bool,
@@ -764,6 +766,7 @@ async fn resolve_account_endpoint_for_response(
             endpoint,
             route_trace: None,
             requires_computer: false,
+            strip_native_computer_toolchain: false,
             explicit_model: None,
             explicit_account_model: false,
             session_main_model_anchor: false,
@@ -801,6 +804,7 @@ async fn resolve_account_endpoint_for_response(
                 requires_computer: tool_requirements.is_some_and(|requirements| {
                     requirements.requires_computer
                 }),
+                strip_native_computer_toolchain: false,
                 explicit_model: (effective_model != requested_model).then_some(effective_model),
                 explicit_account_model: false,
                 session_main_model_anchor: false,
@@ -822,11 +826,28 @@ fn router_effective_model_for_account(
     requested_model: &str,
     endpoint: &EndpointConfig,
 ) -> String {
+    effective_model_for_chat_account(account, requested_model, endpoint, true)
+}
+
+fn translated_chat_effective_model_for_account(
+    account: &Account,
+    requested_model: &str,
+    endpoint: &EndpointConfig,
+) -> String {
+    effective_model_for_chat_account(account, requested_model, endpoint, false)
+}
+
+fn effective_model_for_chat_account(
+    account: &Account,
+    requested_model: &str,
+    endpoint: &EndpointConfig,
+    keep_native_gpt_models: bool,
+) -> String {
     let requested_model = requested_model.trim();
     if !endpoint.kind.is_chat_like() {
         return requested_model.to_string();
     }
-    if codex_router_native_direct_model(requested_model) {
+    if keep_native_gpt_models && codex_router_native_direct_model(requested_model) {
         return requested_model.to_string();
     }
     if let Some(mapped) = endpoint
@@ -844,6 +865,10 @@ fn router_effective_model_for_account(
         .any(|model| model.trim() == requested_model)
     {
         return requested_model.to_string();
+    }
+    let default_model = account.default_model.trim();
+    if !default_model.is_empty() {
+        return default_model.to_string();
     }
     endpoint
         .known_models
@@ -994,6 +1019,18 @@ fn resolve_explicit_dex_account_model_selection(
             && requirements.native_signal >= NativeRouteSignal::StrongNative
     }) && !endpoint_is_native_router_executor(&endpoint)
     {
+        let routing = account_routing_options(account);
+        if routing.strip_native_computer_toolchain() {
+            return explicit_chat_model_strip_native_toolchain_selection(
+                account,
+                &endpoint,
+                &model_ref.model,
+                tool_requirements,
+                now,
+                requested_model,
+            )
+            .map(Some);
+        }
         return resolve_explicit_chat_model_native_helper_selection(
             store,
             account,
@@ -1038,6 +1075,7 @@ fn resolve_explicit_dex_account_model_selection(
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: tool_requirements
             .is_some_and(|requirements| requirements.requires_computer),
+        strip_native_computer_toolchain: false,
         explicit_model: Some(model_ref.model),
         explicit_account_model: true,
         session_main_model_anchor: false,
@@ -1102,6 +1140,7 @@ fn resolve_session_main_model_anchor_selection(
         endpoint,
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: false,
+        strip_native_computer_toolchain: false,
         explicit_model: Some(anchor.model.clone()),
         explicit_account_model: false,
         session_main_model_anchor: true,
@@ -1238,6 +1277,7 @@ fn resolve_explicit_chat_model_native_helper_selection(
         endpoint: helper_endpoint,
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: true,
+        strip_native_computer_toolchain: false,
         explicit_model: Some(helper_model),
         explicit_account_model: true,
         session_main_model_anchor: false,
@@ -1300,6 +1340,7 @@ fn explicit_chat_model_native_helper_fallback_selection(
         endpoint: context.main_endpoint.clone(),
         route_trace: serde_json::to_string(&trace).ok(),
         requires_computer: false,
+        strip_native_computer_toolchain: false,
         explicit_model: Some(context.selected_model.to_string()),
         explicit_account_model: true,
         session_main_model_anchor: false,
@@ -1308,6 +1349,58 @@ fn explicit_chat_model_native_helper_fallback_selection(
             endpoint_id: context.main_endpoint.id.clone(),
             model: context.selected_model.to_string(),
             endpoint_kind: endpoint_kind_slug(&context.main_endpoint.kind).to_string(),
+        }),
+    })
+}
+
+fn explicit_chat_model_strip_native_toolchain_selection(
+    main_account: &Account,
+    main_endpoint: &EndpointConfig,
+    selected_model: &str,
+    tool_requirements: Option<&RouterToolRequirements>,
+    now: u64,
+    requested_model: &str,
+) -> Result<AccountRouteSelection, Box<Response>> {
+    if let Some(block) = account_runtime_block(main_account, selected_model, now) {
+        return Err(Box::new(codex_router_pool_unavailable_response(
+            format!(
+                "已选择「{} / {}」，但该模型当前不可用：{}",
+                main_account.name, selected_model, block.reason
+            ),
+            "dex_router_explicit_model_runtime_blocked",
+        )));
+    }
+    let mut account = main_account.clone();
+    account.sync_legacy_from_endpoint(main_endpoint);
+    let trace = json!({
+        "requested_model": requested_model,
+        "explicit_model_selection": true,
+        "native_computer_policy": "strip_and_continue",
+        "native_toolchain_stripped": true,
+        "native_helper_reroute": false,
+        "native_helper_fallback_reason": "account_policy_strip_and_continue",
+        "selected_account_id": account.id,
+        "selected_account_name": account.name,
+        "selected_endpoint_id": main_endpoint.id,
+        "selected_endpoint_kind": endpoint_kind_slug(&main_endpoint.kind),
+        "selected_model": selected_model,
+        "upstream_model": selected_model,
+        "tool_requirements": router_tool_requirements_value(tool_requirements),
+    });
+    Ok(AccountRouteSelection {
+        account,
+        endpoint: main_endpoint.clone(),
+        route_trace: serde_json::to_string(&trace).ok(),
+        requires_computer: false,
+        strip_native_computer_toolchain: true,
+        explicit_model: Some(selected_model.to_string()),
+        explicit_account_model: true,
+        session_main_model_anchor: false,
+        main_model_anchor_to_record: Some(crate::codex_router_session::MainModelAnchor {
+            account_id: main_account.id.clone(),
+            endpoint_id: main_endpoint.id.clone(),
+            model: selected_model.to_string(),
+            endpoint_kind: endpoint_kind_slug(&main_endpoint.kind).to_string(),
         }),
     })
 }
@@ -3177,6 +3270,187 @@ fn apply_endpoint_image_generation_declaration(
         "端点未声明支持 image_generation，已从本轮直连请求中移除可选图片生成工具"
     );
     Ok(())
+}
+
+fn native_computer_tool_type(typ: &str) -> bool {
+    matches!(
+        typ,
+        "computer_use" | "computer_use_preview" | "browser_use" | "browser"
+    )
+}
+
+fn native_computer_item_type(typ: &str) -> bool {
+    matches!(typ, "computer_call" | "computer_call_output")
+}
+
+fn native_computer_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "get_app_state"
+            | "screenshot"
+            | "click"
+            | "double_click"
+            | "scroll"
+            | "press_key"
+            | "type"
+            | "type_text"
+            | "drag"
+            | "move"
+            | "wait"
+            | "open_url"
+    )
+}
+
+fn tool_value_is_native_computer(tool: &Value) -> bool {
+    let Value::Object(map) = tool else {
+        return false;
+    };
+    let typ = map
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if native_computer_tool_type(&typ) {
+        return true;
+    }
+    let label = map
+        .get("name")
+        .or_else(|| map.get("namespace"))
+        .or_else(|| map.get("server_label"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if label.contains("computer") || label.contains("browser-use") {
+        return true;
+    }
+    if matches!(typ.as_str(), "function" | "custom") {
+        let name = map
+            .get("name")
+            .or_else(|| {
+                map.get("function")
+                    .and_then(|function| function.get("name"))
+            })
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return native_computer_tool_name(name);
+    }
+    false
+}
+
+fn strip_native_computer_from_value(value: &mut Value) -> bool {
+    match value {
+        Value::Array(items) => {
+            let mut changed = false;
+            items.retain_mut(|item| {
+                let drop = strip_native_computer_value_or_drop(item);
+                changed |= drop;
+                !drop
+            });
+            for item in items {
+                changed |= strip_native_computer_from_value(item);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let typ = map
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if native_computer_item_type(&typ) {
+                *value = Value::Null;
+                return true;
+            }
+            let mut changed = false;
+            for key in ["screenshot", "action"] {
+                changed |= map.remove(key).is_some();
+            }
+            for key in ["content", "output", "image", "text"] {
+                if let Some(child) = map.get_mut(key) {
+                    let drop_child = child
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(|typ| native_computer_item_type(&typ.to_ascii_lowercase()))
+                        .unwrap_or(false);
+                    if drop_child {
+                        *child = Value::Null;
+                        changed = true;
+                    } else {
+                        changed |= strip_native_computer_from_value(child);
+                    }
+                }
+            }
+            changed
+        }
+        Value::String(text)
+            if text.contains("computer_call_output") || text.contains("\"screenshot\"") =>
+        {
+            *text = "[Computer Use 原生工具链残留已按账号设置剥离]".into();
+            true
+        }
+        Value::String(_) => false,
+        _ => false,
+    }
+}
+
+fn strip_native_computer_value_or_drop(value: &mut Value) -> bool {
+    let should_drop = value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|typ| native_computer_item_type(&typ.to_ascii_lowercase()))
+        .unwrap_or(false);
+    if should_drop {
+        return true;
+    }
+    strip_native_computer_from_value(value);
+    false
+}
+
+fn strip_native_computer_toolchain_from_request(req: &mut ResponsesRequest) -> bool {
+    let mut changed = false;
+    let before_tools = req.tools.len();
+    req.tools
+        .retain(|tool| !tool_value_is_native_computer(tool));
+    changed |= before_tools != req.tools.len();
+
+    if req
+        .tool_choice
+        .as_ref()
+        .is_some_and(tool_value_is_native_computer)
+    {
+        req.tool_choice = None;
+        changed = true;
+    }
+
+    match &mut req.input {
+        ResponsesInput::Text(text) => {
+            if text.contains("computer_call_output") || text.contains("\"screenshot\"") {
+                *text = "[Computer Use 原生工具链残留已按账号设置剥离]".into();
+                changed = true;
+            }
+        }
+        ResponsesInput::Messages(items) => {
+            let before = items.len();
+            items.retain_mut(|item| !strip_native_computer_value_or_drop(item));
+            changed |= before != items.len();
+            for item in items {
+                changed |= strip_native_computer_from_value(item);
+            }
+        }
+    }
+    changed
+}
+
+fn patch_native_computer_strip_trace(route_trace: Option<String>, changed: bool) -> Option<String> {
+    let mut trace = route_trace
+        .and_then(|trace| serde_json::from_str::<Value>(&trace).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("native_computer_policy".into(), json!("strip_and_continue"));
+        obj.insert("native_toolchain_stripped".into(), json!(true));
+        obj.insert("native_toolchain_request_changed".into(), json!(changed));
+    }
+    serde_json::to_string(&trace).ok()
 }
 
 struct RuntimeBlock {
@@ -6833,7 +7107,7 @@ async fn handle_responses_for_selection(
     mut req: ResponsesRequest,
     mut body: axum::body::Bytes,
     route_surface: AccountRouteSurface,
-    route_selection: AccountRouteSelection,
+    mut route_selection: AccountRouteSelection,
     start: Instant,
     session_route_decision: Option<&DexRouterSessionRouteDecision>,
 ) -> Response {
@@ -6847,7 +7121,7 @@ async fn handle_responses_for_selection(
             }
         }
     }
-    // Computer Use 文本信号只参与选路；请求体里的工具必须保持 Codex Desktop 原样。
+    // 默认保留 Codex Desktop 原生工具链；只有账号显式选择“剥离并继续”时才移除历史残留。
     let model = req.model.clone();
     if endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial {
         if let Err(response) = apply_endpoint_image_generation_declaration(
@@ -6858,6 +7132,23 @@ async fn handle_responses_for_selection(
         ) {
             return *response;
         }
+    }
+    if route_selection.strip_native_computer_toolchain && endpoint.kind.is_chat_like() {
+        let changed = strip_native_computer_toolchain_from_request(&mut req);
+        route_selection.route_trace =
+            patch_native_computer_strip_trace(route_selection.route_trace.take(), changed);
+        match serde_json::to_vec(&req) {
+            Ok(updated) => body = axum::body::Bytes::from(updated),
+            Err(err) => {
+                warn!("Computer Use 残留剥离后请求体序列化失败，继续使用解析后的请求: {err}")
+            }
+        }
+        info!(
+            account_id = %route_selection.account.id,
+            endpoint_id = %endpoint.id,
+            request_changed = changed,
+            "已按账号设置剥离 Computer Use 原生工具链残留并继续 Chat 兼容请求"
+        );
     }
     let mode = match endpoint.kind {
         EndpointKind::OpenAiChat | EndpointKind::CustomChat => "translate",
@@ -7160,12 +7451,77 @@ async fn resolve_dex_router_retry_selection(
             ),
             requires_computer: tool_requirements
                 .is_some_and(|requirements| requirements.requires_computer),
+            strip_native_computer_toolchain: false,
             explicit_model: (effective_model != requested_model).then_some(effective_model),
             explicit_account_model: false,
             session_main_model_anchor: false,
             main_model_anchor_to_record: None,
         }
     })
+}
+
+fn chat_message_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+fn task_loop_guard_active(model: &str, guard_label: Option<&str>) -> bool {
+    guard_label.is_some() || providers::task_loop_guard_applies_to_identifier(model)
+}
+
+fn synthetic_task_loop_recovery_tool_call(response_id: &str) -> Value {
+    json!({
+        "id": format!("call_{response_id}_task_loop_recovery"),
+        "type": "function",
+        "function": {
+            "name": "exec_command",
+            "arguments": json!({
+                "cmd": "pwd",
+                "yield_time_ms": 1000,
+                "max_output_tokens": 2000
+            }).to_string()
+        }
+    })
+}
+
+fn maybe_inject_blocking_task_loop_recovery(
+    chat_resp: &mut ChatResponse,
+    response_id: &str,
+    model: &str,
+    guard_label: Option<&str>,
+) -> bool {
+    if !task_loop_guard_active(model, guard_label) {
+        return false;
+    }
+    let Some(choice) = chat_resp.choices.first_mut() else {
+        return false;
+    };
+    if choice
+        .message
+        .tool_calls
+        .as_ref()
+        .is_some_and(|calls| !calls.is_empty())
+    {
+        return false;
+    }
+    let text = chat_message_text(choice.message.content.as_ref());
+    if !providers::should_recover_promised_tool_call_text(&text) {
+        return false;
+    }
+    choice.message.tool_calls = Some(vec![synthetic_task_loop_recovery_tool_call(response_id)]);
+    true
 }
 
 fn patch_router_fallback_trace(
@@ -9407,7 +9763,7 @@ async fn handle_responses_inner(
         if route_surface.uses_codex_direct_models() {
             original_model.clone()
         } else if endpoint.kind.is_chat_like() {
-            router_effective_model_for_account(&account, &original_model, &endpoint)
+            translated_chat_effective_model_for_account(&account, &original_model, &endpoint)
         } else {
             resolve_model(&original_model, &model_map)
         }
@@ -9668,7 +10024,10 @@ async fn handle_responses_inner(
     };
 
     let vision_label = if use_vision_transport { " 📷" } else { "" };
-    providers::adapt_chat_request(&providers::profile_for_account(&account), &mut chat_req);
+    let provider_profile = providers::profile_for_account(&account);
+    let task_loop_guard_label =
+        providers::task_loop_guard_label(&provider_profile).map(str::to_string);
+    providers::adapt_chat_request(&provider_profile, &mut chat_req);
     let adapted_reasoning_effort = chat_req.reasoning_effort.clone();
     let adapted_thinking = chat_req.thinking.clone();
     let tool_names: Vec<&str> = chat_req
@@ -9797,6 +10156,7 @@ async fn handle_responses_inner(
         let bg_timeout = endpoint.request_timeout_secs;
         let bg_max_retries = endpoint.max_retries;
         let bg_runtime_feedback = runtime_feedback.clone();
+        let bg_task_loop_guard_label = task_loop_guard_label.clone();
         let handle = tokio::spawn(async move {
             if store_response {
                 if let Some(mut in_progress) = bg_state.sessions.get_response(&bg_id) {
@@ -9820,6 +10180,7 @@ async fn handle_responses_inner(
                 req: &bg_req,
                 history_context: history_context.clone(),
                 runtime_feedback: bg_runtime_feedback,
+                task_loop_guard_label: bg_task_loop_guard_label,
                 start: Instant::now(),
             })
             .await;
@@ -9931,6 +10292,7 @@ async fn handle_responses_inner(
             allow_missing_done: providers::profile_for_account(&account)
                 .capabilities
                 .allow_missing_done,
+            task_loop_guard_label: task_loop_guard_label.clone(),
             runtime_feedback: runtime_feedback.clone(),
             start,
         });
@@ -9967,6 +10329,7 @@ async fn handle_responses_inner(
             req: &req,
             history_context: history_context.clone(),
             runtime_feedback,
+            task_loop_guard_label,
             start,
         })
         .await;
@@ -10167,6 +10530,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
         req,
         history_context,
         runtime_feedback,
+        task_loop_guard_label,
         start,
     } = args;
     let mut builder = state
@@ -10432,7 +10796,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     .await;
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
-            Ok(chat_resp) => {
+            Ok(mut chat_resp) => {
                 runtime_feedback.success(&model).await;
                 // Log token usage including reasoning and cache stats
                 let usage_str = format_usage(chat_resp.usage.as_ref());
@@ -10447,6 +10811,20 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                             .with_label_values(&[atype])
                             .inc();
                     }
+                }
+
+                if maybe_inject_blocking_task_loop_recovery(
+                    &mut chat_resp,
+                    &response_id,
+                    &model,
+                    task_loop_guard_label.as_deref(),
+                ) {
+                    warn!(
+                        "{} promised a follow-up tool action without tool calls in blocking mode; injecting recovery tool call.",
+                        task_loop_guard_label
+                            .as_deref()
+                            .unwrap_or("upstream model")
+                    );
                 }
 
                 let assistant_msg = chat_resp
@@ -12072,6 +12450,7 @@ mod tests {
             endpoint,
             route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
             requires_computer: true,
+            strip_native_computer_toolchain: false,
             explicit_model: None,
             explicit_account_model: false,
             session_main_model_anchor: false,
@@ -12114,6 +12493,7 @@ mod tests {
             endpoint,
             route_trace: Some(json!({"requested_model": GPT54_MODEL}).to_string()),
             requires_computer: false,
+            strip_native_computer_toolchain: false,
             explicit_model: None,
             explicit_account_model: false,
             session_main_model_anchor: false,
@@ -12232,6 +12612,39 @@ mod tests {
             Err(err) => err,
         };
         assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn dex_router_explicit_chat_model_strips_native_toolchain_when_enabled() {
+        let mut active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
+        let mut routing = crate::accounts::account_routing_options(&active);
+        routing.native_computer_policy = "strip_and_continue".into();
+        crate::accounts::set_account_routing_options(&mut active, routing);
+        let slug =
+            codex_config::encode_dex_account_model_slug("active", "ep-active", "deepseek-v4-pro");
+        let store = router_store(vec![active], "active");
+        let requirements = RouterToolRequirements {
+            has_computer: true,
+            requires_computer: true,
+            native_signal: NativeRouteSignal::StrongNative,
+            labels: vec!["input.computer_call_output".into()],
+            ..Default::default()
+        };
+
+        let selection =
+            resolve_explicit_dex_account_model_selection(&store, &slug, Some(&requirements))
+                .unwrap()
+                .unwrap();
+        let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
+
+        assert_eq!(selection.account.id, "active");
+        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
+        assert!(!selection.requires_computer);
+        assert!(selection.strip_native_computer_toolchain);
+        assert_eq!(trace["native_computer_policy"], "strip_and_continue");
+        assert_eq!(trace["native_toolchain_stripped"], true);
+        assert_eq!(trace["upstream_model"], "deepseek-v4-pro");
     }
 
     #[test]
@@ -13224,6 +13637,63 @@ mod tests {
             .labels
             .iter()
             .any(|label| label == "input.screenshot"));
+    }
+
+    #[test]
+    fn strip_native_computer_toolchain_preserves_regular_tools_and_text() {
+        let mut req = responses_request_with_tools(vec![
+            json!({"type": "computer_use_preview"}),
+            json!({"type": "function", "name": "get_app_state"}),
+            json!({"type": "function", "name": "read_file"}),
+            json!({"type": "web_search_preview"}),
+        ]);
+        req.tool_choice = Some(json!({"type": "function", "function": {"name": "get_app_state"}}));
+        req.input = ResponsesInput::Messages(vec![
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": "保留这条普通文本"
+            }),
+            json!({
+                "type": "computer_call_output",
+                "call_id": "call_screen",
+                "screenshot": "data:image/png;base64,abc"
+            }),
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "{\"screenshot\":\"raw\"}"}]
+            }),
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "output": {
+                    "type": "computer_call_output",
+                    "call_id": "nested",
+                    "screenshot": "data:image/png;base64,def"
+                }
+            }),
+        ]);
+
+        assert!(strip_native_computer_toolchain_from_request(&mut req));
+
+        assert_eq!(req.tools.len(), 2);
+        assert!(req.tools.iter().any(|tool| tool["type"] == "function"));
+        assert!(req
+            .tools
+            .iter()
+            .any(|tool| tool["type"] == "web_search_preview"));
+        assert!(req.tool_choice.is_none());
+        let ResponsesInput::Messages(items) = &req.input else {
+            panic!("input should stay as message array");
+        };
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["content"], "保留这条普通文本");
+        assert_eq!(
+            items[1]["content"][0]["text"],
+            "[Computer Use 原生工具链残留已按账号设置剥离]"
+        );
+        assert_eq!(items[2]["output"], Value::Null);
     }
 
     #[test]

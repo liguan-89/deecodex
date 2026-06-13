@@ -180,6 +180,9 @@ function accountRouting(a) {
   const official = isCodexOfficialAccount(a);
   const anchorEnabled = typeof raw.anchor_enabled === 'boolean' ? raw.anchor_enabled : official;
   const executionEnabled = typeof raw.execution_enabled === 'boolean' ? raw.execution_enabled : !official;
+  const nativeComputerPolicy = raw.native_computer_policy === 'strip_and_continue'
+    ? 'strip_and_continue'
+    : 'helper_required';
   return {
     enabled,
     anchor_enabled: enabled && anchorEnabled,
@@ -187,6 +190,7 @@ function accountRouting(a) {
     pool: String(raw.pool || 'codex-official'),
     priority: Number(raw.priority || 0),
     weight,
+    native_computer_policy: nativeComputerPolicy,
   };
 }
 
@@ -227,6 +231,9 @@ function renderCodexRouterPanel(a) {
   if (!isCodexAccount(a)) return '';
   const routing = accountRouting(a);
   const official = isCodexOfficialAccount(a);
+  const surface = accountClientSurface(a);
+  const ep = currentEndpoint(a);
+  const showNativePolicy = surface === 'desktop' && endpointKindIsChat(ep?.kind) && !official;
   const accountId = escAttr(a.id || '');
   return `<section class="account-edit-section codex-router-section">
     <div class="account-section-head">
@@ -259,6 +266,14 @@ function renderCodexRouterPanel(a) {
         <label>权重</label>
         <input type="number" id="edit_routing_weight" value="${Number(routing.weight || 1)}" min="1" max="100" step="1">
       </div>
+      ${showNativePolicy ? `<div class="config-field">
+        <label>Computer Use</label>
+        <select id="edit_routing_native_computer_policy">
+          <option value="helper_required" ${routing.native_computer_policy !== 'strip_and_continue' ? 'selected' : ''}>原生 helper 接管</option>
+          <option value="strip_and_continue" ${routing.native_computer_policy === 'strip_and_continue' ? 'selected' : ''}>剥离并继续</option>
+        </select>
+        <span class="hint">历史会话残留 Computer Use 原生工具链时，剥离原生项后继续交给当前 Chat 模型；真实 Computer Use 能力会降级。</span>
+      </div>` : ''}
     </div>
     <div class="official-runtime-actions">
       ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用路由</button>` : ''}
@@ -541,69 +556,11 @@ function routerScenarioDetail(scenario) {
 }
 
 function renderRouterScenarioStrip(scenarios) {
-  if (!Array.isArray(scenarios) || !scenarios.length) return '';
-  return `<div class="router-scenario-strip">
-    ${scenarios.map(scenario => {
-      const candidates = Array.isArray(scenario.candidates) ? scenario.candidates : [];
-      const eligible = Number(scenario.eligible_count || 0);
-      const total = Number(scenario.candidate_count || candidates.length || 0);
-      const selected = scenario.selected;
-      const ok = Boolean(selected);
-      const selectedName = selected ? (selected.account_name || selected.account_id || '可用') : '不可用';
-      return `<span class="router-scenario-chip ${ok ? 'ok' : 'blocked'}" title="${escAttr(routerScenarioDetail(scenario))}">
-        <em>${esc(scenario.scenario_label || scenario.scenario_id || '场景')}</em>
-        <strong>${esc(selectedName)}</strong>
-        <b>${eligible}/${total}</b>
-      </span>`;
-    }).join('')}
-  </div>`;
+  return '';
 }
 
 function renderRouterStatusOverview() {
-  if (selectedClientKind !== 'codex' || selectedSurfaceForKind('codex') !== 'desktop') return '';
-  const router = accountsData?.router_status || {};
-  const scenarios = Array.isArray(accountsData?.router_status_scenarios)
-    ? accountsData.router_status_scenarios
-    : [];
-  const candidates = Array.isArray(router.candidates) ? router.candidates : [];
-  if (!router.anchor && candidates.length === 0) return '';
-  const ready = candidates.filter(candidate => candidate.eligible).length;
-  const skipped = Math.max(0, candidates.length - ready);
-  const anchorPool = router.anchor?.pool || '—';
-  const selected = router.selected;
-  const selectedName = selected ? (selected.account_name || selected.account_id || '—') : '暂无';
-  const mappedModel = selected?.mapped_model || router.requested_model || '—';
-  const skippedTitle = candidates
-    .filter(candidate => !candidate.eligible)
-    .map(routerCandidateDetail)
-    .join('\n');
-  const selectedDetail = selected
-    ? routerCandidateDetail({
-      ...selected,
-      reason: 'ready',
-    })
-    : '暂无可用执行账号';
-  return `<div class="router-status-block">
-  <div class="official-pool-overview router-pool-overview">
-    <div>
-      <span>路由池</span>
-      <strong title="${escAttr(anchorPool)}">${esc(anchorPool)}</strong>
-    </div>
-    <div>
-      <span>执行账号</span>
-      <strong title="${escAttr(selectedDetail)}">${esc(selectedName)}</strong>
-    </div>
-    <div>
-      <span>模型</span>
-      <strong title="${escAttr(mappedModel)}">${esc(mappedModel)}</strong>
-    </div>
-    <div>
-      <span>候选</span>
-      <strong title="${escAttr(skippedTitle)}">${ready}/${candidates.length}${skipped ? ` 跳过${skipped}` : ''}</strong>
-    </div>
-  </div>
-  ${renderRouterScenarioStrip(scenarios)}
-  </div>`;
+  return '';
 }
 
 function clientAccountHasIssue(a) {
@@ -1773,16 +1730,16 @@ function clientProviderDefaults(kind, provider, preset = null) {
   if (normalized === 'claude_code' && provider === 'minimax') {
     return {
       upstream: 'https://api.minimaxi.com/anthropic',
-      default_model: 'MiniMax-M2.7',
-      known_models: ['MiniMax-M2.7', 'MiniMax-M2', 'MiniMax-M1'],
+      default_model: 'MiniMax-M3[1m]',
+      known_models: ['MiniMax-M3[1m]', 'MiniMax-M3', 'MiniMax-M2.7-highspeed[1m]', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.7[1m]', 'MiniMax-M2.7', 'MiniMax-M2', 'MiniMax-M1'],
       api_key_env: 'ANTHROPIC_API_KEY',
     };
   }
   if (normalized === 'claude_code' && provider === 'mimo') {
     return {
       upstream: 'https://token-plan-cn.xiaomimimo.com/anthropic',
-      default_model: MIMO_CODING_MODEL,
-      known_models: MIMO_CHAT_MODELS,
+      default_model: `${MIMO_CODING_MODEL}${CLAUDE_ONE_M_SUFFIX}`,
+      known_models: [`${MIMO_CODING_MODEL}${CLAUDE_ONE_M_SUFFIX}`, MIMO_CODING_MODEL, 'mimo-v2.5[1m]', 'mimo-v2.5', 'mimo-v2-pro[1m]', 'mimo-v2-pro', 'mimo-v2-omni'],
       api_key_env: 'ANTHROPIC_API_KEY',
     };
   }
@@ -2678,7 +2635,8 @@ function syncEditingDraftFromForm(options = {}) {
   const routingPool = document.getElementById('edit_routing_pool');
   const routingPriority = document.getElementById('edit_routing_priority');
   const routingWeight = document.getElementById('edit_routing_weight');
-  if (routingAnchorEnabled || routingExecutionEnabled || routingPool || routingPriority || routingWeight) {
+  const routingNativeComputerPolicy = document.getElementById('edit_routing_native_computer_policy');
+  if (routingAnchorEnabled || routingExecutionEnabled || routingPool || routingPriority || routingWeight || routingNativeComputerPolicy) {
     if (!a.client_options) a.client_options = {};
     const routing = accountRouting(a);
     routing.anchor_enabled = routingAnchorEnabled ? routingAnchorEnabled.checked : routing.anchor_enabled;
@@ -2687,6 +2645,9 @@ function syncEditingDraftFromForm(options = {}) {
     routing.pool = routingPool ? (routingPool.value.trim() || 'codex-official') : routing.pool;
     routing.priority = routingPriority ? Number(routingPriority.value || 0) : routing.priority;
     routing.weight = routingWeight ? Math.max(1, Math.min(100, Number(routingWeight.value || 1))) : routing.weight;
+    routing.native_computer_policy = routingNativeComputerPolicy
+      ? routingNativeComputerPolicy.value
+      : routing.native_computer_policy;
     a.routing = routing;
     a.client_options.routing = {
       enabled: routing.enabled,
@@ -2696,6 +2657,7 @@ function syncEditingDraftFromForm(options = {}) {
       pool: routing.pool,
       priority: routing.priority,
       weight: routing.weight,
+      native_computer_policy: routing.native_computer_policy,
     };
   }
 
@@ -3089,6 +3051,7 @@ async function applyAccountRoutingFromDetail(id) {
       pool: routing.pool,
       priority: routing.priority,
       weight: routing.weight,
+      nativeComputerPolicy: routing.native_computer_policy,
     });
     showToast('路由设置已应用', 'success');
     await loadAccountsData();

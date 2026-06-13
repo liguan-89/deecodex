@@ -194,6 +194,8 @@ pub struct AccountRoutingOptions {
     pub priority: i64,
     #[serde(default = "default_routing_weight")]
     pub weight: u32,
+    #[serde(default = "default_native_computer_policy")]
+    pub native_computer_policy: String,
     #[serde(default)]
     pub disabled: bool,
 }
@@ -210,6 +212,10 @@ fn default_routing_weight() -> u32 {
     1
 }
 
+fn default_native_computer_policy() -> String {
+    "helper_required".into()
+}
+
 impl Default for AccountRoutingOptions {
     fn default() -> Self {
         Self {
@@ -219,6 +225,7 @@ impl Default for AccountRoutingOptions {
             pool: default_routing_pool(),
             priority: 0,
             weight: 1,
+            native_computer_policy: default_native_computer_policy(),
             disabled: false,
         }
     }
@@ -257,7 +264,15 @@ impl AccountRoutingOptions {
             self.pool = self.pool.trim().to_string();
         }
         self.weight = self.weight.clamp(1, 100);
+        self.native_computer_policy = match self.native_computer_policy.trim() {
+            "strip_and_continue" => "strip_and_continue".into(),
+            _ => default_native_computer_policy(),
+        };
         self
+    }
+
+    pub fn strip_native_computer_toolchain(&self) -> bool {
+        self.native_computer_policy == "strip_and_continue"
     }
 }
 
@@ -795,7 +810,7 @@ impl Account {
             if !endpoint.kind.is_chat_like() {
                 continue;
             }
-            for model in ["mimo-v2.5", "mimo-v2-omni"] {
+            for model in ["mimo-v2.5[1m]", "mimo-v2.5", "mimo-v2-omni"] {
                 endpoint.model_profiles.insert(
                     model.into(),
                     ModelProfile {
@@ -803,7 +818,12 @@ impl Account {
                     },
                 );
             }
-            for model in ["mimo-v2.5-pro", "mimo-v2-pro"] {
+            for model in [
+                "mimo-v2.5-pro[1m]",
+                "mimo-v2.5-pro",
+                "mimo-v2-pro[1m]",
+                "mimo-v2-pro",
+            ] {
                 endpoint.model_profiles.insert(
                     model.into(),
                     ModelProfile {
@@ -1038,6 +1058,12 @@ pub fn account_routing_options(account: &Account) -> AccountRoutingOptions {
         if let Some(weight) = routing.get("weight").and_then(Value::as_u64) {
             options.weight = weight.min(u32::MAX as u64) as u32;
         }
+        if let Some(policy) = routing
+            .get("native_computer_policy")
+            .and_then(Value::as_str)
+        {
+            options.native_computer_policy = policy.to_string();
+        }
         if let Some(disabled) = routing.get("disabled").and_then(Value::as_bool) {
             options.disabled = disabled;
         }
@@ -1057,6 +1083,7 @@ pub fn set_account_routing_options(account: &mut Account, options: AccountRoutin
             "pool": options.pool,
             "priority": options.priority,
             "weight": options.weight,
+            "native_computer_policy": options.native_computer_policy,
             "disabled": options.disabled,
         }),
     );
@@ -2818,6 +2845,7 @@ mod tests {
                 pool: " official-main ".into(),
                 priority: 30,
                 weight: 4,
+                native_computer_policy: "helper_required".into(),
                 disabled: true,
             },
         );
@@ -3016,7 +3044,15 @@ mod tests {
         let endpoint = account.endpoints.first().unwrap();
         assert!(endpoint.model_map.is_empty());
         assert_eq!(endpoint.known_models, vec!["old-mapped-model"]);
+        assert_eq!(
+            endpoint.model_vision_mode("mimo-v2.5-pro[1m]"),
+            VisionMode::Off
+        );
         assert_eq!(endpoint.model_vision_mode("mimo-v2.5-pro"), VisionMode::Off);
+        assert_eq!(
+            endpoint.model_vision_mode("mimo-v2.5[1m]"),
+            VisionMode::Native
+        );
         assert_eq!(endpoint.model_vision_mode("mimo-v2.5"), VisionMode::Native);
         assert_eq!(
             endpoint.model_vision_mode("mimo-v2-omni"),

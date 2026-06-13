@@ -247,7 +247,7 @@ function renderStatusClientDock(gatewayRunning) {
         const label = item.label || clientKindUiLabel(item.accountKind);
         const info = statusClientInfo(kind, gatewayRunning);
         const lifecycle = statusClientLifecycleMeta(kind, info);
-        return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
+        return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" oncontextmenu="handleClientDockContextMenu(event, '${escAttr(kind)}')" title="${escAttr(label)}" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
             <span class="client-dock-icon">${statusClientIcon(item)}</span>
             <span class="client-dock-runtime ${info.processRunning ? 'live' : 'idle'}" title="${escAttr(info.processRunning ? '客户端进程运行中' : '未检测到客户端进程')}"></span>
@@ -322,6 +322,29 @@ async function toggleStatusClientKind(kind) {
   } catch (err) {
     showToast(`${clientKindUiLabel(accountKind)} 切换失败: ` + err, 'error');
   }
+}
+
+async function handleClientDockContextMenu(event, kind) {
+  event.preventDefault();
+  event.stopPropagation();
+  const normalized = String(kind || '');
+  const label = statusClientDockItem(normalized).label || normalized;
+  if (!statusClientProcessRunning(normalized)) {
+    showToast(`${label} 未检测到运行中的进程`, 'info');
+    return false;
+  }
+  const ok = typeof confirm === 'function'
+    ? confirm(`强制退出 ${label}？`)
+    : true;
+  if (!ok) return false;
+  try {
+    const result = await invoke('dex_force_quit_client', { kind: normalized });
+    showToast(`${label} 已强制退出 ${Number(result?.killed || 0)} 个进程`, 'success');
+    setTimeout(refreshStatusClientDock, 600);
+  } catch (err) {
+    showToast(`${label} 强制退出失败: ` + err, 'error');
+  }
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1085,18 +1108,18 @@ function renderHelp() {
 
     <div class="help-section" id="h-codex-config">
       <h3>Codex 配置</h3>
-      <p><strong>Codex 桌面版</strong> — 编辑 <code>~/.codex/config.toml</code>：</p>
+      <p><strong>Codex 桌面版 API 模式</strong> — 编辑 <code>~/.codex/config.toml</code>：</p>
       <div class="code-block"><pre><span class="comment"># ~/.codex/config.toml</span>
 <span class="key">model</span> = <span class="str">"gpt-5.5"</span>
-<span class="key">model_provider</span> = <span class="str">"dex_router"</span>
+<span class="key">model_provider</span> = <span class="str">"deecodex"</span>
 <span class="key">model_reasoning_effort</span> = <span class="str">"medium"</span>
 
-<span class="key">[model_providers.dex_router]</span>
-<span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/codex-router/v1"</span>
-<span class="key">name</span> = <span class="str">"dex_router"</span>
-<span class="key">requires_openai_auth</span> = <span class="val">true</span>
+<span class="key">[model_providers.deecodex]</span>
+<span class="key">base_url</span> = <span class="str">"http://127.0.0.1:4446/v1"</span>
+<span class="key">name</span> = <span class="str">"deecodex"</span>
+<span class="key">requires_openai_auth</span> = <span class="val">false</span>
 <span class="key">wire_api</span> = <span class="str">"responses"</span></pre></div>
-      <p class="help-note">注意：base_url 末尾不要加 /，端口须与 DEX AI 监听端口一致。</p>
+      <p class="help-note">注意：base_url 末尾不要加 /，端口须与 DEX AI 监听端口一致。智能路由模式才使用 <code>dex_router</code> 与 <code>/codex-router/v1</code>。</p>
 
       <p class="help-subsection"><strong>CC Switch (CLI)</strong> — 在设置中填写：</p>
       <ul>

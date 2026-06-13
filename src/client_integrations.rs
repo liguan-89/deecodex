@@ -467,6 +467,13 @@ fn apply_claude(account: &Account, dry_run: bool) -> Result<ClientOperationRepor
     let auth_env = claude_auth_env_name(account);
     let model_map = client_model_map(account);
     set_json_string(env, &auth_env, &client_config_api_key(account));
+    // 移除冲突的认证变量，避免 Claude CLI 同时检测到两个而报警告
+    let conflicting_auth_env = if auth_env == "ANTHROPIC_API_KEY" {
+        "ANTHROPIC_AUTH_TOKEN"
+    } else {
+        "ANTHROPIC_API_KEY"
+    };
+    env.remove(conflicting_auth_env);
     set_json_string(env, "ANTHROPIC_BASE_URL", &client_config_base_url(account));
     set_json_string(
         env,

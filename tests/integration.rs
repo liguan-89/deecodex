@@ -4173,6 +4173,7 @@ fn make_stream_args(
         codex_router_sessions: None,
         upstream_url: url.to_string(),
         allow_missing_done: false,
+        task_loop_guard_label: None,
         runtime_feedback: test_runtime_feedback_sink(),
         start: std::time::Instant::now(),
     }
@@ -4229,6 +4230,7 @@ fn make_stream_args_custom(
         codex_router_sessions: None,
         upstream_url: url.to_string(),
         allow_missing_done: false,
+        task_loop_guard_label: None,
         runtime_feedback: test_runtime_feedback_sink(),
         start: std::time::Instant::now(),
     }
@@ -4663,6 +4665,271 @@ async fn test_responses_blocking_text() {
     assert_eq!(json["usage"]["input_tokens"], 10);
     assert_eq!(json["usage"]["output_tokens"], 20);
     assert_eq!(json["usage"]["total_tokens"], 30);
+}
+
+#[tokio::test]
+async fn api_mode_chat_compatible_uses_translated_chat_endpoint_and_real_model() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "api chat ok"}}
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}
+        }"#,
+    )
+    .await;
+    let upstream_base = format!("{}v1", upstream.as_str());
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
+        reqwest::Url::parse(&upstream_base).unwrap(),
+    ));
+    state.data_dir = Arc::new(std::env::temp_dir().join(format!(
+        "deecodex-api-chat-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+
+    let mut account: Account = serde_json::from_value(json!({
+        "id": "api-chat-account",
+        "name": "API Chat 兼容账号",
+        "provider": "deepseek",
+        "client_kind": "codex",
+        "upstream": upstream_base,
+        "api_key": "sk-api-chat",
+        "default_model": "deepseek-v4-pro",
+        "endpoints": [{
+            "id": "api-chat-endpoint",
+            "name": "Chat 兼容",
+            "kind": "open_ai_chat",
+            "base_url": upstream_base,
+            "known_models": ["deepseek-v4-pro"]
+        }]
+    }))
+    .unwrap();
+    account.normalize_v2();
+    *state.active_account.write().await = account.clone();
+    *state.account_store.write().await = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        accounts: vec![account.clone()],
+        active_id: Some(account.id.clone()),
+        active_account_id: Some(account.id.clone()),
+        active_endpoint_id: Some("api-chat-endpoint".into()),
+        active_by_surface: std::collections::HashMap::new(),
+    };
+
+    let request_history = state.request_history.clone();
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","input":"API 模式 Chat 兼容测试"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["output"][0]["content"][0]["text"], "api chat ok");
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/v1/chat/completions");
+    assert_eq!(captured[0].body["model"], "deepseek-v4-pro");
+    assert_eq!(captured[0].body["messages"][0]["role"], "user");
+    assert_eq!(
+        captured[0].headers[header::AUTHORIZATION].to_str().unwrap(),
+        "Bearer sk-api-chat"
+    );
+
+    let entries = request_history.list(10, &HistoryFilter::default()).await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.request_path == "/v1/responses")
+        .unwrap();
+    assert_eq!(entry.endpoint_kind, "openai_chat");
+    assert_eq!(entry.route_trace, "");
+}
+
+#[tokio::test]
+async fn api_mode_chat_compatible_uses_default_model_when_model_list_is_empty() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "api chat default ok"}}
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+        }"#,
+    )
+    .await;
+    let upstream_base = format!("{}v1", upstream.as_str());
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
+        reqwest::Url::parse(&upstream_base).unwrap(),
+    ));
+    state.data_dir = Arc::new(std::env::temp_dir().join(format!(
+        "deecodex-api-chat-default-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+
+    let mut account: Account = serde_json::from_value(json!({
+        "id": "api-chat-default-account",
+        "name": "API Chat 默认模型账号",
+        "provider": "mimo",
+        "client_kind": "codex",
+        "upstream": upstream_base,
+        "api_key": "sk-api-chat",
+        "default_model": "mimo-v2.5-pro",
+        "endpoints": [{
+            "id": "api-chat-default-endpoint",
+            "name": "Chat 兼容",
+            "kind": "open_ai_chat",
+            "base_url": upstream_base
+        }]
+    }))
+    .unwrap();
+    account.normalize_v2();
+    *state.active_account.write().await = account.clone();
+    *state.account_store.write().await = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        accounts: vec![account.clone()],
+        active_id: Some(account.id.clone()),
+        active_account_id: Some(account.id.clone()),
+        active_endpoint_id: Some("api-chat-default-endpoint".into()),
+        active_by_surface: std::collections::HashMap::new(),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","input":"API 模式默认模型测试"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/v1/chat/completions");
+    assert_eq!(captured[0].body["model"], "mimo-v2.5-pro");
+}
+
+#[tokio::test]
+async fn api_mode_chat_compatible_recovers_promised_tool_action_without_tool_calls() {
+    let (upstream, captured) = capture_any_json_upstream(
+        r#"{
+            "choices": [
+                {"message": {"role": "assistant", "content": "现在我来运行测试并检查结果。"}}
+            ],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 9, "total_tokens": 17}
+        }"#,
+    )
+    .await;
+    let upstream_base = format!("{}v1", upstream.as_str());
+
+    let mut state = test_state();
+    state.upstream = Arc::new(tokio::sync::RwLock::new(
+        reqwest::Url::parse(&upstream_base).unwrap(),
+    ));
+    state.data_dir = Arc::new(std::env::temp_dir().join(format!(
+        "deecodex-api-chat-recovery-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+
+    let mut account: Account = serde_json::from_value(json!({
+        "id": "api-chat-recovery-account",
+        "name": "API Chat 恢复账号",
+        "provider": "mimo",
+        "client_kind": "codex",
+        "upstream": upstream_base,
+        "api_key": "sk-api-chat",
+        "default_model": "mimo-v2.5-pro",
+        "endpoints": [{
+            "id": "api-chat-recovery-endpoint",
+            "name": "Chat 兼容",
+            "kind": "open_ai_chat",
+            "base_url": upstream_base,
+            "known_models": ["mimo-v2.5-pro"]
+        }]
+    }))
+    .unwrap();
+    account.normalize_v2();
+    *state.active_account.write().await = account.clone();
+    *state.account_store.write().await = AccountStore {
+        version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+        accounts: vec![account.clone()],
+        active_id: Some(account.id.clone()),
+        active_account_id: Some(account.id.clone()),
+        active_endpoint_id: Some("api-chat-recovery-endpoint".into()),
+        active_by_surface: std::collections::HashMap::new(),
+    };
+
+    let app = build_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method(Method::POST)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "gpt-5.5",
+                        "input": "修复问题并运行测试",
+                        "tools": [{"type":"function","name":"exec_command"}]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["output"].as_array().unwrap().iter().any(|item| {
+        item["type"] == "function_call"
+            && item["name"] == "exec_command"
+            && item["arguments"]
+                .as_str()
+                .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\""))
+    }));
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let messages = captured[0].body["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| {
+        message["role"] == "system"
+            && message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("工具调用稳定性约束"))
+    }));
 }
 
 #[tokio::test]

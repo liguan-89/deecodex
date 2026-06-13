@@ -177,9 +177,6 @@ const HISTORY_LIST_LIMIT = 20000;
 				  const routeLine = `<div class="hc-route" title="${escAttr(titleParts.join('\n'))}">
 				    Router ${esc(anchorName)} → ${esc(selectedName)}
 				    <span>${esc(mappedModel || '原模型')}</span>
-				    ${capabilityBits.length ? `<span>${esc(capabilityBits.join('/'))}</span>` : ''}
-				    ${toolDecisionBits.length ? `<span>${esc(toolDecisionBits.join('/'))}</span>` : ''}
-				    <span>候选 ${eligible}/${total}${skipped ? ` · 跳过 ${skipped}` : ''}</span>
 				  </div>`;
 				  return routeLine + renderHistoryRouterFlow(trace);
 				}

@@ -648,6 +648,7 @@ pub fn run() {
             commands::dex::dex_launch_client,
             commands::dex::dex_pick_client_launch_dir,
             commands::dex::dex_toggle_desktop_client,
+            commands::dex::dex_force_quit_client,
             commands::dex::dex_detect_ports,
             commands::dex::dex_get_env_info,
             commands::dex::dex_execute_shell,

@@ -199,6 +199,12 @@ pub fn dex_toggle_desktop_client(kind: String, running: bool) -> Result<Value, S
     super::dex_clients::dex_toggle_desktop_client_impl(kind, running)
 }
 
+/// 状态页客户端 Dock：强制退出客户端进程。
+#[tauri::command]
+pub fn dex_force_quit_client(kind: String) -> Result<Value, String> {
+    super::dex_clients::dex_force_quit_client_impl(kind)
+}
+
 /// DEX 助手：检测端口占用
 #[tauri::command]
 pub fn dex_detect_ports() -> Result<Value, String> {
