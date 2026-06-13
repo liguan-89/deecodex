@@ -1080,11 +1080,14 @@ pub fn runtime_cooldown_for_status(
             quota.backoff_level = next_level;
             (AccountRuntimeStatus::QuotaExceeded, Some(wait), next_level)
         }
-        408 | 500 | 502 | 503 | 504 => (
-            AccountRuntimeStatus::Error,
-            retry_after_secs.filter(|wait| *wait > 0),
-            previous_backoff_level,
-        ),
+        408 | 500 | 502 | 503 | 504 => {
+            let (wait, next_level) = match retry_after_secs.filter(|wait| *wait > 0) {
+                Some(wait) => (wait, previous_backoff_level),
+                None => next_transient_upstream_backoff(previous_backoff_level),
+            };
+            quota.backoff_level = next_level;
+            (AccountRuntimeStatus::Error, Some(wait), next_level)
+        }
         _ => (AccountRuntimeStatus::Error, None, previous_backoff_level),
     };
     if status_code == 429 {
@@ -1118,6 +1121,19 @@ fn next_quota_backoff(previous_level: u32) -> (u64, u32) {
     let level = previous_level.min(31);
     let wait = 1u64.checked_shl(level).unwrap_or(30 * 60).clamp(1, 30 * 60);
     let next_level = if wait >= 30 * 60 {
+        previous_level
+    } else {
+        previous_level.saturating_add(1)
+    };
+    (wait, next_level)
+}
+
+fn next_transient_upstream_backoff(previous_level: u32) -> (u64, u32) {
+    let level = previous_level.min(3);
+    let wait = 60u64
+        .saturating_mul(1u64.checked_shl(level).unwrap_or(8))
+        .min(5 * 60);
+    let next_level = if wait >= 5 * 60 {
         previous_level
     } else {
         previous_level.saturating_add(1)
@@ -2831,12 +2847,13 @@ mod tests {
     }
 
     #[test]
-    fn transient_upstream_5xx_does_not_cool_down_without_retry_after() {
+    fn transient_upstream_5xx_uses_default_cooldown_without_retry_after() {
         let cooldown = runtime_cooldown_for_status(502, None, 0);
 
         assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
-        assert!(cooldown.next_retry_after.is_none());
+        assert!(cooldown.next_retry_after.is_some());
         assert!(!cooldown.quota.exceeded);
+        assert_eq!(cooldown.quota.backoff_level, 1);
     }
 
     #[test]
