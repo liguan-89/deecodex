@@ -1962,6 +1962,125 @@ async fn codex_router_stream_keeps_recent_failure_candidate_sendable() {
 }
 
 #[tokio::test]
+async fn codex_router_stream_502_retry_after_skips_account_on_next_request() {
+    let (failing_upstream, failing_captured) = capture_status_upstream(
+        StatusCode::BAD_GATEWAY,
+        Some("60"),
+        "application/json",
+        r#"{"error":{"message":"temporary upstream 502","type":"api_error"}}"#,
+    )
+    .await;
+    let sse_body = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_healthy\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n";
+    let (healthy_upstream, healthy_captured) = capture_sse_request_upstream(sse_body).await;
+    let state = test_state();
+    let failing = router_test_account(
+        "router-failing",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &failing_upstream,
+        100,
+        None,
+    );
+    let healthy = router_test_account(
+        "router-healthy",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &healthy_upstream,
+        10,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![failing, healthy], "router-failing").await;
+    let request_history = state.request_history.clone();
+    let account_store = state.account_store.clone();
+    let app = build_router(state);
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-stream-502-retry-after")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","input":"trigger stream 502","store":false,"stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+    let _ = first.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(failing_captured.lock().unwrap().len(), 1);
+    assert_eq!(healthy_captured.lock().unwrap().len(), 0);
+    {
+        let store = account_store.read().await;
+        let failing = store
+            .accounts
+            .iter()
+            .find(|account| account.id == "router-failing")
+            .unwrap();
+        assert_eq!(
+            failing.runtime_state.status,
+            deecodex::accounts::AccountRuntimeStatus::Error
+        );
+        assert!(failing.runtime_state.next_retry_after.is_some());
+    }
+
+    let second = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-stream-502-retry-after")
+                .body(Body::from(
+                    r#"{"model":"gpt-5.5","input":"retry after failure","store":false,"stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let second_status = second.status();
+    let _ = second.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(failing_captured.lock().unwrap().len(), 1);
+    {
+        let captured = healthy_captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/responses");
+        assert_eq!(captured[0].body["model"], "gpt-5.5");
+    }
+
+    let entries = request_history
+        .list(10, &deecodex::request_history::HistoryFilter::default())
+        .await;
+    let failed_entry = entries
+        .iter()
+        .find(|entry| entry.account_id == "router-failing")
+        .unwrap();
+    assert_eq!(failed_entry.status, "failed");
+    assert!(failed_entry.error_msg.contains("502"));
+    let healthy_entry = entries
+        .iter()
+        .find(|entry| entry.account_id == "router-healthy")
+        .unwrap();
+    let healthy_trace: Value = serde_json::from_str(&healthy_entry.route_trace).unwrap();
+    assert_eq!(healthy_trace["selected"]["account_id"], "router-healthy");
+    let failing_candidate = healthy_trace["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["account_id"] == "router-failing")
+        .unwrap();
+    assert_eq!(failing_candidate["eligible"], false);
+    assert_eq!(failing_candidate["reason"], "account_upstream_cooling");
+}
+
+#[tokio::test]
 async fn codex_router_rejects_when_computer_use_capability_is_unavailable() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"choices":[{"message":{"role":"assistant","content":"chat should not run"}}]}"#,
@@ -5753,6 +5872,15 @@ struct CaptureSequenceState {
     captured: Arc<Mutex<Vec<CapturedRequest>>>,
 }
 
+#[derive(Clone)]
+struct CaptureStatusState {
+    status: StatusCode,
+    retry_after: Option<&'static str>,
+    content_type: &'static str,
+    response_body: &'static str,
+    captured: Arc<Mutex<Vec<CapturedRequest>>>,
+}
+
 async fn capture_json_handler(State(state): State<CaptureJsonState>, body: Body) -> Response<Body> {
     let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
@@ -5843,6 +5971,35 @@ async fn capture_sequence_handler(
     response
 }
 
+async fn capture_status_handler(
+    State(state): State<CaptureStatusState>,
+    req: Request<Body>,
+) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    let headers = req.headers().clone();
+    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    state.captured.lock().unwrap().push(CapturedRequest {
+        path,
+        headers,
+        body,
+    });
+    let mut response = Response::new(Body::from(state.response_body));
+    *response.status_mut() = state.status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(state.content_type),
+    );
+    if let Some(retry_after) = state.retry_after {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static(retry_after));
+    }
+    response
+}
+
 async fn capture_json_upstream(
     response_body: &'static str,
 ) -> (reqwest::Url, Arc<Mutex<Vec<Value>>>) {
@@ -5928,6 +6085,36 @@ async fn capture_sequence_json_upstream(
     tokio::spawn(async move {
         let app = Router::new()
             .fallback(post(capture_sequence_handler))
+            .with_state(state);
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (
+        reqwest::Url::parse(&format!("http://{addr}/")).unwrap(),
+        captured,
+    )
+}
+
+async fn capture_status_upstream(
+    status: StatusCode,
+    retry_after: Option<&'static str>,
+    content_type: &'static str,
+    response_body: &'static str,
+) -> (reqwest::Url, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let state = CaptureStatusState {
+        status,
+        retry_after,
+        content_type,
+        response_body,
+        captured: captured.clone(),
+    };
+    tokio::spawn(async move {
+        let app = Router::new()
+            .fallback(post(capture_status_handler))
             .with_state(state);
         axum::serve(listener, app.into_make_service())
             .await

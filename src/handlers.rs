@@ -3193,6 +3193,16 @@ fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Opt
             reason: "account_quota_cooling",
         });
     }
+    if runtime_state_blocks_for_upstream_cooldown(
+        &account.runtime_state.status,
+        &account.runtime_state.status_message,
+        account.runtime_state.next_retry_after,
+        now,
+    ) {
+        return Some(RuntimeBlock {
+            reason: "account_upstream_cooling",
+        });
+    }
 
     account
         .runtime_state
@@ -3205,10 +3215,30 @@ fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Opt
                 Some(RuntimeBlock {
                     reason: "model_quota_cooling",
                 })
+            } else if runtime_state_blocks_for_upstream_cooldown(
+                &state.status,
+                &state.status_message,
+                state.next_retry_after,
+                now,
+            ) {
+                Some(RuntimeBlock {
+                    reason: "model_upstream_cooling",
+                })
             } else {
                 None
             }
         })
+}
+
+fn runtime_state_blocks_for_upstream_cooldown(
+    status: &AccountRuntimeStatus,
+    status_message: &str,
+    next_retry_after: Option<u64>,
+    now: u64,
+) -> bool {
+    !runtime_retry_ready(next_retry_after, now)
+        && (matches!(status, AccountRuntimeStatus::Error)
+            || runtime_state_is_transient_upstream_error(status, status_message))
 }
 
 fn runtime_state_is_transient_upstream_error(
@@ -11899,7 +11929,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_keeps_legacy_transient_5xx_cooldown_eligible() {
+    fn dex_router_skips_transient_5xx_cooldown_until_retry_ready() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut transient = router_responses_account("transient", "pool-a", 100, 1);
         transient.runtime_state.status = AccountRuntimeStatus::CoolingDown;
@@ -11920,6 +11950,12 @@ mod tests {
 
         let (account, endpoint) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "ready");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 2_000, 0, None).unwrap();
 
         assert_eq!(account.id, "transient");
         assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
