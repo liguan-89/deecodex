@@ -797,62 +797,21 @@ pub fn dex_toggle_desktop_client_impl(kind: String, running: bool) -> Result<Val
     }
 }
 
-/// 状态页客户端 Dock：强制退出识别到的客户端进程。
-pub fn dex_force_quit_client_impl(kind: String) -> Result<Value, String> {
-    let spec = client_app_spec_or_err(&kind)?;
-    let instances = client_process_instances_for_spec(spec);
-    if instances.is_empty() {
-        return Ok(json!({
-            "ok": true,
-            "kind": spec.kind,
-            "label": spec.label,
-            "killed": 0,
-            "message": "未检测到运行中的客户端进程",
-        }));
-    }
-
-    let mut killed = 0usize;
-    let mut errors = Vec::new();
-    for instance in instances {
-        let Some(pid) = instance.get("pid").and_then(Value::as_str) else {
-            continue;
-        };
-        if pid.trim().is_empty() {
-            continue;
-        }
-        match force_kill_pid(pid) {
-            Ok(()) => killed += 1,
-            Err(err) => errors.push(format!("{pid}: {err}")),
-        }
-    }
-
-    if killed == 0 && !errors.is_empty() {
-        return Err(format!(
-            "强制退出 {} 失败: {}",
-            spec.label,
-            errors.join("; ")
-        ));
-    }
-    Ok(json!({
-        "ok": errors.is_empty(),
-        "kind": spec.kind,
-        "label": spec.label,
-        "killed": killed,
-        "errors": errors,
-    }))
-}
-
 fn force_kill_pid(pid: &str) -> Result<(), String> {
+    let pid = pid.trim();
+    if pid.is_empty() {
+        return Err("PID 为空".into());
+    }
     #[cfg(target_os = "windows")]
     {
         let status = std::process::Command::new("taskkill")
             .args(["/PID", pid, "/F"])
             .status()
-            .map_err(|e| format!("taskkill 启动失败: {e}"))?;
+            .map_err(|e| format!("执行 taskkill 失败: {e}"))?;
         if status.success() {
             Ok(())
         } else {
-            Err(format!("taskkill 退出码: {status}"))
+            Err(format!("taskkill 退出码: {:?}", status.code()))
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -860,13 +819,62 @@ fn force_kill_pid(pid: &str) -> Result<(), String> {
         let status = std::process::Command::new("kill")
             .args(["-9", pid])
             .status()
-            .map_err(|e| format!("kill 启动失败: {e}"))?;
+            .map_err(|e| format!("执行 kill 失败: {e}"))?;
         if status.success() {
             Ok(())
         } else {
-            Err(format!("kill 退出码: {status}"))
+            Err(format!("kill 退出码: {:?}", status.code()))
         }
     }
+}
+
+/// 状态页客户端 Dock：按已检测到的进程 PID 强制退出客户端。
+pub fn dex_force_quit_client_impl(kind: String) -> Result<Value, String> {
+    let spec = client_app_spec_or_err(&kind)?;
+    let instances = client_process_instances_for_spec(spec);
+    if instances.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "kind": spec.kind,
+            "label": spec.label,
+            "killed": [],
+            "errors": ["未检测到运行中的客户端进程"],
+        }));
+    }
+
+    let mut killed = Vec::new();
+    let mut errors = Vec::new();
+    for instance in instances {
+        let pid = instance
+            .get("pid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if pid.is_empty() {
+            errors.push(json!({"pid": null, "error": "进程 PID 为空"}));
+            continue;
+        }
+        match force_kill_pid(&pid) {
+            Ok(()) => killed.push(json!({
+                "pid": pid,
+                "command": instance.get("command").cloned().unwrap_or(Value::Null),
+            })),
+            Err(err) => errors.push(json!({
+                "pid": pid,
+                "error": err,
+                "command": instance.get("command").cloned().unwrap_or(Value::Null),
+            })),
+        }
+    }
+
+    Ok(json!({
+        "ok": !killed.is_empty() && errors.is_empty(),
+        "kind": spec.kind,
+        "label": spec.label,
+        "killed": killed,
+        "errors": errors,
+    }))
 }
 
 #[cfg(test)]

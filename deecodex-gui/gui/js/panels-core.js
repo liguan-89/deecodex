@@ -276,6 +276,31 @@ async function refreshStatusClientDock() {
   } catch (_) {}
 }
 
+async function handleClientDockContextMenu(event, kind) {
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  const normalized = String(kind || '');
+  const item = statusClientDockItem(normalized);
+  if (!statusClientProcessRunning(normalized)) {
+    showToast(`${item.label} 当前未运行`, 'info');
+    return;
+  }
+  if (!await showConfirm(`强制退出 ${item.label}？`)) return;
+  try {
+    const result = await invoke('dex_force_quit_client', { kind: normalized });
+    const killed = Array.isArray(result?.killed) ? result.killed.length : Number(result?.killed || 0);
+    const errors = Array.isArray(result?.errors) ? result.errors.length : 0;
+    if (killed) {
+      showToast(`${item.label} 已强制退出 ${killed} 个进程${errors ? `，${errors} 个失败` : ''}`, errors ? 'info' : 'success');
+    } else {
+      showToast(`${item.label} 强制退出失败`, 'error');
+    }
+    setTimeout(refreshStatusClientDock, 700);
+  } catch (err) {
+    showToast(`${item.label} 强制退出失败: ` + err, 'error');
+  }
+}
+
 async function toggleStatusClientKind(kind) {
   const normalized = String(kind || '');
   if (normalized === 'codex_cli') {
@@ -322,29 +347,6 @@ async function toggleStatusClientKind(kind) {
   } catch (err) {
     showToast(`${clientKindUiLabel(accountKind)} 切换失败: ` + err, 'error');
   }
-}
-
-async function handleClientDockContextMenu(event, kind) {
-  event.preventDefault();
-  event.stopPropagation();
-  const normalized = String(kind || '');
-  const label = statusClientDockItem(normalized).label || normalized;
-  if (!statusClientProcessRunning(normalized)) {
-    showToast(`${label} 未检测到运行中的进程`, 'info');
-    return false;
-  }
-  const ok = typeof confirm === 'function'
-    ? confirm(`强制退出 ${label}？`)
-    : true;
-  if (!ok) return false;
-  try {
-    const result = await invoke('dex_force_quit_client', { kind: normalized });
-    showToast(`${label} 已强制退出 ${Number(result?.killed || 0)} 个进程`, 'success');
-    setTimeout(refreshStatusClientDock, 600);
-  } catch (err) {
-    showToast(`${label} 强制退出失败: ` + err, 'error');
-  }
-  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════
