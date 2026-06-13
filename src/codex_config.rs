@@ -13,6 +13,15 @@ const DEECODEX_PROVIDER: &str = "deecodex";
 const DEECODEX_CLI_PROVIDER: &str = "deecodex_cli";
 const DEECODEX_DESKTOP_PROVIDER: &str = "deecodex_desktop";
 const DEX_ROUTER_PROVIDER: &str = "dex_router";
+const CODEX_REGISTRY_MODEL_SLUGS: &[&str] = &[
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+    "codex-auto-review",
+];
+const RETIRED_CODEX_REGISTRY_MODEL_SLUGS: &[&str] = &["gpt-5.3-codex-spark"];
 
 pub(crate) fn managed_model_provider() -> &'static str {
     managed_model_provider_for_mode(&crate::config::default_codex_router_mode())
@@ -787,12 +796,7 @@ fn catalog_native_gpt_model_slugs(codex_model_slugs: &[String]) -> Vec<String> {
 fn is_codex_native_text_gpt_model(model: &str) -> bool {
     matches!(
         model,
-        "gpt-5.5"
-            | "gpt-5.4"
-            | "gpt-5.4-mini"
-            | "gpt-5.3-codex"
-            | "gpt-5.3-codex-spark"
-            | "gpt-5.2"
+        "gpt-5.5" | "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.3-codex" | "gpt-5.2"
     )
 }
 
@@ -914,6 +918,9 @@ fn build_context_catalog(
         .and_then(|m| m.as_array_mut())
         .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
 
+    prune_retired_codex_registry_models(models);
+    ensure_codex_registry_models(models);
+
     for model in models.iter_mut() {
         if let Some(context_window) = context_window_override {
             model["context_window"] = serde_json::Value::from(context_window);
@@ -929,8 +936,14 @@ fn build_context_catalog(
         }
     }
 
+    let template_models = models.clone();
     hide_base_catalog_models_when_account_models_exist(models, account_models);
-    prepend_dex_account_catalog_models(models, account_models, context_window_override);
+    prepend_dex_account_catalog_models(
+        models,
+        &template_models,
+        account_models,
+        context_window_override,
+    );
 
     // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
     let models = catalog
@@ -938,6 +951,85 @@ fn build_context_catalog(
         .cloned()
         .ok_or_else(|| anyhow!("models_cache.json 格式异常: 缺少 models 数组"))?;
     Ok(serde_json::json!({ "models": models }))
+}
+
+fn prune_retired_codex_registry_models(models: &mut Vec<Value>) {
+    models.retain(|model| {
+        let slug = model.get("slug").and_then(Value::as_str).unwrap_or("");
+        !RETIRED_CODEX_REGISTRY_MODEL_SLUGS.contains(&slug)
+    });
+}
+
+fn ensure_codex_registry_models(models: &mut Vec<Value>) {
+    for slug in CODEX_REGISTRY_MODEL_SLUGS {
+        let Some(registry_model) = codex_registry_model_template(slug) else {
+            continue;
+        };
+        if let Some(model) = models
+            .iter_mut()
+            .find(|model| model.get("slug").and_then(Value::as_str) == Some(*slug))
+        {
+            merge_codex_registry_model_metadata(model, &registry_model);
+        } else {
+            models.push(registry_model);
+        }
+    }
+}
+
+fn merge_codex_registry_model_metadata(model: &mut Value, registry_model: &Value) {
+    for key in [
+        "display_name",
+        "description",
+        "auto_compact_token_limit",
+        "default_reasoning_level",
+        "shell_type",
+        "visibility",
+        "minimal_client_version",
+        "supported_in_api",
+        "priority",
+        "support_verbosity",
+        "default_verbosity",
+        "supports_image_detail_original",
+        "supports_parallel_tool_calls",
+        "reasoning_summary_format",
+        "default_reasoning_summary",
+        "prefer_websockets",
+        "apply_patch_tool_type",
+        "web_search_tool_type",
+        "truncation_policy",
+    ] {
+        if model.get(key).is_none() || model.get(key).is_some_and(Value::is_null) {
+            if let Some(value) = registry_model.get(key) {
+                model[key] = value.clone();
+            }
+        }
+    }
+
+    for key in [
+        "supported_reasoning_levels",
+        "service_tiers",
+        "input_modalities",
+    ] {
+        let should_fill = model
+            .get(key)
+            .and_then(Value::as_array)
+            .is_none_or(|values| values.is_empty());
+        if should_fill {
+            if let Some(value) = registry_model.get(key) {
+                model[key] = value.clone();
+            }
+        }
+    }
+
+    for key in ["context_window", "max_context_window"] {
+        let current = model.get(key).and_then(Value::as_u64).unwrap_or_default();
+        let Some(registry) = registry_model.get(key).and_then(Value::as_u64) else {
+            continue;
+        };
+        if current < registry {
+            model[key] = Value::from(registry);
+        }
+    }
 }
 
 fn hide_base_catalog_models_when_account_models_exist(
@@ -949,19 +1041,20 @@ fn hide_base_catalog_models_when_account_models_exist(
     }
     models.retain(|model| {
         let slug = model.get("slug").and_then(Value::as_str).unwrap_or("");
-        !is_codex_native_text_gpt_model(slug)
+        !is_codex_native_text_gpt_model(slug) && !CODEX_REGISTRY_MODEL_SLUGS.contains(&slug)
     });
 }
 
 fn prepend_dex_account_catalog_models(
     models: &mut Vec<Value>,
+    template_models: &[Value],
     account_models: &[DexCatalogAccountModel],
     context_window_override: Option<u32>,
 ) {
     if account_models.is_empty() {
         return;
     }
-    let template = catalog_model_template(models);
+    let fallback_template = catalog_model_template(template_models);
     let existing = models
         .iter()
         .filter_map(|model| model.get("slug").and_then(Value::as_str))
@@ -990,7 +1083,11 @@ fn prepend_dex_account_catalog_models(
         if existing.contains(&slug) || !added.insert(slug.clone()) {
             continue;
         }
-        let mut model = template.clone();
+        let mut model = catalog_model_template_for_account_model(
+            template_models,
+            &fallback_template,
+            account_model,
+        );
         let base_display_name = catalog_account_model_display_name(account_model);
         let display_name = if existing_display_names.contains(&base_display_name)
             || account_display_counts
@@ -1028,6 +1125,24 @@ fn prepend_dex_account_catalog_models(
     if !account_entries.is_empty() {
         models.splice(0..0, account_entries);
     }
+}
+
+fn catalog_model_template_for_account_model(
+    template_models: &[Value],
+    fallback_template: &Value,
+    account_model: &DexCatalogAccountModel,
+) -> Value {
+    template_models
+        .iter()
+        .find(|model| {
+            model
+                .get("slug")
+                .and_then(Value::as_str)
+                .is_some_and(|slug| slug == account_model.model)
+        })
+        .cloned()
+        .or_else(|| codex_registry_model_template(&account_model.model))
+        .unwrap_or_else(|| fallback_template.clone())
 }
 
 fn catalog_account_model_disambiguated_display_name(
@@ -1180,6 +1295,177 @@ fn catalog_model_template(models: &[Value]) -> Value {
                 "max_context_window": 272000
             })
         })
+}
+
+fn codex_registry_model_template(slug: &str) -> Option<Value> {
+    let (
+        display_name,
+        description,
+        context_window,
+        max_context_window,
+        default_reasoning_level,
+        default_verbosity,
+        supports_image_detail_original,
+        reasoning_summary_format,
+        default_reasoning_summary,
+        web_search_tool_type,
+        truncation_mode,
+        minimal_client_version,
+        priority,
+        visibility,
+        has_priority_service_tier,
+    ) = match slug {
+        "gpt-5.5" => (
+            "GPT-5.5",
+            "Frontier model for complex coding, research, and real-world work.",
+            272_000,
+            272_000,
+            "medium",
+            "low",
+            true,
+            "experimental",
+            "none",
+            "text_and_image",
+            "tokens",
+            "0.124.0",
+            0,
+            "list",
+            true,
+        ),
+        "gpt-5.4" => (
+            "gpt-5.4",
+            "Strong model for everyday coding.",
+            272_000,
+            1_000_000,
+            "xhigh",
+            "low",
+            true,
+            "experimental",
+            "none",
+            "text_and_image",
+            "tokens",
+            "0.98.0",
+            2,
+            "list",
+            true,
+        ),
+        "gpt-5.4-mini" => (
+            "GPT-5.4-Mini",
+            "Small, fast, and cost-efficient model for simpler coding tasks.",
+            272_000,
+            272_000,
+            "medium",
+            "medium",
+            true,
+            "experimental",
+            "none",
+            "text_and_image",
+            "tokens",
+            "0.98.0",
+            4,
+            "list",
+            false,
+        ),
+        "gpt-5.3-codex" => (
+            "gpt-5.3-codex",
+            "Coding-optimized model.",
+            272_000,
+            272_000,
+            "medium",
+            "low",
+            true,
+            "experimental",
+            "none",
+            "text",
+            "tokens",
+            "0.98.0",
+            6,
+            "list",
+            false,
+        ),
+        "gpt-5.2" => (
+            "gpt-5.2",
+            "Optimized for professional work and long-running agents.",
+            272_000,
+            272_000,
+            "medium",
+            "low",
+            false,
+            "none",
+            "auto",
+            "text",
+            "bytes",
+            "0.0.1",
+            10,
+            "list",
+            false,
+        ),
+        "codex-auto-review" => (
+            "Codex Auto Review",
+            "Automatic approval review model for Codex.",
+            272_000,
+            1_000_000,
+            "medium",
+            "low",
+            true,
+            "experimental",
+            "none",
+            "text_and_image",
+            "tokens",
+            "0.98.0",
+            29,
+            "hide",
+            false,
+        ),
+        _ => return None,
+    };
+
+    let service_tiers = if has_priority_service_tier {
+        serde_json::json!([{
+            "id": "priority",
+            "name": "Fast",
+            "description": "1.5x speed, increased usage"
+        }])
+    } else {
+        serde_json::json!([])
+    };
+
+    Some(serde_json::json!({
+        "prefer_websockets": true,
+        "support_verbosity": true,
+        "default_verbosity": default_verbosity,
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": web_search_tool_type,
+        "input_modalities": ["text", "image"],
+        "supports_image_detail_original": supports_image_detail_original,
+        "truncation_policy": {
+            "mode": truncation_mode,
+            "limit": 10000
+        },
+        "supports_parallel_tool_calls": true,
+        "context_window": context_window,
+        "max_context_window": max_context_window,
+        "auto_compact_token_limit": null,
+        "reasoning_summary_format": reasoning_summary_format,
+        "default_reasoning_summary": default_reasoning_summary,
+        "slug": slug,
+        "display_name": display_name,
+        "description": description,
+        "default_reasoning_level": default_reasoning_level,
+        "supported_reasoning_levels": [
+            {"effort": "low", "description": "Fast responses with lighter reasoning"},
+            {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+            {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+            {"effort": "xhigh", "description": "Extra high reasoning depth for complex problems"}
+        ],
+        "shell_type": "shell_command",
+        "visibility": visibility,
+        "minimal_client_version": minimal_client_version,
+        "supported_in_api": true,
+        "upgrade": null,
+        "priority": priority,
+        "service_tiers": service_tiers
+    }))
 }
 
 fn ensure_model_context_fields(model: &mut Value) {
@@ -1673,7 +1959,7 @@ wire_api = "responses"
     }
 
     #[test]
-    fn context_catalog_preserves_cached_window_without_override() {
+    fn context_catalog_preserves_cached_window_and_applies_registry_floor() {
         let input = serde_json::json!({
             "fetched_at": "ignored",
             "models": [
@@ -1695,8 +1981,8 @@ wire_api = "responses"
         let models = output["models"].as_array().unwrap();
         assert_eq!(models[0]["context_window"], 272000);
         assert_eq!(models[0]["max_context_window"], 1000000);
-        assert_eq!(models[1]["context_window"], 128000);
-        assert_eq!(models[1]["max_context_window"], 128000);
+        assert_eq!(models[1]["context_window"], 272000);
+        assert_eq!(models[1]["max_context_window"], 272000);
         assert_eq!(
             resolve_model_context_window(&output, "gpt-5.5"),
             Some(272_000)
@@ -1719,6 +2005,39 @@ wire_api = "responses"
         let model = &output["models"][0];
         assert_eq!(model["context_window"], 2_000_000);
         assert_eq!(model["max_context_window"], 2_000_000);
+    }
+
+    #[test]
+    fn context_catalog_applies_cliproxy_codex_registry_metadata() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.4",
+                    "display_name": "gpt-5.4",
+                    "context_window": 272000,
+                    "max_context_window": 272000
+                },
+                {
+                    "slug": "gpt-5.3-codex-spark",
+                    "display_name": "gpt-5.3-codex-spark",
+                    "context_window": 272000,
+                    "max_context_window": 272000
+                }
+            ]
+        });
+
+        let output = build_context_catalog(input, None, &[]).unwrap();
+        let models = output["models"].as_array().unwrap();
+        assert!(!models.iter().any(|model| {
+            model.get("slug").and_then(Value::as_str) == Some("gpt-5.3-codex-spark")
+        }));
+        let gpt_54 = models
+            .iter()
+            .find(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.4"))
+            .unwrap();
+        assert_eq!(gpt_54["max_context_window"], 1_000_000);
+        assert_eq!(gpt_54["default_reasoning_level"], "xhigh");
+        assert_eq!(gpt_54["service_tiers"][0]["id"], "priority");
     }
 
     #[test]
@@ -1847,6 +2166,40 @@ wire_api = "responses"
     }
 
     #[test]
+    fn dex_account_model_inherits_exact_codex_registry_template() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "display_name": "GPT-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 272000,
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        });
+        let account_models = vec![DexCatalogAccountModel {
+            account_id: "openai_1".into(),
+            endpoint_id: "ep_1".into(),
+            account_name: "OpenAI 桌面版账号".into(),
+            endpoint_name: "OpenAI Responses".into(),
+            endpoint_kind: crate::accounts::EndpointKind::OpenAiResponses,
+            provider: "openai".into(),
+            model: "gpt-5.4".into(),
+            context_window_override: None,
+        }];
+
+        let output = build_context_catalog(input, None, &account_models).unwrap();
+        let models = output["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["display_name"], "GPT-5.4");
+        assert_eq!(models[0]["context_window"], 272_000);
+        assert_eq!(models[0]["max_context_window"], 1_000_000);
+        assert_eq!(models[0]["default_reasoning_level"], "xhigh");
+    }
+
+    #[test]
     fn chat_catalog_models_ignore_retired_model_map_values() {
         let account: crate::accounts::Account = serde_json::from_value(serde_json::json!({
             "id": "deepseek_1",
@@ -1962,8 +2315,8 @@ wire_api = "responses"
         assert!(models.iter().any(|model| model == "gpt-5.4"));
         assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
         assert!(models.iter().any(|model| model == "gpt-5.3-codex"));
-        assert!(models.iter().any(|model| model == "gpt-5.3-codex-spark"));
         assert!(models.iter().any(|model| model == "gpt-5.2"));
+        assert!(!models.iter().any(|model| model == "gpt-5.3-codex-spark"));
         assert!(!models.iter().any(|model| model == "gpt-5"));
         assert!(!models.iter().any(|model| model == "gpt-4.1"));
     }
@@ -1976,8 +2329,8 @@ wire_api = "responses"
         assert!(models.iter().any(|model| model == "gpt-5.4"));
         assert!(models.iter().any(|model| model == "gpt-5.4-mini"));
         assert!(models.iter().any(|model| model == "gpt-5.3-codex"));
-        assert!(models.iter().any(|model| model == "gpt-5.3-codex-spark"));
         assert!(models.iter().any(|model| model == "gpt-5.2"));
+        assert!(!models.iter().any(|model| model == "gpt-5.3-codex-spark"));
         assert!(!models.iter().any(|model| model == "gpt-image-2"));
         assert!(!models.iter().any(|model| model == "codex-auto-review"));
     }

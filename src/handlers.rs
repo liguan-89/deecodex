@@ -900,7 +900,15 @@ fn router_effective_model(requested_model: &str, endpoint: &EndpointConfig) -> S
         .to_string()
 }
 
-fn model_recent_transient_upstream_error(account: &Account, model: &str, now: u64) -> bool {
+fn model_recent_transient_upstream_error(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    model: &str,
+    now: u64,
+) -> bool {
+    if !endpoint_uses_dex_managed_runtime_cooldown(account, endpoint) {
+        return false;
+    }
     account
         .runtime_state
         .model_states
@@ -1042,7 +1050,9 @@ fn resolve_explicit_dex_account_model_selection(
         )
         .map(Some);
     }
-    if let Some(block) = account_runtime_block(account, &upstream_model, now) {
+    if let Some(block) =
+        account_runtime_block_for_endpoint(account, &endpoint, &upstream_model, now)
+    {
         return Err(Box::new(codex_router_pool_unavailable_response(
             format!(
                 "已选择「{} / {}」，但该模型当前不可用：{}",
@@ -1111,7 +1121,8 @@ fn resolve_session_main_model_anchor_selection(
         )));
     };
     let now = crate::accounts::now_secs();
-    if let Some(block) = account_runtime_block(account, &anchor.model, now) {
+    if let Some(block) = account_runtime_block_for_endpoint(account, &endpoint, &anchor.model, now)
+    {
         return Err(Box::new(codex_router_pool_unavailable_response(
             format!(
                 "会话主模型「{} / {}」当前不可用：{}",
@@ -1197,7 +1208,7 @@ fn resolve_explicit_chat_model_native_helper_selection(
         ) else {
             continue;
         };
-        if model_recent_transient_upstream_error(&account, &candidate_model, now) {
+        if model_recent_transient_upstream_error(&account, &endpoint, &candidate_model, now) {
             skipped_helpers.push(json!({
                 "account_id": account.id,
                 "account_name": account.name,
@@ -1293,9 +1304,12 @@ fn resolve_explicit_chat_model_native_helper_selection(
 fn explicit_chat_model_native_helper_fallback_selection(
     context: ExplicitChatFallbackContext<'_>,
 ) -> Result<AccountRouteSelection, Box<Response>> {
-    if let Some(block) =
-        account_runtime_block(context.main_account, context.selected_model, context.now)
-    {
+    if let Some(block) = account_runtime_block_for_endpoint(
+        context.main_account,
+        context.main_endpoint,
+        context.selected_model,
+        context.now,
+    ) {
         return Err(Box::new(codex_router_pool_unavailable_response(
             format!(
                 "已选择「{} / {}」作为主账号模型，但原生 Computer Use helper 不可用，且主账号当前不可降级使用：{}",
@@ -1361,7 +1375,9 @@ fn explicit_chat_model_strip_native_toolchain_selection(
     now: u64,
     requested_model: &str,
 ) -> Result<AccountRouteSelection, Box<Response>> {
-    if let Some(block) = account_runtime_block(main_account, selected_model, now) {
+    if let Some(block) =
+        account_runtime_block_for_endpoint(main_account, main_endpoint, selected_model, now)
+    {
         return Err(Box::new(codex_router_pool_unavailable_response(
             format!(
                 "已选择「{} / {}」，但该模型当前不可用：{}",
@@ -1482,7 +1498,7 @@ fn select_dex_router_native_executor_in_pool(
             }
             let mapped_model =
                 router_effective_model_for_account(account, requested_model, &endpoint);
-            if !account_runtime_ready(account, &mapped_model, now) {
+            if !account_runtime_ready_for_endpoint(account, &endpoint, &mapped_model, now) {
                 return None;
             }
             let capabilities = dex_router_capability_summary(account, &endpoint, &mapped_model);
@@ -1629,7 +1645,7 @@ fn select_dex_router_account_endpoint_excluding(
             }
             let mapped_model =
                 router_effective_model_for_account(account, requested_model, &endpoint);
-            if !account_runtime_ready(account, &mapped_model, now) {
+            if !account_runtime_ready_for_endpoint(account, &endpoint, &mapped_model, now) {
                 return None;
             }
             let capabilities = dex_router_capability_summary(account, &endpoint, &mapped_model);
@@ -1840,7 +1856,11 @@ fn dex_router_snapshot_value(
                 .as_ref()
                 .map(|endpoint| router_effective_model_for_account(account, requested_model, endpoint))
                 .unwrap_or_else(|| requested_model.to_string());
-            let runtime_block = account_runtime_block(account, &mapped_model, now);
+            let runtime_block = endpoint
+                .as_ref()
+                .and_then(|endpoint| {
+                    account_runtime_block_for_endpoint(account, endpoint, &mapped_model, now)
+                });
             let capabilities = endpoint
                 .as_ref()
                 .map(|endpoint| dex_router_capability_summary(account, endpoint, &mapped_model));
@@ -2074,7 +2094,7 @@ fn select_codex_official_account_endpoint(
             }
             let endpoint = official_endpoint_for_account(store, account, route_surface)?;
             let mapped_model = router_effective_model(requested_model, &endpoint);
-            if !account_runtime_ready(account, &mapped_model, now) {
+            if !account_runtime_ready_for_endpoint(account, &endpoint, &mapped_model, now) {
                 return None;
             }
             let mut account = account.clone();
@@ -2178,8 +2198,21 @@ fn official_endpoint_for_account(
         .cloned()
 }
 
-fn account_runtime_ready(account: &Account, mapped_model: &str, now: u64) -> bool {
-    account_runtime_block(account, mapped_model, now).is_none()
+fn endpoint_uses_dex_managed_runtime_cooldown(
+    account: &Account,
+    endpoint: &EndpointConfig,
+) -> bool {
+    endpoint.kind == EndpointKind::CodexOfficial
+        || matches!(account.auth_mode, AccountAuthMode::OAuth)
+}
+
+fn account_runtime_ready_for_endpoint(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    mapped_model: &str,
+    now: u64,
+) -> bool {
+    account_runtime_block_for_endpoint(account, endpoint, mapped_model, now).is_none()
 }
 
 fn dex_router_capability_summary(
@@ -3457,6 +3490,18 @@ struct RuntimeBlock {
     reason: &'static str,
 }
 
+fn account_runtime_block_for_endpoint(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    mapped_model: &str,
+    now: u64,
+) -> Option<RuntimeBlock> {
+    if !endpoint_uses_dex_managed_runtime_cooldown(account, endpoint) {
+        return None;
+    }
+    account_runtime_block(account, mapped_model, now)
+}
+
 fn account_runtime_block(account: &Account, mapped_model: &str, now: u64) -> Option<RuntimeBlock> {
     if matches!(
         account.runtime_state.status,
@@ -3591,12 +3636,17 @@ fn history_context_for(
     }
 }
 
-fn runtime_feedback_for_account(state: &AppState, account: &Account) -> RuntimeFeedbackSink {
+fn runtime_feedback_for_account_endpoint(
+    state: &AppState,
+    account: &Account,
+    endpoint: &EndpointConfig,
+) -> RuntimeFeedbackSink {
     RuntimeFeedbackSink::new(
         state.data_dir.clone(),
         state.account_store.clone(),
         state.active_account.clone(),
         account.id.clone(),
+        endpoint_uses_dex_managed_runtime_cooldown(account, endpoint),
     )
 }
 
@@ -7399,7 +7449,12 @@ fn apply_codex_router_preflight_model_fallback(
             None
         };
         if let Some((fallback_model, reason)) = fallback {
-            if account_runtime_ready(&selection.account, fallback_model, now) {
+            if account_runtime_ready_for_endpoint(
+                &selection.account,
+                &selection.endpoint,
+                fallback_model,
+                now,
+            ) {
                 tracing::warn!(
                     account_id = %selection.account.id,
                     account_name = %selection.account.name,
@@ -8603,7 +8658,7 @@ async fn handle_responses_bypass(
     );
 
     let response_id = state.sessions.new_id();
-    let runtime_feedback = runtime_feedback_for_account(&state, &account);
+    let runtime_feedback = runtime_feedback_for_account_endpoint(&state, &account, &endpoint);
     let bypass = BypassArgs {
         state: state.clone(),
         body,
@@ -9106,6 +9161,7 @@ async fn update_runtime_result(
             status_code: status.as_u16(),
             message,
             retry_after_secs,
+            cooldown_managed: true,
         },
     )
     .await;
@@ -9752,7 +9808,7 @@ async fn handle_responses_inner(
     if let Some(trace) = route_trace {
         history_context.route_trace = trace;
     }
-    let runtime_feedback = runtime_feedback_for_account(&state, &account);
+    let runtime_feedback = runtime_feedback_for_account_endpoint(&state, &account, &endpoint);
     let model_map = if route_surface.uses_codex_direct_models() {
         ModelMap::new()
     } else {
@@ -12115,6 +12171,12 @@ mod tests {
         account
     }
 
+    fn enable_official_execution(account: &mut Account) {
+        let mut routing = crate::accounts::account_routing_options(account);
+        routing.execution_enabled = Some(true);
+        crate::accounts::set_account_routing_options(account, routing);
+    }
+
     fn router_store(accounts: Vec<Account>, active_id: &str) -> AccountStore {
         let mut accounts = accounts;
         for account in &mut accounts {
@@ -12291,9 +12353,26 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_skips_quota_exceeded_account() {
+    fn dex_router_keeps_unmanaged_direct_quota_error_eligible() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut quota = router_responses_account("quota", "pool-a", 100, 1);
+        quota.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
+        quota.runtime_state.status_message = "HTTP 429".into();
+        quota.runtime_state.next_retry_after = Some(2_000);
+        let ready = router_responses_account("ready", "pool-a", 10, 1);
+        let store = router_store(vec![active, quota, ready], "active");
+
+        let (account, _) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "quota");
+    }
+
+    #[test]
+    fn dex_router_skips_managed_official_quota_exceeded_account() {
+        let active = router_responses_account("active", "pool-a", 0, 1);
+        let mut quota = router_official_anchor_account("quota", "pool-a", 100, 1);
+        enable_official_execution(&mut quota);
         quota.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
         quota.runtime_state.status_message = "HTTP 429".into();
         quota.runtime_state.next_retry_after = Some(2_000);
@@ -12307,7 +12386,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_skips_transient_5xx_cooldown_until_retry_ready() {
+    fn dex_router_keeps_unmanaged_direct_transient_5xx_eligible() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut transient = router_responses_account("transient", "pool-a", 100, 1);
         transient.runtime_state.status = AccountRuntimeStatus::CoolingDown;
@@ -12329,7 +12408,7 @@ mod tests {
         let (account, endpoint) =
             select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
 
-        assert_eq!(account.id, "ready");
+        assert_eq!(account.id, "transient");
         assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
 
         let (account, endpoint) =
@@ -12364,9 +12443,34 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_skips_model_level_quota() {
+    fn dex_router_keeps_unmanaged_direct_model_level_quota_eligible() {
         let active = router_responses_account("active", "pool-a", 0, 1);
         let mut model_quota = router_responses_account("model-quota", "pool-a", 100, 1);
+        model_quota.runtime_state.model_states.insert(
+            "gpt-5".into(),
+            crate::accounts::AccountModelRuntimeState {
+                status: AccountRuntimeStatus::QuotaExceeded,
+                status_message: "HTTP 429".into(),
+                next_retry_after: Some(2_000),
+                quota: Default::default(),
+                updated_at: 1_000,
+            },
+        );
+        let ready = router_responses_account("ready", "pool-a", 10, 1);
+        let store = router_store(vec![active, model_quota, ready], "active");
+
+        let (account, endpoint) =
+            select_dex_router_account_endpoint(&store, "gpt-5", 1_000, 0, None).unwrap();
+
+        assert_eq!(account.id, "model-quota");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+    }
+
+    #[test]
+    fn dex_router_skips_managed_official_model_level_quota() {
+        let active = router_responses_account("active", "pool-a", 0, 1);
+        let mut model_quota = router_official_anchor_account("model-quota", "pool-a", 100, 1);
+        enable_official_execution(&mut model_quota);
         model_quota.runtime_state.model_states.insert(
             "gpt-5".into(),
             crate::accounts::AccountModelRuntimeState {
@@ -12792,9 +12896,11 @@ mod tests {
     }
 
     #[test]
-    fn dex_router_explicit_chat_model_strong_signal_uses_recent_failed_helper_as_last_resort() {
+    fn dex_router_explicit_chat_model_strong_signal_uses_managed_recent_failed_helper_as_last_resort(
+    ) {
         let active = router_chat_account("active", "pool-a", 100, 1, Some("mapped-active"));
-        let mut responses = router_responses_account("responses", "pool-a", 10, 1);
+        let mut responses = router_official_anchor_account("responses", "pool-a", 10, 1);
+        enable_official_execution(&mut responses);
         let now = crate::accounts::now_secs();
         responses.runtime_state.model_states.insert(
             DEFAULT_NATIVE_HELPER_MODEL.into(),
@@ -12824,7 +12930,7 @@ mod tests {
         let trace: Value = serde_json::from_str(selection.route_trace.as_deref().unwrap()).unwrap();
 
         assert_eq!(selection.account.id, "responses");
-        assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(selection.endpoint.kind, EndpointKind::CodexOfficial);
         assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
@@ -12875,8 +12981,8 @@ mod tests {
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
-        assert_eq!(trace["native_helper_last_resort"], true);
+        assert_eq!(trace["native_helper_skipped"].as_array().unwrap().len(), 0);
+        assert_eq!(trace["native_helper_last_resort"], false);
     }
 
     #[test]
@@ -13045,12 +13151,14 @@ mod tests {
     #[test]
     fn dex_router_status_reports_runtime_skip_details() {
         let active = router_responses_account("active", "pool-a", 0, 1);
-        let mut account_cooled = router_responses_account("account-cooled", "pool-a", 100, 1);
+        let mut account_cooled = router_official_anchor_account("account-cooled", "pool-a", 100, 1);
+        enable_official_execution(&mut account_cooled);
         account_cooled.runtime_state.status = AccountRuntimeStatus::QuotaExceeded;
         account_cooled.runtime_state.status_message = "账号额度耗尽".into();
         account_cooled.runtime_state.next_retry_after = Some(2_000);
 
-        let mut model_cooled = router_responses_account("model-cooled", "pool-a", 90, 1);
+        let mut model_cooled = router_official_anchor_account("model-cooled", "pool-a", 90, 1);
+        enable_official_execution(&mut model_cooled);
         model_cooled.runtime_state.model_states.insert(
             "gpt-5".into(),
             crate::accounts::AccountModelRuntimeState {

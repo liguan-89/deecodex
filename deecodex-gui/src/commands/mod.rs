@@ -901,6 +901,50 @@ fn oauth_http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("创建 OAuth HTTP 客户端失败: {e}"))
 }
 
+fn normalize_external_http_url(url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|e| format!("链接格式无效: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed.to_string()),
+        scheme => Err(format!("不支持打开 {scheme} 链接")),
+    }
+}
+
+fn open_url_in_default_browser(url: &str) -> Result<(), String> {
+    let url = normalize_external_http_url(url)?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("调用系统浏览器失败: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| format!("调用系统浏览器失败: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("调用系统浏览器失败: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<Value, String> {
+    let normalized = normalize_external_http_url(&url)?;
+    open_url_in_default_browser(&normalized)?;
+    Ok(json!({
+        "ok": true,
+        "url": normalized,
+    }))
+}
+
 #[tauri::command]
 pub async fn start_oauth_account_login(
     provider: String,
@@ -977,7 +1021,9 @@ pub async fn start_oauth_account_login(
         }
     };
 
-    let response = json!({
+    let should_open_browser = session.mode == "browser";
+    let auth_url_to_open = session.auth_url.clone();
+    let mut response = json!({
         "state": state,
         "provider": session.provider.as_str(),
         "client_surface": session.client_surface,
@@ -989,6 +1035,17 @@ pub async fn start_oauth_account_login(
         "poll_interval_secs": session.poll_interval_secs,
     });
     oauth_sessions().insert(state, Arc::new(tokio::sync::Mutex::new(session)));
+    if should_open_browser {
+        match open_url_in_default_browser(&auth_url_to_open) {
+            Ok(()) => {
+                response["open_status"] = json!("opened");
+            }
+            Err(err) => {
+                response["open_status"] = json!("failed");
+                response["open_error"] = json!(err);
+            }
+        }
+    }
     Ok(response)
 }
 
@@ -7214,6 +7271,16 @@ mod tests {
 
         assert_eq!(args.port, 4446);
         assert_eq!(args.data_dir, PathBuf::from(".deecodex"));
+    }
+
+    #[test]
+    fn external_url_opening_is_limited_to_http_urls() {
+        assert_eq!(
+            normalize_external_http_url("https://auth.openai.com/oauth/authorize").unwrap(),
+            "https://auth.openai.com/oauth/authorize"
+        );
+        assert!(normalize_external_http_url("javascript:alert(1)").is_err());
+        assert!(normalize_external_http_url("file:///tmp/token").is_err());
     }
 
     #[test]

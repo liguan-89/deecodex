@@ -66,7 +66,6 @@
       'gpt-5.4': 'deepseek-v4-flash',
       'gpt-5.4-mini': 'deepseek-v4-flash',
       'gpt-5.3-codex': 'deepseek-v4-pro',
-      'gpt-5.3-codex-spark': 'deepseek-v4-flash',
       'gpt-5.2': 'deepseek-v4-flash',
       'codex-auto-review': 'deepseek-v4-flash',
       'gpt-4o': 'deepseek-v4-pro',

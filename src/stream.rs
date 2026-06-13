@@ -1935,6 +1935,7 @@ mod tests {
             Arc::new(tokio::sync::RwLock::new(store)),
             Arc::new(tokio::sync::RwLock::new(account)),
             "test-account".into(),
+            true,
         )
     }
 

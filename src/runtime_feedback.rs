@@ -12,6 +12,7 @@ pub struct RuntimeFeedbackSink {
     account_store: Arc<RwLock<AccountStore>>,
     active_account: Arc<RwLock<Account>>,
     account_id: String,
+    cooldown_managed: bool,
 }
 
 pub struct RuntimeFeedbackRecord {
@@ -20,6 +21,7 @@ pub struct RuntimeFeedbackRecord {
     pub status_code: u16,
     pub message: String,
     pub retry_after_secs: Option<u64>,
+    pub cooldown_managed: bool,
 }
 
 impl RuntimeFeedbackSink {
@@ -28,12 +30,14 @@ impl RuntimeFeedbackSink {
         account_store: Arc<RwLock<AccountStore>>,
         active_account: Arc<RwLock<Account>>,
         account_id: String,
+        cooldown_managed: bool,
     ) -> Self {
         Self {
             data_dir,
             account_store,
             active_account,
             account_id,
+            cooldown_managed,
         }
     }
 
@@ -69,6 +73,7 @@ impl RuntimeFeedbackSink {
                 status_code,
                 message,
                 retry_after_secs,
+                cooldown_managed: self.cooldown_managed,
             },
         )
         .await;
@@ -94,12 +99,18 @@ pub async fn record_runtime_result(
         {
             if success {
                 account.record_runtime_success(&record.model, now);
-            } else {
+            } else if record.cooldown_managed {
                 account.record_runtime_failure(
                     &record.model,
                     record.status_code,
                     record.message.clone(),
                     record.retry_after_secs,
+                    now,
+                );
+            } else {
+                account.record_runtime_failure_observation(
+                    &record.model,
+                    record.message.clone(),
                     now,
                 );
             }
@@ -122,7 +133,7 @@ pub async fn record_runtime_result(
         {
             if success {
                 account.record_runtime_success(&record.model, now);
-            } else {
+            } else if record.cooldown_managed {
                 account.record_runtime_failure(
                     &record.model,
                     record.status_code,
@@ -130,6 +141,8 @@ pub async fn record_runtime_result(
                     record.retry_after_secs,
                     now,
                 );
+            } else {
+                account.record_runtime_failure_observation(&record.model, message_for_persist, now);
             }
         }
         Ok(())
@@ -204,6 +217,7 @@ mod tests {
                 status_code: 429,
                 message: "quota".into(),
                 retry_after_secs: Some(90),
+                cooldown_managed: true,
             },
         )
         .await;
@@ -239,6 +253,7 @@ mod tests {
                 status_code: 200,
                 message: String::new(),
                 retry_after_secs: None,
+                cooldown_managed: true,
             },
         )
         .await;
@@ -252,6 +267,60 @@ mod tests {
         assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Active);
         assert_eq!(account.runtime_state.success, 1);
         assert!(account.runtime_state.model_states.contains_key("gpt-5"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unmanaged_runtime_failure_records_observation_without_cooldown() {
+        let dir = test_data_dir("runtime-feedback-observation");
+        let account = test_account("a1");
+        let store = AccountStore {
+            version: ACCOUNT_STORE_VERSION,
+            accounts: vec![account.clone()],
+            active_id: Some(account.id.clone()),
+            active_account_id: Some(account.id.clone()),
+            active_endpoint_id: Some("ep-a1".into()),
+            active_by_surface: HashMap::new(),
+        };
+        save_accounts(&dir, &store).unwrap();
+
+        let data_dir = Arc::new(dir.clone());
+        let account_store = Arc::new(RwLock::new(store));
+        let active_account = Arc::new(RwLock::new(account));
+
+        record_runtime_result(
+            data_dir,
+            account_store.clone(),
+            active_account.clone(),
+            RuntimeFeedbackRecord {
+                account_id: "a1".into(),
+                model: "gpt-5".into(),
+                status_code: 429,
+                message: "quota".into(),
+                retry_after_secs: Some(90),
+                cooldown_managed: false,
+            },
+        )
+        .await;
+
+        let store = account_store.read().await;
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == "a1")
+            .unwrap();
+        assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Error);
+        assert_eq!(account.runtime_state.failed, 1);
+        assert!(account.runtime_state.next_retry_after.is_none());
+        assert!(!account.runtime_state.quota.exceeded);
+        let model = account.runtime_state.model_states.get("gpt-5").unwrap();
+        assert_eq!(model.status, AccountRuntimeStatus::Error);
+        assert!(model.next_retry_after.is_none());
+        assert!(!model.quota.exceeded);
+        assert_eq!(
+            active_account.read().await.runtime_state.status,
+            AccountRuntimeStatus::Error
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1159,7 +1159,6 @@ function renderHelp() {
 <span class="key">"gpt-5.4"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"gpt-5.4-mini"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"gpt-5.3-codex"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5.3-codex-spark"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"gpt-5.2"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"codex-auto-review"</span>: <span class="str">"deepseek-v4-flash"</span>
 <span class="key">"gpt-4o"</span>: <span class="str">"deepseek-v4-pro"</span>

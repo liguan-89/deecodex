@@ -1,4 +1,4 @@
-const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'codex-auto-review'];
+const CODEX_MODEL_LIST = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2', 'codex-auto-review'];
 const MIMO_CODING_MODEL = 'mimo-v2.5-pro';
 const MIMO_VISION_MODEL = 'mimo-v2.5';
 const MIMO_CHAT_MODELS = [MIMO_CODING_MODEL, MIMO_VISION_MODEL, 'mimo-v2-omni', 'mimo-v2-pro'];
@@ -2894,6 +2894,9 @@ async function startOAuthAccountLogin(provider, mode = 'browser') {
       mode,
     });
     oauthLoginState = { ...result, status: 'pending' };
+    if (result.open_error) {
+      showToast('登录页打开失败，请复制链接: ' + result.open_error, 'error');
+    }
     accountsView = 'add';
     renderMainContent();
     startOAuthLoginPolling();
@@ -2958,10 +2961,15 @@ async function cancelOAuthAccountLogin() {
   renderMainContent();
 }
 
-function openOAuthLoginUrl() {
+async function openOAuthLoginUrl() {
   const url = oauthLoginState?.verification_url || oauthLoginState?.url;
   if (!url) return;
-  window.open(url, '_blank');
+  try {
+    await invoke('open_external_url', { url });
+    showToast('已打开登录页', 'success');
+  } catch (e) {
+    showToast('打开登录页失败: ' + e, 'error');
+  }
 }
 
 async function copyOAuthLoginUrl() {

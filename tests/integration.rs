@@ -1962,7 +1962,7 @@ async fn codex_router_stream_keeps_recent_failure_candidate_sendable() {
 }
 
 #[tokio::test]
-async fn codex_router_stream_502_retry_after_skips_account_on_next_request() {
+async fn codex_router_stream_502_retry_after_keeps_unmanaged_direct_account_sendable() {
     let (failing_upstream, failing_captured) = capture_status_upstream(
         StatusCode::BAD_GATEWAY,
         Some("60"),
@@ -2025,7 +2025,8 @@ async fn codex_router_stream_502_retry_after_skips_account_on_next_request() {
             failing.runtime_state.status,
             deecodex::accounts::AccountRuntimeStatus::Error
         );
-        assert!(failing.runtime_state.next_retry_after.is_some());
+        assert!(failing.runtime_state.next_retry_after.is_none());
+        assert!(!failing.runtime_state.quota.exceeded);
     }
 
     let second = app
@@ -2046,14 +2047,9 @@ async fn codex_router_stream_502_retry_after_skips_account_on_next_request() {
 
     let second_status = second.status();
     let _ = second.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(second_status, StatusCode::OK);
-    assert_eq!(failing_captured.lock().unwrap().len(), 1);
-    {
-        let captured = healthy_captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].path, "/responses");
-        assert_eq!(captured[0].body["model"], "gpt-5.5");
-    }
+    assert_eq!(second_status, StatusCode::BAD_GATEWAY);
+    assert_eq!(failing_captured.lock().unwrap().len(), 2);
+    assert_eq!(healthy_captured.lock().unwrap().len(), 0);
 
     let entries = request_history
         .list(10, &deecodex::request_history::HistoryFilter::default())
@@ -2064,20 +2060,16 @@ async fn codex_router_stream_502_retry_after_skips_account_on_next_request() {
         .unwrap();
     assert_eq!(failed_entry.status, "failed");
     assert!(failed_entry.error_msg.contains("502"));
-    let healthy_entry = entries
-        .iter()
-        .find(|entry| entry.account_id == "router-healthy")
-        .unwrap();
-    let healthy_trace: Value = serde_json::from_str(&healthy_entry.route_trace).unwrap();
-    assert_eq!(healthy_trace["selected"]["account_id"], "router-healthy");
-    let failing_candidate = healthy_trace["candidates"]
+    let failed_trace: Value = serde_json::from_str(&failed_entry.route_trace).unwrap();
+    assert_eq!(failed_trace["selected"]["account_id"], "router-failing");
+    let failing_candidate = failed_trace["candidates"]
         .as_array()
         .unwrap()
         .iter()
         .find(|candidate| candidate["account_id"] == "router-failing")
         .unwrap();
-    assert_eq!(failing_candidate["eligible"], false);
-    assert_eq!(failing_candidate["reason"], "account_upstream_cooling");
+    assert_eq!(failing_candidate["eligible"], true);
+    assert_eq!(failing_candidate["reason"], "ready");
 }
 
 #[tokio::test]
@@ -4243,6 +4235,7 @@ fn test_runtime_feedback_sink() -> deecodex::runtime_feedback::RuntimeFeedbackSi
         state.account_store.clone(),
         state.active_account.clone(),
         "test-account".into(),
+        true,
     )
 }
 

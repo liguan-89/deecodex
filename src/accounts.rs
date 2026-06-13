@@ -1011,6 +1011,35 @@ impl Account {
         }
     }
 
+    pub fn record_runtime_failure_observation(&mut self, model: &str, message: String, now: u64) {
+        self.runtime_state.record_request(now, false);
+        self.runtime_state.failed = self.runtime_state.failed.saturating_add(1);
+
+        let model_key = model.trim().to_string();
+        let status = if runtime_message_is_image_capability_error(&message) {
+            AccountRuntimeStatus::Active
+        } else {
+            AccountRuntimeStatus::Error
+        };
+        self.runtime_state.status = status.clone();
+        self.runtime_state.status_message = message.clone();
+        self.runtime_state.next_retry_after = None;
+        self.runtime_state.quota = AccountQuotaState::default();
+
+        if !model_key.is_empty() {
+            self.runtime_state.model_states.insert(
+                model_key,
+                AccountModelRuntimeState {
+                    status,
+                    status_message: message,
+                    next_retry_after: None,
+                    quota: AccountQuotaState::default(),
+                    updated_at: now,
+                },
+            );
+        }
+    }
+
     #[allow(dead_code)]
     pub fn clear_runtime_cooldown(&mut self, now: u64) {
         self.runtime_state.status = AccountRuntimeStatus::Active;
@@ -1886,7 +1915,6 @@ pub const CODEX_MODEL_LIST: &[&str] = &[
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
     "gpt-5.2",
     "codex-auto-review",
 ];
