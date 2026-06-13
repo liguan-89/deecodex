@@ -5324,6 +5324,7 @@ pub async fn fetch_upstream_models(
     endpoint_kind: Option<String>,
 ) -> Result<Vec<String>, String> {
     let mut cache_target: Option<(PathBuf, String, String)> = None;
+    let fallback_models: Vec<String>;
     let (upstream, api_key, profile, endpoint_kind, oauth_account) = if let Some(id) = account_id {
         let data_dir = manager.data_dir.lock().await.clone();
         let store = deecodex::accounts::load_accounts(&data_dir);
@@ -5342,6 +5343,12 @@ pub async fn fetch_upstream_models(
                     .map(|endpoint| endpoint.id.clone())
             })
             .unwrap_or_else(|| "default".into());
+        let profile = deecodex::providers::profile_for_account(account);
+        fallback_models = model_fallback_candidates(
+            endpoint.map(|endpoint| endpoint.known_models.as_slice()),
+            Some(account.default_model.as_str()),
+            &profile.known_models,
+        );
         cache_target = Some((data_dir, account.id.clone(), endpoint_id));
         (
             non_empty_override(upstream).unwrap_or_else(|| {
@@ -5350,7 +5357,7 @@ pub async fn fetch_upstream_models(
                     .unwrap_or_else(|| account.upstream.clone())
             }),
             secret_override(api_key).unwrap_or_else(|| account.api_key.clone()),
-            deecodex::providers::profile_for_account(account),
+            profile,
             endpoint_kind.or_else(|| endpoint.map(|ep| format!("{:?}", ep.kind))),
             matches!(
                 account.auth_mode,
@@ -5369,10 +5376,12 @@ pub async fn fetch_upstream_models(
         } else {
             deecodex::providers::guess_provider(&upstream).to_string()
         };
+        let profile = deecodex::providers::profile_by_slug(&provider);
+        fallback_models = model_fallback_candidates(None, None, &profile.known_models);
         (
             upstream,
             api_key.unwrap_or_default(),
-            deecodex::providers::profile_by_slug(&provider),
+            profile,
             endpoint_kind,
             false,
         )
@@ -5449,7 +5458,41 @@ pub async fn fetch_upstream_models(
         refresh_codex_model_catalog_after_fetch(&manager, cache_target.as_ref()).await;
         return Ok(profile.known_models);
     }
+    if !fallback_models.is_empty() {
+        tracing::warn!(
+            provider = %profile.slug,
+            upstream = %upstream,
+            count = fallback_models.len(),
+            "上游模型接口不可用，使用账号/供应商内置模型列表"
+        );
+        persist_fetched_models(cache_target.as_ref(), &fallback_models);
+        refresh_codex_model_catalog_after_fetch(&manager, cache_target.as_ref()).await;
+        return Ok(fallback_models);
+    }
     Err("无法从上游获取模型列表".to_string())
+}
+
+fn model_fallback_candidates(
+    endpoint_models: Option<&[String]>,
+    default_model: Option<&str>,
+    profile_models: &[String],
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for model in endpoint_models
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(default_model.into_iter())
+        .chain(profile_models.iter().map(String::as_str))
+    {
+        let model = model.trim();
+        if model.is_empty() || !seen.insert(model.to_string()) {
+            continue;
+        }
+        models.push(model.to_string());
+    }
+    models
 }
 
 fn persist_fetched_models(target: Option<&(PathBuf, String, String)>, models: &[String]) {
@@ -6538,6 +6581,7 @@ fn account_to_value_with_endpoint(
     let balance_url = endpoint
         .map(|endpoint| endpoint.balance_url.as_str())
         .unwrap_or(&a.balance_url);
+    let known_models = account_visible_known_models(a, endpoint);
     let raw_vision_api_key = vision
         .map(|v| v.api_key.clone())
         .unwrap_or_else(|| a.vision_api_key.clone());
@@ -6584,6 +6628,7 @@ fn account_to_value_with_endpoint(
         "created_at": a.created_at,
         "updated_at": a.updated_at,
     });
+    value["known_models"] = json!(known_models);
     value["client_surface"] = json!(a.client_surface);
     value["dev_pipeline_enabled"] = json!(a.dev_pipeline_enabled);
     value["dev_pipeline_trigger_mode"] = json!(a.dev_pipeline_trigger_mode);
@@ -6598,6 +6643,18 @@ fn account_to_value_with_endpoint(
     value["dev_pipeline_implementer_instruction"] = json!(a.dev_pipeline_implementer_instruction);
     value["dev_pipeline_reviewer_instruction"] = json!(a.dev_pipeline_reviewer_instruction);
     value
+}
+
+fn account_visible_known_models(
+    account: &deecodex::accounts::Account,
+    endpoint: Option<&deecodex::accounts::EndpointConfig>,
+) -> Vec<String> {
+    let profile = deecodex::providers::profile_by_slug(&account.provider);
+    model_fallback_candidates(
+        endpoint.map(|endpoint| endpoint.known_models.as_slice()),
+        Some(account.default_model.as_str()),
+        &profile.known_models,
+    )
 }
 
 // ── 线程聚合 ──────────────────────────────────────────────────────────────
@@ -7860,6 +7917,46 @@ mod tests {
 
         assert_eq!(value["capability_enabled"], true);
         assert_eq!(value["capability_account_id"], "helper");
+    }
+
+    #[test]
+    fn model_fallback_candidates_prefer_endpoint_then_default_then_provider() {
+        let endpoint_models = vec![
+            "deepseek-v4-pro".to_string(),
+            "deepseek-v4-pro".to_string(),
+            "".to_string(),
+        ];
+        let provider_models = vec!["deepseek-chat".to_string(), "deepseek-v4-pro".to_string()];
+
+        let models = model_fallback_candidates(
+            Some(&endpoint_models),
+            Some("deepseek-v4-flash"),
+            &provider_models,
+        );
+
+        assert_eq!(
+            models,
+            vec![
+                "deepseek-v4-pro".to_string(),
+                "deepseek-v4-flash".to_string(),
+                "deepseek-chat".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn account_to_value_exposes_endpoint_known_models_for_dex_assistant() {
+        let mut account = test_account("dex");
+        account.provider = "mimo".into();
+        account.default_model = "mimo-v2.5".into();
+        account.normalize_v2();
+        account.endpoints[0].known_models = vec!["mimo-v2.5-pro".into()];
+
+        let value = account_to_value_with_endpoint(&account, account.endpoints.first());
+        let models = value["known_models"].as_array().unwrap();
+
+        assert_eq!(models[0], "mimo-v2.5-pro");
+        assert!(models.iter().any(|model| model == "mimo-v2.5"));
     }
 
     #[test]

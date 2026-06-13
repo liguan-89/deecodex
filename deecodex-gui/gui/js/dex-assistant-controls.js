@@ -113,17 +113,24 @@ function dexLoadModels() {
   var menu = document.getElementById('dexModelMenu');
   if (!menu) return;
   DeeCodexTauri.invoke('get_dex_assistant_account', {}).then(function(account) {
-    if (!account || !account.model_map) return;
+    if (!account) return;
+    var vals = [];
+    if (Array.isArray(account.known_models)) vals = vals.concat(account.known_models);
+    if (Array.isArray(account.endpoints)) {
+      for (var e = 0; e < account.endpoints.length; e++) {
+        if (Array.isArray(account.endpoints[e].known_models)) vals = vals.concat(account.endpoints[e].known_models);
+      }
+    }
     var mm = account.model_map;
-    if (typeof mm === 'string') { try { mm = JSON.parse(mm); } catch(e) { return; } }
-    if (typeof mm !== 'object') return;
-    var vals = Object.values(mm);
+    if (typeof mm === 'string') { try { mm = JSON.parse(mm); } catch(e) { mm = {}; } }
+    if (mm && typeof mm === 'object') vals = vals.concat(Object.values(mm));
     var seen = {}, html = '';
     html += '<div class="dex-model-item" onclick="dexSelectModel(\'auto\',\'模型\')">自动</div>';
     for (var i = 0; i < vals.length; i++) {
-      var v = vals[i];
+      var v = String(vals[i] || '').trim();
+      if (!v) continue;
       if (seen[v]) continue; seen[v] = true;
-      html += '<div class="dex-model-item" onclick="dexSelectModel(\'' + esc(v) + '\',\'' + esc(v) + '\')">' + esc(v) + '</div>';
+      html += '<div class="dex-model-item" onclick="dexSelectModel(\'' + escAttr(v) + '\',\'' + escAttr(v) + '\')">' + esc(v) + '</div>';
     }
     menu.innerHTML = html;
   }).catch(function(e) { console.warn('[dexAgent] 加载模型列表失败:', e); });

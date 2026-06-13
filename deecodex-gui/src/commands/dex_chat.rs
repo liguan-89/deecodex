@@ -354,20 +354,43 @@ pub(super) async fn dex_chat_impl(
 
     let data_dir = manager.data_dir.lock().await.clone();
 
-    let (upstream, api_key, model_map, provider, profile, endpoint_kind, endpoint_path) =
-        get_active_account_info(&data_dir)
-            .ok_or_else(|| "请先在账号管理中配置一个活跃账号".to_string())?;
+    let (
+        upstream,
+        api_key,
+        model_map,
+        known_models,
+        provider,
+        profile,
+        endpoint_kind,
+        endpoint_path,
+    ) = get_active_account_info(&data_dir)
+        .ok_or_else(|| "请先在账号管理中配置一个活跃账号".to_string())?;
 
-    let default_model = "gpt-5.5";
-    let requested = model
-        .as_deref()
-        .filter(|m| !m.is_empty())
-        .unwrap_or(default_model);
+    let explicit_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    let default_model = known_models
+        .first()
+        .map(String::as_str)
+        .or_else(|| model_map.get("gpt-5.5").map(String::as_str))
+        .or_else(|| model_map.values().next().map(String::as_str))
+        .unwrap_or("gpt-5.5");
+    let requested = explicit_model.unwrap_or(default_model);
     let mapped_model = model_map
         .get(requested)
         .cloned()
-        .or_else(|| model_map.get(default_model).cloned())
-        .or_else(|| model_map.values().next().cloned())
+        .or_else(|| {
+            if explicit_model.is_none() {
+                model_map.get("gpt-5.5").cloned()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if explicit_model.is_none() {
+                model_map.values().next().cloned()
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| requested.to_string());
 
     let base = upstream.trim_end_matches('/');

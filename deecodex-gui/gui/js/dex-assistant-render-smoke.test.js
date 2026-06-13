@@ -124,4 +124,27 @@ const profileHtml = context.renderProfile();
 assert(profileHtml.includes('个人中心'));
 assert(!profileHtml.includes('DEX助手'));
 
-console.log('dex assistant render smoke ok');
+(async () => {
+  const modelMenu = { innerHTML: '' };
+  context.document.getElementById = id => (id === 'dexModelMenu' ? modelMenu : null);
+  context.DeeCodexTauri.invoke = async cmd => {
+    if (cmd === 'get_dex_assistant_account') {
+      return {
+        known_models: ['mimo-v2.5-pro'],
+        endpoints: [{ known_models: ['mimo-v2.5'] }],
+        model_map: { legacy: 'legacy-model' },
+      };
+    }
+    return {};
+  };
+  context.dexLoadModels();
+  await new Promise(resolve => setImmediate(resolve));
+  assert(modelMenu.innerHTML.includes('mimo-v2.5-pro'));
+  assert(modelMenu.innerHTML.includes('mimo-v2.5'));
+  assert(modelMenu.innerHTML.includes('legacy-model'));
+
+  console.log('dex assistant render smoke ok');
+})().catch(error => {
+  console.error(error);
+  process.exit(1);
+});

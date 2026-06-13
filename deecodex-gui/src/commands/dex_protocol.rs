@@ -10,6 +10,7 @@ pub(super) type DexAccountInfo = (
     String,
     String,
     HashMap<String, String>,
+    Vec<String>,
     String,
     deecodex::providers::ProviderProfile,
     deecodex::accounts::EndpointKind,
@@ -32,16 +33,43 @@ pub(super) fn get_active_account_info(data_dir: &Path) -> Option<DexAccountInfo>
     };
     let mut profile = deecodex::providers::profile_by_slug(&provider);
     profile.wire_protocol = dex_wire_protocol_for_endpoint(&endpoint.kind);
+    let known_models = dex_account_known_models(&active, &endpoint, &profile);
 
     Some((
         active.upstream.clone(),
         active.api_key.clone(),
         active.model_map.clone(),
+        known_models,
         provider,
         profile,
         endpoint.kind.clone(),
         endpoint.effective_path().to_string(),
     ))
+}
+
+fn dex_account_known_models(
+    account: &deecodex::accounts::Account,
+    endpoint: &deecodex::accounts::EndpointConfig,
+    profile: &deecodex::providers::ProviderProfile,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for model in endpoint
+        .known_models
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(account.default_model.as_str()))
+        .chain(account.model_map.values().map(String::as_str))
+        .chain(endpoint.model_map.values().map(String::as_str))
+        .chain(profile.known_models.iter().map(String::as_str))
+    {
+        let model = model.trim();
+        if model.is_empty() || !seen.insert(model.to_string()) {
+            continue;
+        }
+        models.push(model.to_string());
+    }
+    models
 }
 
 fn dex_wire_protocol_for_endpoint(
@@ -101,7 +129,15 @@ pub(super) async fn dex_responses_request_target(
 
 fn dex_chat_request_to_responses_body(req: &deecodex::types::ChatRequest) -> Value {
     let mut input = Vec::new();
+    let mut instructions = Vec::new();
     for message in &req.messages {
+        if matches!(message.role.as_str(), "system" | "developer") {
+            let text = dex_message_content_text(message.content.as_ref());
+            if !text.trim().is_empty() {
+                instructions.push(text);
+            }
+            continue;
+        }
         if message.role == "tool" {
             input.push(json!({
                 "type": "function_call_output",
@@ -111,11 +147,7 @@ fn dex_chat_request_to_responses_body(req: &deecodex::types::ChatRequest) -> Val
             continue;
         }
 
-        let role = if message.role == "system" {
-            "developer"
-        } else {
-            message.role.as_str()
-        };
+        let role = message.role.as_str();
         let content = dex_responses_content_parts(message.content.as_ref(), role);
         if !content.is_empty() {
             input.push(json!({
@@ -141,21 +173,25 @@ fn dex_chat_request_to_responses_body(req: &deecodex::types::ChatRequest) -> Val
         }
     }
 
+    let instructions_text = if instructions.is_empty() {
+        "你是 DEX AI 助手。".to_string()
+    } else {
+        instructions.join("\n\n")
+    };
     let mut body = json!({
         "model": req.model.clone(),
-        "instructions": "",
+        "instructions": instructions_text,
         "input": input,
         "stream": false,
         "store": false,
         "parallel_tool_calls": true,
-        "include": ["reasoning.encrypted_content"],
     });
     let tools = dex_chat_tools_to_responses_tools(&req.tools);
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
     if let Some(reasoning) = req.reasoning_effort.as_deref() {
-        body["reasoning"] = json!({"effort": reasoning, "summary": "auto"});
+        body["reasoning"] = json!({"effort": reasoning});
     }
     body
 }
@@ -333,10 +369,10 @@ mod tests {
         let body = dex_chat_request_to_responses_body(&req);
 
         assert_eq!(body["model"], "gpt-5");
-        assert_eq!(body["instructions"], "");
-        assert_eq!(body["input"][0]["role"], "developer");
-        assert_eq!(body["input"][0]["content"][0]["text"], "rules");
-        assert_eq!(body["input"][1]["role"], "user");
+        assert_eq!(body["instructions"], "rules");
+        assert!(body.get("include").is_none());
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"][0]["text"], "hello");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["name"], "health_summary");
     }
@@ -408,7 +444,7 @@ mod tests {
         )
         .unwrap();
 
-        let (_, _, _, provider, profile, _, _) = get_active_account_info(&data_dir).unwrap();
+        let (_, _, _, _, provider, profile, _, _) = get_active_account_info(&data_dir).unwrap();
 
         assert_eq!(provider, "minimax");
         assert_eq!(profile.slug, "minimax");
@@ -482,12 +518,13 @@ mod tests {
         )
         .unwrap();
 
-        let (upstream, api_key, model_map, _, _, _, _) =
+        let (upstream, api_key, model_map, known_models, _, _, _, _) =
             get_active_account_info(&data_dir).unwrap();
 
         assert_eq!(upstream, "https://assistant.example/v1");
         assert_eq!(api_key, "sk-assistant");
         assert!(model_map.is_empty());
+        assert!(known_models.contains(&"assistant-model".to_string()));
 
         let store = deecodex::accounts::load_accounts(&data_dir);
         let endpoint = store.active_endpoint_for_dex_assistant().unwrap();

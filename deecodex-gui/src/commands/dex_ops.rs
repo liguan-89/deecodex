@@ -153,7 +153,7 @@ pub(super) fn dex_config_diff_impl() -> Result<Value, String> {
 
     let deecodex_port = args.port;
     let (deecodex_upstream, deecodex_model_count, deecodex_provider) =
-        if let Some((up, _, mm, provider, _, _, _)) = get_active_account_info(data_dir) {
+        if let Some((up, _, mm, _, provider, _, _, _)) = get_active_account_info(data_dir) {
             (up, mm.len(), provider)
         } else {
             (String::new(), 0, String::new())
@@ -289,7 +289,7 @@ pub(super) async fn dex_token_cost_impl(
 
 pub(super) async fn dex_speed_test_impl() -> Result<Value, String> {
     let args = load_args();
-    let (upstream, api_key, model_map, provider, profile, _, _) =
+    let (upstream, api_key, model_map, _, provider, profile, _, _) =
         get_active_account_info(&args.data_dir)
             .ok_or_else(|| "请先在账号管理中配置一个活跃账号".to_string())?;
 

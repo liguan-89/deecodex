@@ -154,7 +154,7 @@ pub(super) async fn dex_health_summary_impl(
         counts
     };
     let (account_ok, provider, profile_slug, wire_protocol, capability_labels) =
-        if let Some((upstream, api_key, _, provider, profile, _, _)) =
+        if let Some((upstream, api_key, _, _, provider, profile, _, _)) =
             get_active_account_info(&data_dir)
         {
             let ok = !upstream.is_empty() && !api_key.is_empty();
