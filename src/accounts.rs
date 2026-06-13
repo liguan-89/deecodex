@@ -918,7 +918,15 @@ impl Account {
         self.runtime_state.next_retry_after = None;
         self.runtime_state.quota = AccountQuotaState::default();
         if !model.trim().is_empty() {
-            self.runtime_state.model_states.remove(model.trim());
+            let model_key = model.trim();
+            let keep_active_cooldown = self
+                .runtime_state
+                .model_states
+                .get(model_key)
+                .is_some_and(|state| state.next_retry_after.is_some_and(|retry| retry > now));
+            if !keep_active_cooldown {
+                self.runtime_state.model_states.remove(model_key);
+            }
         }
     }
 
@@ -2863,6 +2871,25 @@ mod tests {
         assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
         assert!(cooldown.next_retry_after.is_some());
         assert!(!cooldown.quota.exceeded);
+    }
+
+    #[test]
+    fn runtime_success_keeps_active_model_cooldown() {
+        let mut account = legacy_account(true);
+        account.normalize_v2();
+
+        account.record_runtime_failure("gpt-5.5", 502, "HTTP 502".into(), None, 1_000);
+        let retry_after = account
+            .runtime_state
+            .model_states
+            .get("gpt-5.5")
+            .and_then(|state| state.next_retry_after)
+            .unwrap();
+        account.record_runtime_success("gpt-5.5", 1_001);
+
+        let model = account.runtime_state.model_states.get("gpt-5.5").unwrap();
+        assert_eq!(model.next_retry_after, Some(retry_after));
+        assert_eq!(model.status, AccountRuntimeStatus::Error);
     }
 
     #[test]

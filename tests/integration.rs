@@ -2201,6 +2201,108 @@ async fn codex_router_stream_502_without_retry_after_skips_account_on_next_reque
 }
 
 #[tokio::test]
+async fn codex_router_explicit_model_502_without_retry_after_blocks_next_same_account_request() {
+    let (failing_upstream, failing_captured) = capture_status_upstream(
+        StatusCode::BAD_GATEWAY,
+        None,
+        "application/json",
+        r#"{"error":{"message":"temporary upstream 502","type":"api_error"}}"#,
+    )
+    .await;
+    let state = test_state();
+    let failing = router_test_account(
+        "router-failing",
+        "openai",
+        EndpointKind::OpenAiResponses,
+        &failing_upstream,
+        100,
+        None,
+    );
+    configure_router_test_accounts(&state, vec![failing], "router-failing").await;
+    let account_store = state.account_store.clone();
+    let app = build_router(state);
+    let slug = deecodex::codex_config::encode_dex_account_model_slug(
+        "router-failing",
+        "ep-router-failing",
+        "gpt-5.5",
+    );
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-explicit-502-no-retry-after")
+                .body(Body::from(format!(
+                    r#"{{"model":"{slug}","input":"trigger explicit stream 502","store":false,"stream":true}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+    let _ = first.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(failing_captured.lock().unwrap().len(), 1);
+    {
+        let store = account_store.read().await;
+        let failing = store
+            .accounts
+            .iter()
+            .find(|account| account.id == "router-failing")
+            .unwrap();
+        let model_state = failing
+            .runtime_state
+            .model_states
+            .get("gpt-5.5")
+            .expect("explicit model failure should be recorded on the upstream model");
+        assert_eq!(
+            model_state.status,
+            deecodex::accounts::AccountRuntimeStatus::Error
+        );
+        assert!(model_state.next_retry_after.is_some());
+        assert_eq!(model_state.quota.backoff_level, 1);
+    }
+
+    let second = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/codex-router/v1/responses")
+                .method(Method::POST)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("thread-id", "thread-explicit-502-no-retry-after")
+                .body(Body::from(format!(
+                    r#"{{"model":"{slug}","input":"same explicit model should be blocked locally","store":false,"stream":true}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = second.status();
+    let body = second.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        "dex_router_explicit_model_runtime_blocked"
+    );
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("account_upstream_cooling"));
+    assert_eq!(failing_captured.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn codex_router_rejects_when_computer_use_capability_is_unavailable() {
     let (chat_upstream, chat_captured) = capture_any_json_upstream(
         r#"{"choices":[{"message":{"role":"assistant","content":"chat should not run"}}]}"#,
