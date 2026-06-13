@@ -1089,10 +1089,12 @@ pub fn runtime_cooldown_for_status(
             (AccountRuntimeStatus::QuotaExceeded, Some(wait), next_level)
         }
         408 | 500 | 502 | 503 | 504 => {
-            let (wait, next_level) = match retry_after_secs.filter(|wait| *wait > 0) {
-                Some(wait) => (wait, previous_backoff_level),
-                None => next_transient_upstream_backoff(previous_backoff_level),
-            };
+            let (default_wait, next_level) =
+                next_transient_upstream_backoff(previous_backoff_level);
+            let wait = retry_after_secs
+                .filter(|wait| *wait > 0)
+                .map(|wait| wait.max(default_wait))
+                .unwrap_or(default_wait);
             quota.backoff_level = next_level;
             (AccountRuntimeStatus::Error, Some(wait), next_level)
         }
@@ -2871,6 +2873,17 @@ mod tests {
         assert_eq!(cooldown.status, AccountRuntimeStatus::Error);
         assert!(cooldown.next_retry_after.is_some());
         assert!(!cooldown.quota.exceeded);
+        assert_eq!(cooldown.quota.backoff_level, 1);
+    }
+
+    #[test]
+    fn transient_upstream_5xx_retry_after_still_increases_backoff() {
+        let first = runtime_cooldown_for_status(502, Some(60), 0);
+        let second = runtime_cooldown_for_status(502, Some(60), first.quota.backoff_level);
+
+        assert_eq!(first.quota.backoff_level, 1);
+        assert_eq!(second.quota.backoff_level, 2);
+        assert!(second.next_retry_after.unwrap() > first.next_retry_after.unwrap());
     }
 
     #[test]

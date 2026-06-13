@@ -251,7 +251,7 @@ mod tests {
             .unwrap();
         assert_eq!(account.runtime_state.status, AccountRuntimeStatus::Active);
         assert_eq!(account.runtime_state.success, 1);
-        assert!(!account.runtime_state.model_states.contains_key("gpt-5"));
+        assert!(account.runtime_state.model_states.contains_key("gpt-5"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
