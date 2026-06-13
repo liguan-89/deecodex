@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "stream", "system-proxy", "socks"] }
 futures-util = "0.3"
 dashmap = "6"
 anyhow = "1"
