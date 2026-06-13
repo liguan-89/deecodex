@@ -797,6 +797,9 @@ pub fn dex_toggle_desktop_client_impl(kind: String, running: bool) -> Result<Val
     }
 }
 
+const FORCE_QUIT_MAX_ROUNDS: usize = 4;
+const FORCE_QUIT_ROUND_DELAY_MS: u64 = 350;
+
 fn force_kill_pid(pid: &str) -> Result<(), String> {
     let pid = pid.trim();
     if pid.is_empty() {
@@ -828,58 +831,129 @@ fn force_kill_pid(pid: &str) -> Result<(), String> {
     }
 }
 
-/// 状态页客户端 Dock：按已检测到的进程 PID 强制退出客户端。
-pub fn dex_force_quit_client_impl(kind: String) -> Result<Value, String> {
-    let spec = client_app_spec_or_err(&kind)?;
-    let instances = client_process_instances_for_spec(spec);
-    if instances.is_empty() {
-        return Ok(json!({
-            "ok": false,
-            "kind": spec.kind,
-            "label": spec.label,
-            "killed": [],
-            "errors": ["未检测到运行中的客户端进程"],
+fn force_quit_client_processes<F, K, S>(
+    spec: &ClientAppSpec,
+    mut collect_instances: F,
+    mut kill_pid: K,
+    mut sleep_after_round: S,
+) -> Value
+where
+    F: FnMut() -> Vec<Value>,
+    K: FnMut(&str) -> Result<(), String>,
+    S: FnMut(),
+{
+    let mut killed = Vec::new();
+    let mut killed_pids = HashSet::new();
+    let mut errors = Vec::new();
+    let mut saw_process = false;
+    let mut rounds = 0usize;
+
+    for round in 1..=FORCE_QUIT_MAX_ROUNDS {
+        let instances = collect_instances();
+        if instances.is_empty() {
+            if !saw_process {
+                return json!({
+                    "ok": false,
+                    "kind": spec.kind,
+                    "label": spec.label,
+                    "killed": [],
+                    "errors": ["未检测到运行中的客户端进程"],
+                    "remaining": [],
+                    "rounds": 0,
+                });
+            }
+            break;
+        }
+
+        saw_process = true;
+        rounds = round;
+        let mut attempted = 0usize;
+        for instance in instances {
+            let pid = instance
+                .get("pid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let command = instance.get("command").cloned().unwrap_or(Value::Null);
+            if pid.is_empty() {
+                errors.push(json!({
+                    "pid": null,
+                    "round": round,
+                    "error": "进程 PID 为空",
+                    "command": command,
+                }));
+                continue;
+            }
+
+            attempted += 1;
+            match kill_pid(&pid) {
+                Ok(()) => {
+                    if killed_pids.insert(pid.clone()) {
+                        killed.push(json!({
+                            "pid": pid,
+                            "round": round,
+                            "command": command,
+                        }));
+                    }
+                }
+                Err(err) => errors.push(json!({
+                    "pid": pid,
+                    "round": round,
+                    "error": err,
+                    "command": command,
+                })),
+            }
+        }
+
+        if attempted > 0 {
+            sleep_after_round();
+        }
+    }
+
+    let remaining = collect_instances();
+    if !remaining.is_empty() {
+        errors.push(json!({
+            "error": format!("仍检测到 {} 个客户端进程", remaining.len()),
+            "remaining": remaining.clone(),
         }));
     }
 
-    let mut killed = Vec::new();
-    let mut errors = Vec::new();
-    for instance in instances {
-        let pid = instance
-            .get("pid")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if pid.is_empty() {
-            errors.push(json!({"pid": null, "error": "进程 PID 为空"}));
-            continue;
-        }
-        match force_kill_pid(&pid) {
-            Ok(()) => killed.push(json!({
-                "pid": pid,
-                "command": instance.get("command").cloned().unwrap_or(Value::Null),
-            })),
-            Err(err) => errors.push(json!({
-                "pid": pid,
-                "error": err,
-                "command": instance.get("command").cloned().unwrap_or(Value::Null),
-            })),
-        }
-    }
-
-    Ok(json!({
-        "ok": !killed.is_empty() && errors.is_empty(),
+    json!({
+        "ok": !killed.is_empty() && remaining.is_empty() && errors.is_empty(),
         "kind": spec.kind,
         "label": spec.label,
         "killed": killed,
         "errors": errors,
-    }))
+        "remaining": remaining,
+        "rounds": rounds,
+    })
+}
+
+/// 状态页客户端 Dock：按已检测到的进程 PID 强制退出客户端，分多轮确认残留进程。
+pub fn dex_force_quit_client_impl(kind: String) -> Result<Value, String> {
+    let spec = client_app_spec_or_err(&kind)?;
+    Ok(force_quit_client_processes(
+        spec,
+        || client_process_instances_for_spec(spec),
+        force_kill_pid,
+        || {
+            std::thread::sleep(std::time::Duration::from_millis(FORCE_QUIT_ROUND_DELAY_MS));
+        },
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    fn fake_process(pid: &str, command: &str) -> Value {
+        json!({
+            "pid": pid,
+            "command": command,
+        })
+    }
 
     #[test]
     fn client_lifecycle_specs_cover_status_dock_entries() {
@@ -970,6 +1044,62 @@ mod tests {
         assert!(!status_command_is_hermes_cli(
             "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python -m hermes_cli.main gateway run --replace"
         ));
+    }
+
+    #[test]
+    fn force_quit_rechecks_until_late_codex_helpers_are_gone() {
+        let spec = client_app_spec_or_err("codex_desktop").unwrap();
+        let first_round = (1..=7)
+            .map(|idx| fake_process(&format!("10{idx}"), "Codex Helper"))
+            .collect::<Vec<_>>();
+        let second_round = (1..=3)
+            .map(|idx| {
+                fake_process(
+                    &format!("20{idx}"),
+                    "/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://",
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut batches = VecDeque::from([first_round, second_round, Vec::new(), Vec::new()]);
+        let mut killed_pids = Vec::new();
+
+        let result = force_quit_client_processes(
+            spec,
+            || batches.pop_front().unwrap_or_default(),
+            |pid| {
+                killed_pids.push(pid.to_string());
+                Ok(())
+            },
+            || {},
+        );
+
+        assert_eq!(result["ok"], json!(true));
+        assert_eq!(result["rounds"], json!(2));
+        assert_eq!(result["remaining"].as_array().unwrap().len(), 0);
+        assert_eq!(result["killed"].as_array().unwrap().len(), 10);
+        assert_eq!(killed_pids.len(), 10);
+    }
+
+    #[test]
+    fn force_quit_reports_remaining_after_max_rounds() {
+        let spec = client_app_spec_or_err("codex_desktop").unwrap();
+        let mut killed_pids = Vec::new();
+
+        let result = force_quit_client_processes(
+            spec,
+            || vec![fake_process("301", "Codex Helper")],
+            |pid| {
+                killed_pids.push(pid.to_string());
+                Ok(())
+            },
+            || {},
+        );
+
+        assert_eq!(result["ok"], json!(false));
+        assert_eq!(result["rounds"], json!(FORCE_QUIT_MAX_ROUNDS));
+        assert_eq!(result["remaining"].as_array().unwrap().len(), 1);
+        assert_eq!(result["killed"].as_array().unwrap().len(), 1);
+        assert_eq!(killed_pids.len(), FORCE_QUIT_MAX_ROUNDS);
     }
 
     #[test]

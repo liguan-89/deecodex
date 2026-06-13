@@ -290,8 +290,10 @@ async function handleClientDockContextMenu(event, kind) {
     const result = await invoke('dex_force_quit_client', { kind: normalized });
     const killed = Array.isArray(result?.killed) ? result.killed.length : Number(result?.killed || 0);
     const errors = Array.isArray(result?.errors) ? result.errors.length : 0;
+    const remaining = Array.isArray(result?.remaining) ? result.remaining.length : 0;
     if (killed) {
-      showToast(`${item.label} 已强制退出 ${killed} 个进程${errors ? `，${errors} 个失败` : ''}`, errors ? 'info' : 'success');
+      const tail = remaining ? `，仍检测到 ${remaining} 个残留` : (errors ? `，${errors} 个失败` : '');
+      showToast(`${item.label} 已强制退出 ${killed} 个进程${tail}`, remaining || errors ? 'info' : 'success');
     } else {
       showToast(`${item.label} 强制退出失败`, 'error');
     }
