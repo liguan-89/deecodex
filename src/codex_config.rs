@@ -13,6 +13,8 @@ const DEECODEX_PROVIDER: &str = "deecodex";
 const DEECODEX_CLI_PROVIDER: &str = "deecodex_cli";
 const DEECODEX_DESKTOP_PROVIDER: &str = "deecodex_desktop";
 const DEX_ROUTER_PROVIDER: &str = "dex_router";
+const DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS: &str =
+    "You are Codex, a coding agent. Follow the active Codex Desktop instructions and complete the user request safely.";
 const CODEX_REGISTRY_MODEL_SLUGS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
@@ -970,6 +972,7 @@ fn build_context_catalog(
         account_models,
         context_window_override,
     );
+    ensure_model_catalog_schema(models, &catalog_model_template(&template_models));
 
     // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
     let models = catalog
@@ -1182,7 +1185,182 @@ fn account_catalog_field_is_supported(key: &str) -> bool {
             | "use_responses_lite"
             | "experimental_supported_tools"
             | "prefer_websockets"
+            | "base_instructions"
+            | "model_messages"
     )
+}
+
+fn ensure_model_catalog_schema(models: &mut [Value], schema_template: &Value) {
+    for model in models {
+        let is_account_model = model
+            .get("slug")
+            .and_then(Value::as_str)
+            .is_some_and(|slug| slug.starts_with(DEX_ACCOUNT_MODEL_SLUG_PREFIX));
+        ensure_model_catalog_entry_schema(model, schema_template, is_account_model);
+    }
+}
+
+fn ensure_model_catalog_entry_schema(
+    model: &mut Value,
+    schema_template: &Value,
+    is_account_model: bool,
+) {
+    if is_account_model {
+        model["base_instructions"] = Value::String(DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS.into());
+        model["model_messages"] = compact_dex_account_model_messages(schema_template);
+    } else {
+        fill_catalog_field_from_template(
+            model,
+            schema_template,
+            "base_instructions",
+            Value::String(DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS.into()),
+        );
+        fill_catalog_field_from_template(
+            model,
+            schema_template,
+            "model_messages",
+            compact_dex_account_model_messages(schema_template),
+        );
+    }
+
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "supports_reasoning_summaries",
+        Value::Bool(true),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "default_reasoning_summary",
+        Value::String("none".into()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "support_verbosity",
+        Value::Bool(true),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "default_verbosity",
+        Value::String("low".into()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "apply_patch_tool_type",
+        Value::String("freeform".into()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "web_search_tool_type",
+        Value::String("text_and_image".into()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "truncation_policy",
+        serde_json::json!({ "mode": "tokens", "limit": 10000 }),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "supports_parallel_tool_calls",
+        Value::Bool(true),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "supports_image_detail_original",
+        Value::Bool(true),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "effective_context_window_percent",
+        Value::from(95),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "experimental_supported_tools",
+        Value::Array(Vec::new()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "supports_search_tool",
+        Value::Bool(true),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "use_responses_lite",
+        Value::Bool(false),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "input_modalities",
+        serde_json::json!(["text", "image"]),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "additional_speed_tiers",
+        Value::Array(Vec::new()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "service_tiers",
+        Value::Array(Vec::new()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "reasoning_summary_format",
+        Value::String("experimental".into()),
+    );
+}
+
+fn fill_catalog_field_from_template(
+    model: &mut Value,
+    schema_template: &Value,
+    key: &str,
+    fallback: Value,
+) {
+    let should_fill = model.get(key).is_none_or(Value::is_null);
+    if !should_fill {
+        return;
+    }
+    model[key] = schema_template
+        .get(key)
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or(fallback);
+}
+
+fn compact_dex_account_model_messages(schema_template: &Value) -> Value {
+    let instructions_variables = schema_template
+        .get("model_messages")
+        .and_then(|messages| messages.get("instructions_variables"))
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "personality_default": null,
+                "personality_friendly": null,
+                "personality_pragmatic": null
+            })
+        });
+    serde_json::json!({
+        "instructions_template": "{{ base_instructions }}",
+        "instructions_variables": instructions_variables
+    })
 }
 
 fn catalog_model_template_for_account_model(
@@ -2162,8 +2340,14 @@ wire_api = "responses"
         assert_eq!(account_entry["display_name"], "GPT-5.5 Proxy");
         assert_eq!(account_entry["context_window"], 128_000);
         assert_eq!(account_entry["max_context_window"], 128_000);
-        assert!(account_entry.get("base_instructions").is_none());
-        assert!(account_entry.get("model_messages").is_none());
+        assert_eq!(
+            account_entry["base_instructions"],
+            DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS
+        );
+        assert_eq!(
+            account_entry["model_messages"]["instructions_template"],
+            "{{ base_instructions }}"
+        );
         assert_eq!(
             decode_dex_account_model_slug(account_entry["slug"].as_str().unwrap())
                 .unwrap()
@@ -2183,6 +2367,10 @@ wire_api = "responses"
         assert_eq!(deepseek_entry["display_name"], "DeepSeek V4 Pro");
         assert_eq!(deepseek_entry["context_window"], 272000);
         assert_eq!(deepseek_entry["max_context_window"], 272000);
+        assert_eq!(
+            deepseek_entry["model_messages"]["instructions_template"],
+            "{{ base_instructions }}"
+        );
         assert!(models
             .iter()
             .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.5")));
