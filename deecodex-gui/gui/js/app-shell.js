@@ -69,7 +69,9 @@ async function normalizeThreadsOnStartup() {
     const changed = Number(diff?.changed_count || 0);
     const rolloutFixed = Number(diff?.rollout_metadata_fixed_count || 0);
     const remaining = Number(diff?.remaining_non_unified_count || 0);
-    if (changed || rolloutFixed || remaining) {
+    const desktopFixed = Number(diff?.desktop_project_fixed_count || 0);
+    const desktopPending = Number(diff?.desktop_project_pending_count || 0);
+    if (changed || rolloutFixed || remaining || desktopFixed || desktopPending) {
       console.info('[deecodex] Codex Desktop 线程已自动归一', diff);
       if (currentPanel === 'threads') await refreshThreads();
     }

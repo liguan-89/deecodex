@@ -263,18 +263,30 @@ fn load_env() {
     }
 }
 
-fn normalize_codex_desktop_threads_once(data_dir: &std::path::Path, phase: &str) {
+const STARTUP_DESKTOP_INDEX_STABILIZE_ATTEMPTS: usize = 4;
+const STARTUP_DESKTOP_INDEX_STABILIZE_DELAY_MS: u64 = 1_500;
+const STARTUP_DESKTOP_INDEX_GUARD_ATTEMPTS: usize = 40;
+const STARTUP_DESKTOP_INDEX_GUARD_INTERVAL_SECS: u64 = 15;
+
+fn normalize_codex_desktop_threads_once(
+    data_dir: &std::path::Path,
+    phase: &str,
+) -> Option<deecodex::codex_threads::MigrationDiff> {
     match deecodex::codex_threads::normalize_desktop_threads(data_dir) {
         Ok(diff) => {
             if diff.changed_count > 0
                 || diff.rollout_metadata_fixed_count > 0
                 || diff.remaining_non_unified_count > 0
+                || diff.desktop_project_fixed_count > 0
+                || diff.desktop_project_pending_count > 0
             {
                 tracing::info!(
                     target_provider = %diff.target_provider,
                     changed = diff.changed_count,
                     rollout_metadata_fixed = diff.rollout_metadata_fixed_count,
                     remaining = diff.remaining_non_unified_count,
+                    desktop_project_fixed = diff.desktop_project_fixed_count,
+                    desktop_project_pending = diff.desktop_project_pending_count,
                     phase,
                     "Codex Desktop 线程启动归一完成"
                 );
@@ -285,19 +297,22 @@ fn normalize_codex_desktop_threads_once(data_dir: &std::path::Path, phase: &str)
                     "Codex Desktop 线程启动归一无需变更"
                 );
             }
+            Some(diff)
         }
         Err(err) => {
             tracing::warn!(phase, "Codex Desktop 线程启动归一失败: {err}");
+            None
         }
     }
 }
 
 fn normalize_codex_desktop_threads_on_startup(data_dir: &std::path::Path) {
-    normalize_codex_desktop_threads_once(data_dir, "startup");
+    let _ = normalize_codex_desktop_threads_once(data_dir, "startup");
 }
 
 fn schedule_codex_desktop_thread_normalization(data_dir: std::path::PathBuf) {
     for (phase, delay_secs) in [
+        ("startup-delay-2s", 2_u64),
         ("startup-delay-5s", 5_u64),
         ("startup-delay-20s", 20),
         ("startup-delay-60s", 60),
@@ -306,9 +321,53 @@ fn schedule_codex_desktop_thread_normalization(data_dir: std::path::PathBuf) {
         let data_dir = data_dir.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-            normalize_codex_desktop_threads_once(&data_dir, phase);
+            let _ = normalize_codex_desktop_threads_once(&data_dir, phase);
         });
     }
+
+    let stabilize_data_dir = data_dir.clone();
+    tauri::async_runtime::spawn(async move {
+        for attempt in 1..=STARTUP_DESKTOP_INDEX_STABILIZE_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                STARTUP_DESKTOP_INDEX_STABILIZE_DELAY_MS,
+            ))
+            .await;
+            let Ok(status) = deecodex::codex_threads::status(&stabilize_data_dir) else {
+                continue;
+            };
+            if status.desktop_project_pending_count == 0 {
+                break;
+            }
+            tracing::warn!(
+                attempt,
+                pending = status.desktop_project_pending_count,
+                "Codex Desktop 项目索引启动复查仍有待补齐项，重新归一"
+            );
+            let _ = normalize_codex_desktop_threads_once(&stabilize_data_dir, "startup-stabilize");
+        }
+    });
+
+    let guard_data_dir = data_dir;
+    tauri::async_runtime::spawn(async move {
+        for attempt in 1..=STARTUP_DESKTOP_INDEX_GUARD_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                STARTUP_DESKTOP_INDEX_GUARD_INTERVAL_SECS,
+            ))
+            .await;
+            let Ok(status) = deecodex::codex_threads::status(&guard_data_dir) else {
+                continue;
+            };
+            if status.desktop_project_pending_count == 0 {
+                continue;
+            }
+            tracing::warn!(
+                attempt,
+                pending = status.desktop_project_pending_count,
+                "Codex Desktop 项目索引后台守护发现待补齐项，重新归一"
+            );
+            let _ = normalize_codex_desktop_threads_once(&guard_data_dir, "startup-guard");
+        }
+    });
 }
 
 pub fn run() {

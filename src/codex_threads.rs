@@ -18,6 +18,7 @@ const MAX_ROLLOUT_MESSAGE_CHARS: usize = 24_000;
 const MAX_ROLLOUT_TOTAL_CHARS: usize = 1_500_000;
 const DESKTOP_RECENT_LOAD_WINDOW: usize = 20;
 const MAX_ROLLOUT_TOKEN_USAGE_SCAN_FILES: usize = 400;
+const DESKTOP_PROJECT_INDEX_REPAIR_ATTEMPTS: usize = 3;
 
 /// 线程信息（只读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1465,10 +1466,48 @@ fn remove_deleted_thread_from_desktop_state(db_path: &Path, thread_id: &str) -> 
             .unwrap_or(0)
     ));
     std::fs::write(&backup_path, raw).context("备份 Codex Desktop 全局状态失败")?;
-    let next_raw =
-        serde_json::to_string(&state).context("序列化 Codex Desktop 全局状态失败")? + "\n";
-    std::fs::write(&global_path, next_raw).context("写入 Codex Desktop 全局状态失败")?;
+    write_json_atomically(&global_path, &state).context("写入 Codex Desktop 全局状态失败")?;
     Ok(changed)
+}
+
+fn file_signature(path: &Path) -> Result<(u64, Option<SystemTime>)> {
+    let meta =
+        std::fs::metadata(path).with_context(|| format!("读取文件状态失败: {}", path.display()))?;
+    Ok((meta.len(), meta.modified().ok()))
+}
+
+fn write_raw_atomically(path: &Path, raw: &str) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = path.with_file_name(format!(
+        ".{file_name}.deecodex-tmp-{}-{suffix}",
+        std::process::id()
+    ));
+    let result = (|| -> Result<()> {
+        std::fs::write(&tmp_path, raw).context("写入 Codex Desktop 临时状态失败")?;
+        std::fs::rename(&tmp_path, path).context("替换 Codex Desktop 全局状态失败")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
+fn write_json_atomically(path: &Path, value: &Value) -> Result<()> {
+    let raw = serde_json::to_string(value).context("序列化 Codex Desktop 全局状态失败")? + "\n";
+    write_raw_atomically(path, &raw)?;
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        let backup_path = path.with_file_name(format!("{file_name}.bak"));
+        write_raw_atomically(&backup_path, &raw)?;
+    }
+    Ok(())
 }
 
 fn path_starts_with(path: &str, root: &str) -> bool {
@@ -1959,11 +1998,10 @@ fn get_desktop_project_index_status(
     Ok(DesktopProjectIndexStatus {
         indexed_count,
         pending_count,
-        repair_blocked: pending_count > 0 && is_live_codex_desktop_state(&global_path),
+        repair_blocked: false,
         recent_visible_count,
         recent_pending_count,
-        recent_repair_blocked: recent_pending_count > 0
-            && is_live_codex_desktop_state(&global_path),
+        recent_repair_blocked: false,
     })
 }
 
@@ -1982,140 +2020,187 @@ fn repair_desktop_project_index(
         return Ok(DesktopProjectRepairResult::default());
     }
 
-    let raw = std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
-    let mut state: Value = serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
-
     let rows = read_desktop_thread_rows(conn)?;
-    let (project_threads, assignments_by_thread) = desktop_project_candidates(&state, rows);
-    if project_threads.is_empty() {
+    if rows.is_empty() {
         return Ok(DesktopProjectRepairResult::default());
     }
-    let before_status = get_desktop_project_index_status(db_path, conn)?;
-    if before_status.pending_count > 0 && is_live_codex_desktop_state(&global_path) {
-        tracing::warn!(
-            pending = before_status.pending_count,
-            path = %global_path.display(),
-            "Codex Desktop 正在运行，跳过项目索引写入以避免被运行态全局状态覆盖"
-        );
-        return Ok(DesktopProjectRepairResult {
-            fixed_count: 0,
-            pending_count: before_status.pending_count,
-            blocked: true,
-        });
-    }
 
-    let mut changed = 0usize;
-    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
-    let project_order = value_string_array(state.get("project-order"));
-    let labels = value_string_object(state.get("electron-workspace-root-labels"));
-    let mut next_saved_roots = saved_roots;
-    let mut next_project_order = project_order;
-    let mut next_labels = labels;
-    let mut next_assignments = value_string_object(state.get("thread-project-assignments"));
-    let mut next_projectless = value_string_array(state.get("projectless-thread-ids"));
-    let mut next_hints = value_string_object(state.get("thread-workspace-root-hints"));
-    let mut next_orders = value_string_object(state.get("sidebar-project-thread-orders"));
+    let mut total_changed = 0usize;
+    let mut last_pending = get_desktop_project_index_status(db_path, conn)?.pending_count;
+    let mut backup_written = false;
 
-    for project in project_threads.keys() {
-        changed += append_unique(&mut next_saved_roots, project) as usize;
-        changed += append_unique(&mut next_project_order, project) as usize;
-        if !next_labels.contains_key(project) {
-            next_labels.insert(project.clone(), Value::String(project_label(project)));
-            changed += 1;
+    for attempt in 1..=DESKTOP_PROJECT_INDEX_REPAIR_ATTEMPTS {
+        let initial_signature = file_signature(&global_path)?;
+        let raw =
+            std::fs::read_to_string(&global_path).context("读取 Codex Desktop 全局状态失败")?;
+        let mut state: Value =
+            serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
+
+        let (project_threads, assignments_by_thread) =
+            desktop_project_candidates(&state, rows.clone());
+        if project_threads.is_empty() {
+            return Ok(DesktopProjectRepairResult {
+                fixed_count: total_changed,
+                pending_count: 0,
+                blocked: false,
+            });
         }
-    }
 
-    for (thread_id, project) in &assignments_by_thread {
-        let assignment = json!({
-            "projectKind": "local",
-            "projectId": project,
-            "path": project,
-            "pendingCoreUpdate": false,
-        });
-        if next_assignments.get(thread_id) != Some(&assignment) {
-            next_assignments.insert(thread_id.clone(), assignment);
-            changed += 1;
-        }
-        changed += remove_value(&mut next_projectless, thread_id) as usize;
-        if next_hints.get(thread_id).and_then(Value::as_str) != Some(project.as_str()) {
-            next_hints.insert(thread_id.clone(), Value::String(project.clone()));
-            changed += 1;
-        }
-    }
+        let mut changed = 0usize;
+        let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
+        let active_roots = value_string_array(state.get("active-workspace-roots"));
+        let project_order = value_string_array(state.get("project-order"));
+        let labels = value_string_object(state.get("electron-workspace-root-labels"));
+        let mut next_saved_roots = saved_roots;
+        let mut next_active_roots = active_roots;
+        let mut next_project_order = project_order;
+        let mut next_labels = labels;
+        let mut next_assignments = value_string_object(state.get("thread-project-assignments"));
+        let mut next_projectless = value_string_array(state.get("projectless-thread-ids"));
+        let mut next_hints = value_string_object(state.get("thread-workspace-root-hints"));
+        let mut next_orders = value_string_object(state.get("sidebar-project-thread-orders"));
 
-    for (project, thread_ids) in &project_threads {
-        let mut merged = Vec::new();
-        let mut seen = HashSet::new();
-        for id in thread_ids {
-            if seen.insert(id.clone()) {
-                merged.push(Value::String(id.clone()));
+        for project in project_threads.keys() {
+            changed += append_unique(&mut next_saved_roots, project) as usize;
+            changed += append_unique(&mut next_active_roots, project) as usize;
+            changed += append_unique(&mut next_project_order, project) as usize;
+            if !next_labels.contains_key(project) {
+                next_labels.insert(project.clone(), Value::String(project_label(project)));
+                changed += 1;
             }
         }
-        let sort_key = next_orders
-            .get(project)
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("sortKey"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        if let Some(existing_ids) = next_orders
-            .get(project)
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("threadIds"))
-            .and_then(Value::as_array)
-        {
-            for id in existing_ids.iter().filter_map(Value::as_str) {
-                if seen.insert(id.to_string()) {
-                    merged.push(Value::String(id.to_string()));
+
+        for (thread_id, project) in &assignments_by_thread {
+            let assignment = json!({
+                "projectKind": "local",
+                "projectId": project,
+                "path": project,
+                "pendingCoreUpdate": false,
+            });
+            if next_assignments.get(thread_id) != Some(&assignment) {
+                next_assignments.insert(thread_id.clone(), assignment);
+                changed += 1;
+            }
+            changed += remove_value(&mut next_projectless, thread_id) as usize;
+            if next_hints.get(thread_id).and_then(Value::as_str) != Some(project.as_str()) {
+                next_hints.insert(thread_id.clone(), Value::String(project.clone()));
+                changed += 1;
+            }
+        }
+
+        for (project, thread_ids) in &project_threads {
+            let mut merged = Vec::new();
+            let mut seen = HashSet::new();
+            for id in thread_ids {
+                if seen.insert(id.clone()) {
+                    merged.push(Value::String(id.clone()));
                 }
             }
+            let sort_key = next_orders
+                .get(project)
+                .and_then(Value::as_object)
+                .and_then(|object| object.get("sortKey"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(existing_ids) = next_orders
+                .get(project)
+                .and_then(Value::as_object)
+                .and_then(|object| object.get("threadIds"))
+                .and_then(Value::as_array)
+            {
+                for id in existing_ids.iter().filter_map(Value::as_str) {
+                    if seen.insert(id.to_string()) {
+                        merged.push(Value::String(id.to_string()));
+                    }
+                }
+            }
+
+            let mut order = Map::new();
+            order.insert("threadIds".to_string(), Value::Array(merged));
+            if let Some(sort_key) = sort_key {
+                order.insert("sortKey".to_string(), Value::String(sort_key));
+            }
+            let next = Value::Object(order);
+            if next_orders.get(project) != Some(&next) {
+                next_orders.insert(project.clone(), next);
+                changed += 1;
+            }
         }
 
-        let mut order = Map::new();
-        order.insert("threadIds".to_string(), Value::Array(merged));
-        if let Some(sort_key) = sort_key {
-            order.insert("sortKey".to_string(), Value::String(sort_key));
+        if changed == 0 {
+            let status = get_desktop_project_index_status(db_path, conn)?;
+            return Ok(DesktopProjectRepairResult {
+                fixed_count: total_changed,
+                pending_count: status.pending_count,
+                blocked: false,
+            });
         }
-        let next = Value::Object(order);
-        if next_orders.get(project) != Some(&next) {
-            next_orders.insert(project.clone(), next);
-            changed += 1;
+
+        state["electron-saved-workspace-roots"] = json!(next_saved_roots);
+        state["active-workspace-roots"] = json!(next_active_roots);
+        state["project-order"] = json!(next_project_order);
+        state["electron-workspace-root-labels"] = Value::Object(next_labels);
+        state["thread-project-assignments"] = Value::Object(next_assignments);
+        state["projectless-thread-ids"] = json!(next_projectless);
+        state["thread-workspace-root-hints"] = Value::Object(next_hints);
+        state["sidebar-project-thread-orders"] = Value::Object(next_orders);
+
+        if file_signature(&global_path)? != initial_signature {
+            tracing::warn!(
+                attempt,
+                path = %global_path.display(),
+                "Codex Desktop 全局状态在项目索引修复期间发生变化，重读后重试"
+            );
+            continue;
         }
+
+        if !backup_written {
+            let backup_path = global_path.with_file_name(format!(
+                ".codex-global-state.json.deecodex-desktop-index-{}.bak",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::write(&backup_path, &raw).context("备份 Codex Desktop 全局状态失败")?;
+            backup_written = true;
+        }
+
+        write_json_atomically(&global_path, &state)?;
+        total_changed += changed;
+
+        let after_status = get_desktop_project_index_status(db_path, conn)?;
+        last_pending = after_status.pending_count;
+        if last_pending == 0 {
+            tracing::info!(
+                fixed = total_changed,
+                projects = project_threads.len(),
+                path = %global_path.display(),
+                "已修复 Codex Desktop 项目线程索引"
+            );
+            return Ok(DesktopProjectRepairResult {
+                fixed_count: total_changed,
+                pending_count: 0,
+                blocked: false,
+            });
+        }
+
+        tracing::warn!(
+            attempt,
+            pending = last_pending,
+            path = %global_path.display(),
+            "Codex Desktop 项目索引写入后仍有待补齐项，重读状态后重试"
+        );
     }
 
-    if changed == 0 {
-        return Ok(DesktopProjectRepairResult::default());
-    }
-
-    state["electron-saved-workspace-roots"] = json!(next_saved_roots);
-    state["project-order"] = json!(next_project_order);
-    state["electron-workspace-root-labels"] = Value::Object(next_labels);
-    state["thread-project-assignments"] = Value::Object(next_assignments);
-    state["projectless-thread-ids"] = json!(next_projectless);
-    state["thread-workspace-root-hints"] = Value::Object(next_hints);
-    state["sidebar-project-thread-orders"] = Value::Object(next_orders);
-
-    let backup_path = global_path.with_file_name(format!(
-        ".codex-global-state.json.deecodex-desktop-index-{}.bak",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&backup_path, raw).context("备份 Codex Desktop 全局状态失败")?;
-
-    let next_raw =
-        serde_json::to_string(&state).context("序列化 Codex Desktop 全局状态失败")? + "\n";
-    std::fs::write(&global_path, next_raw).context("写入 Codex Desktop 全局状态失败")?;
-
-    tracing::info!(
-        fixed = changed,
-        projects = project_threads.len(),
+    tracing::warn!(
+        pending = last_pending,
         path = %global_path.display(),
-        "已修复 Codex Desktop 项目线程索引"
+        "Codex Desktop 项目索引修复已重试，仍有待补齐项"
     );
     Ok(DesktopProjectRepairResult {
-        fixed_count: changed,
-        pending_count: 0,
+        fixed_count: total_changed,
+        pending_count: last_pending,
         blocked: false,
     })
 }
@@ -2187,12 +2272,11 @@ fn repair_desktop_recent_visibility(
     // updated_at/updated_at_ms 临时抬到当前时间，虽然能挤进首屏，
     // 但会把其他真实最近线程顶出去，看起来像“线程丢失”。这里改为只
     // 报告待显示数量，项目索引仍可修复，但不再改写线程时间戳。
-    let blocked = is_live_codex_desktop_state(&global_path);
-    if blocked {
-        tracing::warn!(
+    if is_live_codex_desktop_state(&global_path) {
+        tracing::info!(
             pending = pending_ids.len(),
             path = %global_path.display(),
-            "Codex Desktop 正在运行，Recent 仅做只读诊断"
+            "Codex Desktop 正在运行，Recent 仍仅做只读诊断"
         );
     } else {
         tracing::info!(
@@ -2205,7 +2289,7 @@ fn repair_desktop_recent_visibility(
     Ok(DesktopRecentRepairResult {
         fixed_count: 0,
         pending_count: pending_ids.len(),
-        blocked,
+        blocked: false,
     })
 }
 
@@ -2406,8 +2490,9 @@ fn do_calibrate(
         conn.pragma_update(None, "journal_mode", "WAL")?;
         let remaining_before = count_non_unified_provider(&conn, &target_provider)?;
         if codex_desktop_running && remaining_before > 0 {
-            anyhow::bail!(
-                "Codex Desktop 正在运行，暂不校准 {remaining_before} 条线程；请完全退出 Codex Desktop 后再重试，避免 Desktop 运行态把 provider 写回旧值"
+            tracing::info!(
+                remaining_before,
+                "Codex Desktop 正在运行，继续执行线程校准；如运行态稍后回写，下次校准会自动重试"
             );
         }
         let migrated = unify_remaining_non_deecodex(&conn, backup_path)?;
@@ -2447,8 +2532,9 @@ fn do_calibrate(
     conn.pragma_update(None, "journal_mode", "WAL")?;
     let remaining_before = count_non_unified_provider(&conn, &target_provider)?;
     if codex_desktop_running && remaining_before > 0 {
-        anyhow::bail!(
-            "Codex Desktop 正在运行，暂不校准 {remaining_before} 条线程；请完全退出 Codex Desktop 后再重试，避免 Desktop 运行态把 provider 写回旧值"
+        tracing::info!(
+            remaining_before,
+            "Codex Desktop 正在运行，继续执行线程校准；如运行态稍后回写，下次校准会自动重试"
         );
     }
 
@@ -3546,7 +3632,11 @@ mod tests {
             state["thread-project-assignments"]["ordered-thread"]["projectId"].as_str(),
             Some(project)
         );
-        assert!(!state["active-workspace-roots"].is_array());
+        assert!(state["active-workspace-roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some(project)));
 
         let conn = Connection::open(&db_path).expect("open db");
         let status = get_desktop_project_index_status(&db_path, &conn).expect("project status");

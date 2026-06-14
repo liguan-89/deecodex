@@ -5538,7 +5538,7 @@ fn model_fallback_candidates(
         .into_iter()
         .flatten()
         .map(String::as_str)
-        .chain(default_model.into_iter())
+        .chain(default_model)
         .chain(profile_models.iter().map(String::as_str))
     {
         let model = model.trim();

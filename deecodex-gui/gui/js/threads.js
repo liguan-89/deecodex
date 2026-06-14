@@ -154,8 +154,8 @@ function renderCodexThreadActions(status) {
   const desktopPending = Number(status.desktop_project_pending_count || 0);
   const actionNeeded = pendingUnified > 0;
   const migrateDisabled = actionNeeded ? '' : ' disabled';
-  const desktopTitle = desktopBlocked
-    ? ' title="Codex Desktop 正在运行，项目索引写入可能被运行态覆盖；退出 Codex 后再归一更稳"'
+  const desktopTitle = desktopPending
+    ? ' title="项目索引待补齐；立即归一会写入并复查，若状态刷新后仍未补齐可再次重试"'
     : '';
   const desktopIndexTag = desktopPending > 0
     ? `<span class="tag tag-warning"${desktopTitle}>索引待同步: ${desktopPending}</span>`

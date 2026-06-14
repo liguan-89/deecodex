@@ -1,7 +1,12 @@
 use serde_json::{json, Value};
+use std::path::Path;
+use std::time::Duration;
 use tauri::State;
 
 use crate::ServerManager;
+
+const DESKTOP_INDEX_STABILIZE_ATTEMPTS: usize = 4;
+const DESKTOP_INDEX_STABILIZE_DELAY_MS: u64 = 1_500;
 
 pub async fn get_threads_status_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
@@ -63,9 +68,37 @@ pub async fn migrate_threads_impl(manager: State<'_, ServerManager>) -> Result<V
 
 pub async fn normalize_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let diff = deecodex::codex_threads::normalize_desktop_threads(&data_dir)
-        .map_err(|e| format!("归一失败: {e}"))?;
+    let diff = normalize_desktop_threads_stabilized(&data_dir).await?;
     serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+async fn normalize_desktop_threads_stabilized(
+    data_dir: &Path,
+) -> Result<deecodex::codex_threads::MigrationDiff, String> {
+    let mut diff = deecodex::codex_threads::normalize_desktop_threads(data_dir)
+        .map_err(|e| format!("归一失败: {e}"))?;
+    if !diff.codex_desktop_running || diff.desktop_project_fixed_count == 0 {
+        return Ok(diff);
+    }
+
+    for attempt in 1..=DESKTOP_INDEX_STABILIZE_ATTEMPTS {
+        tokio::time::sleep(Duration::from_millis(DESKTOP_INDEX_STABILIZE_DELAY_MS)).await;
+        let status = deecodex::codex_threads::status(data_dir)
+            .map_err(|e| format!("复查线程状态失败: {e}"))?;
+        if status.desktop_project_pending_count == 0 {
+            break;
+        }
+
+        tracing::warn!(
+            attempt,
+            pending = status.desktop_project_pending_count,
+            "Codex Desktop 项目索引被运行态回写，重新归一"
+        );
+        diff = deecodex::codex_threads::normalize_desktop_threads(data_dir)
+            .map_err(|e| format!("归一失败: {e}"))?;
+    }
+
+    Ok(diff)
 }
 
 pub async fn restore_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
