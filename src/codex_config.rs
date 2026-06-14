@@ -1132,12 +1132,57 @@ fn prepend_dex_account_catalog_models(
             ensure_model_context_fields(&mut model);
             cap_account_model_max_context_window(&mut model);
         }
-        model["availability_nux"] = Value::Null;
+        prune_account_catalog_entry(&mut model);
         account_entries.push(model);
     }
     if !account_entries.is_empty() {
         models.splice(0..0, account_entries);
     }
+}
+
+fn prune_account_catalog_entry(model: &mut Value) {
+    let Some(object) = model.as_object_mut() else {
+        return;
+    };
+    object.retain(|key, _| account_catalog_field_is_supported(key));
+}
+
+fn account_catalog_field_is_supported(key: &str) -> bool {
+    matches!(
+        key,
+        "slug"
+            | "display_name"
+            | "description"
+            | "provider"
+            | "visibility"
+            | "supported_in_api"
+            | "priority"
+            | "context_window"
+            | "max_context_window"
+            | "auto_compact_token_limit"
+            | "effective_context_window_percent"
+            | "minimal_client_version"
+            | "default_reasoning_level"
+            | "supported_reasoning_levels"
+            | "shell_type"
+            | "input_modalities"
+            | "supports_image_detail_original"
+            | "supports_parallel_tool_calls"
+            | "supports_reasoning_summaries"
+            | "supports_search_tool"
+            | "support_verbosity"
+            | "default_verbosity"
+            | "default_reasoning_summary"
+            | "reasoning_summary_format"
+            | "apply_patch_tool_type"
+            | "web_search_tool_type"
+            | "truncation_policy"
+            | "service_tiers"
+            | "additional_speed_tiers"
+            | "use_responses_lite"
+            | "experimental_supported_tools"
+            | "prefer_websockets"
+    )
 }
 
 fn catalog_model_template_for_account_model(
@@ -2069,6 +2114,8 @@ wire_api = "responses"
                 {
                     "slug": "gpt-5.5",
                     "display_name": "GPT-5.5",
+                    "base_instructions": "large prompt that should not be copied into account entries",
+                    "model_messages": [{"role": "system", "content": "large prompt"}],
                     "context_window": 272000,
                     "max_context_window": 1000000,
                     "visibility": "list",
@@ -2115,6 +2162,8 @@ wire_api = "responses"
         assert_eq!(account_entry["display_name"], "GPT-5.5 Proxy");
         assert_eq!(account_entry["context_window"], 128_000);
         assert_eq!(account_entry["max_context_window"], 128_000);
+        assert!(account_entry.get("base_instructions").is_none());
+        assert!(account_entry.get("model_messages").is_none());
         assert_eq!(
             decode_dex_account_model_slug(account_entry["slug"].as_str().unwrap())
                 .unwrap()

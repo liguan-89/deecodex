@@ -137,9 +137,85 @@ fn desktop_thread_filter_sql() -> &'static str {
 ///
 /// 依次搜索多个可能的 Codex 数据目录，优先找版本号最大的 `state_*.sqlite`（不含 -wal/-shm 后缀）。
 fn find_state_db(home: &Path) -> Option<PathBuf> {
-    // 可能的 Codex 数据目录列表（按优先级）
+    find_state_dbs(home).into_iter().next()
+}
+
+fn find_state_dbs(home: &Path) -> Vec<PathBuf> {
+    let search_dirs = state_db_search_dirs(home);
+
+    tracing::debug!(dirs = ?search_dirs, "搜索 Codex state 数据库");
+
+    let mut candidates = Vec::new();
+    for (dir_index, codex_dir) in search_dirs.iter().enumerate() {
+        if !codex_dir.is_dir() {
+            tracing::debug!(dir = %codex_dir.display(), "Codex 目录不存在，跳过");
+            continue;
+        }
+
+        let entries = match std::fs::read_dir(codex_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                tracing::warn!(dir = %codex_dir.display(), "读取 Codex 目录失败，跳过: {err}");
+                continue;
+            }
+        };
+        candidates.extend(entries.filter_map(|e| e.ok()).filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("state_")
+                && name.ends_with(".sqlite")
+                && !name.ends_with("-wal")
+                && !name.ends_with("-shm")
+            {
+                let path = e.path();
+                let version = state_db_version(&name)?;
+                let metadata = path.metadata().ok()?;
+                let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+                let size = metadata.len();
+                Some((path, dir_index, version, modified, size))
+            } else {
+                None
+            }
+        }));
+    }
+
+    if candidates.is_empty() {
+        tracing::warn!(home = %home.display(), "未找到 Codex state SQLite 数据库");
+        return Vec::new();
+    }
+
+    candidates.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| b.4.cmp(&a.4))
+    });
+    let mut seen = HashSet::new();
+    let found = candidates
+        .into_iter()
+        .filter_map(|(path, _, _, _, _)| {
+            let key = path.to_string_lossy().to_string();
+            seen.insert(key).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    tracing::info!(dbs = ?found, "找到 Codex state 数据库");
+    found
+}
+
+fn state_db_search_dirs(home: &Path) -> Vec<PathBuf> {
+    // 可能的 Codex 数据目录列表（按优先级）。新版 Codex Desktop/本地运行态
+    // 可能使用 CODEX_SQLITE_HOME，即默认的 ~/.codex/sqlite；旧版仍使用 ~/.codex。
     #[allow(unused_mut)]
-    let mut search_dirs: Vec<PathBuf> = vec![home.join(".codex")];
+    let mut search_dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(sqlite_home) = std::env::var("CODEX_SQLITE_HOME") {
+        let sqlite_home = PathBuf::from(sqlite_home);
+        if sqlite_home.starts_with(home) {
+            search_dirs.push(sqlite_home);
+        }
+    }
+    search_dirs.push(home.join(".codex").join("sqlite"));
+    search_dirs.push(home.join(".codex"));
 
     // Windows：Codex Desktop 可能把数据放在不同位置
     #[cfg(target_os = "windows")]
@@ -160,61 +236,11 @@ fn find_state_db(home: &Path) -> Option<PathBuf> {
         }
     }
 
-    tracing::debug!(dirs = ?search_dirs, "搜索 Codex state 数据库");
-
-    for codex_dir in &search_dirs {
-        if !codex_dir.is_dir() {
-            tracing::debug!(dir = %codex_dir.display(), "Codex 目录不存在，跳过");
-            continue;
-        }
-
-        let entries = match std::fs::read_dir(codex_dir) {
-            Ok(entries) => entries,
-            Err(err) => {
-                tracing::warn!(dir = %codex_dir.display(), "读取 Codex 目录失败，跳过: {err}");
-                continue;
-            }
-        };
-        let mut candidates: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with("state_")
-                    && name.ends_with(".sqlite")
-                    && !name.ends_with("-wal")
-                    && !name.ends_with("-shm")
-                {
-                    let path = e.path();
-                    let version = state_db_version(&name)?;
-                    let metadata = path.metadata().ok()?;
-                    let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
-                    let size = metadata.len();
-                    Some((path, version, modified, size))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if !candidates.is_empty() {
-            candidates.sort_by(|a, b| {
-                b.1.cmp(&a.1)
-                    .then_with(|| b.2.cmp(&a.2))
-                    .then_with(|| b.3.cmp(&a.3))
-            });
-            let found = candidates.into_iter().next().map(|(p, _, _, _)| p);
-            if let Some(ref db_path) = found {
-                tracing::info!(db = %db_path.display(), "找到 Codex state 数据库");
-            }
-            return found;
-        } else {
-            tracing::debug!(dir = %codex_dir.display(), "目录下未找到 state_*.sqlite");
-        }
-    }
-
-    tracing::warn!(home = %home.display(), "未找到 Codex state SQLite 数据库");
-    None
+    let mut seen = HashSet::new();
+    search_dirs
+        .into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_string()))
+        .collect()
 }
 
 fn state_db_version(name: &str) -> Option<u64> {
@@ -229,14 +255,46 @@ pub fn backup_path(data_dir: &Path) -> PathBuf {
     data_dir.join("thread_migration_backup.json")
 }
 
+fn backup_path_for_db(data_dir: &Path, db_path: &Path) -> PathBuf {
+    scoped_backup_path(backup_path(data_dir), db_path)
+}
+
 /// 线程 cwd 可见性备份路径。
 pub fn cwd_backup_path(data_dir: &Path) -> PathBuf {
     data_dir.join("thread_cwd_visibility_backup.json")
 }
 
+fn cwd_backup_path_for_db(data_dir: &Path, db_path: &Path) -> PathBuf {
+    scoped_backup_path(cwd_backup_path(data_dir), db_path)
+}
+
 /// Codex Desktop recent 可见性时间戳备份路径。
 pub fn desktop_recent_backup_path(data_dir: &Path) -> PathBuf {
     data_dir.join("thread_desktop_recent_backup.json")
+}
+
+fn desktop_recent_backup_path_for_db(data_dir: &Path, db_path: &Path) -> PathBuf {
+    scoped_backup_path(desktop_recent_backup_path(data_dir), db_path)
+}
+
+fn scoped_backup_path(base: PathBuf, db_path: &Path) -> PathBuf {
+    let Some(scope) = state_db_scope_suffix(db_path) else {
+        return base;
+    };
+    let Some(file_name) = base.file_name().and_then(|name| name.to_str()) else {
+        return base;
+    };
+    let scoped_name = if let Some((stem, ext)) = file_name.rsplit_once('.') {
+        format!("{stem}.{scope}.{ext}")
+    } else {
+        format!("{file_name}.{scope}")
+    };
+    base.with_file_name(scoped_name)
+}
+
+fn state_db_scope_suffix(db_path: &Path) -> Option<&'static str> {
+    let parent = db_path.parent()?;
+    (parent.file_name().and_then(|name| name.to_str()) == Some("sqlite")).then_some("sqlite")
 }
 
 /// 获取当前状态：各 provider 线程数、待归一 DEX 管理线程数、旧迁移备份状态。
@@ -287,9 +345,18 @@ pub fn list_all() -> Result<Vec<ThreadInfo>> {
 /// 归一：将 Codex Desktop 主线程和历史 DEX 管理线程的 model_provider 改为当前 Codex 配置里的 provider。
 pub fn migrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
-    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-
-    do_normalize_desktop_threads(&db_path, &desktop_recent_backup_path(data_dir))
+    let db_paths = find_state_dbs(&home);
+    if db_paths.is_empty() {
+        anyhow::bail!("未找到 Codex state SQLite");
+    }
+    let mut diffs = Vec::new();
+    for db_path in db_paths {
+        diffs.push(do_normalize_desktop_threads(
+            &db_path,
+            &desktop_recent_backup_path_for_db(data_dir, &db_path),
+        )?);
+    }
+    merge_migration_diffs(diffs)
 }
 
 /// 打开 DEX 时静默执行的幂等归一：统一 Codex Desktop 主线程和历史 DEX 管理线程。
@@ -301,32 +368,48 @@ pub fn normalize_desktop_threads(data_dir: &Path) -> Result<MigrationDiff> {
 /// 还原后自动删除备份文件。
 pub fn restore(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
-    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    let bp = backup_path(data_dir);
-
-    if !bp.exists() {
-        anyhow::bail!("没有迁移备份，无需还原");
+    let db_paths = find_state_dbs(&home);
+    if db_paths.is_empty() {
+        anyhow::bail!("未找到 Codex state SQLite");
     }
 
-    do_restore(
-        &db_path,
-        &bp,
-        &cwd_backup_path(data_dir),
-        &desktop_recent_backup_path(data_dir),
-    )
+    let mut diffs = Vec::new();
+    for db_path in db_paths {
+        let bp = backup_path_for_db(data_dir, &db_path);
+        if !bp.exists() {
+            continue;
+        }
+        diffs.push(do_restore(
+            &db_path,
+            &bp,
+            &cwd_backup_path_for_db(data_dir, &db_path),
+            &desktop_recent_backup_path_for_db(data_dir, &db_path),
+        )?);
+    }
+    if diffs.is_empty() {
+        anyhow::bail!("没有迁移备份，无需还原");
+    }
+    merge_migration_diffs(diffs)
 }
 
 /// 校准迁移备份：移除已删除的线程，追加新增的非当前 DEX provider 线程。
 #[allow(dead_code)]
 pub fn calibrate(data_dir: &Path) -> Result<MigrationDiff> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
-    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    do_calibrate(
-        &db_path,
-        &backup_path(data_dir),
-        &cwd_backup_path(data_dir),
-        &desktop_recent_backup_path(data_dir),
-    )
+    let db_paths = find_state_dbs(&home);
+    if db_paths.is_empty() {
+        anyhow::bail!("未找到 Codex state SQLite");
+    }
+    let mut diffs = Vec::new();
+    for db_path in db_paths {
+        diffs.push(do_calibrate(
+            &db_path,
+            &backup_path_for_db(data_dir, &db_path),
+            &cwd_backup_path_for_db(data_dir, &db_path),
+            &desktop_recent_backup_path_for_db(data_dir, &db_path),
+        )?);
+    }
+    merge_migration_diffs(diffs)
 }
 
 /// 获取指定线程的完整内容（含元数据、摘要、工具）。
@@ -878,7 +961,10 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
     let codex_visible_count = query_count(
         &conn,
         "SELECT COUNT(*) FROM threads
-         WHERE archived = 0 AND model_provider = ?1 AND TRIM(preview) <> ''",
+         WHERE archived = 0
+           AND model_provider = ?1
+           AND has_user_event = 1
+           AND TRIM(preview) <> ''",
         rusqlite::params![provider],
     )?;
     let missing_preview_count = query_count(
@@ -893,7 +979,11 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
          WHERE model_provider = ?1
            AND archived = 0
            AND has_user_event = 0
-           AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
+           AND (
+             TRIM(first_user_message) <> ''
+             OR thread_source = 'user'
+             OR (source = 'vscode' AND (TRIM(preview) <> '' OR TRIM(title) <> ''))
+           )",
         rusqlite::params![provider],
     )?;
     let current_cwd = std::env::current_dir()
@@ -907,6 +997,7 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
             "SELECT COUNT(*) FROM threads
              WHERE archived = 0
                AND model_provider = ?1
+               AND has_user_event = 1
                AND TRIM(preview) <> ''
                AND cwd = ?2",
             rusqlite::params![provider, current_cwd],
@@ -917,7 +1008,10 @@ fn get_visibility_status(db_path: &Path) -> Result<ThreadVisibilityStatus> {
     let mut stmt = conn.prepare(
         "SELECT COALESCE(NULLIF(TRIM(source), ''), '(空)'), COUNT(*)
          FROM threads
-         WHERE archived = 0 AND model_provider = ?1 AND TRIM(preview) <> ''
+         WHERE archived = 0
+           AND model_provider = ?1
+           AND has_user_event = 1
+           AND TRIM(preview) <> ''
          GROUP BY source
          ORDER BY COUNT(*) DESC",
     )?;
@@ -1235,7 +1329,11 @@ fn repair_thread_visibility(conn: &Connection) -> Result<usize> {
                  WHERE model_provider = ?1
                    AND archived = 0
                    AND has_user_event = 0
-                   AND (TRIM(first_user_message) <> '' OR thread_source = 'user')",
+                   AND (
+                     TRIM(first_user_message) <> ''
+                     OR thread_source = 'user'
+                     OR (source = 'vscode' AND (TRIM(preview) <> '' OR TRIM(title) <> ''))
+                   )",
                 rusqlite::params![provider],
             )
             .context("补齐 Codex 线程 has_user_event 失败")?;
@@ -1247,7 +1345,10 @@ fn repair_thread_visibility(conn: &Connection) -> Result<usize> {
                  WHERE model_provider = ?1
                    AND archived = 0
                    AND has_user_event = 0
-                   AND TRIM(first_user_message) <> ''",
+                   AND (
+                     TRIM(first_user_message) <> ''
+                     OR (source = 'vscode' AND (TRIM(preview) <> '' OR TRIM(title) <> ''))
+                   )",
                 rusqlite::params![provider],
             )
             .context("补齐 Codex 线程 has_user_event 失败")?;
@@ -1372,9 +1473,13 @@ struct DesktopRecentTimestampBackup {
 }
 
 fn codex_global_state_path(db_path: &Path) -> Option<PathBuf> {
-    db_path
-        .parent()
-        .map(|codex_home| codex_home.join(".codex-global-state.json"))
+    let codex_home = db_path.parent()?;
+    let codex_home = if codex_home.file_name().and_then(|name| name.to_str()) == Some("sqlite") {
+        codex_home.parent().unwrap_or(codex_home)
+    } else {
+        codex_home
+    };
+    Some(codex_home.join(".codex-global-state.json"))
 }
 
 fn value_string_array(value: Option<&Value>) -> Vec<String> {
@@ -2406,6 +2511,53 @@ fn unify_remaining_non_deecodex(conn: &Connection, backup_path: &Path) -> Result
     Ok(changed)
 }
 
+fn merge_migration_diffs(diffs: Vec<MigrationDiff>) -> Result<MigrationDiff> {
+    let mut iter = diffs.into_iter();
+    let Some(first) = iter.next() else {
+        anyhow::bail!("未找到 Codex state SQLite");
+    };
+
+    let mut merged = first;
+    for diff in iter {
+        merged.before = merge_provider_summaries([merged.before, diff.before]);
+        merged.after = merge_provider_summaries([merged.after, diff.after]);
+        merged.changed_count += diff.changed_count;
+        merged.rollout_metadata_fixed_count += diff.rollout_metadata_fixed_count;
+        merged.remaining_non_unified_count += diff.remaining_non_unified_count;
+        merged.visibility_fixed_count += diff.visibility_fixed_count;
+        merged.desktop_project_fixed_count += diff.desktop_project_fixed_count;
+        merged.desktop_recent_fixed_count += diff.desktop_recent_fixed_count;
+        merged.desktop_project_pending_count += diff.desktop_project_pending_count;
+        merged.desktop_recent_pending_count += diff.desktop_recent_pending_count;
+        merged.desktop_project_repair_blocked |= diff.desktop_project_repair_blocked;
+        merged.desktop_recent_repair_blocked |= diff.desktop_recent_repair_blocked;
+        merged.codex_desktop_running |= diff.codex_desktop_running;
+        merged.cwd_aligned_count += diff.cwd_aligned_count;
+    }
+    Ok(merged)
+}
+
+fn merge_provider_summaries<const N: usize>(
+    summaries: [Vec<ProviderSummary>; N],
+) -> Vec<ProviderSummary> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for summary in summaries {
+        for item in summary {
+            *counts.entry(item.provider).or_default() += item.count;
+        }
+    }
+    let mut merged = counts
+        .into_iter()
+        .map(|(provider, count)| ProviderSummary { provider, count })
+        .collect::<Vec<_>>();
+    merged.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.provider.cmp(&b.provider))
+    });
+    merged
+}
+
 fn restore_thread_cwds(conn: &Connection, cwd_backup_path: &Path) -> Result<usize> {
     if !cwd_backup_path.exists() {
         return Ok(0);
@@ -2885,6 +3037,66 @@ mod tests {
             found.file_name().and_then(|name| name.to_str()),
             Some("state_10.sqlite")
         );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn find_state_dbs_includes_runtime_sqlite_home() {
+        let dir = temp_test_dir("state-db-runtime-sqlite");
+        let codex_dir = dir.join(".codex");
+        let sqlite_dir = codex_dir.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).expect("create sqlite dir");
+        std::fs::write(codex_dir.join("state_5.sqlite"), [1_u8]).expect("write legacy db");
+        std::fs::write(sqlite_dir.join("state_5.sqlite"), [2_u8]).expect("write runtime db");
+
+        let found = find_state_dbs(&dir);
+        assert!(found.contains(&codex_dir.join("state_5.sqlite")));
+        assert!(found.contains(&sqlite_dir.join("state_5.sqlite")));
+        assert_eq!(find_state_db(&dir), Some(sqlite_dir.join("state_5.sqlite")));
+        assert_eq!(
+            codex_global_state_path(&sqlite_dir.join("state_5.sqlite")),
+            Some(codex_dir.join(".codex-global-state.json"))
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn repair_visibility_marks_desktop_threads_with_preview_as_user_threads() {
+        let dir = temp_test_dir("thread-repair-preview-user-event");
+        let db_path = dir.join("state_test.sqlite");
+        let target_provider = current_thread_provider();
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[(
+                "title-preview-only",
+                &target_provider,
+                "已有标题",
+                "已有预览",
+                "",
+                "vscode",
+                "/tmp/a",
+                0,
+            )],
+        );
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute(
+            "UPDATE threads SET thread_source = NULL WHERE id = 'title-preview-only'",
+            [],
+        )
+        .expect("clear thread source");
+
+        let fixed = repair_thread_visibility(&conn).expect("repair visibility");
+        assert_eq!(fixed, 1);
+        let has_user_event: i32 = conn
+            .query_row(
+                "SELECT has_user_event FROM threads WHERE id = 'title-preview-only'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read row");
+        assert_eq!(has_user_event, 1);
 
         std::fs::remove_dir_all(dir).ok();
     }
