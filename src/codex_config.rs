@@ -702,11 +702,24 @@ fn generate_context_catalog(
     let catalog_path = codex_home.join(CATALOG_FILENAME);
 
     let catalog: Value = if cache_path.exists() {
-        let content = std::fs::read_to_string(&cache_path)
-            .map_err(|e| anyhow!("读取 models_cache.json 失败: {e}"))?;
-        serde_json::from_str(&content).map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))?
+        match std::fs::read_to_string(&cache_path)
+            .map_err(|e| anyhow!("读取 models_cache.json 失败: {e}"))
+            .and_then(|content| {
+                serde_json::from_str(&content)
+                    .map_err(|e| anyhow!("解析 models_cache.json 失败: {e}"))
+            }) {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                warn!("Codex models_cache.json 不可用，使用 DEX 内置模型目录兜底: {err}");
+                fallback_codex_model_catalog()
+            }
+        }
     } else {
-        return Err(anyhow!("models_cache.json 不存在，请先运行一次 Codex"));
+        warn!(
+            path = %cache_path.display(),
+            "Codex models_cache.json 不存在，使用 DEX 内置模型目录兜底"
+        );
+        fallback_codex_model_catalog()
     };
 
     let codex_model_slugs = catalog_model_slugs(&catalog);
@@ -761,6 +774,10 @@ fn generate_context_catalog(
         model_count,
         account_model_count,
     })
+}
+
+fn fallback_codex_model_catalog() -> Value {
+    serde_json::json!({ "models": [] })
 }
 
 /// 清理 deecodex 管理的模型目录文件。
@@ -2115,6 +2132,21 @@ wire_api = "responses"
     }
 
     #[test]
+    fn context_catalog_has_registry_models_when_codex_cache_is_empty() {
+        let output = build_context_catalog(serde_json::json!({ "models": [] }), None, &[]).unwrap();
+        let models = output["models"].as_array().unwrap();
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.5")));
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.4")));
+        assert!(models
+            .iter()
+            .all(|model| model.get("visibility").and_then(Value::as_str).is_some()));
+    }
+
+    #[test]
     fn account_model_with_one_m_suffix_keeps_one_m_context_window() {
         assert_eq!(
             one_m_context_window_for_model("mimo-v2.5-pro[1m]"),
@@ -2176,7 +2208,7 @@ wire_api = "responses"
     }
 
     #[test]
-    fn dex_account_model_inherits_exact_codex_registry_template() {
+    fn dex_account_model_uses_registry_template_but_caps_default_max_context() {
         let input = serde_json::json!({
             "models": [
                 {
@@ -2205,7 +2237,7 @@ wire_api = "responses"
         assert_eq!(models.len(), 1);
         assert_eq!(models[0]["display_name"], "GPT-5.4");
         assert_eq!(models[0]["context_window"], 272_000);
-        assert_eq!(models[0]["max_context_window"], 1_000_000);
+        assert_eq!(models[0]["max_context_window"], 272_000);
         assert_eq!(models[0]["default_reasoning_level"], "xhigh");
     }
 

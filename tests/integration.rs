@@ -2073,7 +2073,7 @@ async fn codex_router_stream_502_retry_after_keeps_unmanaged_direct_account_send
 }
 
 #[tokio::test]
-async fn codex_router_stream_502_without_retry_after_skips_account_on_next_request() {
+async fn codex_router_stream_502_without_retry_after_keeps_account_sendable() {
     let (failing_upstream, failing_captured) = capture_status_upstream(
         StatusCode::BAD_GATEWAY,
         None,
@@ -2136,8 +2136,8 @@ async fn codex_router_stream_502_without_retry_after_skips_account_on_next_reque
             failing.runtime_state.status,
             deecodex::accounts::AccountRuntimeStatus::Error
         );
-        assert!(failing.runtime_state.next_retry_after.is_some());
-        assert_eq!(failing.runtime_state.quota.backoff_level, 1);
+        assert!(failing.runtime_state.next_retry_after.is_none());
+        assert!(!failing.runtime_state.quota.exceeded);
     }
 
     let second = app
@@ -2158,42 +2158,36 @@ async fn codex_router_stream_502_without_retry_after_skips_account_on_next_reque
 
     let second_status = second.status();
     let _ = second.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(second_status, StatusCode::OK);
-    assert_eq!(failing_captured.lock().unwrap().len(), 1);
-    {
-        let captured = healthy_captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].path, "/responses");
-        assert_eq!(captured[0].body["model"], "gpt-5.5");
-    }
+    assert_eq!(second_status, StatusCode::BAD_GATEWAY);
+    assert_eq!(failing_captured.lock().unwrap().len(), 2);
+    assert_eq!(healthy_captured.lock().unwrap().len(), 0);
 
     let entries = request_history
         .list(10, &deecodex::request_history::HistoryFilter::default())
         .await;
-    let failed_entry = entries
+    let failed_entries: Vec<_> = entries
         .iter()
-        .find(|entry| entry.account_id == "router-failing")
-        .unwrap();
-    assert_eq!(failed_entry.status, "failed");
-    assert!(failed_entry.error_msg.contains("502"));
-    let healthy_entry = entries
+        .filter(|entry| entry.account_id == "router-failing")
+        .collect();
+    assert_eq!(failed_entries.len(), 2);
+    assert!(failed_entries.iter().all(|entry| entry.status == "failed"));
+    assert!(failed_entries
         .iter()
-        .find(|entry| entry.account_id == "router-healthy")
-        .unwrap();
-    let healthy_trace: Value = serde_json::from_str(&healthy_entry.route_trace).unwrap();
-    assert_eq!(healthy_trace["selected"]["account_id"], "router-healthy");
-    let failing_candidate = healthy_trace["candidates"]
+        .all(|entry| entry.error_msg.contains("502")));
+    let retry_trace: Value = serde_json::from_str(&failed_entries[0].route_trace).unwrap();
+    assert_eq!(retry_trace["selected"]["account_id"], "router-failing");
+    let failing_candidate = retry_trace["candidates"]
         .as_array()
         .unwrap()
         .iter()
         .find(|candidate| candidate["account_id"] == "router-failing")
         .unwrap();
-    assert_eq!(failing_candidate["eligible"], false);
-    assert_eq!(failing_candidate["reason"], "account_upstream_cooling");
+    assert_eq!(failing_candidate["eligible"], true);
+    assert_eq!(failing_candidate["reason"], "ready");
 }
 
 #[tokio::test]
-async fn codex_router_explicit_model_502_without_retry_after_blocks_next_same_account_request() {
+async fn codex_router_explicit_model_502_without_retry_after_keeps_model_sendable() {
     let (failing_upstream, failing_captured) = capture_status_upstream(
         StatusCode::BAD_GATEWAY,
         None,
@@ -2254,8 +2248,8 @@ async fn codex_router_explicit_model_502_without_retry_after_blocks_next_same_ac
             model_state.status,
             deecodex::accounts::AccountRuntimeStatus::Error
         );
-        assert!(model_state.next_retry_after.is_some());
-        assert_eq!(model_state.quota.backoff_level, 1);
+        assert!(model_state.next_retry_after.is_none());
+        assert!(!model_state.quota.exceeded);
     }
 
     let second = app
@@ -2267,7 +2261,7 @@ async fn codex_router_explicit_model_502_without_retry_after_blocks_next_same_ac
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("thread-id", "thread-explicit-502-no-retry-after")
                 .body(Body::from(format!(
-                    r#"{{"model":"{slug}","input":"same explicit model should be blocked locally","store":false,"stream":true}}"#
+                    r#"{{"model":"{slug}","input":"same explicit model should retry upstream","store":false,"stream":true}}"#
                 )))
                 .unwrap(),
         )
@@ -2278,20 +2272,11 @@ async fn codex_router_explicit_model_502_without_retry_after_blocks_next_same_ac
     let body = second.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
+        StatusCode::BAD_GATEWAY,
         "{}",
         String::from_utf8_lossy(&body)
     );
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        json["error"]["code"],
-        "dex_router_explicit_model_runtime_blocked"
-    );
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("account_upstream_cooling"));
-    assert_eq!(failing_captured.lock().unwrap().len(), 1);
+    assert_eq!(failing_captured.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -4735,15 +4720,17 @@ async fn api_mode_chat_compatible_uses_translated_chat_endpoint_and_real_model()
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["output"][0]["content"][0]["text"], "api chat ok");
 
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].path, "/v1/chat/completions");
-    assert_eq!(captured[0].body["model"], "deepseek-v4-pro");
-    assert_eq!(captured[0].body["messages"][0]["role"], "user");
-    assert_eq!(
-        captured[0].headers[header::AUTHORIZATION].to_str().unwrap(),
-        "Bearer sk-api-chat"
-    );
+    {
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].path, "/v1/chat/completions");
+        assert_eq!(captured[0].body["model"], "deepseek-v4-pro");
+        assert_eq!(captured[0].body["messages"][0]["role"], "user");
+        assert_eq!(
+            captured[0].headers[header::AUTHORIZATION].to_str().unwrap(),
+            "Bearer sk-api-chat"
+        );
+    }
 
     let entries = request_history.list(10, &HistoryFilter::default()).await;
     let entry = entries
