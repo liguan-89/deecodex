@@ -350,7 +350,13 @@ fn check_client_accounts(ctx: &DiagnosticContext) -> Vec<DiagnosticItem> {
                 .iter()
                 .filter(|item| item.level == "warning")
                 .count();
-            let status = if errors > 0 {
+            let passive_generic_client = account.client_kind
+                == accounts::AccountClientKind::GenericClient
+                && !client_proxy_enabled(account)
+                && errors == 0;
+            let status = if passive_generic_client {
+                Status::Info
+            } else if errors > 0 {
                 Status::Fail
             } else if warnings > 0 {
                 Status::Warn
@@ -369,7 +375,9 @@ fn check_client_accounts(ctx: &DiagnosticContext) -> Vec<DiagnosticItem> {
             DiagnosticItem {
                 status,
                 check_name: format!("客户端账号 · {}", account.name),
-                message: if report.ok {
+                message: if passive_generic_client {
+                    "通用客户端未启用代理记录，配置写入状态仅作提示".into()
+                } else if report.ok {
                     "客户端账号状态正常".into()
                 } else {
                     format!("客户端账号存在 {} 个错误、{} 个警告", errors, warnings)
@@ -671,7 +679,7 @@ fn check_codex_third_party_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
 
     if let Some(providers) = doc.get("model_providers").and_then(|mp| mp.as_table()) {
         for (key, value) in providers.iter() {
-            if key == "deecodex" {
+            if codex_config::is_managed_model_provider(key) {
                 continue;
             }
             let base_url = value
@@ -837,6 +845,33 @@ fn check_codex_deecodex_routing(ctx: &DiagnosticContext) -> DiagnosticItem {
 }
 
 fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
+    let mut store = accounts::load_accounts(&ctx.data_dir);
+    store.normalize_v2();
+    if let Some(account) = store.active_account() {
+        let endpoint = store.active_endpoint();
+        if endpoint
+            .map(|endpoint| {
+                endpoint.kind.is_responses_like()
+                    || endpoint.kind == accounts::EndpointKind::CodexOfficial
+            })
+            .unwrap_or(false)
+        {
+            return DiagnosticItem {
+                status: Status::Pass,
+                check_name: "模型映射".into(),
+                message: "当前活跃账号走 Responses/官方端点，模型映射不是必需项".into(),
+                detail: Some(format!(
+                    "账号: {}, 端点: {}",
+                    account.name,
+                    endpoint
+                        .map(|endpoint| endpoint.name.as_str())
+                        .unwrap_or("默认端点")
+                )),
+                suggestion: None,
+            };
+        }
+    }
+
     let raw = ctx.model_map.trim();
     if raw.is_empty() || raw == "{}" {
         return DiagnosticItem {
@@ -1745,7 +1780,9 @@ fn check_codex_startup_order(ctx: &DiagnosticContext) -> DiagnosticItem {
         };
     }
 
-    // deecodex 在运行 + auto_inject → 检查 codex config 是否被注入
+    let expected_provider = codex_config::managed_model_provider_for_mode(&ctx.codex_router_mode);
+
+    // deecodex 在运行 + auto_inject → 检查 codex config 是否被注入到当前路由模式
     let injected = codex_config::codex_config_path()
         .and_then(|p| {
             if !p.exists() {
@@ -1757,7 +1794,7 @@ fn check_codex_startup_order(ctx: &DiagnosticContext) -> DiagnosticItem {
                 doc.get("model_provider")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
-                    == "deecodex",
+                    == expected_provider,
             )
         })
         .unwrap_or(false);
@@ -1766,7 +1803,7 @@ fn check_codex_startup_order(ctx: &DiagnosticContext) -> DiagnosticItem {
         DiagnosticItem {
             status: Status::Pass,
             check_name: "启动顺序".into(),
-            message: "启动顺序正常：Codex 已正确路由到 deecodex".into(),
+            message: format!("启动顺序正常：Codex 已正确路由到 {}", expected_provider),
             detail: None,
             suggestion: None,
         }
@@ -1775,7 +1812,10 @@ fn check_codex_startup_order(ctx: &DiagnosticContext) -> DiagnosticItem {
             status: Status::Fail,
             check_name: "启动顺序".into(),
             message: "Codex 可能在 deecodex 之前启动，配置未注入".into(),
-            detail: Some("deecodex 正在运行且自动注入已开启，但 Codex 配置未指向 deecodex".into()),
+            detail: Some(format!(
+                "deecodex 正在运行且自动注入已开启，但 Codex 配置未指向 {}",
+                expected_provider
+            )),
             suggestion: Some("请重启 Codex（deecodex 已就绪），或在控制面板中点击「注入配置」手动注入后重启 Codex".into()),
         }
     }

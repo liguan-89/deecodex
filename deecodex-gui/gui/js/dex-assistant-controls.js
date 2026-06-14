@@ -109,30 +109,69 @@ function dexSelectAccount(id) {
   });
 }
 
+function dexAccountModelValues(account) {
+  var vals = [];
+  if (!account) return vals;
+  if (Array.isArray(account.endpoints)) {
+    for (var e = 0; e < account.endpoints.length; e++) {
+      if (Array.isArray(account.endpoints[e].known_models)) vals = vals.concat(account.endpoints[e].known_models);
+    }
+  }
+  if (account.default_model) vals.push(account.default_model);
+  var mm = account.model_map;
+  if (typeof mm === 'string') { try { mm = JSON.parse(mm); } catch(e) { mm = {}; } }
+  if (mm && typeof mm === 'object') vals = vals.concat(Object.values(mm));
+  return vals;
+}
+
+function dexUniqueModels(vals) {
+  var seen = {}, models = [];
+  for (var i = 0; i < vals.length; i++) {
+    var v = String(vals[i] || '').trim();
+    if (!v || seen[v]) continue;
+    seen[v] = true;
+    models.push(v);
+  }
+  return models;
+}
+
+function dexRenderModelMenu(models, loading) {
+  var menu = document.getElementById('dexModelMenu');
+  if (!menu) return;
+  var html = '<div class="dex-model-item" onclick="dexSelectModel(\'auto\',\'模型\')">自动</div>';
+  if (loading) html += '<div class="dex-model-item dex-model-empty">正在刷新模型...</div>';
+  for (var i = 0; i < models.length; i++) {
+    var v = models[i];
+    html += '<div class="dex-model-item" onclick="dexSelectModel(\'' + escAttr(v) + '\',\'' + escAttr(v) + '\')">' + esc(v) + '</div>';
+  }
+  if (!loading && !models.length) html += '<div class="dex-model-item dex-model-empty">暂无可用模型</div>';
+  menu.innerHTML = html;
+}
+
 function dexLoadModels() {
   var menu = document.getElementById('dexModelMenu');
   if (!menu) return;
+  window.dexAgent.modelLoadToken = (window.dexAgent.modelLoadToken || 0) + 1;
+  var token = window.dexAgent.modelLoadToken;
+  dexRenderModelMenu([], true);
   DeeCodexTauri.invoke('get_dex_assistant_account', {}).then(function(account) {
     if (!account) return;
-    var vals = [];
-    if (Array.isArray(account.known_models)) vals = vals.concat(account.known_models);
-    if (Array.isArray(account.endpoints)) {
-      for (var e = 0; e < account.endpoints.length; e++) {
-        if (Array.isArray(account.endpoints[e].known_models)) vals = vals.concat(account.endpoints[e].known_models);
-      }
+    var fallbackModels = dexUniqueModels(dexAccountModelValues(account));
+    if (token !== window.dexAgent.modelLoadToken) return;
+    dexRenderModelMenu(fallbackModels, true);
+    if (!account.id) {
+      dexRenderModelMenu(fallbackModels, false);
+      return;
     }
-    var mm = account.model_map;
-    if (typeof mm === 'string') { try { mm = JSON.parse(mm); } catch(e) { mm = {}; } }
-    if (mm && typeof mm === 'object') vals = vals.concat(Object.values(mm));
-    var seen = {}, html = '';
-    html += '<div class="dex-model-item" onclick="dexSelectModel(\'auto\',\'模型\')">自动</div>';
-    for (var i = 0; i < vals.length; i++) {
-      var v = String(vals[i] || '').trim();
-      if (!v) continue;
-      if (seen[v]) continue; seen[v] = true;
-      html += '<div class="dex-model-item" onclick="dexSelectModel(\'' + escAttr(v) + '\',\'' + escAttr(v) + '\')">' + esc(v) + '</div>';
-    }
-    menu.innerHTML = html;
+    DeeCodexTauri.invoke('fetch_upstream_models', { accountId: account.id }).then(function(models) {
+      if (token !== window.dexAgent.modelLoadToken) return;
+      var liveModels = Array.isArray(models) ? models : [];
+      dexRenderModelMenu(dexUniqueModels(liveModels.concat(fallbackModels)), false);
+    }).catch(function(e) {
+      if (token !== window.dexAgent.modelLoadToken) return;
+      console.warn('[dexAgent] 刷新上游模型失败，使用账号缓存:', e);
+      dexRenderModelMenu(fallbackModels, false);
+    });
   }).catch(function(e) { console.warn('[dexAgent] 加载模型列表失败:', e); });
 }
 

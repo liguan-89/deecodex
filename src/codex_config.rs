@@ -677,6 +677,16 @@ fn cached_models_for(cache: &Value, account_id: &str, endpoint_id: &str) -> Vec<
         .collect()
 }
 
+#[allow(dead_code)]
+pub fn account_model_cache_for(
+    data_dir: &std::path::Path,
+    account_id: &str,
+    endpoint_id: &str,
+) -> Vec<String> {
+    let cache = read_account_model_cache(data_dir);
+    cached_models_for(&cache, account_id, endpoint_id)
+}
+
 /// 从 models_cache.json 生成 deecodex 模型目录，写入 ~/.codex/models_deecodex.json。
 fn generate_context_catalog(
     context_window_override: Option<u32>,

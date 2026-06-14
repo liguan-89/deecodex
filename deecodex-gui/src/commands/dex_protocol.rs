@@ -33,7 +33,7 @@ pub(super) fn get_active_account_info(data_dir: &Path) -> Option<DexAccountInfo>
     };
     let mut profile = deecodex::providers::profile_by_slug(&provider);
     profile.wire_protocol = dex_wire_protocol_for_endpoint(&endpoint.kind);
-    let known_models = dex_account_known_models(&active, &endpoint, &profile);
+    let known_models = dex_account_known_models(&active, &endpoint, &profile, data_dir);
 
     Some((
         active.upstream.clone(),
@@ -51,17 +51,25 @@ fn dex_account_known_models(
     account: &deecodex::accounts::Account,
     endpoint: &deecodex::accounts::EndpointConfig,
     profile: &deecodex::providers::ProviderProfile,
+    data_dir: &Path,
 ) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
-    for model in endpoint
-        .known_models
+    let cached_models =
+        deecodex::codex_config::account_model_cache_for(data_dir, &account.id, &endpoint.id);
+    let profile_models = if account.provider.eq_ignore_ascii_case("openai") {
+        Vec::new()
+    } else {
+        profile.known_models.iter().map(String::as_str).collect()
+    };
+    for model in cached_models
         .iter()
         .map(String::as_str)
+        .chain(endpoint.known_models.iter().map(String::as_str))
         .chain(std::iter::once(account.default_model.as_str()))
         .chain(account.model_map.values().map(String::as_str))
         .chain(endpoint.model_map.values().map(String::as_str))
-        .chain(profile.known_models.iter().map(String::as_str))
+        .chain(profile_models)
     {
         let model = model.trim();
         if model.is_empty() || !seen.insert(model.to_string()) {

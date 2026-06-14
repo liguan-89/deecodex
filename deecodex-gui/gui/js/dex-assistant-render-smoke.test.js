@@ -127,19 +127,27 @@ assert(!profileHtml.includes('DEX助手'));
 (async () => {
   const modelMenu = { innerHTML: '' };
   context.document.getElementById = id => (id === 'dexModelMenu' ? modelMenu : null);
-  context.DeeCodexTauri.invoke = async cmd => {
+  context.DeeCodexTauri.invoke = async (cmd, args) => {
     if (cmd === 'get_dex_assistant_account') {
       return {
-        known_models: ['mimo-v2.5-pro'],
+        id: 'openai-account',
+        known_models: ['gpt-5.3-codex'],
         endpoints: [{ known_models: ['mimo-v2.5'] }],
         model_map: { legacy: 'legacy-model' },
       };
+    }
+    if (cmd === 'fetch_upstream_models') {
+      assert.strictEqual(args.accountId, 'openai-account');
+      return ['gpt-5.5', 'gpt-5.4'];
     }
     return {};
   };
   context.dexLoadModels();
   await new Promise(resolve => setImmediate(resolve));
-  assert(modelMenu.innerHTML.includes('mimo-v2.5-pro'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert(modelMenu.innerHTML.includes('gpt-5.5'));
+  assert(modelMenu.innerHTML.includes('gpt-5.4'));
+  assert(!modelMenu.innerHTML.includes('gpt-5.3-codex'));
   assert(modelMenu.innerHTML.includes('mimo-v2.5'));
   assert(modelMenu.innerHTML.includes('legacy-model'));
 

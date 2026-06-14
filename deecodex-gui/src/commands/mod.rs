@@ -5457,9 +5457,7 @@ pub async fn fetch_upstream_models(
         return Ok(profile.known_models);
     }
 
-    let urls = deecodex::providers::model_discovery_url(&profile, &upstream, &api_key)
-        .map(|url| vec![url])
-        .unwrap_or_else(|| vec![format!("{}/models", upstream.trim_end_matches('/'))]);
+    let urls = model_discovery_urls(&profile, &upstream, &api_key);
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -5550,6 +5548,32 @@ fn model_fallback_candidates(
         models.push(model.to_string());
     }
     models
+}
+
+fn model_discovery_urls(
+    profile: &deecodex::providers::ProviderProfile,
+    upstream: &str,
+    api_key: &str,
+) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(url) = deecodex::providers::model_discovery_url(profile, upstream, api_key) {
+        urls.push(url);
+    }
+    let base = upstream.trim().trim_end_matches('/');
+    let lower = base.to_ascii_lowercase();
+    for suffix in ["/responses", "/chat/completions"] {
+        if lower.ends_with(suffix) {
+            let keep_len = base.len().saturating_sub(suffix.len());
+            urls.push(format!("{}/models", &base[..keep_len]));
+        }
+    }
+    if !base.is_empty() {
+        urls.push(format!("{base}/models"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    urls.into_iter()
+        .filter(|url| seen.insert(url.clone()))
+        .collect()
 }
 
 fn persist_fetched_models(target: Option<&(PathBuf, String, String)>, models: &[String]) {
