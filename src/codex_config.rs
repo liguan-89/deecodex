@@ -1155,8 +1155,11 @@ fn account_catalog_field_is_supported(key: &str) -> bool {
         key,
         "slug"
             | "display_name"
+            | "displayName"
+            | "model"
             | "description"
             | "provider"
+            | "hidden"
             | "visibility"
             | "supported_in_api"
             | "priority"
@@ -1166,7 +1169,9 @@ fn account_catalog_field_is_supported(key: &str) -> bool {
             | "effective_context_window_percent"
             | "minimal_client_version"
             | "default_reasoning_level"
+            | "defaultReasoningEffort"
             | "supported_reasoning_levels"
+            | "supportedReasoningEfforts"
             | "shell_type"
             | "input_modalities"
             | "supports_image_detail_original"
@@ -1205,6 +1210,8 @@ fn ensure_model_catalog_entry_schema(
     schema_template: &Value,
     is_account_model: bool,
 ) {
+    normalize_codex_desktop_model_catalog_aliases(model);
+
     if is_account_model {
         model["base_instructions"] = Value::String(DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS.into());
         model["model_messages"] = compact_dex_account_model_messages(schema_template);
@@ -1325,6 +1332,154 @@ fn ensure_model_catalog_entry_schema(
         "reasoning_summary_format",
         Value::String("experimental".into()),
     );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "default_reasoning_level",
+        Value::String("medium".into()),
+    );
+    fill_catalog_field_from_template(
+        model,
+        schema_template,
+        "supported_reasoning_levels",
+        serde_json::json!([
+            {"effort": "low", "description": "Fast responses with lighter reasoning"},
+            {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+            {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+        ]),
+    );
+    ensure_codex_desktop_model_catalog_fields(model);
+}
+
+fn normalize_codex_desktop_model_catalog_aliases(model: &mut Value) {
+    if model.get("slug").is_none_or(Value::is_null) {
+        if let Some(slug) = model.get("model").and_then(Value::as_str) {
+            model["slug"] = Value::String(slug.to_string());
+        }
+    }
+    if model.get("display_name").is_none_or(Value::is_null) {
+        if let Some(display_name) = model.get("displayName").and_then(Value::as_str) {
+            model["display_name"] = Value::String(display_name.to_string());
+        }
+    }
+    if model.get("visibility").is_none_or(Value::is_null) {
+        if let Some(hidden) = model.get("hidden").and_then(Value::as_bool) {
+            model["visibility"] = Value::String(if hidden { "hide" } else { "list" }.into());
+        }
+    }
+    if model
+        .get("default_reasoning_level")
+        .is_none_or(Value::is_null)
+    {
+        if let Some(effort) = model.get("defaultReasoningEffort").and_then(Value::as_str) {
+            model["default_reasoning_level"] = Value::String(effort.to_string());
+        }
+    }
+    if model
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .is_none_or(|values| values.is_empty())
+    {
+        let levels = model
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .map(|efforts| {
+                efforts
+                    .iter()
+                    .filter_map(|effort| {
+                        let level = effort
+                            .get("reasoningEffort")
+                            .or_else(|| effort.get("effort"))
+                            .and_then(Value::as_str)?
+                            .trim();
+                        if level.is_empty() {
+                            return None;
+                        }
+                        let description = effort
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or(level);
+                        Some(serde_json::json!({
+                            "effort": level,
+                            "description": description
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !levels.is_empty() {
+            model["supported_reasoning_levels"] = Value::Array(levels);
+        }
+    }
+}
+
+fn ensure_codex_desktop_model_catalog_fields(model: &mut Value) {
+    if model.get("slug").is_none_or(Value::is_null) {
+        if let Some(slug) = model.get("model").and_then(Value::as_str) {
+            model["slug"] = Value::String(slug.to_string());
+        }
+    }
+    if model.get("model").is_none_or(Value::is_null) {
+        if let Some(slug) = model.get("slug").and_then(Value::as_str) {
+            model["model"] = Value::String(slug.to_string());
+        }
+    }
+    if model.get("displayName").is_none_or(Value::is_null) {
+        if let Some(display_name) = model.get("display_name").and_then(Value::as_str) {
+            model["displayName"] = Value::String(display_name.to_string());
+        }
+    }
+    if model.get("hidden").is_none_or(Value::is_null) {
+        let hidden = model
+            .get("visibility")
+            .and_then(Value::as_str)
+            .is_some_and(|visibility| visibility != "list");
+        model["hidden"] = Value::Bool(hidden);
+    }
+    if model
+        .get("defaultReasoningEffort")
+        .is_none_or(Value::is_null)
+    {
+        if let Some(effort) = model.get("default_reasoning_level").and_then(Value::as_str) {
+            model["defaultReasoningEffort"] = Value::String(effort.to_string());
+        }
+    }
+    if model
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .is_none_or(|values| values.is_empty())
+    {
+        let efforts = model
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| {
+                        let effort = level
+                            .get("effort")
+                            .or_else(|| level.get("reasoningEffort"))
+                            .and_then(Value::as_str)?
+                            .trim();
+                        if effort.is_empty() {
+                            return None;
+                        }
+                        let description = level
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or(effort);
+                        Some(serde_json::json!({
+                            "reasoningEffort": effort,
+                            "description": description
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !efforts.is_empty() {
+            model["supportedReasoningEfforts"] = Value::Array(efforts);
+        }
+    }
 }
 
 fn fill_catalog_field_from_template(
@@ -2338,6 +2493,15 @@ wire_api = "responses"
             })
             .expect("missing account model");
         assert_eq!(account_entry["display_name"], "GPT-5.5 Proxy");
+        assert_eq!(account_entry["model"], account_entry["slug"]);
+        assert_eq!(account_entry["displayName"], "GPT-5.5 Proxy");
+        assert_eq!(account_entry["hidden"], false);
+        assert_eq!(account_entry["defaultReasoningEffort"], "medium");
+        assert!(account_entry["supportedReasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effort| effort["reasoningEffort"] == "medium"));
         assert_eq!(account_entry["context_window"], 128_000);
         assert_eq!(account_entry["max_context_window"], 128_000);
         assert_eq!(
@@ -2365,6 +2529,9 @@ wire_api = "responses"
             })
             .expect("missing deepseek account model");
         assert_eq!(deepseek_entry["display_name"], "DeepSeek V4 Pro");
+        assert_eq!(deepseek_entry["model"], deepseek_entry["slug"]);
+        assert_eq!(deepseek_entry["displayName"], "DeepSeek V4 Pro");
+        assert_eq!(deepseek_entry["hidden"], false);
         assert_eq!(deepseek_entry["context_window"], 272000);
         assert_eq!(deepseek_entry["max_context_window"], 272000);
         assert_eq!(
@@ -2392,6 +2559,58 @@ wire_api = "responses"
         assert!(models
             .iter()
             .all(|model| model.get("visibility").and_then(Value::as_str).is_some()));
+        assert!(models
+            .iter()
+            .all(|model| model.get("model").and_then(Value::as_str).is_some()));
+        assert!(models
+            .iter()
+            .all(|model| model.get("hidden").and_then(Value::as_bool).is_some()));
+        let auto_review = models
+            .iter()
+            .find(|model| model.get("slug").and_then(Value::as_str) == Some("codex-auto-review"))
+            .unwrap();
+        assert_eq!(auto_review["hidden"], true);
+    }
+
+    #[test]
+    fn context_catalog_accepts_codex_desktop_camel_case_cache_entries() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "model": "vendor-model",
+                    "displayName": "Vendor Model",
+                    "hidden": false,
+                    "defaultReasoningEffort": "high",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low", "description": "low effort"},
+                        {"reasoningEffort": "high", "description": "high effort"}
+                    ],
+                    "context_window": 128000,
+                    "max_context_window": 128000
+                }
+            ]
+        });
+
+        let output = build_context_catalog(input, None, &[]).unwrap();
+        let models = output["models"].as_array().unwrap();
+        let vendor = models
+            .iter()
+            .find(|model| model.get("model").and_then(Value::as_str) == Some("vendor-model"))
+            .expect("missing vendor model");
+        assert_eq!(vendor["slug"], "vendor-model");
+        assert_eq!(vendor["display_name"], "Vendor Model");
+        assert_eq!(vendor["visibility"], "list");
+        assert_eq!(vendor["default_reasoning_level"], "high");
+        assert!(vendor["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|level| level["effort"] == "high"));
+        assert!(vendor["supportedReasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effort| effort["reasoningEffort"] == "high"));
     }
 
     #[test]
