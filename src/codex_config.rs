@@ -964,7 +964,6 @@ fn build_context_catalog(
     }
 
     let template_models = models.clone();
-    hide_base_catalog_models_when_account_models_exist(models, account_models);
     prepend_dex_account_catalog_models(
         models,
         &template_models,
@@ -1057,19 +1056,6 @@ fn merge_codex_registry_model_metadata(model: &mut Value, registry_model: &Value
             model[key] = Value::from(registry);
         }
     }
-}
-
-fn hide_base_catalog_models_when_account_models_exist(
-    models: &mut Vec<Value>,
-    account_models: &[DexCatalogAccountModel],
-) {
-    if account_models.is_empty() {
-        return;
-    }
-    models.retain(|model| {
-        let slug = model.get("slug").and_then(Value::as_str).unwrap_or("");
-        !is_codex_native_text_gpt_model(slug) && !CODEX_REGISTRY_MODEL_SLUGS.contains(&slug)
-    });
 }
 
 fn prepend_dex_account_catalog_models(
@@ -2115,20 +2101,45 @@ wire_api = "responses"
 
         let output = build_context_catalog(input, None, &account_models).unwrap();
         let models = output["models"].as_array().unwrap();
-        assert_eq!(models.len(), 2);
-        let appended = &models[0];
-        assert_eq!(appended["display_name"], "GPT-5.5 Proxy");
-        assert_eq!(appended["context_window"], 128_000);
-        assert_eq!(appended["max_context_window"], 128_000);
+        assert!(models.len() > 2);
+        let account_entry = models
+            .iter()
+            .find(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .and_then(decode_dex_account_model_slug)
+                    .is_some_and(|slug| slug.model == "gpt-5.5-proxy")
+            })
+            .expect("missing account model");
+        assert_eq!(account_entry["display_name"], "GPT-5.5 Proxy");
+        assert_eq!(account_entry["context_window"], 128_000);
+        assert_eq!(account_entry["max_context_window"], 128_000);
         assert_eq!(
-            decode_dex_account_model_slug(appended["slug"].as_str().unwrap())
+            decode_dex_account_model_slug(account_entry["slug"].as_str().unwrap())
                 .unwrap()
                 .model,
             "gpt-5.5-proxy"
         );
-        assert_eq!(models[1]["display_name"], "DeepSeek V4 Pro");
-        assert_eq!(models[1]["context_window"], 272000);
-        assert_eq!(models[1]["max_context_window"], 272000);
+        let deepseek_entry = models
+            .iter()
+            .find(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .and_then(decode_dex_account_model_slug)
+                    .is_some_and(|slug| slug.model == "deepseek-v4-pro")
+            })
+            .expect("missing deepseek account model");
+        assert_eq!(deepseek_entry["display_name"], "DeepSeek V4 Pro");
+        assert_eq!(deepseek_entry["context_window"], 272000);
+        assert_eq!(deepseek_entry["max_context_window"], 272000);
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.5")));
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.4")));
     }
 
     #[test]
@@ -2198,13 +2209,32 @@ wire_api = "responses"
 
         let output = build_context_catalog(input, None, &account_models).unwrap();
         let models = output["models"].as_array().unwrap();
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0]["display_name"], "OpenAI 桌面版 账号 / GPT-5.5");
-        assert_eq!(models[1]["display_name"], "OpenAI 备用账号 / GPT-5.5");
-        assert_eq!(models[0]["context_window"], 272000);
-        assert_eq!(models[0]["max_context_window"], 272000);
-        assert_eq!(models[1]["context_window"], 272000);
-        assert_eq!(models[1]["max_context_window"], 272000);
+        let account_entries = models
+            .iter()
+            .filter(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .and_then(decode_dex_account_model_slug)
+                    .is_some_and(|slug| slug.model == "gpt-5.5")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(account_entries.len(), 2);
+        assert_eq!(
+            account_entries[0]["display_name"],
+            "OpenAI 桌面版 账号 / GPT-5.5"
+        );
+        assert_eq!(
+            account_entries[1]["display_name"],
+            "OpenAI 备用账号 / GPT-5.5"
+        );
+        assert_eq!(account_entries[0]["context_window"], 272000);
+        assert_eq!(account_entries[0]["max_context_window"], 272000);
+        assert_eq!(account_entries[1]["context_window"], 272000);
+        assert_eq!(account_entries[1]["max_context_window"], 272000);
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.5")));
     }
 
     #[test]
@@ -2234,11 +2264,23 @@ wire_api = "responses"
 
         let output = build_context_catalog(input, None, &account_models).unwrap();
         let models = output["models"].as_array().unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0]["display_name"], "GPT-5.4");
-        assert_eq!(models[0]["context_window"], 272_000);
-        assert_eq!(models[0]["max_context_window"], 272_000);
-        assert_eq!(models[0]["default_reasoning_level"], "xhigh");
+        let account_entry = models
+            .iter()
+            .find(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .and_then(decode_dex_account_model_slug)
+                    .is_some_and(|slug| slug.model == "gpt-5.4")
+            })
+            .expect("missing account GPT-5.4");
+        assert_eq!(account_entry["display_name"], "GPT-5.4");
+        assert_eq!(account_entry["context_window"], 272_000);
+        assert_eq!(account_entry["max_context_window"], 272_000);
+        assert_eq!(account_entry["default_reasoning_level"], "xhigh");
+        assert!(models
+            .iter()
+            .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.4")));
     }
 
     #[test]

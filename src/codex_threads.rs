@@ -1405,12 +1405,6 @@ fn append_unique(items: &mut Vec<String>, value: &str) -> bool {
     true
 }
 
-fn remove_value(items: &mut Vec<String>, value: &str) -> bool {
-    let before = items.len();
-    items.retain(|item| item != value);
-    before != items.len()
-}
-
 fn remove_deleted_thread_from_desktop_state(db_path: &Path, thread_id: &str) -> Result<usize> {
     let Some(global_path) = codex_global_state_path(db_path) else {
         return Ok(0);
@@ -1556,13 +1550,7 @@ fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<Strin
             best = Some(root);
         }
     }
-    best.cloned().or_else(|| {
-        if Path::new(cwd).is_dir() {
-            Some(cwd.to_string())
-        } else {
-            None
-        }
-    })
+    best.cloned()
 }
 
 fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> {
@@ -2018,7 +2006,7 @@ fn get_desktop_project_index_status(
             .and_then(|item| item.get("threadIds"))
             .and_then(Value::as_array)
             .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(thread_id)));
-        if assigned && ordered && !projectless.contains(thread_id) {
+        if assigned && ordered && projectless.contains(thread_id) {
             indexed_count += 1;
         } else {
             pending_count += 1;
@@ -2115,7 +2103,7 @@ fn repair_desktop_project_index(
                 next_assignments.insert(thread_id.clone(), assignment);
                 changed += 1;
             }
-            changed += remove_value(&mut next_projectless, thread_id) as usize;
+            changed += append_unique(&mut next_projectless, thread_id) as usize;
             if next_hints.get(thread_id).and_then(Value::as_str) != Some(project.as_str()) {
                 next_hints.insert(thread_id.clone(), Value::String(project.clone()));
                 changed += 1;
@@ -3692,7 +3680,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .all(|value| value.as_str() != Some("thread-a")));
+            .any(|value| value.as_str() == Some("thread-a")));
+        assert!(state["projectless-thread-ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("thread-b")));
         let order_ids = state["sidebar-project-thread-orders"]["/tmp/project-a"]["threadIds"]
             .as_array()
             .unwrap()
@@ -3761,6 +3754,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value.as_str() == Some(project)));
+        assert!(state["projectless-thread-ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("ordered-thread")));
 
         let conn = Connection::open(&db_path).expect("open db");
         let status = get_desktop_project_index_status(&db_path, &conn).expect("project status");
@@ -3771,7 +3769,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_project_index_uses_existing_thread_cwd_as_project_fallback() {
+    fn desktop_project_index_does_not_create_project_from_thread_cwd() {
         let dir = temp_test_dir("thread-desktop-project-cwd-fallback");
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
@@ -3821,27 +3819,22 @@ mod tests {
             &std::fs::read_to_string(&global_path).expect("read global state"),
         )
         .expect("parse global state");
-        assert_eq!(
-            state["thread-project-assignments"]["cwd-thread"]["projectId"].as_str(),
-            Some(project.as_str())
-        );
         assert!(state["active-workspace-roots"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some(project.as_str())));
-        assert!(
-            state["sidebar-project-thread-orders"][&project]["threadIds"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value.as_str() == Some("cwd-thread"))
-        );
+            .all(|value| value.as_str() != Some(project.as_str())));
+        assert!(state["thread-project-assignments"]
+            .as_object()
+            .is_none_or(|assignments| !assignments.contains_key("cwd-thread")));
+        assert!(state["sidebar-project-thread-orders"]
+            .as_object()
+            .is_none_or(|orders| !orders.contains_key(&project)));
         assert!(state["projectless-thread-ids"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|value| value.as_str() != Some("cwd-thread")));
+            .any(|value| value.as_str() == Some("cwd-thread")));
 
         std::fs::remove_dir_all(dir).ok();
     }
