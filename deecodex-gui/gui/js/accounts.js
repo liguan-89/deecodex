@@ -1267,6 +1267,21 @@ function activeAccountIdForSelection(kind, surface) {
   return null;
 }
 
+function visibleAccountsForCurrentSelection(list = accountsData.accounts || []) {
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const activeId = activeAccountIdForSelection(selectedClientKind, activeSurface);
+  return (list || [])
+    .filter(a => accountClientKind(a) === selectedClientKind)
+    .filter(a => accountClientSurface(a) === activeSurface)
+    .map((account, index) => ({ account, index }))
+    .sort((left, right) => {
+      const leftActive = left.account.id === activeId ? 0 : 1;
+      const rightActive = right.account.id === activeId ? 0 : 1;
+      return leftActive - rightActive || left.index - right.index;
+    })
+    .map(item => item.account);
+}
+
 function providerDefaultTemplate(provider) {
   const templates = endpointTemplates || [];
   if (provider === 'codex') {
@@ -1425,16 +1440,7 @@ function renderAccountList() {
   const list = accountsData.accounts || [];
   const activeSurface = selectedSurfaceForKind(selectedClientKind);
   const activeId = activeAccountIdForSelection(selectedClientKind, activeSurface);
-  const filtered = list
-    .filter(a => accountClientKind(a) === selectedClientKind)
-    .filter(a => accountClientSurface(a) === activeSurface)
-    .map((account, index) => ({ account, index }))
-    .sort((left, right) => {
-      const leftActive = left.account.id === activeId ? 0 : 1;
-      const rightActive = right.account.id === activeId ? 0 : 1;
-      return leftActive - rightActive || left.index - right.index;
-    })
-    .map(item => item.account);
+  const filtered = visibleAccountsForCurrentSelection(list);
   let cards = '';
   if (filtered.length === 0) {
     cards = `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}${clientKindSupportsSurface(selectedClientKind) ? ' ' + esc(clientSurfaceLabel(activeSurface)) : ''}账号，点击上方按钮创建</div>`;
@@ -1465,13 +1471,13 @@ function renderAccountList() {
           </div>
           <div class="account-card-side">
             <div class="card-balance" id="balance-${escAttr(a.id)}">
-              ${official ? renderOfficialCardStatus(a) : '<span class="balance-loading">—</span>'}
+              ${renderAccountBalanceInitial(a)}
             </div>
             <div class="card-actions-row">
               ${active
                 ? renderAccountIconAction('已应用', 'check', '', 'account-applied', true)
                 : renderAccountIconAction('应用', 'check', `applyAccount('${escAttr(a.id)}')`, 'account-apply')}
-              ${renderAccountIconAction('测试上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
+              ${renderAccountIconAction('测试全部账号上游连接', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
               ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', 'codex')`)}
               ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
             </div>
@@ -1500,6 +1506,14 @@ function renderAccountList() {
       ${cards}
     </div>
   </div>`;
+}
+
+function renderAccountBalanceInitial(a) {
+  const cache = balanceCache[a.id];
+  if (cache && cache.ts > Date.now() - 300000) {
+    return renderBalanceInfo(cache.info);
+  }
+  return isCodexOfficialAccount(a) ? renderOfficialCardStatus(a) : '<span class="balance-loading">—</span>';
 }
 
 function renderClientAccountCard(a) {
@@ -1534,7 +1548,7 @@ function renderClientAccountCard(a) {
         <div class="card-balance client-status-box" id="${statusId}">${statusHtml}</div>
         <div class="card-actions-row">
           ${renderAccountIconAction(applied ? '重新写入配置' : '写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, active ? 'account-apply account-applied' : 'account-apply')}
-          ${renderAccountIconAction('刷新状态', 'refresh', `refreshClientAccountStatus('${escAttr(a.id)}')`, 'account-refresh')}
+          ${renderAccountIconAction('刷新全部账号状态', 'refresh', `refreshAllAccountsForCard('${escAttr(a.id)}')`, 'account-refresh')}
           ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', '${escAttr(kind)}')`)}
           ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
         </div>
@@ -4099,36 +4113,107 @@ async function refreshBalanceFromFormConnectivity() {
   await refreshOfficialQuotaFromDetail(editingAccount.id);
 }
 
+let accountListRefreshInFlight = false;
+
 async function testAccountUpstreamForCard(id) {
-  const a = (accountsData.accounts || []).find(acc => acc.id === id);
-  if (!a) return;
-  const isCodex = isCodexAccount(a);
-  const el = document.getElementById(isCodex ? 'balance-' + id : 'client-status-' + id);
-  const upstream = cardUpstream(a);
-  if (!upstream) {
-    showToast('未配置上游 URL', 'error');
+  await refreshAllAccountsForCard(id);
+}
+
+async function refreshAllAccountsForCard(id) {
+  if (accountListRefreshInFlight) {
+    showToast('账号检测正在进行', 'info');
     return;
   }
-  if (el) el.innerHTML = '<span class="balance-loading">检测中...</span>';
+  const accounts = accountsForAccountListRefresh(id);
+  if (!accounts.length) return;
+
+  accountListRefreshInFlight = true;
+  let okCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+  const target = accounts.find(account => account.id === id);
+  const targetName = target ? accountDisplayTitle(target) : '';
+  showToast(`${targetName ? `${targetName} 触发，` : ''}开始检测全部 ${accounts.length} 个账号`, 'info');
+
+  for (const account of accounts) {
+    const el = accountCardStatusElement(account);
+    if (el) el.innerHTML = '<span class="balance-loading">检测中...</span>';
+  }
+
+  try {
+    for (const account of accounts) {
+      const result = isCodexAccount(account)
+        ? await refreshCodexAccountConnectivityForCard(account)
+        : await refreshClientAccountStatusForCard(account);
+      if (result.skipped) skippedCount += 1;
+      else if (result.ok) okCount += 1;
+      else failedCount += 1;
+    }
+    await loadAccountsData();
+    if (accountsView === 'list' && currentPanel === 'accounts') {
+      accountsListRenderSignature = '';
+      renderMainContent();
+      refreshClientSwitcherIssues();
+    }
+    const checkedCount = okCount + failedCount;
+    const skippedText = skippedCount ? `，跳过 ${skippedCount} 个` : '';
+    const failedText = failedCount ? `，失败 ${failedCount} 个` : '';
+    showToast(`全部账号检测完成：成功 ${okCount}/${checkedCount}${failedText}${skippedText}`, failedCount ? 'error' : 'success');
+  } finally {
+    accountListRefreshInFlight = false;
+  }
+}
+
+function accountsForAccountListRefresh(preferredId) {
+  const accounts = (accountsData.accounts || []).filter(account => account?.id);
+  return accounts
+    .map((account, index) => ({ account, index }))
+    .sort((left, right) => {
+      const leftPreferred = left.account.id === preferredId ? 0 : 1;
+      const rightPreferred = right.account.id === preferredId ? 0 : 1;
+      return leftPreferred - rightPreferred || left.index - right.index;
+    })
+    .map(item => item.account);
+}
+
+function accountCardStatusElement(account) {
+  if (!account?.id) return null;
+  return document.getElementById(isCodexAccount(account) ? 'balance-' + account.id : 'client-status-' + account.id);
+}
+
+async function refreshCodexAccountConnectivityForCard(a) {
+  const el = accountCardStatusElement(a);
+  const upstream = cardUpstream(a);
+  if (!upstream) {
+    if (el) el.innerHTML = '<span class="balance-na">未配置</span>';
+    return { ok: false, skipped: true };
+  }
   try {
     const result = await invoke('test_upstream_connectivity', {
-      accountId: id,
+      accountId: a.id,
       upstream,
       endpointKind: cardEndpointKind(a),
     });
-    if (result.ok) {
-      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
-      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
-    } else if (result.error) {
-      showToast('连通失败: ' + result.error, 'error');
-    } else {
-      showToast(`上游返回 HTTP ${result.status}`, 'error');
-    }
+    delete balanceCache[a.id];
+    await fetchBalanceForCard(a);
+    return { ok: Boolean(result.ok) };
   } catch (e) {
-    showToast('连通测试异常: ' + e, 'error');
-  } finally {
-    if (isCodex) await refreshBalanceForCard(id);
-    else await refreshClientAccountStatus(id);
+    if (el) el.innerHTML = `<span class="balance-na">${esc(String(e))}</span>`;
+    return { ok: false };
+  }
+}
+
+async function refreshClientAccountStatusForCard(a) {
+  const el = accountCardStatusElement(a);
+  try {
+    const report = await invoke('refresh_client_status', { accountId: a.id });
+    a._client_status_report = report;
+    a.last_check = { ok: report.ok, message: report.message, details: report };
+    if (el) el.innerHTML = renderClientCardStatusSummary(report, clientAccountApplied(a));
+    return { ok: Boolean(report.ok) };
+  } catch (e) {
+    if (el) el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    return { ok: false };
   }
 }
 
