@@ -269,15 +269,8 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
         }
     }
 
-    let include_account_models =
-        crate::config::codex_router_mode_is_smart(options.codex_router_mode);
+    let include_account_models = include_account_models_in_catalog_for_mode(options.codex_router_mode);
     let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
-    let active_model =
-        if !include_account_models && decode_dex_account_model_slug(&active_model).is_some() {
-            "gpt-5.5".to_string()
-        } else {
-            active_model
-        };
     let catalog = match generate_context_catalog(
         options.context_window_override,
         &active_model,
@@ -341,6 +334,10 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
     }
 }
 
+fn include_account_models_in_catalog_for_mode(_codex_router_mode: &str) -> bool {
+    true
+}
+
 /// 从 codex 的 config.toml 中移除 deecodex 代理配置。
 pub fn remove() {
     let Some(path) = codex_config_path() else {
@@ -376,9 +373,6 @@ fn do_inject(
         .is_some();
 
     doc["model_provider"] = toml_edit::value(active_provider);
-    if !crate::config::codex_router_mode_is_smart(codex_router_mode) {
-        reset_account_model_selection_for_api_mode(&mut doc);
-    }
 
     // 确保 model_providers 是常规表（非内联表），避免与用户自定义 provider 冲突
     if doc.get("model_providers").is_none() {
@@ -450,16 +444,6 @@ fn do_inject(
 
     std::fs::write(path, doc.to_string())?;
     Ok(!already_exists)
-}
-
-fn reset_account_model_selection_for_api_mode(doc: &mut toml_edit::DocumentMut) {
-    let selected_model = doc
-        .get("model")
-        .and_then(|model| model.as_str())
-        .unwrap_or_default();
-    if decode_dex_account_model_slug(selected_model).is_some() {
-        doc["model"] = toml_edit::value("gpt-5.5");
-    }
 }
 
 fn write_deecodex_provider(
@@ -2270,9 +2254,9 @@ mod tests {
     }
 
     #[test]
-    fn inject_api_mode_resets_dex_account_model_selection() {
-        let account_slug = encode_dex_account_model_slug("acct_1", "ep_1", "deepseek-v4-pro");
-        let path = write_temp_config(&format!("model = \"{account_slug}\"\n"));
+    fn inject_api_mode_preserves_dex_account_model_selection() {
+        let selected = encode_dex_account_model_slug("acct_1", "endpoint_1", "deepseek-v4-pro");
+        let path = write_temp_config(&format!("model = \"{selected}\"\n"));
         let catalog_path = path.parent().unwrap().join(CATALOG_FILENAME);
         do_inject(
             &path,
@@ -2289,7 +2273,7 @@ mod tests {
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
         assert_eq!(
             doc.get("model").and_then(|value| value.as_str()),
-            Some("gpt-5.5")
+            Some(selected.as_str())
         );
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
@@ -2328,7 +2312,7 @@ wire_api = "responses"
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
         assert_eq!(
             doc.get("model").and_then(|value| value.as_str()),
-            Some("gpt-5.5")
+            Some(account_slug.as_str())
         );
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
@@ -2347,6 +2331,16 @@ wire_api = "responses"
             Some("http://127.0.0.1:4446/v1")
         );
         cleanup(&path);
+    }
+
+    #[test]
+    fn api_and_smart_modes_include_account_models_in_catalog() {
+        assert!(include_account_models_in_catalog_for_mode(
+            crate::config::CODEX_ROUTER_MODE_API
+        ));
+        assert!(include_account_models_in_catalog_for_mode(
+            crate::config::CODEX_ROUTER_MODE_SMART
+        ));
     }
 
     #[test]

@@ -228,6 +228,23 @@ struct AuthJsonImportFile {
     content: String,
 }
 
+#[derive(Debug, Clone)]
+struct CodexAuthFileSyncEvent {
+    account_id: String,
+    action: &'static str,
+    message: &'static str,
+    details: Value,
+}
+
+#[derive(Debug, Default, Clone)]
+struct CodexAuthFileSync {
+    changed: bool,
+    imported: usize,
+    updated: usize,
+    activated: bool,
+    events: Vec<CodexAuthFileSyncEvent>,
+}
+
 fn auth_json_string(value: &Value, key: &str) -> String {
     value
         .get(key)
@@ -255,6 +272,20 @@ fn auth_json_u64(value: &Value, key: &str) -> Option<u64> {
                     .and_then(|text| text.parse::<u64>().ok())
             })
         })
+}
+
+fn default_codex_auth_json_path() -> Option<PathBuf> {
+    deecodex::config::home_dir().map(|home| home.join(".codex").join("auth.json"))
+}
+
+fn codex_auth_source_label(path: &Path) -> String {
+    let Some(home) = deecodex::config::home_dir() else {
+        return path.display().to_string();
+    };
+    path.strip_prefix(home)
+        .ok()
+        .map(|relative| format!("~/{}", relative.display()))
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn parse_auth_json_import_files(raw: &str) -> Result<Vec<AuthJsonImportFile>, String> {
@@ -505,6 +536,239 @@ fn same_oauth_account(
         }
     }
     !token.access_token.trim().is_empty() && account.api_key == token.access_token
+}
+
+fn sync_codex_auth_token_account(
+    store: &mut AccountStore,
+    token: &deecodex::oauth_accounts::OAuthToken,
+    source_name: &str,
+    client_surface: AccountClientSurface,
+    now: u64,
+) -> CodexAuthFileSync {
+    let mut sync = CodexAuthFileSync::default();
+    let mut imported =
+        codex_account_from_imported_token(token.clone(), source_name, client_surface.clone(), now);
+    imported.client_options.insert(
+        "oauth".into(),
+        deecodex::oauth_accounts::oauth_token_to_value(token, "codex_auth_file"),
+    );
+    imported
+        .client_options
+        .insert("auth_file_source".into(), json!("codex_default_auth"));
+
+    let target_account_id: String;
+    if let Some(existing) = store
+        .accounts
+        .iter_mut()
+        .find(|account| same_imported_codex_oauth(account, token, &client_surface))
+    {
+        let mut account_changed = false;
+        if existing.provider != imported.provider {
+            existing.provider = imported.provider.clone();
+            account_changed = true;
+        }
+        if existing.client_kind != imported.client_kind {
+            existing.client_kind = imported.client_kind.clone();
+            account_changed = true;
+        }
+        if existing.client_surface != imported.client_surface {
+            existing.client_surface = imported.client_surface.clone();
+            account_changed = true;
+        }
+        if existing.upstream != imported.upstream {
+            existing.upstream = imported.upstream.clone();
+            account_changed = true;
+        }
+        if existing.api_key != token.access_token {
+            existing.api_key = token.access_token.clone();
+            account_changed = true;
+        }
+        if existing.auth_mode != deecodex::accounts::AccountAuthMode::OAuth {
+            existing.auth_mode = deecodex::accounts::AccountAuthMode::OAuth;
+            account_changed = true;
+        }
+        let oauth_value = deecodex::oauth_accounts::oauth_token_to_value(token, "codex_auth_file");
+        if existing.client_options.get("oauth") != Some(&oauth_value) {
+            existing.client_options.insert("oauth".into(), oauth_value);
+            account_changed = true;
+        }
+        for key in ["auth_mode", "auth_file_name", "auth_file_source"] {
+            if let Some(value) = imported.client_options.get(key) {
+                if existing.client_options.get(key) != Some(value) {
+                    existing
+                        .client_options
+                        .insert(key.to_string(), value.clone());
+                    account_changed = true;
+                }
+            }
+        }
+        if !existing.client_options.contains_key("routing") {
+            if let Some(value) = imported.client_options.get("routing") {
+                existing
+                    .client_options
+                    .insert("routing".into(), value.clone());
+                account_changed = true;
+            }
+        }
+        let has_official_endpoint = existing
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial);
+        if !has_official_endpoint {
+            existing
+                .endpoints
+                .push(codex_official_endpoint_config(&existing.id));
+            account_changed = true;
+        }
+        if existing.provider_options.is_empty() {
+            existing.provider_options = imported.provider_options.clone();
+            account_changed = true;
+        }
+        if existing.name.trim().is_empty()
+            || (existing.name == "Codex 官方账号" && imported.name != existing.name)
+        {
+            existing.name = imported.name.clone();
+            account_changed = true;
+        }
+        if account_changed {
+            existing.updated_at = now;
+            existing.normalize_v2();
+            sync.changed = true;
+            sync.updated += 1;
+            sync.events.push(CodexAuthFileSyncEvent {
+                account_id: existing.id.clone(),
+                action: "codex_auth_file_update",
+                message: "已同步本机 Codex 登录态账号",
+                details: json!({
+                    "source_file": source_name,
+                    "client_surface": client_surface,
+                }),
+            });
+        }
+        target_account_id = existing.id.clone();
+    } else {
+        let account_id = imported.id.clone();
+        store.accounts.push(imported);
+        sync.changed = true;
+        sync.imported += 1;
+        sync.events.push(CodexAuthFileSyncEvent {
+            account_id: account_id.clone(),
+            action: "codex_auth_file_import",
+            message: "已从本机 Codex 登录态导入官方账号",
+            details: json!({
+                "source_file": source_name,
+                "client_surface": client_surface,
+            }),
+        });
+        target_account_id = account_id;
+    }
+
+    if client_surface == AccountClientSurface::Desktop
+        && !surface_has_active_codex_official(store, &client_surface)
+    {
+        if let Some(account) = store
+            .accounts
+            .iter()
+            .find(|account| account.id == target_account_id)
+            .cloned()
+        {
+            let endpoint_id = account
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial)
+                .or_else(|| account.endpoints.first())
+                .map(|endpoint| endpoint.id.clone());
+            let sync_legacy_global = should_sync_legacy_global(store, &account);
+            activate_codex_surface_account(store, &account, endpoint_id, sync_legacy_global);
+            sync.changed = true;
+            sync.activated = true;
+        }
+    }
+
+    if sync.changed {
+        store.normalize_v2();
+    }
+    sync
+}
+
+fn sync_default_codex_auth_account(data_dir: &Path) -> (AccountStore, CodexAuthFileSync) {
+    let Some(path) = default_codex_auth_json_path() else {
+        return (
+            deecodex::accounts::load_accounts(data_dir),
+            CodexAuthFileSync::default(),
+        );
+    };
+    if !path.is_file() {
+        return (
+            deecodex::accounts::load_accounts(data_dir),
+            CodexAuthFileSync::default(),
+        );
+    }
+
+    let now = deecodex::accounts::now_secs();
+    let source_name = codex_auth_source_label(&path);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "读取 Codex 登录态文件失败");
+            return (
+                deecodex::accounts::load_accounts(data_dir),
+                CodexAuthFileSync::default(),
+            );
+        }
+    };
+    let value = match serde_json::from_str::<Value>(&content) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "解析 Codex 登录态文件失败");
+            return (
+                deecodex::accounts::load_accounts(data_dir),
+                CodexAuthFileSync::default(),
+            );
+        }
+    };
+    let token = match codex_oauth_token_from_auth_json(&value, now) {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "Codex 登录态文件不包含可导入账号");
+            return (
+                deecodex::accounts::load_accounts(data_dir),
+                CodexAuthFileSync::default(),
+            );
+        }
+    };
+
+    match mutate_account_store(data_dir, "保存 Codex 登录态账号失败", |store| {
+        Ok(sync_codex_auth_token_account(
+            store,
+            &token,
+            &source_name,
+            AccountClientSurface::Desktop,
+            now,
+        ))
+    }) {
+        Ok((store, sync)) => {
+            for event in &sync.events {
+                append_account_event(
+                    data_dir,
+                    &event.account_id,
+                    &AccountClientKind::Codex,
+                    event.action,
+                    true,
+                    event.message,
+                    event.details.clone(),
+                );
+            }
+            (store, sync)
+        }
+        Err(err) => {
+            tracing::warn!("{err}");
+            (
+                deecodex::accounts::load_accounts(data_dir),
+                CodexAuthFileSync::default(),
+            )
+        }
+    }
 }
 
 fn surface_has_active_codex_official(
@@ -2067,7 +2331,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
                 );
             }
         }
-        return store;
+        return sync_default_codex_auth_account(data_dir).0;
     }
 
     tracing::info!("accounts.json 不存在，执行首次迁移");
@@ -2240,7 +2504,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
         tracing::info!("首次迁移完成，已保存 {} 个账号", store.accounts.len());
     }
 
-    store
+    sync_default_codex_auth_account(data_dir).0
 }
 
 /// 从账号存储中读取活跃账号的上下文窗口覆盖值。
@@ -3117,7 +3381,10 @@ pub fn run_upgrade() -> Result<String, String> {
 #[tauri::command]
 pub async fn list_accounts(manager: State<'_, ServerManager>) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let store = deecodex::accounts::load_accounts(&data_dir);
+    let (store, auth_sync) = sync_default_codex_auth_account(&data_dir);
+    if auth_sync.changed {
+        sync_account_store_to_running_state(&manager, &store).await;
+    }
 
     let accounts: Vec<Value> = store
         .accounts
@@ -7356,6 +7623,29 @@ mod tests {
     }
 
     #[test]
+    fn codex_auth_json_import_accepts_codex_auth_file_shape() {
+        let value = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": "access-file",
+                "refresh_token": "refresh-file",
+                "id_token": "id-file",
+                "account_id": "acct-file"
+            },
+            "last_refresh": "2026-06-22T00:00:00Z"
+        });
+
+        let token = codex_oauth_token_from_auth_json(&value, 100).unwrap();
+
+        assert_eq!(token.provider, "codex");
+        assert_eq!(token.access_token, "access-file");
+        assert_eq!(token.refresh_token, "refresh-file");
+        assert_eq!(token.id_token, "id-file");
+        assert_eq!(token.account_id, "acct-file");
+        assert_eq!(token.last_refresh, "2026-06-22T00:00:00Z");
+    }
+
+    #[test]
     fn imported_codex_account_joins_official_pool() {
         let token = deecodex::oauth_accounts::OAuthToken {
             provider: "codex".into(),
@@ -7387,6 +7677,133 @@ mod tests {
             .endpoints
             .iter()
             .any(|endpoint| endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial));
+    }
+
+    #[test]
+    fn codex_auth_file_sync_adds_desktop_official_account() {
+        let mut executor = test_account("executor");
+        executor.provider = "openai".into();
+        executor.client_kind = AccountClientKind::Codex;
+        executor.client_surface = AccountClientSurface::Desktop;
+        executor.upstream = "https://api.openai.com/v1".into();
+
+        let mut store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![executor],
+            active_id: Some("executor".into()),
+            active_account_id: Some("executor".into()),
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+        store.set_active_for_surface(
+            &AccountClientKind::Codex,
+            &AccountClientSurface::Desktop,
+            "executor".into(),
+            None,
+        );
+
+        let token = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "access-auto".into(),
+            refresh_token: "refresh-auto".into(),
+            id_token: String::new(),
+            email: String::new(),
+            account_id: "acct-auto".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+
+        let sync = sync_codex_auth_token_account(
+            &mut store,
+            &token,
+            "~/.codex/auth.json",
+            AccountClientSurface::Desktop,
+            100,
+        );
+
+        assert!(sync.changed);
+        assert_eq!(sync.imported, 1);
+        assert!(sync.activated);
+        assert_eq!(store.accounts.len(), 2);
+        assert_eq!(store.active_account_id.as_deref(), Some("executor"));
+        let active_desktop = store
+            .active_account_for_surface(&AccountClientSurface::Desktop)
+            .unwrap();
+        assert_eq!(active_desktop.provider, "codex");
+        assert_eq!(active_desktop.client_surface, AccountClientSurface::Desktop);
+        assert_eq!(
+            active_desktop.auth_mode,
+            deecodex::accounts::AccountAuthMode::OAuth
+        );
+        assert!(active_desktop.client_options.get("oauth").is_some());
+        assert!(active_desktop
+            .endpoints
+            .iter()
+            .any(|endpoint| { endpoint.kind == deecodex::accounts::EndpointKind::CodexOfficial }));
+    }
+
+    #[test]
+    fn codex_auth_file_sync_updates_existing_without_duplicate() {
+        let original = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "access-old".into(),
+            refresh_token: "refresh-old".into(),
+            id_token: String::new(),
+            email: "same@example.com".into(),
+            account_id: "acct-same".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+        let account = codex_account_from_imported_token(
+            original,
+            "~/.codex/auth.json",
+            AccountClientSurface::Desktop,
+            1,
+        );
+        let mut store = AccountStore {
+            version: deecodex::accounts::ACCOUNT_STORE_VERSION,
+            accounts: vec![account],
+            active_id: None,
+            active_account_id: None,
+            active_endpoint_id: None,
+            active_by_surface: HashMap::new(),
+        };
+        let refreshed = deecodex::oauth_accounts::OAuthToken {
+            provider: "codex".into(),
+            access_token: "access-new".into(),
+            refresh_token: "refresh-new".into(),
+            id_token: String::new(),
+            email: "same@example.com".into(),
+            account_id: "acct-same".into(),
+            expired: String::new(),
+            expired_at: 0,
+            last_refresh: String::new(),
+        };
+
+        let sync = sync_codex_auth_token_account(
+            &mut store,
+            &refreshed,
+            "~/.codex/auth.json",
+            AccountClientSurface::Desktop,
+            100,
+        );
+
+        assert!(sync.changed);
+        assert_eq!(sync.updated, 1);
+        assert_eq!(store.accounts.len(), 1);
+        assert_eq!(store.accounts[0].api_key, "access-new");
+
+        let stable = sync_codex_auth_token_account(
+            &mut store,
+            &refreshed,
+            "~/.codex/auth.json",
+            AccountClientSurface::Desktop,
+            101,
+        );
+        assert!(!stable.changed);
+        assert_eq!(store.accounts.len(), 1);
     }
 
     #[test]
