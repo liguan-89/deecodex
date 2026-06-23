@@ -34,6 +34,37 @@ Tauri updater 需要签名校验。当前项目只保存公钥，私钥保存在
 
 不要把私钥或密码提交到仓库。
 
+### Windows 独立构建机
+
+Windows 版本在独立机器上适配时，也必须使用同一把 updater 私钥签名，否则同一个 `latest.json` 清单无法同时服务 macOS 和 Windows 更新包。
+
+推荐做法：
+
+1. 线下安全拷贝这两个文件到 Windows 构建机，不经过 Git：
+
+```text
+%USERPROFILE%\.tauri\dex-ai-updater.key
+%USERPROFILE%\.tauri\dex-ai-updater.key.password
+```
+
+2. PowerShell 构建时注入：
+
+```powershell
+cd C:\path\to\deecodex\deecodex-gui
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$env:USERPROFILE\.tauri\dex-ai-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD=(Get-Content "$env:USERPROFILE\.tauri\dex-ai-updater.key.password" -Raw).Trim()
+cargo tauri build
+```
+
+3. 如果走 GitHub Actions 或其他 CI，只把私钥内容和密码放进 Secret，例如：
+
+```text
+TAURI_SIGNING_PRIVATE_KEY
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+仓库只保存读取方式和公钥配置，不保存私钥本体。
+
 ## 构建
 
 构建 updater artifact 时需要设置签名私钥和密码：

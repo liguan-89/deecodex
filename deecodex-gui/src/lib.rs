@@ -90,6 +90,13 @@ pub struct ServerManager {
     pub plugin_manager: Mutex<Option<Arc<deecodex_plugin_host::PluginManager>>>,
     /// 请求历史数据库（独立于 AppState，服务停止后仍可读取）
     pub request_history: Mutex<Option<Arc<deecodex::request_history::RequestHistoryStore>>>,
+    /// 应用更新状态，用于托盘菜单提示
+    pub update_info: Mutex<Option<UpdateTrayInfo>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UpdateTrayInfo {
+    pub latest: String,
 }
 
 impl ServerManager {
@@ -107,6 +114,7 @@ impl ServerManager {
             app_state: Mutex::new(None),
             plugin_manager: Mutex::new(None),
             request_history: Mutex::new(None),
+            update_info: Mutex::new(None),
         }
     }
 
@@ -125,7 +133,8 @@ impl ServerManager {
         let tray_guard = self.tray.lock().await;
         if let (Some(app), Some(tray)) = (app_guard.as_ref(), tray_guard.as_ref()) {
             let data_dir = self.data_dir.lock().await;
-            if let Ok(menu) = build_tray_menu(app, running, &data_dir) {
+            let update_info = self.update_info.lock().await.clone();
+            if let Ok(menu) = build_tray_menu(app, running, &data_dir, update_info.as_ref()) {
                 let _ = tray.set_menu(Some(menu));
             }
             let _ = tray.set_tooltip(Some(&format!("{} · {label}", product_name())));
@@ -137,6 +146,7 @@ fn build_tray_menu(
     app: &tauri::AppHandle,
     running: bool,
     data_dir: &std::path::Path,
+    update_info: Option<&UpdateTrayInfo>,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let label = if running { "运行中" } else { "已停止" };
     let status_item = MenuItemBuilder::with_id("status", format!("{} · {label}", product_name()))
@@ -147,6 +157,12 @@ fn build_tray_menu(
         .build(app)?;
     let stop_item = MenuItemBuilder::with_id("stop", "停止服务").build(app)?;
     let open_item = MenuItemBuilder::with_id("open", "打开控制面板").build(app)?;
+    let update_item = update_info
+        .map(|info| {
+            MenuItemBuilder::with_id("check_update", format!("发现新版本 {}", info.latest))
+                .build(app)
+        })
+        .transpose()?;
     let quit_item = MenuItemBuilder::with_id("quit", format!("退出 {}", product_name()))
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
@@ -161,6 +177,10 @@ fn build_tray_menu(
         .item(&stop_item)
         .separator()
         .item(&open_item);
+
+    if let Some(update_item) = update_item {
+        menu_builder = menu_builder.item(&update_item);
+    }
 
     // 插入账号切换子菜单（如果有账号）
     if let Some(sub) = account_submenu {
@@ -446,7 +466,7 @@ pub fn run() {
             // 保留 Dock 图标，用户可在 Dock 看到运行状态
 
             let args = crate::commands::load_args();
-            let menu = build_tray_menu(app.handle(), false, &args.data_dir)?;
+            let menu = build_tray_menu(app.handle(), false, &args.data_dir, None)?;
 
             let icon = make_tray_icon();
 
@@ -490,6 +510,13 @@ pub fn run() {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                            }
+                        }
+                        "check_update" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = window.emit("show-update", ());
                             }
                         }
                         "quit" => {

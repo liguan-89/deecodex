@@ -72,6 +72,10 @@ function renderStatus() {
   const problemCount = (running ? 0 : 1) + clientIssueCount;
   const version = s.version && s.version !== '—' ? `v${s.version}` : '版本 —';
   const hasUpdate = typeof deeStorage !== 'undefined' && deeStorage?.getItem?.('updateAvailable') === '1';
+  const updateInfo = typeof window !== 'undefined' ? window._updateInfo : null;
+  const updateLatest = updateInfo?.latest || deeStorage?.getItem?.('updateLatest') || '';
+  const updateChangelog = updateInfo?.changelog || deeStorage?.getItem?.('updateChangelog') || '';
+  const updateSummary = updateChangelog.split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 2);
 
   return `
     <section class="status-overview-shell" aria-label="接入状态总览">
@@ -83,9 +87,22 @@ function renderStatus() {
             <span class="support-project-icon" aria-hidden="true"></span>
             <span>支持项目</span>
           </button>
+          ${hasUpdate ? `<button type="button" class="gateway-update-pill" onclick="showStoredUpdatePrompt('status')" title="查看更新">
+            <span class="update-dot" aria-hidden="true"></span>
+            <span>发现 ${esc(updateLatest || '新版本')}</span>
+          </button>` : ''}
         </div>
       </div>
       </div>
+
+      ${hasUpdate ? `<div class="gateway-update-banner">
+        <div>
+          <strong>发现新版本 ${esc(updateLatest || '')}</strong>
+          <span>${esc(updateSummary[0] || '可以现在下载并安装，安装前会再次确认。')}</span>
+          ${updateSummary[1] ? `<span>${esc(updateSummary[1])}</span>` : ''}
+        </div>
+        <button type="button" class="btn btn-primary" onclick="showStoredUpdatePrompt('status')">查看更新</button>
+      </div>` : ''}
 
       <div class="gateway-metric-grid">
       <div class="gateway-metric-card ${running ? 'ok' : 'fail'}" onclick="mgmtToggle()">

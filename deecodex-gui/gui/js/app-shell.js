@@ -38,8 +38,8 @@ async function init() {
   if (currentPanel === 'status') renderPanel('status');
   if (typeof checkSetupWizard === 'function') checkSetupWizard();
 
-  // 每日自动检查更新
-  autoCheckUpgrade();
+  // 启动后延迟自动检查更新，避免抢占首屏初始化。
+  window.setTimeout(() => autoCheckUpgrade(), 10000);
 
   // 监听托盘账号切换事件，自动刷新
   if (typeof window.DeeCodexTauri?.listen === 'function') {
@@ -48,6 +48,9 @@ async function init() {
         await window.DeeCodexTauri.listen('account-switched', () => {
           if (currentPanel === 'status') loadStatus();
           if (currentPanel === 'accounts' && accountsView === 'list') loadAccountsData();
+        });
+        await window.DeeCodexTauri.listen('show-update', () => {
+          if (typeof showStoredUpdatePrompt === 'function') showStoredUpdatePrompt('tray');
         });
         console.log('[deecodex] 已注册 account-switched 事件监听');
       } catch (e) {

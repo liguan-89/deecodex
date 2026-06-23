@@ -87,31 +87,59 @@
   }
 
   async function autoCheckUpgrade() {
-    const last = deeStorage.getItem('lastUpgradeCheck');
-    const today = new Date().toISOString().slice(0, 10);
-    if (last === today) {
-      applyUpdateIndicator(Boolean(deeStorage.getItem('updateAvailable')));
-      return;
-    }
+    restoreStoredUpdateInfo();
+    applyUpdateIndicator(deeStorage.getItem('updateAvailable') === '1');
 
+    const today = new Date().toISOString().slice(0, 10);
     deeStorage.setItem('lastUpgradeCheck', today);
     try {
       const info = await invoke('check_upgrade');
       if (info.has_update) {
-        window._updateInfo = info;
-        deeStorage.setItem('updateAvailable', '1');
-        applyUpdateIndicator(true);
+        rememberUpdateInfo(info);
+        showToast(`发现新版本 ${info.latest}，可在服务概览中安装`, 'info');
       } else {
-        window._updateInfo = null;
-        deeStorage.removeItem('updateAvailable');
-        applyUpdateIndicator(false);
+        clearUpdateInfo();
       }
     } catch (_) {}
+  }
+
+  function restoreStoredUpdateInfo() {
+    const raw = deeStorage.getItem('updateInfo');
+    if (!raw) return null;
+    try {
+      const info = JSON.parse(raw);
+      if (info && info.has_update) {
+        window._updateInfo = info;
+        return info;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function rememberUpdateInfo(info) {
+    window._updateInfo = info;
+    deeStorage.setItem('updateAvailable', '1');
+    deeStorage.setItem('updateLatest', info.latest || '');
+    deeStorage.setItem('updateChangelog', info.changelog || '');
+    deeStorage.setItem('updateInfo', JSON.stringify(info));
+    applyUpdateIndicator(true);
+    if (currentPanel === 'status') renderPanel('status');
+  }
+
+  function clearUpdateInfo() {
+    window._updateInfo = null;
+    deeStorage.removeItem('updateAvailable');
+    deeStorage.removeItem('updateLatest');
+    deeStorage.removeItem('updateChangelog');
+    deeStorage.removeItem('updateInfo');
+    applyUpdateIndicator(false);
+    if (currentPanel === 'status') renderPanel('status');
   }
 
   function applyUpdateIndicator(hasUpdate) {
     const ver = document.getElementById('dashboardVersion');
     const btn = document.getElementById('btnUpdate');
+    syncGlobalUpdatePrompt(hasUpdate);
     if (hasUpdate) {
       if (ver && !ver.querySelector('.update-dot')) {
         const dot = document.createElement('span');
@@ -125,6 +153,33 @@
       ver?.querySelector('.update-dot')?.remove();
       btn?.querySelector('.update-dot')?.remove();
     }
+  }
+
+  function syncGlobalUpdatePrompt(hasUpdate) {
+    const old = document.getElementById('globalUpdatePrompt');
+    if (!hasUpdate) {
+      old?.remove();
+      return;
+    }
+
+    const info = window._updateInfo || restoreStoredUpdateInfo() || {};
+    const latest = info.latest || deeStorage.getItem('updateLatest') || '新版本';
+    const changelog = info.changelog || deeStorage.getItem('updateChangelog') || '';
+    const firstLine = changelog.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+
+    const prompt = old || document.createElement('button');
+    prompt.id = 'globalUpdatePrompt';
+    prompt.type = 'button';
+    prompt.className = 'global-update-prompt';
+    prompt.title = '查看更新';
+    prompt.innerHTML = `
+      <span class="update-dot" aria-hidden="true"></span>
+      <span class="global-update-copy">
+        <strong>发现新版本 ${esc(latest)}</strong>
+        ${firstLine ? `<small>${esc(firstLine)}</small>` : '<small>查看更新内容并安装</small>'}
+      </span>`;
+    prompt.onclick = () => showStoredUpdatePrompt('global');
+    if (!old) document.body.appendChild(prompt);
   }
 
   async function mgmtRestart() {
@@ -148,6 +203,68 @@
     if (btn) btn.disabled = false;
   }
 
+  function showUpgradeModal(info, source) {
+    const existing = document.getElementById('upgradeModal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'upgradeModal';
+    overlay.innerHTML = `
+        <div class="modal-box" style="max-width:640px;">
+          <div class="modal-header">
+            <h3>发现新版本 ${esc(info.latest || '')}</h3>
+            <button class="modal-close" id="upgradeCloseBtn" type="button">✕</button>
+          </div>
+          <div class="modal-body" data-source="${escAttr(source || '')}">
+            <div style="margin-bottom:16px;font-family:var(--font-mono);">
+              <p style="color:var(--text-secondary);margin-bottom:4px;">当前版本</p>
+              <p style="font-size:16px;color:var(--amber);margin-bottom:12px;">${esc(info.current)}</p>
+              <p style="color:var(--text-secondary);margin-bottom:4px;">最新版本</p>
+              <p style="font-size:18px;color:var(--green);margin-bottom:12px;">${esc(info.latest)}</p>
+            </div>
+            ${info.endpoint ? '<p style="color:var(--text-muted);font-size:11px;margin:0 0 12px;">更新源：' + esc(info.endpoint) + '</p>' : ''}
+            ${info.changelog ? '<div style="border-top:1px solid var(--border-subtle);padding-top:12px;"><p style="color:var(--text-secondary);margin-bottom:8px;">更新日志</p><pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-primary);max-height:200px;overflow-y:auto;white-space:pre-wrap;">' + esc(info.changelog) + '</pre></div>' : ''}
+            <p style="margin-top:12px;color:var(--text-muted);font-size:11px;">安装完成后不会无提示重启。请按提示退出并重新打开 DEX AI。</p>
+          </div>
+          <div style="padding:12px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border-subtle);">
+            <button class="btn btn-ghost" id="upgradeCancelBtn" type="button">取消</button>
+            <button class="btn btn-primary" id="btnConfirmUpgrade" type="button">⇡ 下载并安装</button>
+          </div>
+        </div>`;
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+
+    document.getElementById('upgradeCloseBtn')?.addEventListener('click', () => overlay.remove());
+    document.getElementById('upgradeCancelBtn')?.addEventListener('click', () => overlay.remove());
+    document.getElementById('btnConfirmUpgrade')?.addEventListener('click', async () => {
+      if (!await showConfirm(`确定下载并安装 ${info.latest || '新版本'} 吗？安装完成后需要手动重新打开 DEX AI。`)) return;
+      overlay.remove();
+      const updateBtn = document.getElementById('btnUpdate');
+      if (updateBtn) updateBtn.disabled = true;
+      showToast('正在下载并安装更新...', 'info');
+      try {
+        const message = await invoke('run_upgrade');
+        clearUpdateInfo();
+        showToast(message, 'success');
+      } catch (error) {
+        showToast('升级失败: ' + error, 'error');
+      }
+      if (updateBtn) updateBtn.disabled = false;
+    });
+  }
+
+  function showStoredUpdatePrompt(source) {
+    const info = window._updateInfo || restoreStoredUpdateInfo();
+    if (info && info.has_update) {
+      showUpgradeModal(info, source);
+    } else {
+      mgmtUpdate();
+    }
+  }
+
   async function mgmtUpdate() {
     const btn = document.getElementById('btnUpdate');
     if (btn) btn.disabled = true;
@@ -157,61 +274,13 @@
       const info = await invoke('check_upgrade');
       if (!info.has_update) {
         showToast('已是最新版本 (' + info.current + ')', 'success');
-        window._updateInfo = null;
-        deeStorage.removeItem('updateAvailable');
-        applyUpdateIndicator(false);
+        clearUpdateInfo();
         if (btn) btn.disabled = false;
         return;
       }
 
-      window._updateInfo = info;
-      deeStorage.setItem('updateAvailable', '1');
-      applyUpdateIndicator(true);
-
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.id = 'upgradeModal';
-      overlay.innerHTML = `
-        <div class="modal-box" style="max-width:640px;">
-          <div class="modal-header">
-            <h3>⇡ 发现新版本</h3>
-            <button class="modal-close" id="upgradeCloseBtn" type="button">✕</button>
-          </div>
-          <div class="modal-body">
-            <div style="margin-bottom:16px;font-family:var(--font-mono);">
-              <p style="color:var(--text-secondary);margin-bottom:4px;">当前版本</p>
-              <p style="font-size:16px;color:var(--amber);margin-bottom:12px;">${esc(info.current)}</p>
-              <p style="color:var(--text-secondary);margin-bottom:4px;">最新版本</p>
-              <p style="font-size:18px;color:var(--green);margin-bottom:12px;">${esc(info.latest)}</p>
-            </div>
-            ${info.endpoint ? '<p style="color:var(--text-muted);font-size:11px;margin:0 0 12px;">更新源：' + esc(info.endpoint) + '</p>' : ''}
-            ${info.changelog ? '<div style="border-top:1px solid var(--border-subtle);padding-top:12px;"><p style="color:var(--text-secondary);margin-bottom:8px;">更新日志</p><pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-primary);max-height:200px;overflow-y:auto;white-space:pre-wrap;">' + esc(info.changelog) + '</pre></div>' : ''}
-          </div>
-          <div style="padding:12px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border-subtle);">
-            <button class="btn btn-ghost" id="upgradeCancelBtn" type="button">取消</button>
-            <button class="btn btn-primary" id="btnConfirmUpgrade" type="button">⇡ 下载并安装</button>
-          </div>
-        </div>`;
-      overlay.addEventListener('click', (event) => {
-        if (event.target === overlay) overlay.remove();
-      });
-      document.body.appendChild(overlay);
-
-      document.getElementById('upgradeCloseBtn')?.addEventListener('click', () => overlay.remove());
-      document.getElementById('upgradeCancelBtn')?.addEventListener('click', () => overlay.remove());
-      document.getElementById('btnConfirmUpgrade')?.addEventListener('click', async () => {
-        overlay.remove();
-        const updateBtn = document.getElementById('btnUpdate');
-        if (updateBtn) updateBtn.disabled = true;
-        showToast('正在下载并安装更新...', 'info');
-        try {
-          const message = await invoke('run_upgrade');
-          showToast(message, 'success');
-        } catch (error) {
-          showToast('升级失败: ' + error, 'error');
-        }
-        if (updateBtn) updateBtn.disabled = false;
-      });
+      rememberUpdateInfo(info);
+      showUpgradeModal(info, 'manual');
     } catch (error) {
       showToast('检查更新失败: ' + error, 'error');
     }
@@ -224,6 +293,7 @@
   window.presetModelMapping = presetModelMapping;
   window.autoCheckUpgrade = autoCheckUpgrade;
   window.applyUpdateIndicator = applyUpdateIndicator;
+  window.showStoredUpdatePrompt = showStoredUpdatePrompt;
   window.mgmtRestart = mgmtRestart;
   window.mgmtUpdate = mgmtUpdate;
 })();

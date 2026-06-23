@@ -73,8 +73,7 @@ pub async fn run_upgrade_with_app(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| format!("下载或安装更新失败: {e}"))?;
 
-    app.request_restart();
-    Ok("更新已安装，正在重启 DEX AI".to_string())
+    Ok("更新已安装。请退出并重新打开 DEX AI 完成切换。".to_string())
 }
 
 /// DEX 助手工具链没有 AppHandle，不能执行真实安装；这里只做远端 manifest 预览。

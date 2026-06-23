@@ -3414,8 +3414,31 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
 }
 
 #[tauri::command]
-pub async fn check_upgrade(app: AppHandle) -> Result<Value, String> {
-    upgrade::check_upgrade_with_app(app).await
+pub async fn check_upgrade(
+    app: AppHandle,
+    manager: State<'_, ServerManager>,
+) -> Result<Value, String> {
+    let info = upgrade::check_upgrade_with_app(app).await?;
+    {
+        let mut update_info = manager.update_info.lock().await;
+        if info
+            .get("has_update")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let latest = info
+                .get("latest")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim_start_matches('v')
+                .to_string();
+            *update_info = Some(crate::UpdateTrayInfo { latest });
+        } else {
+            *update_info = None;
+        }
+    }
+    manager.update_tray().await;
+    Ok(info)
 }
 
 #[tauri::command]

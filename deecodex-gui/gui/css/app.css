@@ -4209,6 +4209,129 @@ body {
   outline: none;
 }
 
+.gateway-update-pill {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 176, 95, 0.36);
+  border-radius: 999px;
+  background: var(--amber-dim);
+  color: var(--amber);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.gateway-update-pill:hover,
+.gateway-update-pill:focus-visible {
+  border-color: var(--amber);
+  background: rgba(255, 176, 95, 0.22);
+  color: var(--amber);
+  outline: none;
+}
+
+.gateway-update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: -10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 176, 95, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 176, 95, 0.08);
+}
+
+.gateway-update-banner > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gateway-update-banner strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.gateway-update-banner span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.gateway-update-banner .btn {
+  flex: 0 0 auto;
+}
+
+.global-update-prompt {
+  position: fixed;
+  top: 16px;
+  right: 18px;
+  z-index: 230;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(360px, calc(100vw - var(--sidebar-w) - 46px));
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 176, 95, 0.28);
+  border-radius: 14px;
+  background: rgba(20, 31, 50, 0.96);
+  color: var(--text-primary);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.global-update-prompt:hover,
+.global-update-prompt:focus-visible {
+  border-color: rgba(255, 176, 95, 0.58);
+  background: rgba(25, 38, 60, 0.98);
+  outline: none;
+}
+
+.global-update-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  text-align: left;
+}
+
+.global-update-copy strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-update-copy small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-update-pill .update-dot,
+.global-update-prompt .update-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(255, 176, 95, 0.82);
+}
+
 .support-project-icon {
   display: inline-grid;
   width: 14px;
