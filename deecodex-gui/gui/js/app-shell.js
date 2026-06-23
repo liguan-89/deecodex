@@ -36,6 +36,7 @@ async function init() {
   normalizeThreadsOnStartup();
   await Promise.all([loadStatus(), loadConfig(), loadAccountsData()]);
   if (currentPanel === 'status') renderPanel('status');
+  if (typeof checkSetupWizard === 'function') checkSetupWizard();
 
   // 每日自动检查更新
   autoCheckUpgrade();

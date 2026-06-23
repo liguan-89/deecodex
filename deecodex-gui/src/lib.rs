@@ -634,6 +634,8 @@ pub fn run() {
             commands::list_client_backups,
             commands::restore_client_backup,
             commands::dex_quick_configure_client,
+            commands::get_codex_quick_start_status,
+            commands::apply_codex_quick_start,
             commands::open_client_config,
             commands::get_account_config_file,
             commands::validate_account_config_file,

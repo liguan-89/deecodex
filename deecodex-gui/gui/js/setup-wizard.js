@@ -1,23 +1,40 @@
-const WIZARD_STEPS = [
-  { id: 'wz1', step: '01', title: '添加账号', desc: '选择供应商并创建账号', panel: 'accounts', quick: '' },
-  { id: 'wz2', step: '02', title: '填写密钥', desc: '填入 API Key 和上游 URL', panel: 'accounts', quick: '' },
-  { id: 'wz3', step: '03', title: '同步模型', desc: '拉取上游可用模型', panel: 'accounts', quick: 'fetchUpstreamModels' },
-  { id: 'wz4', step: '04', title: '模型映射', desc: '设置 Codex 模型到上游模型的对应关系', panel: 'accounts', quick: 'presetModelMap' },
-  { id: 'wz5', step: '05', title: '保存配置', desc: '写入当前账号配置', panel: 'accounts', quick: 'saveConfig' },
-  { id: 'wz6', step: '06', title: '启动顺序', desc: '先启动 deecodex，再打开 Codex', panel: '', quick: '' },
-  { id: 'wz7', step: '07', title: '启动服务', desc: '确认服务状态正常', panel: 'status', quick: 'startService' },
-  { id: 'wz8', step: '08', title: '运行诊断', desc: '验证上游连通与模型可用', panel: 'diagnostics', quick: '' },
-];
-let wizardIdx = 0;
-let wizardVer = '';
+let codexQuickStartStatus = null;
+let codexQuickStartBusy = false;
+let codexQuickStartDismissed = false;
 
 async function checkSetupWizard() {
   hideWizardBar();
+  try {
+    const status = await invoke('get_codex_quick_start_status');
+    codexQuickStartStatus = status || null;
+    window.codexQuickStartStatus = codexQuickStartStatus;
+    if (status?.should_show && !codexQuickStartDismissed) {
+      showCodexQuickStartModal(status, { force: false });
+    }
+  } catch (error) {
+    console.warn('[deecodex] Codex Desktop 快速配置状态读取失败:', error);
+  }
 }
 
-function showWizardBar() {
+async function openCodexQuickStart(force) {
   hideWizardBar();
-  return;
+  try {
+    const status = await invoke('get_codex_quick_start_status');
+    codexQuickStartStatus = status || null;
+    window.codexQuickStartStatus = codexQuickStartStatus;
+    showCodexQuickStartModal(status, { force: force !== false });
+  } catch (error) {
+    showToast('快速配置状态读取失败: ' + error, 'error');
+  }
+}
+
+function closeCodexQuickStartModal() {
+  document.getElementById('codexQuickStartModal')?.remove();
+}
+
+function dismissCodexQuickStart() {
+  codexQuickStartDismissed = true;
+  closeCodexQuickStartModal();
 }
 
 function hideWizardBar() {
@@ -27,107 +44,218 @@ function hideWizardBar() {
   if (main) main.style.paddingTop = '';
 }
 
-function autoWizardStep(panelId) {
-  // 根据当前面板自动定位到相关步骤
-  const bar = document.getElementById('setupWizard');
-  if (!bar) return;
-  let found = -1;
-  for (let i = 0; i < WIZARD_STEPS.length; i++) {
-    if (WIZARD_STEPS[i].panel === panelId) { found = i; break; }
-  }
-  if (found >= 0) { wizardIdx = found; renderWizardBar(bar); }
+function showWizardBar() {
+  hideWizardBar();
 }
 
-function renderWizardBar(bar) {
-  const s = WIZARD_STEPS[wizardIdx];
-  const isFirst = wizardIdx === 0;
-  const isLast = wizardIdx === WIZARD_STEPS.length - 1;
-  const pct = Math.round((wizardIdx + 1) / WIZARD_STEPS.length * 100);
-  let btnHtml = '';
-  if (s.quick) {
-    btnHtml = '<button id="wzAct" class="setup-wizard-btn setup-wizard-btn-act">执行</button>';
-  }
+function autoWizardStep() {
+  // 旧顶部引导条已移除，保留空函数兼容旧调用。
+}
 
-  bar.innerHTML = ''
-    + '<span class="setup-wizard-icon">' + s.step + '</span>'
-    + '<span class="setup-wizard-count">' + (wizardIdx + 1) + '/' + WIZARD_STEPS.length + '</span>'
-    + '<div class="setup-wizard-progress">'
-    +   '<div style="width:' + pct + '%"></div>'
-    + '</div>'
-    + '<b class="setup-wizard-title">' + s.title + '</b>'
-    + '<span class="setup-wizard-desc">' + s.desc + '</span>'
-    + btnHtml
-    + (!isFirst ? '<button id="wzPrev" class="setup-wizard-btn setup-wizard-btn-prev">上一步</button>' : '')
-    + (!isLast ? '<button id="wzNext" class="setup-wizard-btn setup-wizard-btn-next">下一步</button>'
-      : '<button id="wzDone" class="setup-wizard-btn setup-wizard-btn-done">完成</button>')
-    + '<button id="wzClose" class="setup-wizard-close" aria-label="关闭引导">×</button>';
+function renderCodexQuickModeCard(mode, status, selectedMode) {
+  const isSmart = mode === 'smart';
+  const disabled = isSmart && !status?.has_official_login;
+  const title = isSmart ? '智能路由' : 'API 模式';
+  const desc = isSmart
+    ? '检测到 Codex 登录态时使用；DeepSeek 负责常规任务，官方登录态承接原生工具。'
+    : '不依赖官方登录态；Codex Desktop 直接使用 DeepSeek 账号模型。';
+  const badge = isSmart
+    ? (status?.has_official_login ? '已发现登录态' : '需要先登录')
+    : '最少配置';
+  return `
+    <label class="codex-quick-mode-card ${selectedMode === mode ? 'active' : ''} ${disabled ? 'disabled' : ''}">
+      <input type="radio" name="codexQuickMode" value="${escAttr(mode)}" ${selectedMode === mode ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+      <span class="codex-quick-mode-main">
+        <span class="codex-quick-mode-title">${esc(title)}</span>
+        <span class="codex-quick-mode-desc">${esc(desc)}</span>
+      </span>
+      <span class="codex-quick-mode-badge">${esc(badge)}</span>
+    </label>`;
+}
 
-  // 事件绑定
-  document.getElementById('wzClose').onclick = () => { bar.remove(); const m = document.getElementById('mainContent'); if (m) m.style.paddingTop = ''; };
-  document.getElementById('wzPrev')?.addEventListener('click', () => { if (wizardIdx > 0) { wizardIdx--; goWizardStep(); } });
-  document.getElementById('wzNext')?.addEventListener('click', () => { if (wizardIdx < WIZARD_STEPS.length - 1) { wizardIdx++; wizardCheer(); goWizardStep(); } });
-  document.getElementById('wzDone')?.addEventListener('click', () => {
-    deeStorage.setItem('setupCompletedVersion', wizardVer);
-    bar.remove(); const m = document.getElementById('mainContent'); if (m) m.style.paddingTop = '';
+function codexQuickModelOptions(models, selectedModel) {
+  const seen = new Set();
+  return (models || [])
+    .map(model => String(model || '').trim())
+    .filter(model => {
+      if (!model || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    })
+    .map(model => `<option value="${escAttr(model)}" ${model === selectedModel ? 'selected' : ''}>${esc(model)}</option>`)
+    .join('');
+}
+
+function showCodexQuickStartModal(status, options) {
+  closeCodexQuickStartModal();
+  status = status || {};
+  const force = options?.force === true;
+  if (!force && status.completed) return;
+  const recommendedMode = status.recommended_mode || (status.has_official_login ? 'smart' : 'api');
+  const selectedMode = recommendedMode === 'smart' && status.has_official_login ? 'smart' : 'api';
+  const models = Array.isArray(status.known_models) ? status.known_models : [];
+  const defaultModel = status.default_model || models[0] || 'deepseek-v4-pro';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay codex-quick-overlay';
+  overlay.id = 'codexQuickStartModal';
+  overlay.innerHTML = `
+    <div class="modal-box codex-quick-box">
+      <div class="modal-header codex-quick-header">
+        <div>
+          <h3>开始使用 Codex Desktop</h3>
+          <p>用 DeepSeek 完成最小配置，复杂设置之后再调。</p>
+        </div>
+        <button class="modal-close" id="codexQuickCloseBtn" type="button">✕</button>
+      </div>
+      <div class="modal-body codex-quick-body">
+        <div class="codex-quick-status">
+          <span class="${status.codex_installed ? 'ok' : 'warn'}">Codex Desktop ${status.codex_installed ? '已检测' : '未检测'}</span>
+          <span class="${status.has_official_login ? 'ok' : 'muted'}">官方登录态 ${status.has_official_login ? '已发现' : '未发现'}</span>
+          <span class="${status.has_execution_account ? 'ok' : 'muted'}">执行账号 ${status.has_execution_account ? '已存在' : '待配置'}</span>
+        </div>
+
+        <div class="codex-quick-mode-grid">
+          ${renderCodexQuickModeCard('api', status, selectedMode)}
+          ${renderCodexQuickModeCard('smart', status, selectedMode)}
+        </div>
+
+        <div class="config-fields codex-quick-fields">
+          <div class="config-field">
+            <label>账号名称</label>
+            <input type="text" id="codexQuickAccountName" value="DeepSeek 桌面版" placeholder="DeepSeek 桌面版">
+          </div>
+          <div class="config-field">
+            <label>默认模型</label>
+            <select id="codexQuickDefaultModel">
+              ${codexQuickModelOptions(models, defaultModel)}
+            </select>
+          </div>
+          <div class="config-field wide">
+            <label>DeepSeek Base URL</label>
+            <input type="text" id="codexQuickUpstream" value="${escAttr(status.upstream || 'https://api.deepseek.com/v1')}" placeholder="https://api.deepseek.com/v1">
+          </div>
+          <div class="config-field wide">
+            <label>DeepSeek API Key</label>
+            <input type="password" id="codexQuickApiKey" value="" placeholder="输入 DeepSeek API Key" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="codex-quick-actions">
+        <button type="button" class="btn btn-ghost" id="codexQuickFetchModelsBtn">获取模型</button>
+        <button type="button" class="btn btn-ghost" id="codexQuickLaterBtn">稍后</button>
+        <button type="button" class="btn btn-primary" id="codexQuickApplyBtn">完成配置</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) dismissCodexQuickStart();
   });
+  document.body.appendChild(overlay);
+  bindCodexQuickModeCards();
+  document.getElementById('codexQuickCloseBtn')?.addEventListener('click', dismissCodexQuickStart);
+  document.getElementById('codexQuickLaterBtn')?.addEventListener('click', dismissCodexQuickStart);
+  document.getElementById('codexQuickFetchModelsBtn')?.addEventListener('click', codexQuickFetchModels);
+  document.getElementById('codexQuickApplyBtn')?.addEventListener('click', codexQuickApply);
+}
 
-  const actBtn = document.getElementById('wzAct');
-  if (actBtn) {
-    actBtn.onclick = async () => {
-      actBtn.disabled = true; actBtn.textContent = '...';
-      try {
-        if (s.quick === 'fetchUpstreamModels') {
-          const account = await invoke('get_active_account');
-          await invoke('fetch_upstream_models', { accountId: account.id });
-        } else if (s.quick === 'presetModelMap') {
-          await presetModelMapping();
-        } else if (s.quick === 'saveConfig') {
-          await invoke('save_config', { config: currentConfig });
-        } else if (s.quick === 'startService') {
-          const st = await invoke('get_service_status');
-          if (!st.running) await invoke('start_service');
-          for (let j = 0; j < 30; j++) {
-            await new Promise(r => setTimeout(r, 500));
-            if ((await invoke('get_service_status')).running) break;
-          }
-          await loadStatus(); renderPanel('status');
-        }
-        actBtn.textContent = '完成'; actBtn.style.color = 'var(--green)'; actBtn.style.borderColor = 'var(--green)';
-        wizardCheer();
-      } catch (e) {
-        actBtn.textContent = '失败'; actBtn.style.color = 'var(--red)'; actBtn.style.borderColor = 'var(--red)';
-        actBtn.title = String(e);
-        setTimeout(() => { actBtn.textContent = '重试'; actBtn.style.color = ''; actBtn.style.borderColor = ''; actBtn.disabled = false; }, 3000);
-      }
-    };
+function bindCodexQuickModeCards() {
+  document.querySelectorAll('.codex-quick-mode-card input').forEach(input => {
+    input.addEventListener('change', () => {
+      document.querySelectorAll('.codex-quick-mode-card').forEach(card => {
+        const radio = card.querySelector('input');
+        card.classList.toggle('active', Boolean(radio?.checked));
+      });
+    });
+  });
+}
+
+function codexQuickSelectedMode() {
+  return document.querySelector('input[name="codexQuickMode"]:checked')?.value || 'api';
+}
+
+function codexQuickCurrentModels() {
+  const select = document.getElementById('codexQuickDefaultModel');
+  return Array.from(select?.options || []).map(option => option.value).filter(Boolean);
+}
+
+function codexQuickSetModels(models, preferred) {
+  const select = document.getElementById('codexQuickDefaultModel');
+  if (!select) return;
+  const existing = codexQuickCurrentModels();
+  const merged = [];
+  const push = model => {
+    model = String(model || '').trim();
+    if (model && !merged.includes(model)) merged.push(model);
+  };
+  push(preferred);
+  (models || []).forEach(push);
+  existing.forEach(push);
+  select.innerHTML = codexQuickModelOptions(merged, preferred || merged[0]);
+}
+
+async function codexQuickFetchModels() {
+  if (codexQuickStartBusy) return;
+  const btn = document.getElementById('codexQuickFetchModelsBtn');
+  const upstream = document.getElementById('codexQuickUpstream')?.value?.trim() || '';
+  const apiKey = document.getElementById('codexQuickApiKey')?.value?.trim() || '';
+  if (!upstream) { showToast('DeepSeek Base URL 不能为空', 'error'); return; }
+  if (!apiKey) { showToast('DeepSeek API Key 不能为空', 'error'); return; }
+  codexQuickStartBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = '获取中'; }
+  try {
+    const models = await invoke('fetch_upstream_models', {
+      accountId: null,
+      upstream,
+      apiKey,
+      endpointKind: 'OpenAiChat',
+    });
+    codexQuickSetModels(models, models?.includes('deepseek-v4-pro') ? 'deepseek-v4-pro' : models?.[0]);
+    showToast(`已获取 ${Array.isArray(models) ? models.length : 0} 个模型`, 'success');
+  } catch (error) {
+    showToast('获取模型失败: ' + error, 'error');
+  } finally {
+    codexQuickStartBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = '获取模型'; }
   }
-  updateWizardMainOffset(bar);
 }
 
-function updateWizardMainOffset(bar) {
-  const main = document.getElementById('mainContent');
-  if (!main || !bar) return;
-  const height = Math.ceil(bar.getBoundingClientRect().height || 0);
-  main.style.paddingTop = `${height + 18}px`;
-}
-
-function wizardCheer() {
-  const cheers = ['做得不错！', '很好，继续！', '太棒了！', '又完成一步！', '厉害！', '加油，快完成了！', '完美！'];
-  const msg = cheers[wizardIdx % cheers.length];
-  // 短时绿色闪烁
-  const bar = document.getElementById('setupWizard');
-  if (bar) {
-    bar.style.transition = 'background 0.3s';
-    bar.style.background = 'rgba(0,214,143,0.3)';
-    setTimeout(() => { bar.style.background = ''; }, 600);
+async function codexQuickApply() {
+  if (codexQuickStartBusy) return;
+  const btn = document.getElementById('codexQuickApplyBtn');
+  const payload = {
+    mode: codexQuickSelectedMode(),
+    account_name: document.getElementById('codexQuickAccountName')?.value || 'DeepSeek 桌面版',
+    upstream: document.getElementById('codexQuickUpstream')?.value || '',
+    api_key: document.getElementById('codexQuickApiKey')?.value || '',
+    default_model: document.getElementById('codexQuickDefaultModel')?.value || 'deepseek-v4-pro',
+    known_models: codexQuickCurrentModels(),
+  };
+  if (!payload.upstream.trim()) { showToast('DeepSeek Base URL 不能为空', 'error'); return; }
+  if (!payload.api_key.trim()) { showToast('DeepSeek API Key 不能为空', 'error'); return; }
+  codexQuickStartBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = '配置中'; }
+  try {
+    const result = await invoke('apply_codex_quick_start', {
+      requestJson: JSON.stringify(payload),
+    });
+    closeCodexQuickStartModal();
+    codexQuickStartDismissed = true;
+    await Promise.all([
+      typeof loadConfig === 'function' ? loadConfig() : Promise.resolve(),
+      typeof loadAccountsData === 'function' ? loadAccountsData() : Promise.resolve(),
+      typeof loadStatus === 'function' ? loadStatus() : Promise.resolve(),
+    ]);
+    if (typeof renderPanel === 'function' && currentPanel === 'status') renderPanel('status');
+    if (typeof refreshClientLifecycleDock === 'function') await refreshClientLifecycleDock();
+    const serviceError = result?.service?.error;
+    showToast(serviceError ? `配置已保存，服务启动失败: ${serviceError}` : (result?.message || 'Codex Desktop 已配置'), serviceError ? 'info' : 'success');
+  } catch (error) {
+    showToast('快速配置失败: ' + error, 'error');
+  } finally {
+    codexQuickStartBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = '完成配置'; }
   }
-  showToast(msg, 'success');
 }
 
-function goWizardStep() {
-  const s = WIZARD_STEPS[wizardIdx];
-  if (s.panel && s.panel !== currentPanel) switchPanel(s.panel);
-  else renderWizardBar(document.getElementById('setupWizard'));
-}
-
-/* end wizard */
+window.checkSetupWizard = checkSetupWizard;
+window.openCodexQuickStart = openCodexQuickStart;
+window.closeCodexQuickStartModal = closeCodexQuickStartModal;

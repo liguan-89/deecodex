@@ -228,7 +228,7 @@ struct AuthJsonImportFile {
     content: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct CodexAuthFileSyncEvent {
     account_id: String,
     action: &'static str,
@@ -236,7 +236,7 @@ struct CodexAuthFileSyncEvent {
     details: Value,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 struct CodexAuthFileSync {
     changed: bool,
     imported: usize,
@@ -3737,6 +3737,466 @@ pub async fn dex_quick_configure_client(
         "ok": true,
         "account": account_to_value_for_store(&account, &store),
         "report": report,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexQuickStartRequest {
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    account_name: String,
+    #[serde(default)]
+    upstream: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    default_model: String,
+    #[serde(default)]
+    known_models: Vec<String>,
+}
+
+fn codex_quick_start_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("quick_start_codex_desktop.json")
+}
+
+fn codex_desktop_official_exists(store: &AccountStore) -> bool {
+    store.accounts.iter().any(|account| {
+        account.client_kind == AccountClientKind::Codex
+            && account.client_surface == AccountClientSurface::Desktop
+            && account.is_codex_official_account()
+    })
+}
+
+fn codex_desktop_execution_account_ready(account: &deecodex::accounts::Account) -> bool {
+    account.client_kind == AccountClientKind::Codex
+        && account.client_surface == AccountClientSurface::Desktop
+        && !account.is_codex_official_account()
+        && !account.api_key.trim().is_empty()
+        && account.endpoints.iter().any(|endpoint| {
+            !endpoint.base_url.trim().is_empty()
+                && matches!(
+                    endpoint.kind,
+                    deecodex::accounts::EndpointKind::OpenAiChat
+                        | deecodex::accounts::EndpointKind::CustomChat
+                        | deecodex::accounts::EndpointKind::OpenAiResponses
+                        | deecodex::accounts::EndpointKind::CustomResponses
+                )
+        })
+}
+
+fn codex_quick_deepseek_defaults() -> (String, Vec<String>, String) {
+    let profile = deecodex::providers::profile_by_slug("deepseek");
+    let default_model = profile
+        .known_models
+        .iter()
+        .find(|model| model.as_str() == "deepseek-v4-pro")
+        .cloned()
+        .or_else(|| profile.known_models.first().cloned())
+        .unwrap_or_else(|| "deepseek-v4-pro".into());
+    (
+        profile.default_upstream,
+        profile.known_models,
+        default_model,
+    )
+}
+
+fn normalized_codex_quick_mode(mode: &str, has_official_login: bool) -> Result<String, String> {
+    let mode = deecodex::config::normalize_codex_router_mode(mode);
+    if mode == deecodex::config::CODEX_ROUTER_MODE_SMART && !has_official_login {
+        return Err(
+            "未发现 Codex 官方登录态，无法启用智能路由；请先登录 Codex Desktop 或使用 API 模式"
+                .into(),
+        );
+    }
+    Ok(mode)
+}
+
+fn quick_start_known_models(request: &CodexQuickStartRequest, fallback: &[String]) -> Vec<String> {
+    let mut models = Vec::<String>::new();
+    let mut push_model = |model: &str| {
+        let model = model.trim();
+        if model.is_empty() || models.iter().any(|existing| existing == model) {
+            return;
+        }
+        models.push(model.to_string());
+    };
+    push_model(&request.default_model);
+    for model in &request.known_models {
+        push_model(model);
+    }
+    for model in fallback {
+        push_model(model);
+    }
+    models
+}
+
+fn build_codex_quick_deepseek_endpoint(
+    account_id: &str,
+    upstream: &str,
+    known_models: Vec<String>,
+) -> deecodex::accounts::EndpointConfig {
+    let kind = deecodex::accounts::EndpointKind::OpenAiChat;
+    deecodex::accounts::EndpointConfig {
+        id: format!("endpoint_{account_id}"),
+        name: "DeepSeek Chat".into(),
+        kind: kind.clone(),
+        base_url: upstream.to_string(),
+        path: String::new(),
+        template_id: "deepseek".into(),
+        template_version: 1,
+        model_map: HashMap::new(),
+        known_models,
+        model_profiles: HashMap::new(),
+        vision: deecodex::accounts::VisionConfig::default(),
+        image_generation_enabled: Some(false),
+        custom_headers: HashMap::new(),
+        request_timeout_secs: None,
+        max_retries: None,
+        context_window_override: None,
+        reasoning_effort_override: None,
+        thinking_tokens: None,
+        fast_mode_enabled: false,
+        fast_service_tier: "auto".into(),
+        balance_url: String::new(),
+    }
+}
+
+#[tauri::command]
+pub async fn get_codex_quick_start_status(
+    manager: State<'_, ServerManager>,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (store, auth_sync) = sync_default_codex_auth_account(&data_dir);
+    if auth_sync.changed {
+        sync_account_store_and_codex_catalog(&manager, &store, "codex_quick_start_auth_sync").await;
+    }
+
+    let marker_exists = codex_quick_start_marker_path(&data_dir).is_file();
+    let has_execution_account = store
+        .accounts
+        .iter()
+        .any(codex_desktop_execution_account_ready);
+    let has_official_login = codex_desktop_official_exists(&store)
+        || surface_has_active_codex_official(&store, &AccountClientSurface::Desktop);
+    let (upstream, known_models, default_model) = codex_quick_deepseek_defaults();
+    let recommended_mode = if has_official_login {
+        deecodex::config::CODEX_ROUTER_MODE_SMART
+    } else {
+        deecodex::config::CODEX_ROUTER_MODE_API
+    };
+    let args = load_args();
+    let completed = marker_exists && has_execution_account;
+    let should_show = !marker_exists && !has_execution_account;
+
+    Ok(json!({
+        "completed": completed,
+        "should_show": should_show,
+        "marker_exists": marker_exists,
+        "codex_installed": dex::codex_is_installed(),
+        "has_official_login": has_official_login,
+        "has_execution_account": has_execution_account,
+        "recommended_mode": recommended_mode,
+        "current_mode": deecodex::config::normalize_codex_router_mode(&args.codex_router_mode),
+        "provider": "deepseek",
+        "provider_label": "DeepSeek",
+        "upstream": upstream,
+        "endpoint_kind": "OpenAiChat",
+        "known_models": known_models,
+        "default_model": default_model,
+        "auth_sync": auth_sync,
+    }))
+}
+
+#[tauri::command]
+pub async fn apply_codex_quick_start(
+    manager: State<'_, ServerManager>,
+    request_json: String,
+) -> Result<Value, String> {
+    use deecodex::accounts::{
+        generate_id, now_secs, Account, AccountAuthMode, AccountRoutingOptions,
+    };
+
+    let request: CodexQuickStartRequest =
+        serde_json::from_str(&request_json).map_err(|err| format!("快速配置参数无效: {err}"))?;
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (_, fallback_models, fallback_default_model) = codex_quick_deepseek_defaults();
+    let upstream = request.upstream.trim().to_string();
+    if upstream.is_empty() {
+        return Err("DeepSeek Base URL 不能为空".into());
+    }
+    deecodex::handlers::validate_upstream(&upstream)
+        .map_err(|err| format!("DeepSeek Base URL 无效: {err}"))?;
+    let api_key = request.api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("DeepSeek API Key 不能为空".into());
+    }
+    let default_model = request.default_model.trim();
+    let default_model = if default_model.is_empty() {
+        fallback_default_model
+    } else {
+        default_model.to_string()
+    };
+    let mut request = request;
+    request.default_model = default_model.clone();
+    let known_models = quick_start_known_models(&request, &fallback_models);
+
+    let (store, auth_sync) = sync_default_codex_auth_account(&data_dir);
+    if auth_sync.changed {
+        sync_account_store_and_codex_catalog(&manager, &store, "codex_quick_start_auth_sync").await;
+    }
+    let has_official_login = codex_desktop_official_exists(&store)
+        || surface_has_active_codex_official(&store, &AccountClientSurface::Desktop);
+    let mode = normalized_codex_quick_mode(&request.mode, has_official_login)?;
+    let smart_mode = mode == deecodex::config::CODEX_ROUTER_MODE_SMART;
+    let now = now_secs();
+    let account_name = request.account_name.trim();
+    let account_name = if account_name.is_empty() {
+        "DeepSeek 桌面版".to_string()
+    } else {
+        account_name.to_string()
+    };
+
+    let (store, (account, endpoint_id)) = mutate_account_store(
+        &data_dir,
+        "保存 Codex Desktop 快速配置失败",
+        |store| {
+            let target_index = store
+                .accounts
+                .iter()
+                .position(|account| {
+                    account.client_kind == AccountClientKind::Codex
+                        && account.client_surface == AccountClientSurface::Desktop
+                        && account
+                            .client_options
+                            .get("quick_start_codex_desktop")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                })
+                .or_else(|| {
+                    store.accounts.iter().position(|account| {
+                        account.client_kind == AccountClientKind::Codex
+                            && account.client_surface == AccountClientSurface::Desktop
+                            && account.provider.eq_ignore_ascii_case("deepseek")
+                            && account.upstream.trim_end_matches('/')
+                                == upstream.trim_end_matches('/')
+                            && !account.is_codex_official_account()
+                    })
+                });
+
+            let account_id = target_index
+                .and_then(|index| store.accounts.get(index).map(|account| account.id.clone()))
+                .unwrap_or_else(generate_id);
+            let endpoint =
+                build_codex_quick_deepseek_endpoint(&account_id, &upstream, known_models.clone());
+            let endpoint_id = endpoint.id.clone();
+            let mut client_options = target_index
+                .and_then(|index| {
+                    store
+                        .accounts
+                        .get(index)
+                        .map(|account| account.client_options.clone())
+                })
+                .unwrap_or_default();
+            client_options.insert("quick_start_codex_desktop".into(), json!(true));
+            client_options.insert("quick_start_provider".into(), json!("deepseek"));
+
+            let mut account = if let Some(index) = target_index {
+                let mut existing = store.accounts[index].clone();
+                existing.name = account_name.clone();
+                existing.provider = "deepseek".into();
+                existing.client_kind = AccountClientKind::Codex;
+                existing.client_surface = AccountClientSurface::Desktop;
+                existing.wire_protocol =
+                    deecodex::providers::profile_by_slug("deepseek").wire_protocol;
+                existing.upstream = upstream.clone();
+                existing.api_key = api_key.clone();
+                existing.auth_mode = AccountAuthMode::default();
+                existing.default_model = default_model.clone();
+                existing.client_options = client_options;
+                existing.model_map.clear();
+                existing.provider_options =
+                    deecodex::providers::provider_options_for_slug("deepseek");
+                existing.translate_enabled = true;
+                existing.capability_enabled = false;
+                existing.capability_account_id = None;
+                existing.dev_pipeline_enabled = false;
+                existing.endpoints = vec![endpoint];
+                existing.updated_at = now;
+                existing
+            } else {
+                Account {
+                    id: account_id.clone(),
+                    name: account_name.clone(),
+                    provider: "deepseek".into(),
+                    client_kind: AccountClientKind::Codex,
+                    client_surface: AccountClientSurface::Desktop,
+                    wire_protocol: deecodex::providers::profile_by_slug("deepseek").wire_protocol,
+                    upstream: upstream.clone(),
+                    api_key: api_key.clone(),
+                    auth_mode: AccountAuthMode::default(),
+                    default_model: default_model.clone(),
+                    client_options,
+                    runtime_state: Default::default(),
+                    last_applied_at: None,
+                    last_check: None,
+                    model_map: HashMap::new(),
+                    vision_upstream: String::new(),
+                    vision_api_key: String::new(),
+                    vision_model: String::new(),
+                    vision_endpoint: String::new(),
+                    vision_enabled: false,
+                    from_codex_config: false,
+                    balance_url: String::new(),
+                    created_at: now,
+                    updated_at: now,
+                    context_window_override: None,
+                    reasoning_effort_override: None,
+                    thinking_tokens: None,
+                    custom_headers: HashMap::new(),
+                    provider_options: deecodex::providers::provider_options_for_slug("deepseek"),
+                    request_timeout_secs: None,
+                    max_retries: None,
+                    translate_enabled: true,
+                    capability_enabled: false,
+                    capability_account_id: None,
+                    dev_pipeline_enabled: false,
+                    dev_pipeline_trigger_mode: DevPipelineTriggerMode::Manual,
+                    dev_pipeline_command: "/dev-pipeline".into(),
+                    dev_pipeline_architect_account_id: None,
+                    dev_pipeline_implementer_account_id: None,
+                    dev_pipeline_reviewer_account_id: None,
+                    dev_pipeline_tool_mode: DevPipelineToolMode::ControlledTools,
+                    dev_pipeline_max_iterations: 3,
+                    dev_pipeline_show_trace: false,
+                    dev_pipeline_architect_instruction: String::new(),
+                    dev_pipeline_implementer_instruction: String::new(),
+                    dev_pipeline_reviewer_instruction: String::new(),
+                    endpoints: vec![endpoint],
+                }
+            };
+
+            let routing = if smart_mode {
+                AccountRoutingOptions {
+                    enabled: true,
+                    anchor_enabled: Some(false),
+                    execution_enabled: Some(true),
+                    pool: "codex-official".into(),
+                    priority: 0,
+                    weight: 1,
+                    native_computer_policy: "helper_required".into(),
+                    disabled: false,
+                }
+            } else {
+                AccountRoutingOptions {
+                    enabled: false,
+                    anchor_enabled: Some(false),
+                    execution_enabled: Some(false),
+                    pool: "codex-official".into(),
+                    priority: 0,
+                    weight: 1,
+                    native_computer_policy: "helper_required".into(),
+                    disabled: true,
+                }
+            };
+            deecodex::accounts::set_account_routing_options(&mut account, routing);
+            account.normalize_v2();
+            validate_endpoint_runtime_urls(
+                account
+                    .endpoints
+                    .first()
+                    .ok_or_else(|| "DeepSeek 账号没有可用端点".to_string())?,
+            )?;
+
+            if smart_mode {
+                for official in &mut store.accounts {
+                    if official.client_kind == AccountClientKind::Codex
+                        && official.client_surface == AccountClientSurface::Desktop
+                        && official.is_codex_official_account()
+                    {
+                        deecodex::accounts::set_account_routing_options(
+                            official,
+                            AccountRoutingOptions {
+                                enabled: true,
+                                anchor_enabled: Some(true),
+                                execution_enabled: Some(false),
+                                pool: "codex-official".into(),
+                                priority: 0,
+                                weight: 1,
+                                native_computer_policy: "helper_required".into(),
+                                disabled: false,
+                            },
+                        );
+                        official.updated_at = now;
+                    }
+                }
+            }
+
+            if let Some(index) = target_index {
+                store.accounts[index] = account.clone();
+            } else {
+                store.accounts.push(account.clone());
+            }
+            activate_codex_surface_account(store, &account, Some(endpoint_id.clone()), false);
+            deecodex::accounts::validate_capability_links(store).map_err(|err| err.to_string())?;
+            deecodex::accounts::validate_dev_pipeline_links(store)
+                .map_err(|err| err.to_string())?;
+            Ok((account, endpoint_id))
+        },
+    )?;
+
+    sync_account_store_and_codex_catalog(&manager, &store, "codex_quick_start_account").await;
+
+    let mut config = get_config()?;
+    config.codex_auto_inject = true;
+    config.codex_config_guard = true;
+    config.codex_persistent_inject = false;
+    config.codex_router_mode = mode.clone();
+    let injection_endpoint = if manager.is_running().await {
+        let host = manager.host.lock().await.clone();
+        let port = *manager.port.lock().await;
+        Some((host, port))
+    } else {
+        None
+    };
+    save_config_inner(config, injection_endpoint)?;
+    sync_codex_integration_for_manager(&manager, "codex_quick_start_apply").await;
+
+    let service_result = if manager.is_running().await {
+        json!({ "running": true, "started": false })
+    } else {
+        match start_service_inner(&manager).await {
+            Ok(info) => json!({ "running": true, "started": true, "info": info }),
+            Err(err) => json!({ "running": false, "started": false, "error": err }),
+        }
+    };
+
+    if let Some(parent) = codex_quick_start_marker_path(&data_dir).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        codex_quick_start_marker_path(&data_dir),
+        serde_json::to_vec_pretty(&json!({
+            "completed_at": now_secs(),
+            "mode": mode,
+            "account_id": account.id,
+            "endpoint_id": endpoint_id,
+            "provider": "deepseek",
+        }))
+        .unwrap_or_default(),
+    );
+
+    Ok(json!({
+        "ok": true,
+        "mode": mode,
+        "account": account_to_value_for_store(&account, &store),
+        "endpoint_id": endpoint_id,
+        "service": service_result,
+        "message": if smart_mode {
+            "Codex Desktop 智能路由已配置"
+        } else {
+            "Codex Desktop API 模式已配置"
+        },
     }))
 }
 

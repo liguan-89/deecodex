@@ -265,6 +265,9 @@ function renderStatusClientDock(gatewayRunning) {
         const info = statusClientInfo(kind, gatewayRunning);
         const lifecycle = statusClientLifecycleMeta(kind, info);
         const welcome = statusClientWelcomeText(item, lifecycle);
+        const quickAction = kind === 'codex_desktop'
+          ? '<span class="client-dock-quick-action" title="快速配置" onclick="event.preventDefault(); event.stopPropagation(); openCodexQuickStart(true);"><span class="client-dock-quick-icon" aria-hidden="true"></span></span>'
+          : '';
         return `<button type="button" class="client-dock-item ${escAttr(info.state)} ${escAttr(lifecycle.classes)}${info.processRunning ? ' process-running' : ''}" data-client-kind="${escAttr(kind)}" data-client-label="${escAttr(label)}" data-next-action="${escAttr(lifecycle.action)}" onclick="handleClientDockClick('${escAttr(kind)}')" oncontextmenu="handleClientDockContextMenu(event, '${escAttr(kind)}')" aria-label="${escAttr(label + ' · ' + info.text)}">
           <span class="client-dock-icon-wrap">
             <span class="client-dock-bubble" aria-hidden="true">${esc(welcome)}</span>
@@ -277,6 +280,7 @@ function renderStatusClientDock(gatewayRunning) {
             <span class="client-dock-state-dot runtime" title="${escAttr(lifecycle.runLabel)}"></span>
           </span>
           <span class="client-dock-label">${esc(label)}</span>
+          ${quickAction}
         </button>`;
       }).join('')}
     </div>
