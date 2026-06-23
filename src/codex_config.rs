@@ -269,7 +269,8 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
         }
     }
 
-    let include_account_models = include_account_models_in_catalog_for_mode(options.codex_router_mode);
+    let include_account_models =
+        include_account_models_in_catalog_for_mode(options.codex_router_mode);
     let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
     let catalog = match generate_context_catalog(
         options.context_window_override,
@@ -280,7 +281,15 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
         Ok(catalog) => Some(catalog),
         Err(e) => {
             warn!(reason = options.reason, "生成 Codex 模型目录失败: {e}");
-            None
+            let existing =
+                existing_generated_catalog(options.context_window_override, &active_model);
+            if existing.is_some() {
+                warn!(
+                    reason = options.reason,
+                    "保留已有 Codex 模型目录，避免本次同步失败清空模型直选入口"
+                );
+            }
+            existing
         }
     };
 
@@ -488,7 +497,8 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
     if doc.remove("model_auto_compact_token_limit").is_some() {
         removed = true;
     }
-    clear_context_catalog();
+    // 不删除 models_deecodex.json。Codex 的下拉直选列表依赖这个目录文件；
+    // 停止服务或关闭自动注入只应移除 config.toml 绑定，不应把可恢复目录物理清空。
 
     // 尝试从常规 table 或 inline table 中移除 deecodex
     if let Some(providers) = doc.get_mut("model_providers") {
@@ -717,7 +727,29 @@ fn generate_context_catalog(
     } else {
         Vec::new()
     };
-    let catalog_out = build_context_catalog(catalog, context_window_override, &account_models)?;
+    let preserve_existing_account_entries = include_account_models
+        && account_models.is_empty()
+        && should_preserve_existing_account_catalog(data_dir, &catalog_path);
+    let preserved_account_entries = if preserve_existing_account_entries {
+        let entries = existing_catalog_account_entries(&catalog_path);
+        if !entries.is_empty() {
+            warn!(
+                path = %catalog_path.display(),
+                data_dir = data_dir.map(|path| path.display().to_string()).unwrap_or_default(),
+                count = entries.len(),
+                "本次未生成账号模型，保留已有 Codex 账号模型目录项"
+            );
+        }
+        entries
+    } else {
+        Vec::new()
+    };
+    let catalog_out = build_context_catalog(
+        catalog,
+        context_window_override,
+        &account_models,
+        &preserved_account_entries,
+    )?;
     let model_context_window = context_window_override
         .map(|window| (window as u64).min(i64::MAX as u64) as i64)
         .or_else(|| resolve_model_context_window(&catalog_out, active_model));
@@ -766,16 +798,48 @@ fn fallback_codex_model_catalog() -> Value {
     serde_json::json!({ "models": [] })
 }
 
-/// 清理 deecodex 管理的模型目录文件。
-fn clear_context_catalog() {
+fn existing_generated_catalog(
+    context_window_override: Option<u32>,
+    active_model: &str,
+) -> Option<GeneratedCatalog> {
     if let Some(codex_home) = codex_home_dir() {
         let catalog_path = codex_home.join(CATALOG_FILENAME);
-        if catalog_path.exists() {
-            if let Err(e) = std::fs::remove_file(&catalog_path) {
-                warn!("删除 models_deecodex.json 失败: {e}");
-            }
+        let content = std::fs::read_to_string(&catalog_path).ok()?;
+        let catalog = serde_json::from_str::<Value>(&content).ok()?;
+        let model_count = catalog_model_count(&catalog);
+        if model_count == 0 {
+            return None;
         }
+        let account_model_count = catalog_account_model_count(&catalog);
+        let model_context_window = context_window_override
+            .map(|window| (window as u64).min(i64::MAX as u64) as i64)
+            .or_else(|| resolve_model_context_window(&catalog, active_model));
+        return Some(GeneratedCatalog {
+            path: catalog_path,
+            model_context_window,
+            model_count,
+            account_model_count,
+        });
     }
+    None
+}
+
+fn catalog_model_count(catalog: &Value) -> usize {
+    catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn catalog_account_model_count(catalog: &Value) -> usize {
+    catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|model| model_is_dex_account_model(model))
+        .count()
 }
 
 fn catalog_model_slugs(catalog: &Value) -> Vec<String> {
@@ -817,7 +881,7 @@ fn dex_catalog_account_models(
     data_dir: &std::path::Path,
     codex_model_slugs: &[String],
 ) -> Result<Vec<DexCatalogAccountModel>> {
-    let store = crate::accounts::load_accounts(data_dir);
+    let store = crate::accounts::load_accounts_checked(data_dir)?;
     let cache = read_account_model_cache(data_dir);
     let native_gpt_models = catalog_native_gpt_model_slugs(codex_model_slugs);
     let mut values = Vec::new();
@@ -925,6 +989,7 @@ fn build_context_catalog(
     mut catalog: Value,
     context_window_override: Option<u32>,
     account_models: &[DexCatalogAccountModel],
+    preserved_account_entries: &[Value],
 ) -> Result<Value> {
     let models = catalog
         .get_mut("models")
@@ -956,6 +1021,7 @@ fn build_context_catalog(
         account_models,
         context_window_override,
     );
+    prepend_preserved_account_catalog_models(models, preserved_account_entries);
     ensure_model_catalog_schema(models, &catalog_model_template(&template_models));
 
     // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
@@ -1125,6 +1191,64 @@ fn prepend_dex_account_catalog_models(
     if !account_entries.is_empty() {
         models.splice(0..0, account_entries);
     }
+}
+
+fn prepend_preserved_account_catalog_models(models: &mut Vec<Value>, preserved: &[Value]) {
+    if preserved.is_empty() {
+        return;
+    }
+    let mut existing = models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    let mut account_entries = Vec::new();
+    for model in preserved {
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if !slug.starts_with(DEX_ACCOUNT_MODEL_SLUG_PREFIX) || !existing.insert(slug.to_string()) {
+            continue;
+        }
+        account_entries.push(model.clone());
+    }
+    if !account_entries.is_empty() {
+        models.splice(0..0, account_entries);
+    }
+}
+
+fn should_preserve_existing_account_catalog(
+    data_dir: Option<&std::path::Path>,
+    catalog_path: &std::path::Path,
+) -> bool {
+    if existing_catalog_account_entries(catalog_path).is_empty() {
+        return false;
+    }
+    match data_dir {
+        Some(data_dir) => {
+            let accounts_path = crate::accounts::accounts_file_path(data_dir);
+            !accounts_path.exists()
+        }
+        None => true,
+    }
+}
+
+fn existing_catalog_account_entries(catalog_path: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(catalog_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|catalog| catalog.get("models").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(model_is_dex_account_model)
+        .collect()
+}
+
+fn model_is_dex_account_model(model: &Value) -> bool {
+    model
+        .get("slug")
+        .and_then(Value::as_str)
+        .is_some_and(|slug| slug.starts_with(DEX_ACCOUNT_MODEL_SLUG_PREFIX))
 }
 
 fn prune_account_catalog_entry(model: &mut Value) {
@@ -2361,7 +2485,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[]).unwrap();
         assert!(output.get("fetched_at").is_none());
         let models = output["models"].as_array().unwrap();
         assert_eq!(models[0]["context_window"], 272000);
@@ -2386,7 +2510,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, Some(2_000_000), &[]).unwrap();
+        let output = build_context_catalog(input, Some(2_000_000), &[], &[]).unwrap();
         let model = &output["models"][0];
         assert_eq!(model["context_window"], 2_000_000);
         assert_eq!(model["max_context_window"], 2_000_000);
@@ -2411,7 +2535,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(!models.iter().any(|model| {
             model.get("slug").and_then(Value::as_str) == Some("gpt-5.3-codex-spark")
@@ -2473,7 +2597,7 @@ wire_api = "responses"
             },
         ];
 
-        let output = build_context_catalog(input, None, &account_models).unwrap();
+        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(models.len() > 2);
         let account_entry = models
@@ -2542,7 +2666,8 @@ wire_api = "responses"
 
     #[test]
     fn context_catalog_has_registry_models_when_codex_cache_is_empty() {
-        let output = build_context_catalog(serde_json::json!({ "models": [] }), None, &[]).unwrap();
+        let output =
+            build_context_catalog(serde_json::json!({ "models": [] }), None, &[], &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(models
             .iter()
@@ -2567,6 +2692,46 @@ wire_api = "responses"
     }
 
     #[test]
+    fn context_catalog_preserves_existing_account_models_when_generation_is_empty() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "display_name": "GPT-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 272000,
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        });
+        let preserved_slug =
+            encode_dex_account_model_slug("acct_old", "endpoint_old", "deepseek-v4-pro");
+        let preserved = vec![serde_json::json!({
+            "slug": preserved_slug,
+            "display_name": "DeepSeek 桌面版 / DeepSeek V4 Pro",
+            "visibility": "list",
+            "provider": DEX_ROUTER_PROVIDER
+        })];
+
+        let output = build_context_catalog(input, None, &[], &preserved).unwrap();
+        let models = output["models"].as_array().unwrap();
+        let restored = models
+            .iter()
+            .find(|model| {
+                model.get("slug").and_then(Value::as_str) == Some(preserved_slug.as_str())
+            })
+            .expect("missing preserved account model");
+        assert_eq!(restored["model"], preserved_slug);
+        assert_eq!(restored["displayName"], "DeepSeek 桌面版 / DeepSeek V4 Pro");
+        assert_eq!(restored["hidden"], false);
+        assert!(restored
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .is_some_and(|efforts| !efforts.is_empty()));
+    }
+
+    #[test]
     fn context_catalog_accepts_codex_desktop_camel_case_cache_entries() {
         let input = serde_json::json!({
             "models": [
@@ -2585,7 +2750,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         let vendor = models
             .iter()
@@ -2657,7 +2822,7 @@ wire_api = "responses"
             },
         ];
 
-        let output = build_context_catalog(input, None, &account_models).unwrap();
+        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         let account_entries = models
             .iter()
@@ -2712,7 +2877,7 @@ wire_api = "responses"
             context_window_override: None,
         }];
 
-        let output = build_context_catalog(input, None, &account_models).unwrap();
+        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
         let models = output["models"].as_array().unwrap();
         let account_entry = models
             .iter()
