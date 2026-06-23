@@ -51,7 +51,7 @@ Windows 版本在独立机器上适配时，也必须使用同一把 updater 私
 
 ```powershell
 cd C:\path\to\deecodex\deecodex-gui
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$env:USERPROFILE\.tauri\dex-ai-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY=(Get-Content "$env:USERPROFILE\.tauri\dex-ai-updater.key" -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD=(Get-Content "$env:USERPROFILE\.tauri\dex-ai-updater.key.password" -Raw).Trim()
 cargo tauri build
 ```
@@ -71,7 +71,7 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 ```bash
 cd /Users/liguan/deecodex/deecodex-gui
-TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/dex-ai-updater.key" \
+TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/dex-ai-updater.key")" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$HOME/.tauri/dex-ai-updater.key.password")" \
 cargo tauri build
 ```

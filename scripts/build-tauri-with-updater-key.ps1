@@ -19,7 +19,7 @@ if (!(Test-Path $PasswordPath)) {
   throw "Missing updater signing key password: $PasswordPath"
 }
 
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $KeyPath
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $KeyPath -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content $PasswordPath -Raw).Trim()
 
 Push-Location $ProjectDir
