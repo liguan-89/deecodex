@@ -248,11 +248,21 @@ async function codexQuickApply() {
     if (typeof refreshClientLifecycleDock === 'function') await refreshClientLifecycleDock();
     const serviceError = result?.service?.error;
     showToast(serviceError ? `配置已保存，服务启动失败: ${serviceError}` : (result?.message || 'Codex Desktop 已配置'), serviceError ? 'info' : 'success');
+    maybeShowSupportAfterQuickStart();
   } catch (error) {
     showToast('快速配置失败: ' + error, 'error');
   } finally {
     codexQuickStartBusy = false;
     if (btn) { btn.disabled = false; btn.textContent = '完成配置'; }
+  }
+}
+
+function maybeShowSupportAfterQuickStart() {
+  const key = 'deecodex.support.afterQuickStartShown';
+  if (deeStorage?.getItem?.(key) === '1') return;
+  deeStorage?.setItem?.(key, '1');
+  if (typeof showSupportProjectNudge === 'function') {
+    showSupportProjectNudge();
   }
 }
 

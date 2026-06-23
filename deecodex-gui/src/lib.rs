@@ -441,6 +441,7 @@ pub fn run() {
     schedule_codex_desktop_thread_normalization(args.data_dir.clone());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 保留 Dock 图标，用户可在 Dock 看到运行状态
 

@@ -184,11 +184,12 @@
               <p style="color:var(--text-secondary);margin-bottom:4px;">最新版本</p>
               <p style="font-size:18px;color:var(--green);margin-bottom:12px;">${esc(info.latest)}</p>
             </div>
+            ${info.endpoint ? '<p style="color:var(--text-muted);font-size:11px;margin:0 0 12px;">更新源：' + esc(info.endpoint) + '</p>' : ''}
             ${info.changelog ? '<div style="border-top:1px solid var(--border-subtle);padding-top:12px;"><p style="color:var(--text-secondary);margin-bottom:8px;">更新日志</p><pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-primary);max-height:200px;overflow-y:auto;white-space:pre-wrap;">' + esc(info.changelog) + '</pre></div>' : ''}
           </div>
           <div style="padding:12px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border-subtle);">
             <button class="btn btn-ghost" id="upgradeCancelBtn" type="button">取消</button>
-            <button class="btn btn-primary" id="btnConfirmUpgrade" type="button">⇡ 立即升级</button>
+            <button class="btn btn-primary" id="btnConfirmUpgrade" type="button">⇡ 下载并安装</button>
           </div>
         </div>`;
       overlay.addEventListener('click', (event) => {
@@ -202,7 +203,7 @@
         overlay.remove();
         const updateBtn = document.getElementById('btnUpdate');
         if (updateBtn) updateBtn.disabled = true;
-        showToast('正在启动升级...', 'info');
+        showToast('正在下载并安装更新...', 'info');
         try {
           const message = await invoke('run_upgrade');
           showToast(message, 'success');

@@ -79,6 +79,10 @@ function renderStatus() {
       <div class="gateway-hero-main">
         <div class="gateway-version-line">
           <span class="gateway-version" id="dashboardVersion">${hasUpdate ? '<span class="update-dot"></span>' : ''}${esc(version)}</span>
+          <button type="button" class="support-project-btn" onclick="showSupportProjectModal('status')" title="支持 DEX AI">
+            <span class="support-project-icon" aria-hidden="true"></span>
+            <span>支持项目</span>
+          </button>
         </div>
       </div>
       </div>
@@ -123,7 +127,7 @@ function renderStatus() {
         </button>
         <button class="btn btn-ghost" onclick="mgmtUpdate()" id="btnUpdate">
           <span class="status-action-icon status-action-icon-upgrade" aria-hidden="true"></span>
-          <span>一键升级</span>
+          <span>检查更新</span>
         </button>
       </div>
       </section>
@@ -142,6 +146,74 @@ function statusClientKinds() {
     { slug: 'openclaw', label: 'OpenClaw', accountKind: 'openclaw', iconKind: 'openclaw' },
     { slug: 'hermes', label: 'Hermes', accountKind: 'hermes', iconKind: 'hermes' },
   ];
+}
+
+function supportQrAsset(type) {
+  return type === 'wechat'
+    ? 'assets/support/wechat-original.png'
+    : 'assets/support/alipay-original.jpg';
+}
+
+function showSupportProjectModal(source) {
+  const existing = document.getElementById('supportProjectModal');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay support-project-overlay';
+  overlay.id = 'supportProjectModal';
+  overlay.innerHTML = `
+    <div class="modal-box support-project-box">
+      <div class="modal-header support-project-header">
+        <div>
+          <h3>支持 DEX AI</h3>
+          <p>如果这个工具帮你省下了时间，可以请开发者喝杯咖啡。</p>
+        </div>
+        <button class="modal-close" id="supportProjectCloseBtn" type="button">✕</button>
+      </div>
+      <div class="modal-body support-project-body" data-source="${escAttr(source || '')}">
+        <div class="support-qr-grid">
+          <div class="support-qr-card support-qr-alipay">
+            <div class="support-qr-image-wrap">
+              <img src="${escAttr(supportQrAsset('alipay'))}" alt="支付宝收款码">
+            </div>
+          </div>
+          <div class="support-qr-card support-qr-wechat">
+            <div class="support-qr-image-wrap">
+              <img src="${escAttr(supportQrAsset('wechat'))}" alt="微信收款码">
+            </div>
+          </div>
+        </div>
+        <p class="support-project-note">打赏完全自愿。功能不会因为是否支持而变化。</p>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+  document.getElementById('supportProjectCloseBtn')?.addEventListener('click', () => overlay.remove());
+}
+
+function showSupportProjectNudge() {
+  const existing = document.getElementById('supportProjectNudge');
+  if (existing) existing.remove();
+  const nudge = document.createElement('div');
+  nudge.className = 'support-project-nudge';
+  nudge.id = 'supportProjectNudge';
+  nudge.innerHTML = `
+    <div class="support-project-nudge-copy">
+      <strong>配置完成</strong>
+      <span>如果 DEX AI 帮到了你，可以支持一下项目。</span>
+    </div>
+    <button type="button" class="btn btn-primary" id="supportProjectNudgeOpen">支持一下</button>
+    <button type="button" class="support-project-nudge-close" id="supportProjectNudgeClose" aria-label="关闭">✕</button>`;
+  document.body.appendChild(nudge);
+  document.getElementById('supportProjectNudgeOpen')?.addEventListener('click', () => {
+    nudge.remove();
+    showSupportProjectModal('quick_start');
+  });
+  document.getElementById('supportProjectNudgeClose')?.addEventListener('click', () => nudge.remove());
+  window.setTimeout(() => {
+    document.getElementById('supportProjectNudge')?.remove();
+  }, 14000);
 }
 
 function statusClientDockItem(kind) {
@@ -1118,6 +1190,7 @@ function renderHelp() {
       <a onclick="document.getElementById('h-codex-config').scrollIntoView({behavior:'smooth'})">Codex 配置</a>
       <a onclick="document.getElementById('h-model-map').scrollIntoView({behavior:'smooth'})">模型映射</a>
       <a onclick="document.getElementById('h-commands').scrollIntoView({behavior:'smooth'})">管理命令</a>
+      <a onclick="document.getElementById('h-support').scrollIntoView({behavior:'smooth'})">支持项目</a>
       <a onclick="document.getElementById('h-faq').scrollIntoView({behavior:'smooth'})">常见问题</a>
     </div>
 
@@ -1189,6 +1262,21 @@ function renderHelp() {
         </tbody>
       </table>
       <p class="help-note help-note-after">如果 <code>~/.local/bin</code> 已在 PATH 中，也可用二进制命令：<code>deecodex start</code> / <code>deecodex stop</code> 等。</p>
+    </div>
+
+    <div class="help-section support-help-section" id="h-support">
+      <h3>支持 DEX AI</h3>
+      <p>DEX AI 会继续围绕 Codex Desktop、账号路由、客户端接入和本地工具链做维护。你可以自愿支持项目，帮助它保持更新。</p>
+      <div class="support-help-panel">
+        <div class="support-help-copy">
+          <strong>请开发者喝杯咖啡</strong>
+          <span>点击右侧按钮查看支付宝和微信收款码。</span>
+        </div>
+        <button type="button" class="btn btn-primary" onclick="showSupportProjectModal('help')">
+          <span class="support-project-icon" aria-hidden="true"></span>
+          <span>打开打赏码</span>
+        </button>
+      </div>
     </div>
 
     <div class="help-section" id="h-faq">

@@ -476,8 +476,10 @@ pub(super) async fn dex_execute_tool_impl(
             }
             "debug_gui_state" => crate::commands::logs::debug_gui_state(),
             "browse_file" => json!(crate::commands::browse_file().await?),
-            "check_upgrade" => crate::commands::check_upgrade().await?,
-            "run_upgrade" => json!({ "output": crate::commands::run_upgrade()? }),
+            "check_upgrade" => crate::commands::upgrade::check_upgrade_manifest_preview().await?,
+            "run_upgrade" => {
+                json!({ "output": crate::commands::upgrade::run_upgrade_manifest_preview()? })
+            }
             "read_file" => super::dex::dex_read_file(
                 req_string(&args, "path")?,
                 opt_usize(&args, "max_lines"),

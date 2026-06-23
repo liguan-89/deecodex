@@ -31,7 +31,7 @@ use std::sync::{Arc, OnceLock};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow};
 
 use deecodex::accounts::{
     AccountClientKind, AccountClientSurface, AccountStore, DevPipelineToolMode,
@@ -3414,13 +3414,13 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
 }
 
 #[tauri::command]
-pub async fn check_upgrade() -> Result<Value, String> {
-    upgrade::check_upgrade_impl().await
+pub async fn check_upgrade(app: AppHandle) -> Result<Value, String> {
+    upgrade::check_upgrade_with_app(app).await
 }
 
 #[tauri::command]
-pub fn run_upgrade() -> Result<String, String> {
-    upgrade::run_upgrade_impl()
+pub async fn run_upgrade(app: AppHandle) -> Result<String, String> {
+    upgrade::run_upgrade_with_app(app).await
 }
 
 // ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────
