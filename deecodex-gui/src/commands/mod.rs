@@ -278,6 +278,21 @@ fn default_codex_auth_json_path() -> Option<PathBuf> {
     deecodex::config::home_dir().map(|home| home.join(".codex").join("auth.json"))
 }
 
+#[cfg(test)]
+fn disable_default_codex_auth_sync_for_test(data_dir: &Path) {
+    let _ = std::fs::write(data_dir.join(".disable-default-codex-auth-sync"), "1");
+}
+
+#[cfg(test)]
+fn default_codex_auth_sync_disabled_for_test(data_dir: &Path) -> bool {
+    data_dir.join(".disable-default-codex-auth-sync").exists()
+}
+
+#[cfg(not(test))]
+fn default_codex_auth_sync_disabled_for_test(_data_dir: &Path) -> bool {
+    false
+}
+
 fn codex_auth_source_label(path: &Path) -> String {
     let Some(home) = deecodex::config::home_dir() else {
         return path.display().to_string();
@@ -692,6 +707,13 @@ fn sync_codex_auth_token_account(
 }
 
 fn sync_default_codex_auth_account(data_dir: &Path) -> (AccountStore, CodexAuthFileSync) {
+    if default_codex_auth_sync_disabled_for_test(data_dir) {
+        return (
+            deecodex::accounts::load_accounts(data_dir),
+            CodexAuthFileSync::default(),
+        );
+    }
+
     let Some(path) = default_codex_auth_json_path() else {
         return (
             deecodex::accounts::load_accounts(data_dir),
@@ -1724,6 +1746,8 @@ pub struct GuiConfig {
     pub chinese_thinking: bool,
     pub codex_auto_inject: bool,
     pub codex_persistent_inject: bool,
+    #[serde(default = "deecodex::config::default_codex_config_guard")]
+    pub codex_config_guard: bool,
     #[serde(default = "deecodex::config::default_codex_router_mode")]
     pub codex_router_mode: String,
     pub vision_upstream: String,
@@ -1761,6 +1785,7 @@ impl From<Args> for GuiConfig {
             chinese_thinking: a.chinese_thinking,
             codex_auto_inject: a.codex_auto_inject,
             codex_persistent_inject: a.codex_persistent_inject,
+            codex_config_guard: a.codex_config_guard,
             codex_router_mode: deecodex::config::normalize_codex_router_mode(&a.codex_router_mode),
             vision_upstream: a.vision_upstream,
             vision_api_key: a.vision_api_key,
@@ -1952,6 +1977,7 @@ pub(crate) fn load_args() -> Args {
                     chinese_thinking: false,
                     codex_auto_inject: true,
                     codex_persistent_inject: false,
+                    codex_config_guard: true,
                     codex_router_mode: deecodex::config::default_codex_router_mode(),
                     prompts_dir: "prompts".into(),
                     data_dir: defaults.data_dir,
@@ -2811,13 +2837,14 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
         .await
         .map_err(|e| format!("无法绑定服务地址 {addr}: {e}"))?;
 
+    let codex_context_window = load_active_account_context_window(&args.data_dir);
     if args.codex_auto_inject || args.codex_persistent_inject {
         deecodex::codex_config::fix();
         deecodex::codex_config::sync_codex_integration(
             deecodex::codex_config::CodexIntegrationSyncOptions {
                 host: &host,
                 port,
-                context_window_override: load_active_account_context_window(&args.data_dir),
+                context_window_override: codex_context_window,
                 data_dir: Some(&args.data_dir),
                 codex_router_mode: &args.codex_router_mode,
                 reason: "service_start",
@@ -2827,6 +2854,14 @@ pub async fn start_service_inner(manager: &ServerManager) -> Result<ServiceInfo,
 
     let (tx, mut rx) = tokio::sync::watch::channel(());
     let server = axum::serve(listener, app);
+    if args.codex_config_guard && (args.codex_auto_inject || args.codex_persistent_inject) {
+        let guard_options =
+            deecodex::codex_guard::CodexConfigGuardOptions::from_args(&args, codex_context_window);
+        let guard_rx = tx.subscribe();
+        tokio::spawn(async move {
+            deecodex::codex_guard::run_codex_config_guard(guard_options, guard_rx).await;
+        });
+    }
 
     let handle = tokio::spawn(async move {
         server
@@ -3090,6 +3125,15 @@ fn save_config_inner(
     let codex_router_mode =
         deecodex::config::normalize_codex_router_mode(&config.codex_router_mode);
     sync_data_dir_env_file(&data_dir, "DEECODEX_CODEX_ROUTER_MODE", &codex_router_mode);
+    sync_data_dir_env_file(
+        &data_dir,
+        "DEECODEX_CODEX_CONFIG_GUARD",
+        if config.codex_config_guard {
+            "true"
+        } else {
+            "false"
+        },
+    );
 
     let args = Args {
         command: None,
@@ -3107,6 +3151,7 @@ fn save_config_inner(
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_config_guard: config.codex_config_guard,
         codex_router_mode,
         prompts_dir: config.prompts_dir.into(),
         data_dir,
@@ -3195,6 +3240,7 @@ pub fn validate_config(config: GuiConfig) -> Vec<Value> {
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_config_guard: config.codex_config_guard,
         codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
@@ -3252,6 +3298,7 @@ pub fn run_diagnostics(config: GuiConfig) -> serde_json::Value {
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_config_guard: config.codex_config_guard,
         codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
@@ -3299,6 +3346,7 @@ pub async fn run_full_diagnostics(config: GuiConfig) -> Result<serde_json::Value
         chinese_thinking: config.chinese_thinking,
         codex_auto_inject: config.codex_auto_inject,
         codex_persistent_inject: config.codex_persistent_inject,
+        codex_config_guard: config.codex_config_guard,
         codex_router_mode: deecodex::config::normalize_codex_router_mode(&config.codex_router_mode),
         prompts_dir: config.prompts_dir.into(),
         data_dir,
@@ -7501,6 +7549,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_config_guard: true,
             codex_router_mode: deecodex::config::CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
@@ -7736,7 +7785,7 @@ mod tests {
             active_desktop.auth_mode,
             deecodex::accounts::AccountAuthMode::OAuth
         );
-        assert!(active_desktop.client_options.get("oauth").is_some());
+        assert!(active_desktop.client_options.contains_key("oauth"));
         assert!(active_desktop
             .endpoints
             .iter()
@@ -7863,6 +7912,7 @@ mod tests {
         let preview_dir = root.join(".deecodex-preview");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&preview_dir).unwrap();
+        disable_default_codex_auth_sync_for_test(&data_dir);
 
         let mut formal = test_account("formal");
         formal.normalize_v2();
@@ -7978,6 +8028,7 @@ mod tests {
         let preview_dir = root.join(".deecodex-preview");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&preview_dir).unwrap();
+        disable_default_codex_auth_sync_for_test(&data_dir);
 
         let mut formal = test_account("formal");
         formal.client_kind = AccountClientKind::Codex;

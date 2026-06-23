@@ -86,6 +86,15 @@ pub(crate) fn managed_model_provider_route_prefix_for_mode(
     }
 }
 
+fn expected_provider_base_url(host: &str, port: u16, codex_router_mode: &str) -> String {
+    format!(
+        "http://{}:{}{}",
+        crate::config::client_url_host(host),
+        port,
+        managed_model_provider_route_prefix_for_mode(codex_router_mode)
+    )
+}
+
 pub(crate) fn codex_home_dir() -> Option<PathBuf> {
     crate::config::home_dir().map(|home| home.join(".codex"))
 }
@@ -343,6 +352,94 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
     }
 }
 
+pub fn codex_integration_restore_reasons(options: CodexIntegrationCheckOptions<'_>) -> Vec<String> {
+    let Some(path) = codex_config_path() else {
+        return vec!["home_dir_missing".into()];
+    };
+    let content = match read_config_file(&path) {
+        Ok(content) => content,
+        Err(err) => return vec![format!("config_unreadable:{err}")],
+    };
+    codex_integration_restore_reasons_for_content(
+        &content,
+        options.host,
+        options.port,
+        options.codex_router_mode,
+    )
+}
+
+fn codex_integration_restore_reasons_for_content(
+    content: &str,
+    host: &str,
+    port: u16,
+    codex_router_mode: &str,
+) -> Vec<String> {
+    let doc: toml_edit::DocumentMut = match content.parse() {
+        Ok(doc) => doc,
+        Err(err) => return vec![format!("config_parse_failed:{err}")],
+    };
+    let mut reasons = Vec::new();
+    let expected_provider = managed_model_provider_for_mode(codex_router_mode);
+    let actual_provider = doc
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .map(str::trim);
+    if actual_provider != Some(expected_provider) {
+        reasons.push(format!(
+            "model_provider:{}",
+            actual_provider.unwrap_or("<missing>")
+        ));
+    }
+
+    let expected_base_url = expected_provider_base_url(host, port, codex_router_mode);
+    let provider = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(expected_provider));
+    match provider {
+        Some(provider) => {
+            let actual_base_url = provider
+                .get("base_url")
+                .and_then(|value| value.as_str())
+                .map(str::trim);
+            if actual_base_url != Some(expected_base_url.as_str()) {
+                reasons.push(format!(
+                    "provider_base_url:{}",
+                    actual_base_url.unwrap_or("<missing>")
+                ));
+            }
+            let expected_auth = crate::config::codex_router_mode_is_smart(codex_router_mode);
+            if provider
+                .get("requires_openai_auth")
+                .and_then(|value| value.as_bool())
+                != Some(expected_auth)
+            {
+                reasons.push("provider_auth_mismatch".into());
+            }
+            if provider
+                .get("wire_api")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                != Some("responses")
+            {
+                reasons.push("provider_wire_api_mismatch".into());
+            }
+        }
+        None => reasons.push(format!("provider_missing:{expected_provider}")),
+    }
+
+    let catalog_matches = doc
+        .get("model_catalog_json")
+        .and_then(|value| value.as_str())
+        .and_then(|value| std::path::Path::new(value).file_name())
+        .and_then(|value| value.to_str())
+        .is_some_and(|file_name| file_name == CATALOG_FILENAME);
+    if !catalog_matches {
+        reasons.push("model_catalog_json_missing_or_external".into());
+    }
+
+    reasons
+}
+
 fn include_account_models_in_catalog_for_mode(_codex_router_mode: &str) -> bool {
     true
 }
@@ -550,6 +647,12 @@ pub struct CodexIntegrationSyncOptions<'a> {
     pub data_dir: Option<&'a std::path::Path>,
     pub codex_router_mode: &'a str,
     pub reason: &'a str,
+}
+
+pub struct CodexIntegrationCheckOptions<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub codex_router_mode: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2455,6 +2558,93 @@ wire_api = "responses"
             Some("http://127.0.0.1:4446/v1")
         );
         cleanup(&path);
+    }
+
+    #[test]
+    fn guard_check_accepts_api_mode_integration() {
+        let content = r#"
+model_provider = "deecodex"
+model_catalog_json = "/Users/test/.codex/models_deecodex.json"
+
+[model_providers.deecodex]
+base_url = "http://127.0.0.1:4446/v1"
+requires_openai_auth = false
+wire_api = "responses"
+"#;
+        let reasons = codex_integration_restore_reasons_for_content(
+            content,
+            "127.0.0.1",
+            4446,
+            crate::config::CODEX_ROUTER_MODE_API,
+        );
+        assert!(reasons.is_empty(), "{reasons:?}");
+    }
+
+    #[test]
+    fn guard_check_accepts_smart_mode_integration() {
+        let content = r#"
+model_provider = "dex_router"
+model_catalog_json = "/Users/test/.codex/models_deecodex.json"
+
+[model_providers.dex_router]
+base_url = "http://127.0.0.1:4556/codex-router/v1"
+requires_openai_auth = true
+wire_api = "responses"
+"#;
+        let reasons = codex_integration_restore_reasons_for_content(
+            content,
+            "127.0.0.1",
+            4556,
+            crate::config::CODEX_ROUTER_MODE_SMART,
+        );
+        assert!(reasons.is_empty(), "{reasons:?}");
+    }
+
+    #[test]
+    fn guard_check_detects_external_provider_override() {
+        let content = r#"
+model_provider = "openai"
+model_catalog_json = "/Users/test/.codex/models_deecodex.json"
+
+[model_providers.deecodex]
+base_url = "http://127.0.0.1:4446/v1"
+requires_openai_auth = false
+wire_api = "responses"
+"#;
+        let reasons = codex_integration_restore_reasons_for_content(
+            content,
+            "127.0.0.1",
+            4446,
+            crate::config::CODEX_ROUTER_MODE_API,
+        );
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "model_provider:openai"));
+    }
+
+    #[test]
+    fn guard_check_distinguishes_api_and_smart_modes() {
+        let content = r#"
+model_provider = "deecodex"
+model_catalog_json = "/Users/test/.codex/models_deecodex.json"
+
+[model_providers.deecodex]
+base_url = "http://127.0.0.1:4446/v1"
+requires_openai_auth = false
+wire_api = "responses"
+"#;
+        let reasons = codex_integration_restore_reasons_for_content(
+            content,
+            "127.0.0.1",
+            4446,
+            crate::config::CODEX_ROUTER_MODE_SMART,
+        );
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "model_provider:deecodex"));
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "provider_missing:dex_router"));
     }
 
     #[test]

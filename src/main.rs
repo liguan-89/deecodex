@@ -7,6 +7,7 @@ mod cdp;
 mod client_integrations;
 mod client_threads;
 mod codex_config;
+mod codex_guard;
 mod codex_router_session;
 mod codex_threads;
 mod config;
@@ -886,6 +887,13 @@ async fn main() -> Result<()> {
             reason: "service_start",
         });
     }
+    let (config_guard_tx, config_guard_rx) = tokio::sync::watch::channel(());
+    if args.codex_config_guard && (args.codex_auto_inject || args.codex_persistent_inject) {
+        let guard_options = crate::codex_guard::CodexConfigGuardOptions::from_args(&args, None);
+        tokio::spawn(async move {
+            crate::codex_guard::run_codex_config_guard(guard_options, config_guard_rx).await;
+        });
+    }
 
     // 如果配置了自动启动 Codex，spawn Codex.app 带 CDP 调试端口
     if args.codex_launch_with_cdp {
@@ -932,9 +940,14 @@ async fn main() -> Result<()> {
     }
 
     info!("服务已启动");
+    let shutdown_tx = config_guard_tx.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = shutdown_tx.send(());
+        })
         .await?;
+    let _ = config_guard_tx.send(());
 
     // 清理 codex config.toml 中的 deecodex 配置
     // 线程聚合迁移激活时不删除，否则 Codex 重启后找不到 provider 会隐藏所有会话

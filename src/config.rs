@@ -98,6 +98,10 @@ pub fn default_codex_router_mode() -> String {
     }
 }
 
+pub fn default_codex_config_guard() -> bool {
+    true
+}
+
 /// 跨平台获取用户 HOME 目录
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -178,6 +182,15 @@ pub struct Args {
         default_value = "false"
     )]
     pub codex_persistent_inject: bool,
+
+    /// 智能守护 Codex 配置，检测外部工具覆盖后恢复 DEX 管理字段。
+    #[serde(default = "default_codex_config_guard")]
+    #[arg(
+        long = "codex-config-guard",
+        env = "DEECODEX_CODEX_CONFIG_GUARD",
+        default_value = "true"
+    )]
+    pub codex_config_guard: bool,
 
     /// Codex 路由模式：api 使用传统 API Key 代理；smart 使用账号登录态智能路由。
     #[serde(default = "default_codex_router_mode")]
@@ -459,6 +472,7 @@ impl Args {
                     false,
                     file.codex_persistent_inject,
                 ),
+                codex_config_guard: pick(self.codex_config_guard, true, file.codex_config_guard),
                 codex_router_mode: normalize_codex_router_mode(&pick_str(
                     &normalize_codex_router_mode(&self.codex_router_mode),
                     &default_codex_router_mode(),
@@ -600,6 +614,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_config_guard: true,
             codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
@@ -643,6 +658,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_config_guard: true,
             codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
@@ -682,6 +698,7 @@ mod tests {
             chinese_thinking: false,
             codex_auto_inject: true,
             codex_persistent_inject: false,
+            codex_config_guard: true,
             codex_router_mode: CODEX_ROUTER_MODE_API.into(),
             codex_launch_with_cdp: false,
             cdp_port: 9222,
@@ -725,6 +742,7 @@ mod tests {
         file_args.chinese_thinking = true;
         file_args.codex_auto_inject = false;
         file_args.codex_persistent_inject = true;
+        file_args.codex_config_guard = false;
         file_args.codex_launch_with_cdp = true;
         file_args.cdp_port = 9333;
         file_args.save_to_file(&config_path).unwrap();
@@ -737,6 +755,7 @@ mod tests {
         assert!(merged.chinese_thinking);
         assert!(!merged.codex_auto_inject);
         assert!(merged.codex_persistent_inject);
+        assert!(!merged.codex_config_guard);
         assert!(merged.codex_launch_with_cdp);
         assert_eq!(merged.cdp_port, 9333);
         std::fs::remove_dir_all(dir).unwrap();

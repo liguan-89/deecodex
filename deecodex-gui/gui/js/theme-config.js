@@ -70,6 +70,7 @@ const CONFIG_SECTIONS = [
       { key: 'codex_router_mode', label: '路由模式', hint: 'API 模式使用本地账号模型直选；智能路由额外使用 Codex 登录态和账号池', type: 'select', options: ['api', 'smart'], optionLabels: { api: 'API 模式', smart: '智能路由' }, layout: 'half' },
       { key: 'codex_auto_inject', label: '自动注入 Codex 配置', hint: '启动时将 deecodex 路由注入 Codex config.toml，停止时移除', type: 'checkbox', layout: 'half' },
       { key: 'codex_persistent_inject', label: '持久注入', hint: '配置持久保留在 Codex config.toml 中，不再自动移除', type: 'checkbox', layout: 'half' },
+      { key: 'codex_config_guard', label: '智能守护 Codex 配置', hint: '运行时检测外部工具覆盖 config.toml，并按当前路由模式恢复 DEX 管理字段', type: 'checkbox', layout: 'half' },
     ]
   },
   {
