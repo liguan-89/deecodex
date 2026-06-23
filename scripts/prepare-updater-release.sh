@@ -10,6 +10,12 @@ BASE_URL="${DEX_AI_UPDATE_BASE_URL:-https://api.liguan.me/releases/dex-ai}"
 OUT_DIR="${DEX_AI_UPDATE_OUT_DIR:-$ROOT_DIR/dist/updater-release/$VERSION}"
 BUNDLE_DIR="$ROOT_DIR/target-mac/release/bundle"
 MAC_TARGETS="${DEX_AI_UPDATE_MAC_TARGETS:-darwin-aarch64}"
+NOTES="${DEX_AI_UPDATE_NOTES:-}"
+NOTES_FILE="${DEX_AI_UPDATE_NOTES_FILE:-}"
+
+if [[ -n "$NOTES_FILE" ]]; then
+  NOTES="$(cat "$NOTES_FILE")"
+fi
 
 mkdir -p "$OUT_DIR/mac" "$OUT_DIR/windows"
 
@@ -39,17 +45,17 @@ MAC_TAR="$(basename "$(find "$OUT_DIR/mac" -type f -name '*.app.tar.gz' | sort |
 MAC_SIG_FILE="$OUT_DIR/mac/$MAC_TAR.sig"
 MAC_SIG="$(tr -d '\r\n' < "$MAC_SIG_FILE")"
 
-python3 - "$OUT_DIR/latest.json" "$VERSION" "$BASE_URL" "$MAC_TAR" "$MAC_SIG" "$MAC_TARGETS" <<'PY'
+python3 - "$OUT_DIR/latest.json" "$VERSION" "$BASE_URL" "$MAC_TAR" "$MAC_SIG" "$MAC_TARGETS" "$NOTES" <<'PY'
 import json
 import pathlib
 import sys
 
-out, version, base_url, mac_tar, mac_sig, mac_targets = sys.argv[1:7]
+out, version, base_url, mac_tar, mac_sig, mac_targets, notes = sys.argv[1:8]
 base_url = base_url.rstrip("/")
 
 manifest = {
     "version": version,
-    "notes": "",
+    "notes": notes,
     "pub_date": None,
     "platforms": {},
 }
