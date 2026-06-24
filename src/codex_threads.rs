@@ -1648,6 +1648,20 @@ fn project_label(path: &str) -> String {
         .to_string()
 }
 
+fn looks_like_workspace_root(path: &Path) -> bool {
+    path.join(".git").exists()
+        || path.join("Cargo.toml").exists()
+        || path.join("package.json").exists()
+        || path.join("pyproject.toml").exists()
+        || path.join("requirements.txt").exists()
+        || path.join("tauri.conf.json").exists()
+        || path.join("src-tauri").exists()
+}
+
+fn is_valid_workspace_root(path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_dir() && looks_like_workspace_root(path)
+}
 fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<String> {
     let mut best: Option<&String> = None;
     for root in known_roots {
@@ -2032,15 +2046,29 @@ fn desktop_project_candidates(
     state: &Value,
     rows: Vec<DesktopThreadRow>,
 ) -> (BTreeMap<String, Vec<String>>, HashMap<String, String>) {
-    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
-    let active_roots = value_string_array(state.get("active-workspace-roots"));
-    let project_order = value_string_array(state.get("project-order"));
+    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"))
+        .into_iter()
+        .filter(|root| is_valid_workspace_root(root))
+        .collect::<Vec<_>>();
+    let active_roots = value_string_array(state.get("active-workspace-roots"))
+        .into_iter()
+        .filter(|root| is_valid_workspace_root(root))
+        .collect::<Vec<_>>();
+    let project_order = value_string_array(state.get("project-order"))
+        .into_iter()
+        .filter(|root| is_valid_workspace_root(root))
+        .collect::<Vec<_>>();
     let labels = value_string_object(state.get("electron-workspace-root-labels"));
 
     let mut known_roots: BTreeSet<String> = saved_roots.iter().cloned().collect();
     known_roots.extend(active_roots.iter().cloned());
     known_roots.extend(project_order.iter().cloned());
-    known_roots.extend(labels.keys().cloned());
+    known_roots.extend(
+        labels
+            .keys()
+            .filter(|root| is_valid_workspace_root(root))
+            .cloned(),
+    );
 
     let mut order_project_by_thread: HashMap<String, String> = HashMap::new();
     if let Some(orders) = state
@@ -2048,6 +2076,9 @@ fn desktop_project_candidates(
         .and_then(Value::as_object)
     {
         for (project, order) in orders {
+            if !is_valid_workspace_root(project) {
+                continue;
+            }
             known_roots.insert(project.clone());
             let Some(thread_ids) = order.get("threadIds").and_then(Value::as_array) else {
                 continue;
@@ -2078,6 +2109,99 @@ fn desktop_project_candidates(
         assignments_by_thread.insert(row.id, project);
     }
     (project_threads, assignments_by_thread)
+}
+
+fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
+    let Some(object) = state.as_object_mut() else {
+        return 0;
+    };
+
+    let mut changed = 0usize;
+    for key in [
+        "electron-saved-workspace-roots",
+        "active-workspace-roots",
+        "project-order",
+    ] {
+        if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+            let before = items.len();
+            items.retain(|item| item.as_str().is_some_and(is_valid_workspace_root));
+            changed += before.saturating_sub(items.len());
+        }
+    }
+
+    if let Some(labels) = object
+        .get_mut("electron-workspace-root-labels")
+        .and_then(Value::as_object_mut)
+    {
+        let before = labels.len();
+        labels.retain(|root, _| is_valid_workspace_root(root));
+        changed += before.saturating_sub(labels.len());
+    }
+
+    if let Some(assignments) = object
+        .get_mut("thread-project-assignments")
+        .and_then(Value::as_object_mut)
+    {
+        let mut removed = Vec::new();
+        for (thread_id, item) in assignments.iter() {
+            let project = item
+                .get("projectId")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("path").and_then(Value::as_str));
+            if !project.is_some_and(is_valid_workspace_root) {
+                removed.push(thread_id.clone());
+            }
+        }
+        for thread_id in removed {
+            if assignments.remove(&thread_id).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if let Some(hints) = object
+        .get_mut("thread-workspace-root-hints")
+        .and_then(Value::as_object_mut)
+    {
+        let mut removed = Vec::new();
+        for (thread_id, item) in hints.iter() {
+            if !item.as_str().is_some_and(is_valid_workspace_root) {
+                removed.push(thread_id.clone());
+            }
+        }
+        for thread_id in removed {
+            if hints.remove(&thread_id).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if let Some(orders) = object
+        .get_mut("sidebar-project-thread-orders")
+        .and_then(Value::as_object_mut)
+    {
+        let mut removed = Vec::new();
+        for (project, order) in orders.iter_mut() {
+            if !is_valid_workspace_root(project) {
+                removed.push(project.clone());
+                continue;
+            }
+            if let Some(thread_ids) = order.get_mut("threadIds").and_then(Value::as_array_mut) {
+                thread_ids.retain(|item| item.as_str().is_some_and(|id| !id.trim().is_empty()));
+            }
+        }
+        for project in removed {
+            if orders.remove(&project).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if changed > 0 {
+        tracing::info!("已清理 {changed} 个无效 Codex Desktop 项目根目录/索引项");
+    }
+
+    changed
 }
 
 fn get_desktop_project_index_status(
@@ -2177,9 +2301,30 @@ fn repair_desktop_project_index(
         let mut state: Value =
             serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
 
+        total_changed += prune_invalid_desktop_project_state(&mut state);
         let (project_threads, assignments_by_thread) =
             desktop_project_candidates(&state, rows.clone());
         if project_threads.is_empty() {
+            if total_changed == 0 {
+                return Ok(DesktopProjectRepairResult {
+                    fixed_count: 0,
+                    pending_count: 0,
+                    blocked: false,
+                });
+            }
+
+            if !backup_written {
+                let backup_path = global_path.with_file_name(format!(
+                    ".codex-global-state.json.deecodex-desktop-index-{}.bak",
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0)
+                ));
+                std::fs::write(&backup_path, &raw).context("备份 Codex Desktop 全局状态失败")?;
+            }
+
+            write_json_atomically(&global_path, &state)?;
             return Ok(DesktopProjectRepairResult {
                 fixed_count: total_changed,
                 pending_count: 0,
@@ -2907,6 +3052,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("deecodex-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    fn create_workspace_root(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("create workspace root");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"workspace-root\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write workspace root marker");
     }
 
     fn create_test_threads_db(path: &Path, threads: &[(&str, &str)]) {
@@ -3827,6 +3981,10 @@ mod tests {
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
+        let project_root = dir.join("project-a");
+        create_workspace_root(&project_root);
+        let nested_root = project_root.join("sub");
+        create_workspace_root(&nested_root);
         let target_provider = current_thread_provider();
         create_test_threads_db_with_rows(
             &db_path,
@@ -3838,7 +3996,7 @@ mod tests {
                     "预览 A",
                     "",
                     "vscode",
-                    "/tmp/project-a",
+                    &project_root.to_string_lossy(),
                     0,
                 ),
                 (
@@ -3848,7 +4006,7 @@ mod tests {
                     "预览 B",
                     "",
                     "vscode",
-                    "/tmp/project-a/sub",
+                    &nested_root.to_string_lossy(),
                     0,
                 ),
                 (
@@ -3867,7 +4025,7 @@ mod tests {
         std::fs::write(
             &global_path,
             serde_json::to_string(&json!({
-                "electron-saved-workspace-roots": ["/tmp/project-a"],
+                "electron-saved-workspace-roots": [project_root.to_string_lossy()],
                 "project-order": [],
                 "electron-workspace-root-labels": {},
                 "projectless-thread-ids": ["thread-a", "projectless"]
@@ -3893,26 +4051,22 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some("/tmp/project-a")));
+            .any(|value| value.as_str() == Some(project_root.to_str().unwrap())));
         assert_eq!(
             state["thread-project-assignments"]["thread-a"]["projectId"].as_str(),
-            Some("/tmp/project-a")
+            Some(project_root.to_str().unwrap())
         );
         assert_eq!(
             state["thread-project-assignments"]["thread-b"]["projectId"].as_str(),
-            Some("/tmp/project-a")
+            Some(project_root.to_str().unwrap())
         );
         assert!(state["projectless-thread-ids"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some("thread-a")));
-        assert!(state["projectless-thread-ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value.as_str() == Some("thread-b")));
-        let order_ids = state["sidebar-project-thread-orders"]["/tmp/project-a"]["threadIds"]
+            .all(|value| value.as_str() != Some("thread-a")));
+        let order_ids = state["sidebar-project-thread-orders"][project_root.to_str().unwrap()]
+            ["threadIds"]
             .as_array()
             .unwrap()
             .iter()
@@ -3920,6 +4074,85 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(order_ids.contains(&"thread-a"));
         assert!(order_ids.contains(&"thread-b"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn migrate_repairs_codex_desktop_project_index() {
+        let dir = temp_test_dir("thread-migrate-desktop-project-index");
+        let db_path = dir.join("state_test.sqlite");
+        let project_root = dir.join("project-a");
+        create_workspace_root(&project_root);
+        let nested_root = project_root.join("sub");
+        create_workspace_root(&nested_root);
+        let target_provider = current_thread_provider();
+        let other_provider = if target_provider == "deecodex" {
+            "dex_router"
+        } else {
+            "deecodex"
+        };
+        create_test_threads_db_with_rows(
+            &db_path,
+            &[
+                (
+                    "thread-a",
+                    other_provider,
+                    "标题 A",
+                    "预览 A",
+                    "",
+                    "vscode",
+                    &project_root.to_string_lossy(),
+                    0,
+                ),
+                (
+                    "thread-b",
+                    other_provider,
+                    "标题 B",
+                    "预览 B",
+                    "",
+                    "vscode",
+                    &nested_root.to_string_lossy(),
+                    0,
+                ),
+            ],
+        );
+        let global_path = dir.join(".codex-global-state.json");
+        std::fs::write(
+            &global_path,
+            serde_json::to_string(&json!({
+                "electron-saved-workspace-roots": [project_root.to_string_lossy()],
+                "project-order": [],
+                "electron-workspace-root-labels": {},
+                "projectless-thread-ids": ["thread-a"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let diff = do_normalize_desktop_threads(&db_path, &desktop_recent_backup_path(&dir))
+            .expect("migrate threads");
+        assert_eq!(diff.changed_count, 2);
+        assert!(diff.visibility_fixed_count >= 2);
+        assert!(diff.desktop_project_fixed_count >= 1);
+
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(&global_path).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert_eq!(
+            state["thread-project-assignments"]["thread-a"]["projectId"].as_str(),
+            Some(project_root.to_str().unwrap())
+        );
+        assert_eq!(
+            state["thread-project-assignments"]["thread-b"]["projectId"].as_str(),
+            Some(project_root.to_str().unwrap())
+        );
+        assert!(state["projectless-thread-ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_str() != Some("thread-a")));
 
         std::fs::remove_dir_all(dir).ok();
     }
