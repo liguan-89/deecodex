@@ -80,8 +80,37 @@ pub async fn run_upgrade_with_app(app: AppHandle) -> Result<Value, String> {
     }))
 }
 
-pub fn restart_app(app: AppHandle) {
+pub fn restart_app(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        restart_installed_macos_app(&app)?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    {
+        app.request_restart();
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restart_installed_macos_app(app: &AppHandle) -> Result<(), String> {
+    use std::process::Command;
+
+    let installed_app = std::path::Path::new("/Applications/DEX AI.app");
+    if installed_app.is_dir() {
+        Command::new("open")
+            .arg("-n")
+            .arg(installed_app)
+            .spawn()
+            .map_err(|e| format!("打开已安装的 DEX AI 失败: {e}"))?;
+        app.exit(0);
+        return Ok(());
+    }
+
     app.request_restart();
+    Ok(())
 }
 
 /// DEX 助手工具链没有 AppHandle，不能执行真实安装；这里只做远端 manifest 预览。

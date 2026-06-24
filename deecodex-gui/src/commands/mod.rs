@@ -3447,8 +3447,8 @@ pub async fn run_upgrade(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn restart_app(app: AppHandle) {
-    upgrade::restart_app(app);
+pub fn restart_app(app: AppHandle) -> Result<(), String> {
+    upgrade::restart_app(app)
 }
 
 // ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────
