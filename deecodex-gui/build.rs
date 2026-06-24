@@ -4,6 +4,7 @@ use std::path::Path;
 fn main() {
     println!("cargo:rerun-if-changed=gui");
     println!("cargo:rerun-if-env-changed=DEX_AI_PREVIEW_BUILD");
+    mark_workspace_build_dir_noindex();
     tauri_build::build();
 
     // 拼接 gui/nav/*.html 为 fragments.js，避免 fetch 在 webview 中失败
@@ -38,5 +39,15 @@ fn main() {
             files.len(),
             out.display()
         );
+    }
+}
+
+fn mark_workspace_build_dir_noindex() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let target_dir = Path::new("../target-mac");
+    if fs::create_dir_all(target_dir).is_ok() {
+        let _ = fs::write(target_dir.join(".metadata_never_index"), "");
     }
 }

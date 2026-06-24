@@ -3442,8 +3442,13 @@ pub async fn check_upgrade(
 }
 
 #[tauri::command]
-pub async fn run_upgrade(app: AppHandle) -> Result<String, String> {
+pub async fn run_upgrade(app: AppHandle) -> Result<Value, String> {
     upgrade::run_upgrade_with_app(app).await
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    upgrade::restart_app(app);
 }
 
 // ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────

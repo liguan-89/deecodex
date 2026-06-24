@@ -55,7 +55,7 @@ pub async fn check_upgrade_with_app(app: AppHandle) -> Result<Value, String> {
     }
 }
 
-pub async fn run_upgrade_with_app(app: AppHandle) -> Result<String, String> {
+pub async fn run_upgrade_with_app(app: AppHandle) -> Result<Value, String> {
     let updater = app
         .updater_builder()
         .timeout(Duration::from_secs(30))
@@ -73,7 +73,15 @@ pub async fn run_upgrade_with_app(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| format!("下载或安装更新失败: {e}"))?;
 
-    Ok("更新已安装。请退出并重新打开 DEX AI 完成切换。".to_string())
+    Ok(json!({
+        "installed": true,
+        "restart_required": true,
+        "message": "更新已安装。请重启 DEX AI 完成切换。",
+    }))
+}
+
+pub fn restart_app(app: AppHandle) {
+    app.request_restart();
 }
 
 /// DEX 助手工具链没有 AppHandle，不能执行真实安装；这里只做远端 manifest 预览。

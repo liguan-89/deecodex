@@ -13,11 +13,24 @@ MAC_TARGETS="${DEX_AI_UPDATE_MAC_TARGETS:-darwin-aarch64}"
 NOTES="${DEX_AI_UPDATE_NOTES:-}"
 NOTES_FILE="${DEX_AI_UPDATE_NOTES_FILE:-}"
 
+mark_macos_build_artifacts_noindex() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+
+  local macos_dir="$BUNDLE_DIR/macos"
+  if [[ -d "$macos_dir" ]]; then
+    touch "$macos_dir/.metadata_never_index" 2>/dev/null || true
+    find "$macos_dir" -maxdepth 1 -type d -name "*.app" -exec touch "{}/.metadata_never_index" \; 2>/dev/null || true
+  fi
+}
+
 if [[ -n "$NOTES_FILE" ]]; then
   NOTES="$(cat "$NOTES_FILE")"
 fi
 
 mkdir -p "$OUT_DIR/mac" "$OUT_DIR/windows"
+mark_macos_build_artifacts_noindex
 
 copy_first() {
   local pattern="$1"

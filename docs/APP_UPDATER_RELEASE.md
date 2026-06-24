@@ -78,6 +78,8 @@ cargo tauri build
 
 macOS updater 产物是 `.app.tar.gz` 和 `.app.tar.gz.sig`；DMG 只用于手动安装。
 
+构建目录里的 `target-mac/release/bundle/macos/DEX AI.app` 只是中间产物。发布脚本会给该目录打 `.metadata_never_index`，避免 Spotlight / Launchpad 把构建产物也当成一份已安装应用，导致 Launchpad 里出现多个 DEX AI 图标。
+
 ## 生成发布目录
 
 ```bash

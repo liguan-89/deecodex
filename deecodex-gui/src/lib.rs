@@ -633,6 +633,7 @@ pub fn run() {
             commands::validate_config,
             commands::check_upgrade,
             commands::run_upgrade,
+            commands::restart_app,
             commands::run_diagnostics,
             commands::run_full_diagnostics,
             commands::launch_codex_cdp,

@@ -225,7 +225,7 @@
             </div>
             ${info.endpoint ? '<p style="color:var(--text-muted);font-size:11px;margin:0 0 12px;">更新源：' + esc(info.endpoint) + '</p>' : ''}
             ${info.changelog ? '<div style="border-top:1px solid var(--border-subtle);padding-top:12px;"><p style="color:var(--text-secondary);margin-bottom:8px;">更新日志</p><pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-primary);max-height:200px;overflow-y:auto;white-space:pre-wrap;">' + esc(info.changelog) + '</pre></div>' : ''}
-            <p style="margin-top:12px;color:var(--text-muted);font-size:11px;">安装完成后不会无提示重启。请按提示退出并重新打开 DEX AI。</p>
+            <p style="margin-top:12px;color:var(--text-muted);font-size:11px;">安装完成后会询问是否立即重启。不会无提示重启。</p>
           </div>
           <div style="padding:12px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border-subtle);">
             <button class="btn btn-ghost" id="upgradeCancelBtn" type="button">取消</button>
@@ -240,15 +240,24 @@
     document.getElementById('upgradeCloseBtn')?.addEventListener('click', () => overlay.remove());
     document.getElementById('upgradeCancelBtn')?.addEventListener('click', () => overlay.remove());
     document.getElementById('btnConfirmUpgrade')?.addEventListener('click', async () => {
-      if (!await showConfirm(`确定下载并安装 ${info.latest || '新版本'} 吗？安装完成后需要手动重新打开 DEX AI。`)) return;
+      if (!await showConfirm(`确定下载并安装 ${info.latest || '新版本'} 吗？安装完成后会询问是否立即重启 DEX AI。`)) return;
       overlay.remove();
       const updateBtn = document.getElementById('btnUpdate');
       if (updateBtn) updateBtn.disabled = true;
       showToast('正在下载并安装更新...', 'info');
       try {
-        const message = await invoke('run_upgrade');
+        const result = await invoke('run_upgrade');
         clearUpdateInfo();
+        const message = result && result.message ? result.message : '更新已安装。请重启 DEX AI 完成切换。';
         showToast(message, 'success');
+        if (result && result.restart_required) {
+          const shouldRestart = await showConfirm('更新已安装。是否立即重启 DEX AI 完成切换？');
+          if (shouldRestart) {
+            showToast('正在重启 DEX AI...', 'info');
+            await invoke('restart_app');
+            return;
+          }
+        }
       } catch (error) {
         showToast('升级失败: ' + error, 'error');
       }
