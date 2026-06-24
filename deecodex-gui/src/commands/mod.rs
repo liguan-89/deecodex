@@ -8237,7 +8237,9 @@ mod tests {
         let mut file_args = test_args();
         file_args.data_dir = data_dir.clone();
         file_args.codex_router_mode = deecodex::config::CODEX_ROUTER_MODE_API.into();
-        file_args.save_to_file(&Args::default_config_path(&data_dir)).unwrap();
+        file_args
+            .save_to_file(&Args::default_config_path(&data_dir))
+            .unwrap();
 
         let args = load_codex_integration_args_for_data_dir(&data_dir);
         assert_eq!(

@@ -1344,13 +1344,17 @@ fn should_preserve_existing_account_catalog(
     if existing_catalog_account_entries(catalog_path).is_empty() {
         return false;
     }
-    match data_dir {
-        Some(data_dir) => {
-            let accounts_path = crate::accounts::accounts_file_path(data_dir);
-            !accounts_path.exists()
+    if let Some(data_dir) = data_dir {
+        let accounts_path = crate::accounts::accounts_file_path(data_dir);
+        if accounts_path.exists() {
+            warn!(
+                path = %catalog_path.display(),
+                accounts_path = %accounts_path.display(),
+                "本次账号库未生成 Codex Desktop 账号模型，继续保留已有模型目录直选项"
+            );
         }
-        None => true,
     }
+    true
 }
 
 fn existing_catalog_account_entries(catalog_path: &std::path::Path) -> Vec<Value> {
@@ -3013,6 +3017,50 @@ wire_api = "responses"
             .get("supportedReasoningEfforts")
             .and_then(Value::as_array)
             .is_some_and(|efforts| !efforts.is_empty()));
+    }
+
+    #[test]
+    fn preserve_existing_account_catalog_even_when_accounts_file_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-preserve-catalog-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog_path = dir.join(CATALOG_FILENAME);
+        let accounts_dir = dir.join("data");
+        std::fs::create_dir_all(&accounts_dir).unwrap();
+        std::fs::write(
+            crate::accounts::accounts_file_path(&accounts_dir),
+            serde_json::json!({
+                "version": 3,
+                "accounts": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let preserved_slug =
+            encode_dex_account_model_slug("acct_old", "endpoint_old", "deepseek-v4-pro");
+        std::fs::write(
+            &catalog_path,
+            serde_json::json!({
+                "models": [
+                    {
+                        "slug": preserved_slug,
+                        "model": preserved_slug,
+                        "display_name": "DeepSeek 桌面版 / DeepSeek V4 Pro",
+                        "provider": DEECODEX_DESKTOP_PROVIDER
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(should_preserve_existing_account_catalog(
+            Some(&accounts_dir),
+            &catalog_path
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

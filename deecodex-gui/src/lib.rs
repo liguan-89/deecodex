@@ -627,6 +627,29 @@ pub fn run() {
                 *manager.data_dir.lock().await = data_dir;
             });
 
+            if args.codex_auto_inject || args.codex_persistent_inject {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let manager = handle.state::<ServerManager>();
+                    match commands::start_service_inner(&manager).await {
+                        Ok(info) => {
+                            tracing::info!(
+                                host = %info.host,
+                                port = info.port,
+                                "DEX AI 启动时已自动启动本地代理服务"
+                            );
+                        }
+                        Err(error) if error.contains("服务已在运行中") => {
+                            tracing::info!(%error, "DEX AI 启动时检测到本地代理已运行");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "DEX AI 启动时自动启动本地代理失败");
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
