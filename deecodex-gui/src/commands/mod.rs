@@ -2714,15 +2714,27 @@ async fn sync_account_store_to_running_state(manager: &ServerManager, store: &Ac
     }
 }
 
+fn load_codex_integration_args_for_data_dir(data_dir: &Path) -> Args {
+    let mut args = load_args();
+    if let Some(file_args) = Args::load_from_file(&Args::default_config_path(data_dir)) {
+        args.codex_auto_inject = file_args.codex_auto_inject;
+        args.codex_persistent_inject = file_args.codex_persistent_inject;
+        args.codex_config_guard = file_args.codex_config_guard;
+        args.codex_router_mode =
+            deecodex::config::normalize_codex_router_mode(&file_args.codex_router_mode);
+    }
+    args
+}
+
 async fn sync_codex_integration_for_manager(manager: &ServerManager, reason: &'static str) {
-    let args = load_args();
+    let data_dir = manager.data_dir.lock().await.clone();
+    let args = load_codex_integration_args_for_data_dir(&data_dir);
     if !(args.codex_auto_inject || args.codex_persistent_inject) {
         tracing::info!(reason = reason, "跳过 Codex 模型目录刷新: Codex 注入未启用");
         return;
     }
 
     let (host, port) = service_endpoint_for_manager(manager).await;
-    let data_dir = manager.data_dir.lock().await.clone();
     deecodex::codex_config::fix();
     deecodex::codex_config::sync_codex_integration(
         deecodex::codex_config::CodexIntegrationSyncOptions {
@@ -6407,7 +6419,7 @@ async fn refresh_codex_model_catalog_after_fetch(
     let host = manager.host.lock().await.clone();
     let port = *manager.port.lock().await;
     let cw = load_active_account_context_window(data_dir);
-    let args = load_args();
+    let args = load_codex_integration_args_for_data_dir(data_dir);
     deecodex::codex_config::sync_codex_integration(
         deecodex::codex_config::CodexIntegrationSyncOptions {
             host: &host,
@@ -8196,6 +8208,40 @@ mod tests {
         );
         assert_eq!(
             load_args().codex_router_mode,
+            deecodex::config::CODEX_ROUTER_MODE_API
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codex_catalog_refresh_prefers_saved_router_mode_over_stale_env() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
+
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-gui-router-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = dir.join(".deecodex");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::env::set_var(
+            "DEECODEX_CODEX_ROUTER_MODE",
+            deecodex::config::CODEX_ROUTER_MODE_SMART,
+        );
+
+        let mut file_args = test_args();
+        file_args.data_dir = data_dir.clone();
+        file_args.codex_router_mode = deecodex::config::CODEX_ROUTER_MODE_API.into();
+        file_args.save_to_file(&Args::default_config_path(&data_dir)).unwrap();
+
+        let args = load_codex_integration_args_for_data_dir(&data_dir);
+        assert_eq!(
+            args.codex_router_mode,
             deecodex::config::CODEX_ROUTER_MODE_API
         );
 
