@@ -265,9 +265,6 @@ fn load_env() {
                 }
                 if let Some(eq) = trimmed.find('=') {
                     let key = trimmed[..eq].trim();
-                    if std::env::var_os(key).is_some() {
-                        continue;
-                    }
                     let val = trimmed[eq + 1..].trim();
                     let val = if (val.starts_with('"') && val.ends_with('"'))
                         || (val.starts_with('\'') && val.ends_with('\''))
@@ -276,11 +273,29 @@ fn load_env() {
                     } else {
                         val
                     };
+                    // GUI 配置保存后以数据目录 .env 为准，避免更新重启或父进程继承旧环境值。
                     std::env::set_var(key, val);
                 }
             }
         }
     }
+}
+
+fn sync_codex_integration_on_gui_start(args: &deecodex::config::Args) {
+    if !(args.codex_auto_inject || args.codex_persistent_inject) {
+        return;
+    }
+    deecodex::codex_config::fix();
+    deecodex::codex_config::sync_codex_integration(
+        deecodex::codex_config::CodexIntegrationSyncOptions {
+            host: &args.host,
+            port: args.port,
+            context_window_override: commands::load_active_account_context_window(&args.data_dir),
+            data_dir: Some(&args.data_dir),
+            codex_router_mode: &args.codex_router_mode,
+            reason: "gui_start",
+        },
+    );
 }
 
 const STARTUP_DESKTOP_INDEX_STABILIZE_ATTEMPTS: usize = 4;
@@ -459,6 +474,7 @@ pub fn run() {
 
     normalize_codex_desktop_threads_on_startup(&args.data_dir);
     schedule_codex_desktop_thread_normalization(args.data_dir.clone());
+    sync_codex_integration_on_gui_start(&args);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())

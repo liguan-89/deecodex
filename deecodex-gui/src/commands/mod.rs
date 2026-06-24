@@ -1864,6 +1864,8 @@ fn sync_data_dir_env_file(data_dir: &Path, key: &str, value: &str) {
         format!("{content}\n{new_line}")
     };
     let _ = std::fs::write(path, replaced);
+    // GUI 保存后会继续在当前进程内调用 load_args()；同步进程环境，避免旧 .env 值覆盖新配置。
+    std::env::set_var(key, value);
 }
 
 pub(crate) struct RuntimeDefaults {
@@ -2534,7 +2536,7 @@ fn migrate_or_load_accounts(data_dir: &std::path::Path) -> AccountStore {
 }
 
 /// 从账号存储中读取活跃账号的上下文窗口覆盖值。
-fn load_active_account_context_window(data_dir: &std::path::Path) -> Option<u32> {
+pub(crate) fn load_active_account_context_window(data_dir: &std::path::Path) -> Option<u32> {
     let store = deecodex::accounts::load_accounts(data_dir);
     store
         .active_endpoint()
@@ -8019,6 +8021,55 @@ mod tests {
     use super::*;
     use deecodex::accounts::Account;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    const SAVE_CONFIG_ENV_KEYS: &[&str] = &[
+        "HOME",
+        "DEECODEX_CONFIG",
+        "DEECODEX_DATA_DIR",
+        "DEECODEX_HOST",
+        "DEECODEX_PORT",
+        "DEECODEX_UPSTREAM",
+        "DEECODEX_API_KEY",
+        "DEECODEX_MODEL_MAP",
+        "DEECODEX_CODEX_ROUTER_MODE",
+        "DEECODEX_CODEX_CONFIG_GUARD",
+    ];
+
+    struct EnvSnapshot(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self(
+                SAVE_CONFIG_ENV_KEYS
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                restore_env_var(key, value);
+            }
+        }
+    }
+
+    fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
 
     fn test_args() -> Args {
         Args {
@@ -8099,6 +8150,56 @@ mod tests {
 
         assert_eq!(args.port, 4446);
         assert_eq!(args.data_dir, PathBuf::from(".deecodex"));
+    }
+
+    #[test]
+    fn save_config_refreshes_process_router_mode_env() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
+
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-gui-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = dir.join("home");
+        let data_dir = home.join(".deecodex");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::env::set_var("HOME", &home);
+        std::env::set_var(
+            "DEECODEX_CODEX_ROUTER_MODE",
+            deecodex::config::CODEX_ROUTER_MODE_SMART,
+        );
+        std::env::remove_var("DEECODEX_DATA_DIR");
+        std::env::remove_var("DEECODEX_PORT");
+        std::env::remove_var("DEECODEX_CONFIG");
+
+        let mut config = GuiConfig::from(test_args());
+        config.data_dir = data_dir.to_string_lossy().to_string();
+        config.codex_auto_inject = false;
+        config.codex_persistent_inject = false;
+        config.codex_config_guard = false;
+        config.codex_router_mode = deecodex::config::CODEX_ROUTER_MODE_API.into();
+
+        save_config_without_runtime(config).unwrap();
+        let saved = Args::load_from_file(&Args::default_config_path(&data_dir)).unwrap();
+        assert_eq!(
+            saved.codex_router_mode,
+            deecodex::config::CODEX_ROUTER_MODE_API
+        );
+        assert_eq!(
+            std::env::var("DEECODEX_CODEX_ROUTER_MODE").unwrap(),
+            deecodex::config::CODEX_ROUTER_MODE_API
+        );
+        assert_eq!(
+            load_args().codex_router_mode,
+            deecodex::config::CODEX_ROUTER_MODE_API
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
