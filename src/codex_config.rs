@@ -33,7 +33,7 @@ pub(crate) fn managed_model_provider_for_mode(codex_router_mode: &str) -> &'stat
     if crate::config::codex_router_mode_is_smart(codex_router_mode) {
         DEX_ROUTER_PROVIDER
     } else {
-        DEECODEX_PROVIDER
+        DEECODEX_DESKTOP_PROVIDER
     }
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn managed_model_provider_route_prefix_for_mode(
     if crate::config::codex_router_mode_is_smart(codex_router_mode) {
         "/codex-router/v1"
     } else {
-        "/v1"
+        "/codex-desktop/v1"
     }
 }
 
@@ -2420,11 +2420,11 @@ mod tests {
         assert!(changed);
 
         let fixed = std::fs::read_to_string(&path).unwrap();
-        assert!(fixed.contains("model_provider = \"deecodex\""));
+        assert!(fixed.contains("model_provider = \"deecodex_desktop\""));
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
         assert!(doc
             .get("model_providers")
-            .and_then(|providers| providers.get("deecodex"))
+            .and_then(|providers| providers.get("deecodex_desktop"))
             .is_some());
         assert!(doc
             .get("model_providers")
@@ -2521,7 +2521,7 @@ mod tests {
         );
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
-            Some("deecodex")
+            Some("deecodex_desktop")
         );
         cleanup(&path);
     }
@@ -2560,7 +2560,7 @@ wire_api = "responses"
         );
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
-            Some("deecodex")
+            Some("deecodex_desktop")
         );
         assert!(doc
             .get("model_providers")
@@ -2568,11 +2568,11 @@ wire_api = "responses"
             .is_none());
         let provider = doc
             .get("model_providers")
-            .and_then(|providers| providers.get("deecodex"))
+            .and_then(|providers| providers.get("deecodex_desktop"))
             .unwrap();
         assert_eq!(
             provider.get("base_url").and_then(|value| value.as_str()),
-            Some("http://127.0.0.1:4446/v1")
+            Some("http://127.0.0.1:4446/codex-desktop/v1")
         );
         cleanup(&path);
     }
@@ -2580,11 +2580,11 @@ wire_api = "responses"
     #[test]
     fn guard_check_accepts_api_mode_integration() {
         let content = r#"
-model_provider = "deecodex"
+model_provider = "deecodex_desktop"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.deecodex]
-base_url = "http://127.0.0.1:4446/v1"
+[model_providers.deecodex_desktop]
+base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
 "#;
@@ -2623,8 +2623,8 @@ wire_api = "responses"
 model_provider = "openai"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.deecodex]
-base_url = "http://127.0.0.1:4446/v1"
+[model_providers.deecodex_desktop]
+base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
 "#;
@@ -2642,11 +2642,11 @@ wire_api = "responses"
     #[test]
     fn guard_check_distinguishes_api_and_smart_modes() {
         let content = r#"
-model_provider = "deecodex"
+model_provider = "deecodex_desktop"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.deecodex]
-base_url = "http://127.0.0.1:4446/v1"
+[model_providers.deecodex_desktop]
+base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
 "#;
@@ -2658,7 +2658,7 @@ wire_api = "responses"
         );
         assert!(reasons
             .iter()
-            .any(|reason| reason == "model_provider:deecodex"));
+            .any(|reason| reason == "model_provider:deecodex_desktop"));
         assert!(reasons
             .iter()
             .any(|reason| reason == "provider_missing:dex_router"));
@@ -2826,7 +2826,7 @@ wire_api = "responses"
         };
         assert_eq!(
             account_provider(&api_catalog).as_deref(),
-            Some(DEECODEX_PROVIDER)
+            Some(DEECODEX_DESKTOP_PROVIDER)
         );
         assert_eq!(
             account_provider(&smart_catalog).as_deref(),
@@ -3031,7 +3031,7 @@ wire_api = "responses"
             None,
             &[],
             &preserved,
-            DEECODEX_PROVIDER,
+            DEECODEX_DESKTOP_PROVIDER,
         )
         .unwrap();
         let restored = output["models"]
@@ -3042,7 +3042,7 @@ wire_api = "responses"
                 model.get("slug").and_then(Value::as_str) == Some(preserved_slug.as_str())
             })
             .expect("missing preserved account model");
-        assert_eq!(restored["provider"], DEECODEX_PROVIDER);
+        assert_eq!(restored["provider"], DEECODEX_DESKTOP_PROVIDER);
     }
 
     #[test]
