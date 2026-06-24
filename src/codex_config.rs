@@ -280,12 +280,14 @@ pub fn sync_codex_integration(options: CodexIntegrationSyncOptions<'_>) {
 
     let include_account_models =
         include_account_models_in_catalog_for_mode(options.codex_router_mode);
+    let active_provider = managed_model_provider_for_mode(options.codex_router_mode);
     let active_model = read_active_codex_model(&path).unwrap_or_else(|| "gpt-5.5".to_string());
     let catalog = match generate_context_catalog(
         options.context_window_override,
         &active_model,
         options.data_dir,
         include_account_models,
+        active_provider,
     ) {
         Ok(catalog) => Some(catalog),
         Err(e) => {
@@ -792,6 +794,7 @@ fn generate_context_catalog(
     active_model: &str,
     data_dir: Option<&std::path::Path>,
     include_account_models: bool,
+    catalog_account_provider: &str,
 ) -> Result<GeneratedCatalog> {
     let Some(codex_home) = codex_home_dir() else {
         return Err(anyhow!("无法确定 HOME 目录"));
@@ -852,6 +855,7 @@ fn generate_context_catalog(
         context_window_override,
         &account_models,
         &preserved_account_entries,
+        catalog_account_provider,
     )?;
     let model_context_window = context_window_override
         .map(|window| (window as u64).min(i64::MAX as u64) as i64)
@@ -1093,6 +1097,7 @@ fn build_context_catalog(
     context_window_override: Option<u32>,
     account_models: &[DexCatalogAccountModel],
     preserved_account_entries: &[Value],
+    catalog_account_provider: &str,
 ) -> Result<Value> {
     let models = catalog
         .get_mut("models")
@@ -1123,8 +1128,13 @@ fn build_context_catalog(
         &template_models,
         account_models,
         context_window_override,
+        catalog_account_provider,
     );
-    prepend_preserved_account_catalog_models(models, preserved_account_entries);
+    prepend_preserved_account_catalog_models(
+        models,
+        preserved_account_entries,
+        catalog_account_provider,
+    );
     ensure_model_catalog_schema(models, &catalog_model_template(&template_models));
 
     // model_catalog_json 只接受 {"models": [...]}，去掉缓存中的额外字段。
@@ -1219,6 +1229,7 @@ fn prepend_dex_account_catalog_models(
     template_models: &[Value],
     account_models: &[DexCatalogAccountModel],
     context_window_override: Option<u32>,
+    catalog_account_provider: &str,
 ) {
     if account_models.is_empty() {
         return;
@@ -1279,7 +1290,7 @@ fn prepend_dex_account_catalog_models(
         model["visibility"] = Value::String("list".into());
         model["supported_in_api"] = Value::Bool(true);
         model["priority"] = Value::from(3);
-        model["provider"] = Value::String(DEX_ROUTER_PROVIDER.into());
+        model["provider"] = Value::String(catalog_account_provider.to_string());
         let window = context_window_override.or(account_model.context_window_override);
         if let Some(window) = window {
             model["context_window"] = Value::from(window);
@@ -1296,7 +1307,11 @@ fn prepend_dex_account_catalog_models(
     }
 }
 
-fn prepend_preserved_account_catalog_models(models: &mut Vec<Value>, preserved: &[Value]) {
+fn prepend_preserved_account_catalog_models(
+    models: &mut Vec<Value>,
+    preserved: &[Value],
+    catalog_account_provider: &str,
+) {
     if preserved.is_empty() {
         return;
     }
@@ -1313,7 +1328,9 @@ fn prepend_preserved_account_catalog_models(models: &mut Vec<Value>, preserved: 
         if !slug.starts_with(DEX_ACCOUNT_MODEL_SLUG_PREFIX) || !existing.insert(slug.to_string()) {
             continue;
         }
-        account_entries.push(model.clone());
+        let mut model = model.clone();
+        model["provider"] = Value::String(catalog_account_provider.to_string());
+        account_entries.push(model);
     }
     if !account_entries.is_empty() {
         models.splice(0..0, account_entries);
@@ -2675,7 +2692,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[], &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[], DEX_ROUTER_PROVIDER).unwrap();
         assert!(output.get("fetched_at").is_none());
         let models = output["models"].as_array().unwrap();
         assert_eq!(models[0]["context_window"], 272000);
@@ -2700,7 +2717,8 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, Some(2_000_000), &[], &[]).unwrap();
+        let output =
+            build_context_catalog(input, Some(2_000_000), &[], &[], DEX_ROUTER_PROVIDER).unwrap();
         let model = &output["models"][0];
         assert_eq!(model["context_window"], 2_000_000);
         assert_eq!(model["max_context_window"], 2_000_000);
@@ -2725,7 +2743,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[], &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[], DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(!models.iter().any(|model| {
             model.get("slug").and_then(Value::as_str) == Some("gpt-5.3-codex-spark")
@@ -2746,6 +2764,74 @@ wire_api = "responses"
         assert_eq!(decoded.account_id, "acct.1");
         assert_eq!(decoded.endpoint_id, "endpoint/2");
         assert_eq!(decoded.model, "vendor/model:latest");
+    }
+
+    fn basic_catalog_input() -> Value {
+        serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "display_name": "GPT-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 1000000,
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        })
+    }
+
+    fn deepseek_catalog_account_model() -> DexCatalogAccountModel {
+        DexCatalogAccountModel {
+            account_id: "acct_deepseek".into(),
+            endpoint_id: "ep_deepseek".into(),
+            account_name: "DeepSeek 桌面版账号".into(),
+            endpoint_name: "OpenAI Chat".into(),
+            endpoint_kind: crate::accounts::EndpointKind::OpenAiChat,
+            provider: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+            context_window_override: None,
+        }
+    }
+
+    #[test]
+    fn context_catalog_account_provider_follows_router_mode() {
+        let account_models = vec![deepseek_catalog_account_model()];
+        let api_catalog = build_context_catalog(
+            basic_catalog_input(),
+            None,
+            &account_models,
+            &[],
+            managed_model_provider_for_mode(crate::config::CODEX_ROUTER_MODE_API),
+        )
+        .unwrap();
+        let smart_catalog = build_context_catalog(
+            basic_catalog_input(),
+            None,
+            &account_models,
+            &[],
+            managed_model_provider_for_mode(crate::config::CODEX_ROUTER_MODE_SMART),
+        )
+        .unwrap();
+
+        let account_provider = |catalog: &Value| {
+            catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model_is_dex_account_model(model))
+                .and_then(|model| model.get("provider"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        };
+        assert_eq!(
+            account_provider(&api_catalog).as_deref(),
+            Some(DEECODEX_PROVIDER)
+        );
+        assert_eq!(
+            account_provider(&smart_catalog).as_deref(),
+            Some(DEX_ROUTER_PROVIDER)
+        );
     }
 
     #[test]
@@ -2787,7 +2873,8 @@ wire_api = "responses"
             },
         ];
 
-        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
+        let output =
+            build_context_catalog(input, None, &account_models, &[], DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(models.len() > 2);
         let account_entry = models
@@ -2856,8 +2943,14 @@ wire_api = "responses"
 
     #[test]
     fn context_catalog_has_registry_models_when_codex_cache_is_empty() {
-        let output =
-            build_context_catalog(serde_json::json!({ "models": [] }), None, &[], &[]).unwrap();
+        let output = build_context_catalog(
+            serde_json::json!({ "models": [] }),
+            None,
+            &[],
+            &[],
+            DEX_ROUTER_PROVIDER,
+        )
+        .unwrap();
         let models = output["models"].as_array().unwrap();
         assert!(models
             .iter()
@@ -2904,7 +2997,8 @@ wire_api = "responses"
             "provider": DEX_ROUTER_PROVIDER
         })];
 
-        let output = build_context_catalog(input, None, &[], &preserved).unwrap();
+        let output =
+            build_context_catalog(input, None, &[], &preserved, DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         let restored = models
             .iter()
@@ -2919,6 +3013,36 @@ wire_api = "responses"
             .get("supportedReasoningEfforts")
             .and_then(Value::as_array)
             .is_some_and(|efforts| !efforts.is_empty()));
+    }
+
+    #[test]
+    fn context_catalog_rewrites_preserved_account_provider_for_current_mode() {
+        let preserved_slug =
+            encode_dex_account_model_slug("acct_old", "endpoint_old", "deepseek-v4-pro");
+        let preserved = vec![serde_json::json!({
+            "slug": preserved_slug,
+            "display_name": "DeepSeek 桌面版 / DeepSeek V4 Pro",
+            "visibility": "list",
+            "provider": DEX_ROUTER_PROVIDER
+        })];
+
+        let output = build_context_catalog(
+            basic_catalog_input(),
+            None,
+            &[],
+            &preserved,
+            DEECODEX_PROVIDER,
+        )
+        .unwrap();
+        let restored = output["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| {
+                model.get("slug").and_then(Value::as_str) == Some(preserved_slug.as_str())
+            })
+            .expect("missing preserved account model");
+        assert_eq!(restored["provider"], DEECODEX_PROVIDER);
     }
 
     #[test]
@@ -2940,7 +3064,7 @@ wire_api = "responses"
             ]
         });
 
-        let output = build_context_catalog(input, None, &[], &[]).unwrap();
+        let output = build_context_catalog(input, None, &[], &[], DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         let vendor = models
             .iter()
@@ -3012,7 +3136,8 @@ wire_api = "responses"
             },
         ];
 
-        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
+        let output =
+            build_context_catalog(input, None, &account_models, &[], DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         let account_entries = models
             .iter()
@@ -3067,7 +3192,8 @@ wire_api = "responses"
             context_window_override: None,
         }];
 
-        let output = build_context_catalog(input, None, &account_models, &[]).unwrap();
+        let output =
+            build_context_catalog(input, None, &account_models, &[], DEX_ROUTER_PROVIDER).unwrap();
         let models = output["models"].as_array().unwrap();
         let account_entry = models
             .iter()

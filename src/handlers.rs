@@ -5453,6 +5453,10 @@ async fn handle_models(State(state): State<AppState>) -> Response {
             .collect();
         return Json(json!({ "object": "list", "data": data })).into_response();
     }
+    drop(model_map);
+    if let Some(data) = codex_model_catalog_response_data() {
+        return Json(json!({ "object": "list", "data": data })).into_response();
+    }
     // fallback: proxy to upstream
     let upstream = state.upstream.read().await;
     let url = format!("{}models", join_base(&upstream));
@@ -5478,6 +5482,51 @@ async fn handle_models(State(state): State<AppState>) -> Response {
             Json(serde_json::json!({ "object": "list", "data": [] })).into_response()
         }
     }
+}
+
+fn codex_model_catalog_response_data() -> Option<Vec<Value>> {
+    let catalog_path = codex_config::codex_home_dir()?.join("models_deecodex.json");
+    codex_model_catalog_response_data_from_path(&catalog_path)
+}
+
+fn codex_model_catalog_response_data_from_path(path: &std::path::Path) -> Option<Vec<Value>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let catalog: Value = serde_json::from_str(&content).ok()?;
+    let mut data = Vec::new();
+    let mut seen = HashSet::new();
+    for model in catalog.get("models")?.as_array()? {
+        if model
+            .get("hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if model.get("visibility").and_then(Value::as_str) == Some("hidden") {
+            continue;
+        }
+        let Some(id) = model
+            .get("model")
+            .or_else(|| model.get("slug"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        data.push(json!({
+            "id": id,
+            "object": "model",
+            "owned_by": model
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("deecodex")
+        }));
+    }
+    (!data.is_empty()).then_some(data)
 }
 
 async fn handle_list_prompts(State(state): State<AppState>) -> Response {
@@ -11908,6 +11957,65 @@ mod tests {
     fn test_join_base_preserves_slash() {
         let url = Url::parse("https://api.example.com/v1/").unwrap();
         assert_eq!(join_base(&url), "https://api.example.com/v1/");
+    }
+
+    #[test]
+    fn codex_models_endpoint_uses_generated_catalog_entries() {
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-model-catalog-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models_deecodex.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "models": [
+                    {
+                        "slug": "dexacct.account.endpoint.deepseek",
+                        "model": "dexacct.account.endpoint.deepseek",
+                        "provider": "deecodex",
+                        "visibility": "list",
+                        "hidden": false
+                    },
+                    {
+                        "slug": "gpt-5.5",
+                        "provider": "dex_router",
+                        "visibility": "list",
+                        "hidden": false
+                    },
+                    {
+                        "slug": "hidden-model",
+                        "model": "hidden-model",
+                        "provider": "dex_router",
+                        "visibility": "hidden",
+                        "hidden": false
+                    },
+                    {
+                        "slug": "also-hidden",
+                        "model": "also-hidden",
+                        "provider": "dex_router",
+                        "visibility": "list",
+                        "hidden": true
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let data = codex_model_catalog_response_data_from_path(&path).unwrap();
+        let ids = data
+            .iter()
+            .filter_map(|model| model.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"dexacct.account.endpoint.deepseek"));
+        assert!(ids.contains(&"gpt-5.5"));
+        assert!(!ids.contains(&"hidden-model"));
+        assert!(!ids.contains(&"also-hidden"));
+        assert_eq!(data[0]["owned_by"], "deecodex");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
