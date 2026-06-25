@@ -138,10 +138,10 @@
         const statsigInstance = window.__STATSIG__?.firstInstance || window.__STATSIG__?.instance;
         if (!statsigInstance) return;
 
-        // Hook getConfig 方法
-        const originalGetConfig = statsigInstance.getConfig;
+        // Hook getDynamicConfig 方法
+        const originalGetConfig = statsigInstance.getDynamicConfig;
         if (originalGetConfig && typeof originalGetConfig === "function") {
-            statsigInstance.getConfig = function(configName) {
+            statsigInstance.getDynamicConfig = function(configName) {
                 const result = originalGetConfig.apply(this, arguments);
 
                 // 拦截模型选择相关配置
@@ -152,6 +152,7 @@
                         result.value = new Proxy(originalValue, {
                             get(target, prop) {
                                 if (prop === "use_hidden_models") {
+                                    console.log("[DeeCodex] 拦截 use_hidden_models，原值:", target[prop], "→ false");
                                     return false; // 强制返回 false，显示所有模型
                                 }
                                 return target[prop];
@@ -164,7 +165,7 @@
             };
 
             statsigHookInstalled = true;
-            console.log("[DeeCodex] 模型列表解锁已激活 (Statsig hook)");
+            console.log("[DeeCodex] 模型列表解锁已激活 (Statsig getDynamicConfig hook)");
         }
 
         // 额外 hook checkGate (如果使用 feature gate)
