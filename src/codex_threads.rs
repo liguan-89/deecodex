@@ -1648,19 +1648,17 @@ fn project_label(path: &str) -> String {
         .to_string()
 }
 
-fn looks_like_workspace_root(path: &Path) -> bool {
-    path.join(".git").exists()
-        || path.join("Cargo.toml").exists()
-        || path.join("package.json").exists()
-        || path.join("pyproject.toml").exists()
-        || path.join("requirements.txt").exists()
-        || path.join("tauri.conf.json").exists()
-        || path.join("src-tauri").exists()
-}
-
-fn is_valid_workspace_root(path: &str) -> bool {
-    let path = Path::new(path);
-    path.is_dir() && looks_like_workspace_root(path)
+// 判定一个 workspace root 路径是否是 Codex Desktop 自身的会话目录。
+// 这类路径不应该作为项目根出现在 global-state.json 中，因此 prune 时
+// 需要把它们从 workspace roots、labels、assignments 等字段里清除。
+// 这里只识别明显属于会话/运行时数据的目录，其他路径一律视为合法
+// workspace root——具体判定权交给 Codex Desktop 自己，不做白名单过滤。
+fn is_session_dir(path: &str) -> bool {
+    path.contains("/.codex/sessions/")
+        || path.contains("/.codex/archived_sessions/")
+        || path.ends_with("/.codex/sessions")
+        || path.ends_with("/.codex/archived_sessions")
+        || path.contains("/.deecodex/")
 }
 fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<String> {
     let mut best: Option<&String> = None;
@@ -2046,29 +2044,17 @@ fn desktop_project_candidates(
     state: &Value,
     rows: Vec<DesktopThreadRow>,
 ) -> (BTreeMap<String, Vec<String>>, HashMap<String, String>) {
-    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"))
-        .into_iter()
-        .filter(|root| is_valid_workspace_root(root))
-        .collect::<Vec<_>>();
-    let active_roots = value_string_array(state.get("active-workspace-roots"))
-        .into_iter()
-        .filter(|root| is_valid_workspace_root(root))
-        .collect::<Vec<_>>();
-    let project_order = value_string_array(state.get("project-order"))
-        .into_iter()
-        .filter(|root| is_valid_workspace_root(root))
-        .collect::<Vec<_>>();
+    // 完全信任 Codex Desktop 自己维护的字段，不过滤——只有后续 prune 步骤
+    // 会基于 session dir 黑名单剔除明显异常的路径。
+    let saved_roots = value_string_array(state.get("electron-saved-workspace-roots"));
+    let active_roots = value_string_array(state.get("active-workspace-roots"));
+    let project_order = value_string_array(state.get("project-order"));
     let labels = value_string_object(state.get("electron-workspace-root-labels"));
 
     let mut known_roots: BTreeSet<String> = saved_roots.iter().cloned().collect();
     known_roots.extend(active_roots.iter().cloned());
     known_roots.extend(project_order.iter().cloned());
-    known_roots.extend(
-        labels
-            .keys()
-            .filter(|root| is_valid_workspace_root(root))
-            .cloned(),
-    );
+    known_roots.extend(labels.keys().cloned());
 
     let mut order_project_by_thread: HashMap<String, String> = HashMap::new();
     if let Some(orders) = state
@@ -2076,9 +2062,6 @@ fn desktop_project_candidates(
         .and_then(Value::as_object)
     {
         for (project, order) in orders {
-            if !is_valid_workspace_root(project) {
-                continue;
-            }
             known_roots.insert(project.clone());
             let Some(thread_ids) = order.get("threadIds").and_then(Value::as_array) else {
                 continue;
@@ -2124,7 +2107,7 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
     ] {
         if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
             let before = items.len();
-            items.retain(|item| item.as_str().is_some_and(is_valid_workspace_root));
+            items.retain(|item| !item.as_str().is_some_and(is_session_dir));
             changed += before.saturating_sub(items.len());
         }
     }
@@ -2134,7 +2117,7 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
         .and_then(Value::as_object_mut)
     {
         let before = labels.len();
-        labels.retain(|root, _| is_valid_workspace_root(root));
+        labels.retain(|root, _| !is_session_dir(root));
         changed += before.saturating_sub(labels.len());
     }
 
@@ -2148,7 +2131,7 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
                 .get("projectId")
                 .and_then(Value::as_str)
                 .or_else(|| item.get("path").and_then(Value::as_str));
-            if !project.is_some_and(is_valid_workspace_root) {
+            if project.is_some_and(is_session_dir) {
                 removed.push(thread_id.clone());
             }
         }
@@ -2165,7 +2148,7 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
     {
         let mut removed = Vec::new();
         for (thread_id, item) in hints.iter() {
-            if !item.as_str().is_some_and(is_valid_workspace_root) {
+            if item.as_str().is_some_and(is_session_dir) {
                 removed.push(thread_id.clone());
             }
         }
@@ -2182,7 +2165,7 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
     {
         let mut removed = Vec::new();
         for (project, order) in orders.iter_mut() {
-            if !is_valid_workspace_root(project) {
+            if is_session_dir(project) {
                 removed.push(project.clone());
                 continue;
             }
@@ -2198,7 +2181,83 @@ fn prune_invalid_desktop_project_state(state: &mut Value) -> usize {
     }
 
     if changed > 0 {
-        tracing::info!("已清理 {changed} 个无效 Codex Desktop 项目根目录/索引项");
+        tracing::info!("已清理 {changed} 个 session 目录型 Codex Desktop 项目根目录/索引项");
+    }
+
+    changed
+}
+
+// 收集 SQLite 中真实存在的 thread ID，用于判断 global-state.json 里的关联
+// 是否仍是"幽灵关联"——Codex Desktop 自己删除 thread 时只清 SQLite 和 rollout
+// 文件，并不会同步清理 thread-project-assignments / hints / sidebar orders
+// / projectless-thread-ids 等字段，需要 deecodex 主动 GC。
+fn collect_sqlite_thread_ids(conn: &Connection) -> BTreeSet<String> {
+    let Ok(mut stmt) = conn.prepare("SELECT id FROM threads") else {
+        return BTreeSet::new();
+    };
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .ok()
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+// 清理 global-state.json 里指向已不存在的 thread 引用。
+// SQLite 里没有这个 thread ID 的条目，一律视为孤儿从以下字段移除：
+// thread-project-assignments、thread-workspace-root-hints、
+// projectless-thread-ids，以及每个 sidebar-project-thread-orders 项目的
+// threadIds 列表。
+fn prune_orphan_desktop_thread_refs(state: &mut Value, sqlite_ids: &BTreeSet<String>) -> usize {
+    let Some(object) = state.as_object_mut() else {
+        return 0;
+    };
+
+    let mut changed = 0usize;
+    for key in [
+        "thread-project-assignments",
+        "thread-workspace-root-hints",
+        "thread-projectless-output-directories",
+    ] {
+        if let Some(map) = object.get_mut(key).and_then(Value::as_object_mut) {
+            let before = map.len();
+            map.retain(|tid, _| sqlite_ids.contains(tid));
+            changed += before.saturating_sub(map.len());
+        }
+    }
+
+    if let Some(items) = object
+        .get_mut("projectless-thread-ids")
+        .and_then(Value::as_array_mut)
+    {
+        let before = items.len();
+        items.retain(|item| item.as_str().is_some_and(|tid| sqlite_ids.contains(tid)));
+        changed += before.saturating_sub(items.len());
+    }
+
+    if let Some(orders) = object
+        .get_mut("sidebar-project-thread-orders")
+        .and_then(Value::as_object_mut)
+    {
+        let mut empty_projects = Vec::new();
+        for (project, order) in orders.iter_mut() {
+            let Some(ids) = order.get_mut("threadIds").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let before = ids.len();
+            ids.retain(|item| item.as_str().is_some_and(|tid| sqlite_ids.contains(tid)));
+            changed += before.saturating_sub(ids.len());
+            if ids.is_empty() {
+                empty_projects.push(project.clone());
+            }
+        }
+        for project in empty_projects {
+            if orders.remove(&project).is_some() {
+                changed += 1;
+            }
+        }
+    }
+
+    if changed > 0 {
+        tracing::info!("已清理 {changed} 个孤儿 Codex Desktop 线程关联");
     }
 
     changed
@@ -2301,6 +2360,8 @@ fn repair_desktop_project_index(
         let mut state: Value =
             serde_json::from_str(&raw).context("解析 Codex Desktop 全局状态失败")?;
 
+        total_changed +=
+            prune_orphan_desktop_thread_refs(&mut state, &collect_sqlite_thread_ids(conn));
         total_changed += prune_invalid_desktop_project_state(&mut state);
         let (project_threads, assignments_by_thread) =
             desktop_project_candidates(&state, rows.clone());
@@ -4422,6 +4483,156 @@ mod tests {
             .expect("read updated");
         assert_eq!(updated_at, 100);
         assert!(!recent_backup_path.exists());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn is_session_dir_recognises_only_runtime_session_paths() {
+        // 明显是 session dir 的路径必须命中
+        assert!(is_session_dir(
+            "/Users/me/.codex/sessions/rollout-abc.jsonl"
+        ));
+        assert!(is_session_dir(
+            "/Users/me/.codex/archived_sessions/rollout-2026.jsonl"
+        ));
+        assert!(is_session_dir("/Users/me/.codex/sessions"));
+        assert!(is_session_dir("/Users/me/.codex/archived_sessions"));
+        assert!(is_session_dir("/Users/me/.deecodex/runtime/foo"));
+        // 普通工程根/任意目录都不能被误判为 session dir
+        assert!(!is_session_dir("/Users/me/projects/deecodex-gui"));
+        assert!(!is_session_dir("/Users/me/Documents/Codex/2026-06-25/ni"));
+        assert!(!is_session_dir("/Users/me/.codex/config.toml"));
+        assert!(!is_session_dir("/Users/me/.codex/worktrees/8c23/deecodex"));
+    }
+
+    #[test]
+    fn prune_invalid_desktop_project_state_keeps_non_session_paths() {
+        // session dir 黑名单只删 session 类路径，工程根（含/不含标记）一律保留。
+        let mut state = json!({
+            "electron-saved-workspace-roots": [
+                "/Users/me/projects/codex-relay",
+                "/Users/me/Documents/Codex/2026-06-25/ni",
+                "/Users/me/notes/no-marker-dir",
+                "/Users/me/.codex/sessions",
+                "/Users/me/.codex/archived_sessions/rollout-x.jsonl",
+            ],
+            "active-workspace-roots": ["/Users/me/.codex/sessions/extra"],
+            "project-order": ["/Users/me/projects/deecodex-gui"],
+            "electron-workspace-root-labels": {
+                "/Users/me/projects/codex-relay": "codex-relay",
+                "/Users/me/.codex/sessions": "sessions",
+            },
+            "thread-project-assignments": {
+                "thread-1": {"projectId": "/Users/me/projects/codex-relay"},
+                "thread-2": {"projectId": "/Users/me/.codex/sessions"},
+                "thread-3": {"projectId": "/Users/me/Documents/Codex/2026-06-25/ni"},
+            },
+            "thread-workspace-root-hints": {
+                "thread-1": "/Users/me/projects/codex-relay",
+                "thread-2": "/Users/me/.codex/sessions",
+                "thread-4": "/Users/me/Documents/Codex/2026-06-25/like",
+            },
+            "sidebar-project-thread-orders": {
+                "/Users/me/projects/codex-relay": {"threadIds": ["thread-1"]},
+                "/Users/me/.codex/sessions": {"threadIds": ["thread-2"]},
+                "/Users/me/Documents/Codex/2026-06-25/ni": {"threadIds": ["thread-3"]},
+            },
+        });
+
+        let changed = prune_invalid_desktop_project_state(&mut state);
+        assert!(
+            changed >= 5,
+            "应至少清掉 5 处 session dir 引用，实际 {changed}"
+        );
+
+        let saved = state["electron-saved-workspace-roots"].as_array().unwrap();
+        assert_eq!(
+            saved.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            vec![
+                "/Users/me/projects/codex-relay",
+                "/Users/me/Documents/Codex/2026-06-25/ni",
+                "/Users/me/notes/no-marker-dir",
+            ]
+        );
+        assert!(state["active-workspace-roots"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let labels = state["electron-workspace-root-labels"].as_object().unwrap();
+        assert!(labels.contains_key("/Users/me/projects/codex-relay"));
+        assert!(!labels.contains_key("/Users/me/.codex/sessions"));
+        let assignments = state["thread-project-assignments"].as_object().unwrap();
+        assert!(assignments.contains_key("thread-1"));
+        assert!(!assignments.contains_key("thread-2"));
+        assert!(assignments.contains_key("thread-3"));
+        let hints = state["thread-workspace-root-hints"].as_object().unwrap();
+        assert!(!hints.contains_key("thread-2"));
+        let orders = state["sidebar-project-thread-orders"].as_object().unwrap();
+        assert!(orders.contains_key("/Users/me/projects/codex-relay"));
+        assert!(!orders.contains_key("/Users/me/.codex/sessions"));
+        assert!(orders.contains_key("/Users/me/Documents/Codex/2026-06-25/ni"));
+    }
+
+    #[test]
+    fn prune_orphan_desktop_thread_refs_removes_sqlite_missing_entries() {
+        let dir = temp_test_dir("prune-orphan-thread-refs");
+        let db_path = dir.join("state_test.sqlite");
+        create_test_threads_db(
+            &db_path,
+            &[("thread-live", "deecodex"), ("thread-archived", "deecodex")],
+        );
+
+        let mut state = json!({
+            "thread-project-assignments": {
+                "thread-live": {"projectId": "/Users/me/projects/codex-relay"},
+                "thread-ghost-1": {"projectId": "/Users/me/projects/codex-relay"},
+                "thread-ghost-2": {"path": "/Users/me/Documents/Codex/2026-06-25/ni"},
+            },
+            "thread-workspace-root-hints": {
+                "thread-live": "/Users/me/projects/codex-relay",
+                "thread-ghost-1": "/Users/me/projects/codex-relay",
+            },
+            "projectless-thread-ids": ["thread-live", "thread-ghost-3", ""],
+            "sidebar-project-thread-orders": {
+                "/Users/me/projects/codex-relay": {
+                    "threadIds": ["thread-live", "thread-ghost-1", "thread-archived"]
+                },
+                "/Users/me/empty-after-gc": {"threadIds": ["thread-ghost-2"]},
+            },
+        });
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let sqlite_ids = collect_sqlite_thread_ids(&conn);
+        drop(conn);
+        assert!(sqlite_ids.contains("thread-live"));
+        assert!(sqlite_ids.contains("thread-archived"));
+        assert_eq!(sqlite_ids.len(), 2);
+
+        let changed = prune_orphan_desktop_thread_refs(&mut state, &sqlite_ids);
+        assert!(changed >= 4, "应至少清掉 4 处孤儿引用，实际 {changed}");
+
+        let assignments = state["thread-project-assignments"].as_object().unwrap();
+        assert!(assignments.contains_key("thread-live"));
+        assert!(!assignments.contains_key("thread-ghost-1"));
+        assert!(!assignments.contains_key("thread-ghost-2"));
+        let hints = state["thread-workspace-root-hints"].as_object().unwrap();
+        assert!(hints.contains_key("thread-live"));
+        assert!(!hints.contains_key("thread-ghost-1"));
+        let projectless = state["projectless-thread-ids"].as_array().unwrap();
+        let projectless_strs: Vec<&str> = projectless.iter().filter_map(Value::as_str).collect();
+        assert!(projectless_strs.contains(&"thread-live"));
+        assert!(!projectless_strs.contains(&"thread-ghost-3"));
+        let orders = state["sidebar-project-thread-orders"].as_object().unwrap();
+        let codex_rels = orders["/Users/me/projects/codex-relay"]["threadIds"]
+            .as_array()
+            .unwrap();
+        let codex_rel_strs: Vec<&str> = codex_rels.iter().filter_map(Value::as_str).collect();
+        assert!(codex_rel_strs.contains(&"thread-live"));
+        assert!(codex_rel_strs.contains(&"thread-archived"));
+        assert!(!codex_rel_strs.contains(&"thread-ghost-1"));
+        // 项目清空后整个 sidebar 项目条目被删除
+        assert!(!orders.contains_key("/Users/me/empty-after-gc"));
 
         std::fs::remove_dir_all(dir).ok();
     }
