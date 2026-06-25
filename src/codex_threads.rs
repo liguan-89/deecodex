@@ -1670,19 +1670,6 @@ fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<Strin
     best.cloned()
 }
 
-fn project_from_thread_cwd(cwd: &str) -> Option<String> {
-    let cwd = cwd.trim();
-    if cwd.is_empty() {
-        return None;
-    }
-    let path = Path::new(cwd);
-    if path.is_absolute() && path.is_dir() {
-        Some(cwd.to_string())
-    } else {
-        None
-    }
-}
-
 fn read_desktop_thread_rows(conn: &Connection) -> Result<Vec<DesktopThreadRow>> {
     let provider = current_thread_provider();
     let mut column_stmt = conn.prepare("PRAGMA table_info(threads)")?;
@@ -2077,11 +2064,14 @@ fn desktop_project_candidates(
     let mut project_threads: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut assignments_by_thread: HashMap<String, String> = HashMap::new();
     for row in rows {
+        // 3.4.2 行为：thread 的归属只来自 order_project_by_thread（已有 sidebar orders）或
+        // project_for_thread（cwd 命中已知根），不再用 cwd 直接 fallback 成新项目——
+        // 后者会让 /tmp/x 这种临时目录被自动升级成 workspace root，污染 Codex Desktop
+        // 的 sidebar 项目视图。
         let Some(project) = order_project_by_thread
             .get(&row.id)
             .cloned()
             .or_else(|| project_for_thread(&row.cwd, &known_roots))
-            .or_else(|| project_from_thread_cwd(&row.cwd))
         else {
             continue;
         };
@@ -4289,7 +4279,11 @@ mod tests {
     }
 
     #[test]
-    fn desktop_project_index_uses_existing_thread_cwd_as_project_fallback() {
+    fn desktop_project_index_does_not_create_project_from_thread_cwd() {
+        // 3.4.2 行为：thread.cwd 不在已知 workspace roots 时，**不应**被自动升级成
+        // 新项目（避免 /tmp/foo 这种临时目录被注册成 Codex Desktop 项目）。
+        // 5d3f8d13 加了 project_from_thread_cwd fallback 让 cwd 直接变项目，
+        // 污染 sidebar。该 fallback 已删除，这里固化正确行为。
         let dir = temp_test_dir("thread-desktop-project-cwd-fallback");
         let db_path = dir.join("state_test.sqlite");
         let backup_path = dir.join("thread_migration_backup.json");
@@ -4326,43 +4320,43 @@ mod tests {
         )
         .expect("write global state");
 
-        let diff = do_calibrate(
+        let _ = do_calibrate(
             &db_path,
             &backup_path,
             &cwd_backup_path,
             &desktop_recent_backup_path(&dir),
         )
         .expect("calibrate threads");
-        assert!(diff.desktop_project_fixed_count >= 1);
 
         let state: Value = serde_json::from_str(
             &std::fs::read_to_string(&global_path).expect("read global state"),
         )
         .expect("parse global state");
-        assert!(state["active-workspace-roots"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value.as_str() == Some(project.as_str())));
-        assert_eq!(
-            state["thread-project-assignments"]["cwd-thread"]["projectId"].as_str(),
-            Some(project.as_str())
-        );
         assert!(
-            state["sidebar-project-thread-orders"][&project]["threadIds"]
+            !state["active-workspace-roots"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|value| value.as_str() == Some("cwd-thread"))
+                .any(|value| value.as_str() == Some(project.as_str())),
+            "thread.cwd 不应被自动升级为 active workspace root"
         );
-        assert!(state["projectless-thread-ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value.as_str() == Some("cwd-thread")));
+        assert!(
+            state["thread-project-assignments"]
+                .as_object()
+                .map(|m| m.get("cwd-thread").is_none())
+                .unwrap_or(true),
+            "不应给 cwd-thread 创建 projectId 关联"
+        );
+        assert!(
+            state["sidebar-project-thread-orders"]
+                .as_object()
+                .map(|m| m.get(&project).is_none())
+                .unwrap_or(true),
+            "不应在 sidebar-project-thread-orders 里出现新项目 {project}"
+        );
         let conn = Connection::open(&db_path).expect("open db");
         let status = get_desktop_project_index_status(&db_path, &conn).expect("project status");
-        assert_eq!(status.indexed_count, 1);
+        assert_eq!(status.indexed_count, 0);
         assert_eq!(status.pending_count, 0);
 
         std::fs::remove_dir_all(dir).ok();
