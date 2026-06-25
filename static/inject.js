@@ -24,7 +24,7 @@
     }
 
     function defaultSettings() {
-        return { pluginUnlock: true, forceInstall: true, sessionDelete: true };
+        return { pluginUnlock: true, forceInstall: true, sessionDelete: true, modelUnlock: true };
     }
 
     function reactFiberFrom(el) {
@@ -125,6 +125,62 @@
                 }
             }
         });
+    }
+
+    // ── 模型列表解锁 ──
+    let statsigHookInstalled = false;
+
+    function hookStatsigForModels() {
+        if (!getSettings().modelUnlock) return;
+        if (statsigHookInstalled) return;
+
+        // 查找 Statsig SDK 实例
+        const statsigInstance = window.__STATSIG__?.firstInstance || window.__STATSIG__?.instance;
+        if (!statsigInstance) return;
+
+        // Hook getConfig 方法
+        const originalGetConfig = statsigInstance.getConfig;
+        if (originalGetConfig && typeof originalGetConfig === "function") {
+            statsigInstance.getConfig = function(configName) {
+                const result = originalGetConfig.apply(this, arguments);
+
+                // 拦截模型选择相关配置
+                if (configName === "model_selection_config" || configName === "chat_model_picker_config") {
+                    // 强制覆盖 use_hidden_models 为 false
+                    if (result && result.value) {
+                        const originalValue = result.value;
+                        result.value = new Proxy(originalValue, {
+                            get(target, prop) {
+                                if (prop === "use_hidden_models") {
+                                    return false; // 强制返回 false，显示所有模型
+                                }
+                                return target[prop];
+                            }
+                        });
+                    }
+                }
+
+                return result;
+            };
+
+            statsigHookInstalled = true;
+            console.log("[DeeCodex] 模型列表解锁已激活 (Statsig hook)");
+        }
+
+        // 额外 hook checkGate (如果使用 feature gate)
+        const originalCheckGate = statsigInstance.checkGate;
+        if (originalCheckGate && typeof originalCheckGate === "function") {
+            statsigInstance.checkGate = function(gateName) {
+                const result = originalCheckGate.apply(this, arguments);
+
+                // 如果存在与模型可见性相关的 gate，强制返回 true
+                if (gateName && (gateName.includes("hidden_model") || gateName.includes("model_visibility"))) {
+                    return true;
+                }
+
+                return result;
+            };
+        }
     }
 
     // ── 会话删除 UI ──
@@ -328,6 +384,7 @@
         injectStyles();
         enablePluginEntry();
         unblockPluginInstallButtons();
+        hookStatsigForModels();
         attachAllDeleteButtons();
     }
 
