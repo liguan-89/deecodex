@@ -7627,6 +7627,27 @@ pub async fn pin_thread(
     }))
 }
 
+#[tauri::command]
+/// 归档或取消归档 Codex 线程。
+///
+/// 改 `state_*.sqlite.threads.archived`（0/1）和 `archived_at`（秒级时间戳或 NULL）。
+/// 不动 rollout / global-state / migration backup（这些是删除才需要清理）。
+/// 返回变更后的 `archived / archived_at_ms`。
+pub async fn archive_thread(
+    manager: State<'_, ServerManager>,
+    thread_id: String,
+    archived: bool,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let (is_archived, archived_at_ms) = deecodex::codex_threads::set_thread_archived(&data_dir, &thread_id, archived)
+        .map_err(|e| format!("归档操作失败: {e}"))?;
+    Ok(serde_json::json!({
+        "thread_id": thread_id,
+        "archived": is_archived,
+        "archived_at_ms": archived_at_ms,
+    }))
+}
+
 /// 连通性检测结果
 struct ConnectivityResult {
     ok: bool,

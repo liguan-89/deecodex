@@ -257,6 +257,12 @@ function renderThreadRows(list) {
     }
     const meta = metaParts.length ? `<span class="thread-meta-line">${esc(metaParts.join(' · '))}</span>` : '';
     const threadKey = String(t.thread_key || '');
+    const archived = !!t.archived;
+    // 归档按钮：仅 codex + delete_available 线程可点（与 delete 同行）
+    // 已归档时显示「取消归档」，未归档时显示「归档」
+    const archiveAction = (kind === 'codex' && t.delete_available)
+      ? `<button type="button" class="thread-row-action ${archived ? 'is-archived' : ''}" onclick="event.stopPropagation();toggleArchive('${escAttr(threadJsArg(t.native_id))}', ${!archived})" title="${archived ? '取消归档' : '归档'}" aria-label="${archived ? '取消归档' : '归档'}">${archived ? '📂' : '📦'}</button>`
+      : '';
     const deleteAction = t.delete_available
       ? `<button type="button" class="thread-row-action danger" onclick="event.stopPropagation();deleteThreadRow('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>`
       : '';
@@ -282,7 +288,9 @@ function renderThreadRows(list) {
     const isActive = !!(t.detail_available && _currentThread
       && normalizeThreadClientKind(_currentThread.clientKind) === kind
       && String(_currentThread.nativeId) === String(t.native_id));
-    const baseClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
+    let baseClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
+    // 已归档：行加 thread-row-archived（灰度降低），但仍保留 detail_available 可点击
+    if (archived && t.detail_available) baseClass = `${baseClass} thread-row-archived`;
     const rowClass = isActive ? `${baseClass} thread-row-active` : baseClass;
     const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}','${escAttr(threadJsArg(threadKey))}')"` : '';
     const rowTitle = [t.title, t.native_id ? `线程 ID: ${t.native_id}` : ''].filter(Boolean).join('\n');
@@ -292,7 +300,7 @@ function renderThreadRows(list) {
       <td>${clientCell}</td>
       <td>${esc(provider)}</td>
       <td title="${escAttr(fullTime)}">${esc(time)}</td>
-      <td class="thread-actions-cell">${deleteAction}</td>
+      <td class="thread-actions-cell">${archiveAction}${deleteAction}</td>
     </tr>`;
   }).join('');
 }
@@ -513,6 +521,43 @@ async function togglePin(nativeId, nextPinned) {
     // 回滚
     _threadsData.list[idx].pinned = oldPinned;
     showToast('置顶操作失败: ' + err, 'error');
+    const tbody = document.getElementById('threadsTableBody');
+    if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
+  }
+}
+
+/// 切换 Codex 线程归档状态。
+/// 乐观更新本地 _threadsData（不等待后端），失败时回滚并提示。
+async function toggleArchive(nativeId, nextArchived) {
+  if (!_threadsData) {
+    showToast('线程数据尚未加载', 'error');
+    return;
+  }
+  const idx = _threadsData.list.findIndex(t => String(t.native_id) === String(nativeId));
+  if (idx < 0) {
+    showToast('未找到线程 ' + nativeId, 'error');
+    return;
+  }
+  const oldArchived = !!_threadsData.list[idx].archived;
+  const oldArchivedAt = _threadsData.list[idx].archived_at_ms || null;
+  // 乐观更新
+  _threadsData.list[idx].archived = nextArchived;
+  _threadsData.list[idx].archived_at_ms = nextArchived ? Date.now() : null;
+  try {
+    const resp = await invoke('archive_thread', { threadId: String(nativeId), archived: !!nextArchived });
+    // 用后端返回的权威值覆盖
+    if (resp && typeof resp.archived === 'boolean') {
+      _threadsData.list[idx].archived = resp.archived;
+      _threadsData.list[idx].archived_at_ms = resp.archived_at_ms || null;
+    }
+    showToast(nextArchived ? '已归档' : '已取消归档', 'success');
+    const tbody = document.getElementById('threadsTableBody');
+    if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
+  } catch (err) {
+    // 回滚
+    _threadsData.list[idx].archived = oldArchived;
+    _threadsData.list[idx].archived_at_ms = oldArchivedAt;
+    showToast('归档操作失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
     if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
   }

@@ -739,6 +739,7 @@ pub fn run() {
             commands::get_client_thread_content,
             commands::delete_thread,
             commands::pin_thread,
+            commands::archive_thread,
             commands::browse_file,
             commands::browse_plugin_package,
             commands::browse_plugin_directory,

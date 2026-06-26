@@ -831,6 +831,65 @@ pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
     delete_thread_from_db(data_dir, &home, &db_path, thread_id)
 }
 
+/// 归档或取消归档 Codex 线程。
+///
+/// `archived=true`  →  archived=1, archived_at=now_ms（秒）
+/// `archived=false` →  archived=0, archived_at=NULL
+///
+/// 通过 SQLite 直接写，不改写 rollout 文件，不改 migration backup，
+/// 不动 .codex-global-state.json（这些是删除才需要做的清理）。
+/// 返回变更后的 `archived / archived_at_ms` 供前端做乐观更新。
+pub fn set_thread_archived(data_dir: &Path, thread_id: &str, archived: bool) -> Result<(bool, Option<i64>)> {
+    let _ = data_dir;
+    let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
+    let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
+    set_thread_archived_in_db(&db_path, thread_id, archived)
+}
+
+/// 底层：直接对指定 db_path 写 archived/archived_at。测试可绕过 find_state_db。
+fn set_thread_archived_in_db(
+    db_path: &Path,
+    thread_id: &str,
+    archived: bool,
+) -> Result<(bool, Option<i64>)> {
+    let conn = Connection::open(db_path).context("打开 Codex state SQLite 失败")?;
+    conn.pragma_update(None, "busy_timeout", "5000")?;
+
+    let now_ms: i64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let now_sec: i64 = now_ms / 1000;
+
+    let affected = if archived {
+        conn.execute(
+            "UPDATE threads SET archived = 1, archived_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_sec, thread_id],
+        )
+    } else {
+        conn.execute(
+            "UPDATE threads SET archived = 0, archived_at = NULL WHERE id = ?1",
+            rusqlite::params![thread_id],
+        )
+    }
+    .context("更新 threads.archived 失败")?;
+
+    if affected == 0 {
+        anyhow::bail!("未找到线程 {thread_id}");
+    }
+
+    // 重新读出最新值返回
+    let (a, at): (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT archived, archived_at FROM threads WHERE id = ?1",
+            rusqlite::params![thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("读取 threads.archived 失败")?;
+
+    Ok((a != 0, at.map(|v| v * 1000)))
+}
+
 fn delete_thread_from_db(
     data_dir: &Path,
     home: &Path,
@@ -5167,6 +5226,104 @@ mod tests {
         let updated = set_pinned_thread_id(&dir, "019e9543-aaaa-7a00-8000-000000000001", true)
             .expect("set pinned pure uuid");
         assert_eq!(updated, vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── archive / unarchive：写 SQLite threads.archived + archived_at ──
+
+    /// 测试 schema 缺 archived/archived_at 列，create_table 时补上
+    fn seed_thread_db_with_archived(db_path: &Path, id: &str) {
+        let conn = Connection::open(db_path).expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                cwd TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER
+            )",
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, title, model_provider, created_at, updated_at, source, archived, archived_at, created_at_ms, updated_at_ms)
+             VALUES (?1, 't', 'p', 1, 2, 'vscode', 0, NULL, 1, 2)",
+            rusqlite::params![id],
+        )
+        .expect("insert");
+    }
+
+    #[test]
+    fn archive_thread_sets_archived_and_timestamp() {
+        let (dir, db) = make_temp_thread_fixture();
+        let id = "019e9543-1111-7a00-8000-000000000001";
+        seed_thread_db_with_archived(&db, id);
+
+        let (is_archived, archived_at_ms) =
+            set_thread_archived_in_db(&db, id, true).expect("archive");
+        assert!(is_archived);
+        assert!(archived_at_ms.is_some(), "归档后 archived_at_ms 应有值");
+        let archived_at = archived_at_ms.unwrap();
+        // 应该是毫秒级，且接近当前时间
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        assert!(archived_at > 0);
+        assert!(archived_at <= now && now - archived_at < 5_000, "archived_at 与 now 差应 < 5s");
+
+        // 重新读 DB 确认持久化
+        let conn = Connection::open(&db).expect("reopen");
+        let (a, at): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT archived, archived_at FROM threads WHERE id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(a, 1);
+        assert!(at.is_some());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unarchive_thread_clears_archived_and_timestamp() {
+        let (dir, db) = make_temp_thread_fixture();
+        let id = "019e9543-2222-7a00-8000-000000000002";
+        seed_thread_db_with_archived(&db, id);
+
+        // 先归档
+        set_thread_archived_in_db(&db, id, true).expect("archive");
+        // 再取消
+        let (is_archived, archived_at_ms) =
+            set_thread_archived_in_db(&db, id, false).expect("unarchive");
+        assert!(!is_archived);
+        assert!(archived_at_ms.is_none(), "取消归档后 archived_at_ms 应为 None");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn archive_thread_idempotent_and_missing_id_errors() {
+        let (dir, db) = make_temp_thread_fixture();
+        let id = "019e9543-3333-7a00-8000-000000000003";
+        seed_thread_db_with_archived(&db, id);
+
+        // 重复归档幂等：archived 仍 1，archived_at 保留首次时间
+        let (_, first_at) = set_thread_archived_in_db(&db, id, true).expect("archive 1");
+        let (_, second_at) = set_thread_archived_in_db(&db, id, true).expect("archive 2");
+        // 两次时间差应极小（毫秒级）
+        assert!(second_at.unwrap() >= first_at.unwrap());
+
+        // 不存在的 id 应报错，不静默成功
+        let err = set_thread_archived_in_db(&db, "00000000-0000-0000-0000-000000000000", true);
+        assert!(err.is_err(), "对不存在 id 归档应报错");
 
         std::fs::remove_dir_all(&dir).ok();
     }

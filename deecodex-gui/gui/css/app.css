@@ -5285,6 +5285,11 @@ body {
   box-shadow: inset 3px 0 0 0 var(--accent);
 }
 .thread-row-active:hover { background: var(--accent-soft); }
+/* 已归档线程：灰度降低 + 标题加删除线，区别于 thread-row-muted（不可点击）*/
+.thread-row-archived .td-title-text { text-decoration: line-through; opacity: 0.6; }
+.thread-row-archived { opacity: 0.7; }
+.thread-row-archived:hover { opacity: 1; }
+.thread-row-action.is-archived { color: var(--accent, #00c8e8); }
 /* 置顶列：固定窄列宽，emoji 居中 */
 .threads-table th.th-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
 .threads-table td.td-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
