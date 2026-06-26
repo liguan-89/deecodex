@@ -53,7 +53,7 @@ fn dex_detect_ports_for_platform(ports_to_check: &[u16]) -> Result<Value, String
 fn dex_detect_ports_for_platform(ports_to_check: &[u16]) -> Result<Value, String> {
     let mut port_results: Vec<Value> = Vec::new();
 
-    for port in &ports_to_check {
+    for port in ports_to_check {
         let output = std::process::Command::new("lsof")
             .arg("-i")
             .arg(format!(":{port}"))
