@@ -1,14 +1,13 @@
 //! CDP 注入编排器。
 //!
 //! 在 deecodex daemon 启动时，检测 Codex 的 CDP 远程调试端口，
-//! 连接并注入 JavaScript（插件解锁 + 会话删除 UI + CDP 桥接）。
+//! 连接并注入 JavaScript（插件解锁 + CDP 桥接）。
 
 use std::sync::Arc;
 
 use futures_util::SinkExt;
 use tracing::{info, warn};
 
-use crate::backup_store::BackupStore;
 use crate::cdp::{self, CdpClient};
 use crate::handlers::AppState;
 
@@ -199,8 +198,6 @@ fn next_bridge_id() -> u64 {
 
 async fn handle_bridge(state: &AppState, path: &str, data: serde_json::Value) -> serde_json::Value {
     match path {
-        "/delete" => handle_delete(state, &data).await,
-        "/undo" => handle_undo(state, &data).await,
         "/idb-report" => handle_idb_report(state, &data).await,
         "/models" => handle_models(state).await,
         _ => serde_json::json!({"status": "failed", "message": "未知桥接路径"}),
@@ -236,162 +233,6 @@ async fn handle_models(_state: &AppState) -> serde_json::Value {
     serde_json::json!({"status": "ok", "models": items})
 }
 
-async fn handle_delete(state: &AppState, data: &serde_json::Value) -> serde_json::Value {
-    let session_id = data
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
-
-    if session_id.is_empty() {
-        return serde_json::json!({"status": "failed", "message": "缺少 session_id"});
-    }
-
-    // 尝试作为 response 删除
-    if let Some((messages, response, input_items)) =
-        state.sessions.delete_response_with_data(session_id)
-    {
-        match create_backup(
-            &state.data_dir,
-            session_id,
-            "response",
-            &messages,
-            Some(&response),
-            Some(&input_items),
-        )
-        .await
-        {
-            Ok(undo_token) => {
-                info!("会话已删除 (response): {session_id} ({title})");
-                serde_json::json!({
-                    "status": "deleted",
-                    "session_id": session_id,
-                    "message": format!("已删除「{title}」"),
-                    "undo_token": undo_token
-                })
-            }
-            Err(e) => {
-                warn!("备份失败: {e}");
-                serde_json::json!({
-                    "status": "deleted",
-                    "session_id": session_id,
-                    "message": format!("已删除「{title}」（备份失败）")
-                })
-            }
-        }
-    }
-    // 尝试作为 conversation 删除
-    else if let Some((messages, items)) = state.sessions.delete_conversation_with_data(session_id)
-    {
-        match create_backup(
-            &state.data_dir,
-            session_id,
-            "conversation",
-            &messages,
-            None,
-            Some(&items),
-        )
-        .await
-        {
-            Ok(undo_token) => {
-                info!("会话已删除 (conversation): {session_id} ({title})");
-                serde_json::json!({
-                    "status": "deleted",
-                    "session_id": session_id,
-                    "message": format!("已删除「{title}」"),
-                    "undo_token": undo_token
-                })
-            }
-            Err(e) => {
-                warn!("备份失败: {e}");
-                serde_json::json!({
-                    "status": "deleted",
-                    "session_id": session_id,
-                    "message": format!("已删除「{title}」（备份失败）")
-                })
-            }
-        }
-    }
-    // 未在 session store 中找到 — 通知前端仅移除 UI
-    else {
-        serde_json::json!({
-            "status": "local_deleted",
-            "session_id": session_id,
-            "message": format!("已移除「{title}」（未找到服务端记录）")
-        })
-    }
-}
-
-async fn handle_undo(state: &AppState, data: &serde_json::Value) -> serde_json::Value {
-    let token = data
-        .get("undo_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if token.is_empty() {
-        return serde_json::json!({"status": "failed", "message": "缺少 undo_token"});
-    }
-
-    let backup_dir = state.data_dir.join("backups");
-    let backup_store = match BackupStore::new(backup_dir) {
-        Ok(bs) => bs,
-        Err(e) => {
-            return serde_json::json!({"status": "failed", "message": format!("无法访问备份目录: {e}")});
-        }
-    };
-
-    let backup = match backup_store.read_backup(token) {
-        Ok(b) => b,
-        Err(e) => {
-            return serde_json::json!({"status": "failed", "message": format!("备份不存在: {e}")});
-        }
-    };
-
-    let session_id = backup
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let session_type = backup
-        .get("session_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let data = &backup["data"];
-    let messages: Vec<crate::types::ChatMessage> = data
-        .get("messages")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    if session_type == "response" {
-        let response: serde_json::Value = data.get("response").cloned().unwrap_or_default();
-        let input_items: Vec<serde_json::Value> = data
-            .get("input_items")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        state
-            .sessions
-            .undo_delete_response(session_id, messages, response, input_items);
-        info!("已撤销删除 (response): {session_id}");
-    } else {
-        let items: Vec<serde_json::Value> = data
-            .get("items")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        state
-            .sessions
-            .undo_delete_conversation(session_id, messages, items);
-        info!("已撤销删除 (conversation): {session_id}");
-    }
-
-    let _ = backup_store.delete_backup(token);
-
-    serde_json::json!({
-        "status": "undone",
-        "session_id": session_id,
-        "message": "已撤销删除"
-    })
-}
-
 /// 处理 IndexedDB 探查报告：写入文件并记录日志。
 async fn handle_idb_report(state: &AppState, data: &serde_json::Value) -> serde_json::Value {
     // 写入 idb_report.json
@@ -414,25 +255,4 @@ async fn handle_idb_report(state: &AppState, data: &serde_json::Value) -> serde_
         }
     }
     serde_json::json!({"status": "ok", "message": "探查报告已保存"})
-}
-
-async fn create_backup(
-    data_dir: &std::path::Path,
-    session_id: &str,
-    session_type: &str,
-    messages: &[crate::types::ChatMessage],
-    response: Option<&serde_json::Value>,
-    input_items: Option<&[serde_json::Value]>,
-) -> anyhow::Result<String> {
-    let backup_dir = data_dir.join("backups");
-    let backup_store = BackupStore::new(backup_dir)?;
-
-    let data = serde_json::json!({
-        "messages": serde_json::to_value(messages).unwrap_or_default(),
-        "response": response.cloned().unwrap_or_default(),
-        "input_items": input_items.map(|i| serde_json::to_value(i).unwrap_or_default()).unwrap_or_default(),
-        "items": input_items.map(|i| serde_json::to_value(i).unwrap_or_default()).unwrap_or_default(),
-    });
-
-    backup_store.write_backup(session_id, session_type, &data)
 }
