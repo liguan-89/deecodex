@@ -13,10 +13,11 @@ const DEECODEX_PROVIDER: &str = "deecodex";
 const DEECODEX_CLI_PROVIDER: &str = "deecodex_cli";
 const DEECODEX_DESKTOP_PROVIDER: &str = "deecodex_desktop";
 const DEX_ROUTER_PROVIDER: &str = "dex_router";
-/// Codex 自身默认的 provider key（`model_provider = "openai"`）。
-/// 两种模式（API / 智能路由）都复用这个 key，差异只在 `[model_providers.openai].base_url`。
-/// 这样 Codex SQLite 里的 `threads.model_provider` 永远是 `openai`，切模式不会被改写。
-const OPENAI_PROVIDER: &str = "openai";
+/// 两种模式（API / 智能路由）共用的 provider key。
+/// 用 `dex_ai` 而不是 `openai`，因为 Codex 把 `openai` 视为 reserved built-in provider，
+/// 任何 `[model_providers.openai]` 块都会被 Codex 拒绝加载。
+/// `dex_ai` 是非保留名，对外是 DEX AI 的稳定标识，对内统一两个模式。
+const DEX_AI_PROVIDER: &str = "dex_ai";
 const DEX_ACCOUNT_MODEL_BASE_INSTRUCTIONS: &str =
     "You are Codex, a coding agent. Follow the active Codex Desktop instructions and complete the user request safely.";
 const CODEX_REGISTRY_MODEL_SLUGS: &[&str] = &[
@@ -34,21 +35,21 @@ pub(crate) fn managed_model_provider() -> &'static str {
 }
 
 pub(crate) fn managed_model_provider_for_mode(_codex_router_mode: &str) -> &'static str {
-    // 两种模式（API / 智能路由）都返回 Codex 默认 provider key，
-    // 让 `config.toml.model_provider` 稳定在 `openai`、线程切换模式时不被改写。
-    // 路由差异由 `[model_providers.openai].base_url` 承载。
-    OPENAI_PROVIDER
+    // 两种模式（API / 智能路由）共用 `dex_ai` provider key，
+    // 让 `config.toml.model_provider` 稳定、线程切换模式时不被改写。
+    // 路由差异由 `[model_providers.dex_ai].base_url` 承载。
+    DEX_AI_PROVIDER
 }
 
 pub(crate) fn is_managed_model_provider(provider: &str) -> bool {
-    // 旧 provider 名称保留在白名单里：migrate 用它们识别需要收敛成 `openai` 的历史线程。
+    // 旧 provider 名称保留在白名单里：migrate 用它们识别需要收敛成 `dex_ai` 的历史线程。
     matches!(
         provider.trim(),
         DEECODEX_PROVIDER
             | DEECODEX_CLI_PROVIDER
             | DEECODEX_DESKTOP_PROVIDER
             | DEX_ROUTER_PROVIDER
-            | OPENAI_PROVIDER
+            | DEX_AI_PROVIDER
     )
 }
 
@@ -521,19 +522,19 @@ fn do_inject(
         "/codex-desktop/v1",
         false,
     );
-    // 活动 provider 现在统一用 Codex 默认 key `openai`，
-    // 路由差异（直连 / 智能路由）通过 base_url 区分：
+    // 活动 provider 统一用 `dex_ai` key（Codex 把 `openai` 当成 reserved built-in，
+    // 不能写在 [model_providers] 里）。路由差异（直连 / 智能路由）通过 base_url 区分：
     //   API 模式    → /codex-desktop/v1, requires_openai_auth = false
     //   智能路由    → /codex-router/v1,  requires_openai_auth = true
     write_deecodex_provider(
         doc.as_table_mut(),
-        OPENAI_PROVIDER,
+        DEX_AI_PROVIDER,
         url_host,
         port,
         managed_model_provider_route_prefix_for_mode(codex_router_mode),
         crate::config::codex_router_mode_is_smart(codex_router_mode),
     );
-    // 旧版智能路由模式曾写入 `dex_router` provider 块；现在改用 `openai` 后该块不再被引用，主动清理掉。
+    // 旧版智能路由模式曾写入 `dex_router` provider 块；现在改用 `dex_ai` 后该块不再被引用，主动清理掉。
     if let Some(providers) = doc
         .get_mut("model_providers")
         .and_then(|providers| providers.as_table_mut())
@@ -620,6 +621,7 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
             found |= inline.remove(DEECODEX_CLI_PROVIDER).is_some();
             found |= inline.remove(DEECODEX_DESKTOP_PROVIDER).is_some();
             found |= inline.remove(DEX_ROUTER_PROVIDER).is_some();
+            found |= inline.remove(DEX_AI_PROVIDER).is_some();
             if inline.is_empty() {
                 doc.remove("model_providers");
             }
@@ -628,6 +630,7 @@ fn do_remove(path: &std::path::Path) -> Result<bool> {
             found |= table.remove(DEECODEX_CLI_PROVIDER).is_some();
             found |= table.remove(DEECODEX_DESKTOP_PROVIDER).is_some();
             found |= table.remove(DEX_ROUTER_PROVIDER).is_some();
+            found |= table.remove(DEX_AI_PROVIDER).is_some();
             if table.is_empty() {
                 doc.remove("model_providers");
             }
@@ -2436,11 +2439,11 @@ mod tests {
         assert!(changed);
 
         let fixed = std::fs::read_to_string(&path).unwrap();
-        assert!(fixed.contains("model_provider = \"openai\""));
+        assert!(fixed.contains("model_provider = \"dex_ai\""));
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
         assert!(doc
             .get("model_providers")
-            .and_then(|providers| providers.get("openai"))
+            .and_then(|providers| providers.get("dex_ai"))
             .is_some());
         assert!(doc
             .get("model_providers")
@@ -2492,15 +2495,15 @@ mod tests {
 
         let fixed = std::fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = fixed.parse().unwrap();
-        // 智能路由模式：model_provider 统一是 Codex 默认 key `openai`，
-        // 差异落在 `[model_providers.openai]` 块的 base_url 上（走 /codex-router/v1）。
+        // 智能路由模式：model_provider 统一是 `dex_ai`，
+        // 差异落在 `[model_providers.dex_ai]` 块的 base_url 上（走 /codex-router/v1）。
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
-            Some("openai")
+            Some("dex_ai")
         );
         let router = doc
             .get("model_providers")
-            .and_then(|providers| providers.get("openai"))
+            .and_then(|providers| providers.get("dex_ai"))
             .unwrap();
         assert_eq!(
             router.get("base_url").and_then(|value| value.as_str()),
@@ -2539,7 +2542,7 @@ mod tests {
         );
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
-            Some("openai")
+            Some("dex_ai")
         );
         cleanup(&path);
     }
@@ -2576,11 +2579,11 @@ wire_api = "responses"
             doc.get("model").and_then(|value| value.as_str()),
             Some(account_slug.as_str())
         );
-        // API 模式下注入后：`model_provider` 收敛到 `openai`，
-        // 旧的 `dex_router` provider 块被移除，`[model_providers.openai]` 接管路由。
+        // API 模式下注入后：`model_provider` 收敛到 `dex_ai`，
+        // 旧的 `dex_router` provider 块被移除，`[model_providers.dex_ai]` 接管路由。
         assert_eq!(
             doc.get("model_provider").and_then(|value| value.as_str()),
-            Some("openai")
+            Some("dex_ai")
         );
         assert!(doc
             .get("model_providers")
@@ -2588,7 +2591,7 @@ wire_api = "responses"
             .is_none());
         let provider = doc
             .get("model_providers")
-            .and_then(|providers| providers.get("openai"))
+            .and_then(|providers| providers.get("dex_ai"))
             .unwrap();
         assert_eq!(
             provider.get("base_url").and_then(|value| value.as_str()),
@@ -2606,10 +2609,10 @@ wire_api = "responses"
     #[test]
     fn guard_check_accepts_api_mode_integration() {
         let content = r#"
-model_provider = "openai"
+model_provider = "dex_ai"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.openai]
+[model_providers.dex_ai]
 base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
@@ -2626,10 +2629,10 @@ wire_api = "responses"
     #[test]
     fn guard_check_accepts_smart_mode_integration() {
         let content = r#"
-model_provider = "openai"
+model_provider = "dex_ai"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.openai]
+[model_providers.dex_ai]
 base_url = "http://127.0.0.1:4556/codex-router/v1"
 requires_openai_auth = true
 wire_api = "responses"
@@ -2650,7 +2653,7 @@ wire_api = "responses"
 model_provider = "deecodex_desktop"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.openai]
+[model_providers.dex_ai]
 base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
@@ -2671,10 +2674,10 @@ wire_api = "responses"
         // API 模式配置文件（走 /codex-desktop/v1）在智能路由模式下应被识别为不匹配：
         // base_url 不一致会导致 requires_openai_auth 与 wire_api 校验失败。
         let content = r#"
-model_provider = "openai"
+model_provider = "dex_ai"
 model_catalog_json = "/Users/test/.codex/models_deecodex.json"
 
-[model_providers.openai]
+[model_providers.dex_ai]
 base_url = "http://127.0.0.1:4446/codex-desktop/v1"
 requires_openai_auth = false
 wire_api = "responses"
@@ -2855,8 +2858,8 @@ wire_api = "responses"
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
         };
-        assert_eq!(account_provider(&api_catalog).as_deref(), Some("openai"));
-        assert_eq!(account_provider(&smart_catalog).as_deref(), Some("openai"));
+        assert_eq!(account_provider(&api_catalog).as_deref(), Some("dex_ai"));
+        assert_eq!(account_provider(&smart_catalog).as_deref(), Some("dex_ai"));
     }
 
     #[test]

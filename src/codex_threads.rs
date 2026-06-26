@@ -2036,10 +2036,12 @@ fn count_non_unified_provider(conn: &Connection, target_provider: &str) -> Resul
 }
 
 fn managed_provider_filter_sql() -> &'static str {
-    // `'openai'` 也算作托管 provider：migrate 已经把历史 `deecodex*` / `dex_router`
-    // 全部收敛成 `openai`，白名单要把它包含进来，否则 `count_non_current_managed_threads`
+    // `'dex_ai'` 也算作托管 provider：migrate 已经把历史 `deecodex*` / `dex_router`
+    // 全部收敛成 `dex_ai`，白名单要把它包含进来，否则 `count_non_current_managed_threads`
     // 会把收敛后的线程误算成"未归一"。
-    "TRIM(model_provider) IN ('deecodex', 'deecodex_cli', 'deecodex_desktop', 'dex_router', 'openai')"
+    // `'openai'` 也包含进来：修复了 Codex 把 `openai` 当 reserved 的问题后，
+    // 之前误写入的 `openai` 线程值需要一次性收敛到 `dex_ai`。
+    "TRIM(model_provider) IN ('deecodex', 'deecodex_cli', 'deecodex_desktop', 'dex_router', 'dex_ai', 'openai')"
 }
 
 fn count_non_current_managed_threads(conn: &Connection, target_provider: &str) -> Result<usize> {
