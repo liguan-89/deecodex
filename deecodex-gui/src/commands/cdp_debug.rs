@@ -246,6 +246,94 @@ async fn collect_snapshot(client: &mut CdpClient) -> Result<Value, String> {
     }))
 }
 
+/// 一次性探针：装 cdp_threads_probe.js 钩子，读 window.__cdp_threads。
+///
+/// 抓取 Codex 桌面版渲染进程里置顶 / 项目 / 线程 / 侧边栏 / 顶层标题的
+/// DOM 元数据，用于和 deecodex 自己的线程管理逻辑做对照（pinned / project / thread）。
+/// 文档位置：deecodex-gui/src/commands/cdp_threads_probe.js
+#[tauri::command]
+pub async fn cdp_threads_probe() -> Result<Value, String> {
+    let args = load_args();
+    let cdp_port = args.cdp_port;
+
+    let targets = list_targets(cdp_port)
+        .await
+        .map_err(|e| format!("CDP 目标列表拉取失败 (端口 {cdp_port}): {e}"))?;
+    let ws_url = find_codex_page(&targets)
+        .ok_or_else(|| format!("未在端口 {cdp_port} 找到 Codex 页面目标"))?;
+
+    let mut client = CdpClient::connect(&ws_url)
+        .await
+        .map_err(|e| format!("CDP WebSocket 连接失败 ({ws_url}): {e}"))?;
+
+    // 装探针钩子。
+    let install_resp = client
+        .evaluate(include_str!("./cdp_threads_probe.js"))
+        .await
+        .map_err(|e| format!("装 threads 探针失败: {e}"))?;
+
+    // 读取结果。Runtime.evaluate 响应：{ id, result: { result: { type, value } } }
+    fn extract_value<'a>(v: &'a Value) -> Option<&'a Value> {
+        v.get("result").and_then(|r| r.get("result")).and_then(|r| r.get("value"))
+    }
+    let install_value = extract_value(&install_resp)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let dump_expr = "JSON.stringify(window.__cdp_threads || {})";
+    let dump_val = client
+        .evaluate(dump_expr)
+        .await
+        .map_err(|e| format!("读 __cdp_threads 失败: {e}"))?;
+    let dump_str = extract_value(&dump_val)
+        .and_then(|v| v.as_str())
+        .unwrap_or("{}");
+    let dump: Value = serde_json::from_str(dump_str)
+        .unwrap_or_else(|e| json!({"parse_error": e.to_string(), "raw": dump_str}));
+
+    let pinned_count = dump
+        .get("pinned")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let projects_count = dump
+        .get("projects")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let threads_count = dump
+        .get("threads")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let nav_count = dump
+        .get("nav")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    tracing::info!(
+        cdp_port,
+        install_value = install_value,
+        pinned = pinned_count,
+        projects = projects_count,
+        threads = threads_count,
+        nav = nav_count,
+        "CDP-DEBUG 线程结构探针完成"
+    );
+
+    Ok(json!({
+        "cdp_port": cdp_port,
+        "ws_url": ws_url,
+        "install_value": install_value,
+        "pinned_count": pinned_count,
+        "projects_count": projects_count,
+        "threads_count": threads_count,
+        "nav_count": nav_count,
+        "data": dump,
+    }))
+}
+
 fn diff_snapshots(first: &Value, second: &Value) -> Value {
     let bubble_count_first = first.get("bubble_count").and_then(|v| v.as_u64()).unwrap_or(0);
     let bubble_count_second = second.get("bubble_count").and_then(|v| v.as_u64()).unwrap_or(0);

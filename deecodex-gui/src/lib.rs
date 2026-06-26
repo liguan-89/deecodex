@@ -678,6 +678,7 @@ pub fn run() {
             commands::launch_codex_cdp,
             commands::stop_codex_cdp,
             commands::cdp_debug::cdp_debug_snapshot,
+            commands::cdp_debug::cdp_threads_probe,
             commands::list_accounts,
             commands::get_active_account,
             commands::get_dex_assistant_account,
