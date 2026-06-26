@@ -38,15 +38,31 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Build Tauri app
+      - name: Build Tauri app without updater artifacts
+        if: github.event_name == 'pull_request'
+        working-directory: deecodex-gui
+        run: |
+          npx @tauri-apps/cli build --config '{ "bundle": { "createUpdaterArtifacts": false } }'
+
+      - name: Build signed Tauri updater artifacts
+        if: github.event_name != 'pull_request'
         working-directory: deecodex-gui
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx @tauri-apps/cli build
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_WINDOWS_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_WINDOWS_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw "missing TAURI_WINDOWS_SIGNING_PRIVATE_KEY secret"
+          }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+            throw "missing TAURI_WINDOWS_SIGNING_PRIVATE_KEY_PASSWORD secret"
+          }
+          npx @tauri-apps/cli build --bundles nsis --config tauri.windows.conf.json
 
-      - name: Upload NSIS installer
+      - name: Upload NSIS installer and updater signature
         uses: actions/upload-artifact@v4
         with:
-          name: deecodex-gui-windows-nsis
-          path: target-mac/release/bundle/nsis/*.exe
+          name: deecodex-gui-windows-nsis-updater
+          path: |
+            target-local/release/bundle/nsis/*setup.exe
+            target-local/release/bundle/nsis/*setup.exe.sig

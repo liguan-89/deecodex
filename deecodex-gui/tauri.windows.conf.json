@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5MTA5RUEzQUQ1NEE0RDQKUldUVXBGU3RvNTRRT1ZLa0lGU1lLa3lEZy9XWnVQY0Q4SjFNczR0RUlCYnlBRnhRNTBTRzVjK2oK",
+      "endpoints": [
+        "https://api.liguan.me/releases/dex-ai/windows/latest.json"
+      ]
+    }
+  }
+}

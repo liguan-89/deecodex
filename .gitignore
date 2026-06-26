@@ -22,6 +22,7 @@ deecodex-gui/app-session-*.js.map
 
 # Rust build
 target/
+target-local/
 target-mac/
 target-win/
 target-linux/
