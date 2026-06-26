@@ -1,6 +1,31 @@
 let _threadsData = null;
+// _currentThread 当前打开的详情页线程：刷新/切 tab 后能恢复。持久化到 deeStorage。
+// 字段：{ clientKind, nativeId, threadKey } | null
+const CURRENT_THREAD_KEY = 'dex_current_thread_v1';
 let _currentThread = null;
+try {
+  const raw = window.deeStorage?.getItem?.(CURRENT_THREAD_KEY);
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.clientKind && parsed.nativeId) {
+      _currentThread = {
+        clientKind: normalizeThreadClientKind(parsed.clientKind),
+        nativeId: String(parsed.nativeId),
+        threadKey: String(parsed.threadKey || ''),
+      };
+    }
+  }
+} catch (_) { /* localStorage 解析失败时忽略，保留 null */ }
 let selectedThreadClientKind = 'all';
+
+function persistCurrentThread() {
+  if (!window.deeStorage) return;
+  if (_currentThread) {
+    window.deeStorage.setItem(CURRENT_THREAD_KEY, JSON.stringify(_currentThread));
+  } else {
+    window.deeStorage.removeItem(CURRENT_THREAD_KEY);
+  }
+}
 
 const THREAD_CLIENT_LABELS = {
   all: '全部',
@@ -80,9 +105,9 @@ function renderThreads() {
   <div class="threads-list-head">线程列表</div>
   <div class="threads-table-wrap">
     <table class="threads-table">
-      <thead><tr><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>操作</th></tr></thead>
-      <tbody id="threadsTableBody"><tr><td colspan="5" class="threads-empty-cell">加载中...</td></tr></tbody>
-      <tfoot><tr class="threads-table-spacer"><td colspan="5"></td></tr></tfoot>
+      <thead><tr><th class="th-pin">📌</th><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>操作</th></tr></thead>
+      <tbody id="threadsTableBody"><tr><td colspan="6" class="threads-empty-cell">加载中...</td></tr></tbody>
+      <tfoot><tr class="threads-table-spacer"><td colspan="6"></td></tr></tfoot>
     </table>
   </div>`;
 }
@@ -111,7 +136,7 @@ async function refreshThreads() {
   } catch (err) {
     showToast('加载线程数据失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
   }
 }
 
@@ -197,7 +222,7 @@ function renderThreadSourceDiagnostics(sources) {
 
 function renderThreadRows(list) {
   if (!list || list.length === 0) {
-    return '<tr><td colspan="5" class="threads-empty-cell">无线程数据</td></tr>';
+    return '<tr><td colspan="6" class="threads-empty-cell">无线程数据</td></tr>';
   }
   return list.map(t => {
     const kind = normalizeThreadClientKind(t.client_kind);
@@ -207,20 +232,63 @@ function renderThreadRows(list) {
     const fullTime = formatThreadFullTime(timeValue);
     const messageCount = Number(t.message_count || 0);
     const preview = String(t.preview || '').trim();
+    const cwdText = String(t.cwd || '').trim();
+    const gitBranch = String(t.git_branch || '').trim();
+    const tokensUsed = Number(t.tokens_used || 0);
     const metaParts = [];
     if (messageCount) metaParts.push(`${messageCount} 条消息`);
     if (preview) metaParts.push(trunc(preview, 72));
+    // 项目 + 分支副标题：有 cwd 时显示「~/.../path › branch」；无 cwd 但有 branch 也显示分支
+    const projectHint = (() => {
+      if (cwdText && gitBranch) return `${trunc(cwdText, 40).replace(/^\/Users\/[^/]+/, '~')} › ${gitBranch}`;
+      if (cwdText) return trunc(cwdText, 50).replace(/^\/Users\/[^/]+/, '~');
+      if (gitBranch) return `branch: ${gitBranch}`;
+      return '';
+    })();
+    if (projectHint) metaParts.push(projectHint);
+    // token 消耗摘要（只在 > 0 时显示，>1000 折成 k/M）
+    if (tokensUsed > 0) {
+      const tok = tokensUsed >= 1_000_000
+        ? `${(tokensUsed / 1_000_000).toFixed(1)}M tok`
+        : tokensUsed >= 1000
+          ? `${Math.round(tokensUsed / 1000)}k tok`
+          : `${tokensUsed} tok`;
+      metaParts.push(tok);
+    }
     const meta = metaParts.length ? `<span class="thread-meta-line">${esc(metaParts.join(' · '))}</span>` : '';
     const threadKey = String(t.thread_key || '');
     const deleteAction = t.delete_available
       ? `<button type="button" class="thread-row-action danger" onclick="event.stopPropagation();deleteThreadRow('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>`
       : '';
-    const rowClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
+    // 置顶标记：t.pinned 由后端注入，来源是 Codex .codex-global-state.json 的 pinned-thread-ids。
+    // 非 Codex 客户端此字段固定为 false。
+    const pinned = !!(t.pinned);
+    const pinCell = pinned
+      ? `<span class="thread-pin-icon" title="置顶" aria-label="置顶">📌</span>`
+      : `<span class="thread-pin-icon thread-pin-icon-empty" title="未置顶" aria-label="未置顶"></span>`;
+    // 客户端列：subagent 时显示「subagent: Aquinas」+ role 副标签
+    const sourceRaw = String(t.source || '').trim();
+    const threadSource = String(t.thread_source || '').trim();
+    const agentNickname = String(t.agent_nickname || '').trim();
+    const agentRole = String(t.agent_role || '').trim();
+    const isSubagent = sourceRaw.startsWith('{') || threadSource === 'subagent' || !!agentNickname;
+    const clientCell = isSubagent
+      ? `<span class="tag tag-subagent" title="subagent${agentRole ? ' · ' + agentRole : ''}">subagent</span>${agentNickname ? `<div class="thread-client-sub">${esc(agentNickname)}${agentRole ? ' · ' + esc(agentRole) : ''}</div>` : ''}`
+      : (sourceRaw && sourceRaw !== 'vscode' && sourceRaw !== kind
+          ? `<span class="tag tag-current">${esc(threadClientLabel(kind))}</span><div class="thread-client-sub">${esc(sourceRaw)}</div>`
+          : `<span class="tag tag-current">${esc(threadClientLabel(kind))}</span>`);
+    // 当前活跃判定：_currentThread 必须 clientKind + nativeId 同时匹配才算
+    const isActive = !!(t.detail_available && _currentThread
+      && normalizeThreadClientKind(_currentThread.clientKind) === kind
+      && String(_currentThread.nativeId) === String(t.native_id));
+    const baseClass = t.detail_available ? 'thread-row' : 'thread-row thread-row-muted';
+    const rowClass = isActive ? `${baseClass} thread-row-active` : baseClass;
     const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}','${escAttr(threadJsArg(threadKey))}')"` : '';
     const rowTitle = [t.title, t.native_id ? `线程 ID: ${t.native_id}` : ''].filter(Boolean).join('\n');
     return `<tr class="${rowClass}"${rowClick}>
+      <td class="td-pin">${pinCell}</td>
       <td title="${escAttr(rowTitle)}"><span class="td-title-text">${esc(t.title || '(无标题)')}</span>${meta}</td>
-      <td><span class="tag tag-current">${esc(threadClientLabel(kind))}</span></td>
+      <td>${clientCell}</td>
       <td>${esc(provider)}</td>
       <td title="${escAttr(fullTime)}">${esc(time)}</td>
       <td class="thread-actions-cell">${deleteAction}</td>
@@ -308,6 +376,7 @@ async function doRestore() {
 function openThread(clientKind, nativeId, threadKey) {
   const kind = normalizeThreadClientKind(clientKind);
   _currentThread = { clientKind: kind, nativeId, threadKey: String(threadKey || '') };
+  persistCurrentThread();
   const container = document.getElementById('mainContent');
   if (!container) return;
   container.innerHTML = `<div class="detail-panel">
@@ -346,6 +415,7 @@ function openThread(clientKind, nativeId, threadKey) {
 
 function closeThreadDetail() {
   _currentThread = null;
+  persistCurrentThread();
   const container = document.getElementById('mainContent');
   if (container) container.innerHTML = renderThreads();
   refreshThreads();

@@ -2345,11 +2345,12 @@ body {
   top: 0;
   z-index: 1;
 }
-.threads-table th:nth-child(1) { width: 38%; }
-.threads-table th:nth-child(2) { width: 14%; }
-.threads-table th:nth-child(3) { width: 18%; }
+.threads-table th:nth-child(1) { width: 36px; }
+.threads-table th:nth-child(2) { width: 36%; }
+.threads-table th:nth-child(3) { width: 14%; }
 .threads-table th:nth-child(4) { width: 18%; }
-.threads-table th:nth-child(5) { width: 12%; }
+.threads-table th:nth-child(5) { width: 18%; }
+.threads-table th:nth-child(6) { width: 12%; }
 .threads-table td {
   padding: 5px 9px; border-bottom: 1px solid var(--border-subtle);
   font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
@@ -5278,6 +5279,33 @@ body {
 /* ── Thread Row ── */
 .thread-row { cursor: pointer; transition: background var(--transition); }
 .thread-row:hover { background: var(--accent-dim); }
+/* 当前活跃线程：左侧蓝条 + 浅蓝底色，区别于 hover */
+.thread-row-active {
+  background: var(--accent-dim);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+.thread-row-active:hover { background: var(--accent-soft); }
+/* 置顶列：固定窄列宽，emoji 居中 */
+.threads-table th.th-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
+.threads-table td.td-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
+.thread-pin-icon { display: inline-block; font-size: 14px; line-height: 1; }
+.thread-pin-icon-empty { display: inline-block; width: 14px; height: 14px; }
+/* subagent 线程的客户端列下加副文本（昵称 · 角色）*/
+.tag-subagent {
+  background: rgba(168, 85, 247, 0.16);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+.thread-client-sub {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  margin-top: 2px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
 .tag-delete {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
   display: none; font-family: var(--font-mono); font-size: 9px;

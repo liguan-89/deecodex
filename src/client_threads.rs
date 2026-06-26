@@ -38,6 +38,41 @@ pub struct UnifiedThreadInfo {
     pub source_path: String,
     pub detail_available: bool,
     pub delete_available: bool,
+    /// 用户是否在 Codex 桌面版侧边栏置顶该线程（来自 `.codex-global-state.json`）。
+    #[serde(default)]
+    pub pinned: bool,
+    /// 线程启动时的 git 分支（来自 Codex SQLite threads.git_branch），非 Codex 客户端为 `""`。
+    #[serde(default)]
+    pub git_branch: String,
+    /// 线程启动时的 git 远端 URL（来自 Codex SQLite threads.git_origin_url），非 Codex 客户端为 `""`。
+    #[serde(default)]
+    pub git_origin_url: String,
+    /// 线程是否已归档（来自 Codex SQLite threads.archived），非 Codex 客户端为 `false`。
+    #[serde(default)]
+    pub archived: bool,
+    /// 线程来源：`vscode` / `exec` / `cli` / subagent 的 JSON 描述。
+    /// 来自 Codex SQLite threads.source；非 Codex 客户端为 `""`。
+    #[serde(default)]
+    pub source: String,
+    /// 用户态来源：`user` / `subagent` / None。
+    /// 来自 Codex SQLite threads.thread_source；非 Codex 客户端为 `""`。
+    #[serde(default)]
+    pub thread_source: String,
+    /// subagent 昵称（如 `Aquinas` / `Bernoulli`），从 source JSON 解析；非 subagent 为 `""`。
+    #[serde(default)]
+    pub agent_nickname: String,
+    /// subagent 角色（如 `explorer` / `worker`），从 source JSON 解析；非 subagent 为 `""`。
+    #[serde(default)]
+    pub agent_role: String,
+    /// 累计 token 消耗（来自 Codex SQLite threads.tokens_used），非 Codex 客户端为 0。
+    #[serde(default)]
+    pub tokens_used: i64,
+    /// 启动该线程的 Codex CLI 版本（来自 Codex SQLite threads.cli_version），非 Codex 客户端为 `""`。
+    #[serde(default)]
+    pub cli_version: String,
+    /// 线程内是否包含过用户事件（来自 Codex SQLite threads.has_user_event），非 Codex 客户端为 false。
+    #[serde(default)]
+    pub has_user_event: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -784,7 +819,7 @@ fn codex_thread_to_unified(thread: crate::codex_threads::ThreadInfo) -> UnifiedT
         title,
         model: String::new(),
         provider: thread.model_provider,
-        cwd: String::new(),
+        cwd: thread.cwd.unwrap_or_default(),
         created_at_ms: thread.created_at_ms,
         updated_at_ms: thread.updated_at_ms,
         message_count: 0,
@@ -792,6 +827,17 @@ fn codex_thread_to_unified(thread: crate::codex_threads::ThreadInfo) -> UnifiedT
         source_path: String::new(),
         detail_available: true,
         delete_available: true,
+        pinned: thread.pinned,
+        git_branch: thread.git_branch.unwrap_or_default(),
+        git_origin_url: thread.git_origin_url.unwrap_or_default(),
+        archived: thread.archived,
+        source: thread.source.unwrap_or_default(),
+        thread_source: thread.thread_source.unwrap_or_default(),
+        agent_nickname: thread.agent_nickname.unwrap_or_default(),
+        agent_role: thread.agent_role.unwrap_or_default(),
+        tokens_used: thread.tokens_used,
+        cli_version: thread.cli_version,
+        has_user_event: thread.has_user_event,
     }
 }
 
@@ -895,6 +941,18 @@ fn file_thread(input: FileThreadInput, path: &Path) -> UnifiedThreadInfo {
         source_path: path.to_string_lossy().to_string(),
         detail_available: true,
         delete_available: false,
+        // 非 Codex 客户端没有 Codex SQLite 真源，全部留默认值
+        pinned: false,
+        git_branch: String::new(),
+        git_origin_url: String::new(),
+        archived: false,
+        source: String::new(),
+        thread_source: String::new(),
+        agent_nickname: String::new(),
+        agent_role: String::new(),
+        tokens_used: 0,
+        cli_version: String::new(),
+        has_user_event: false,
     }
 }
 

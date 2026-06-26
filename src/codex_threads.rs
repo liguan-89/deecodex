@@ -29,6 +29,42 @@ pub struct ThreadInfo {
     pub created_at_ms: Option<i64>,
     pub updated_at_ms: Option<i64>,
     pub archived: bool,
+    /// 用户是否在 Codex 桌面版侧边栏置顶该线程（来自 `.codex-global-state.json` 的 `pinned-thread-ids`）。
+    #[serde(default)]
+    pub pinned: bool,
+    /// 线程工作目录（来自 `state_*.sqlite.threads.cwd`）。
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// 线程启动时的 git 分支（来自 `state_*.sqlite.threads.git_branch`）。
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// 线程启动时的 git 远端 URL（来自 `state_*.sqlite.threads.git_origin_url`）。
+    #[serde(default)]
+    pub git_origin_url: Option<String>,
+    /// 线程来源：`vscode` / `exec` / `cli` / subagent 的 JSON 描述。
+    /// Codex SQLite `threads.source` 字段。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 用户态来源：`user` / `subagent` / None。
+    /// Codex SQLite `threads.thread_source` 字段。
+    #[serde(default)]
+    pub thread_source: Option<String>,
+    /// subagent 昵称（如 `Aquinas` / `Bernoulli`）。从 `source` 的 JSON 解析出，
+    /// 顶层 SQLite `agent_nickname` 列当前全为 NULL，统一以 source 内的为准。
+    #[serde(default)]
+    pub agent_nickname: Option<String>,
+    /// subagent 角色（如 `explorer` / `worker`）。从 `source` 的 JSON 解析。
+    #[serde(default)]
+    pub agent_role: Option<String>,
+    /// 累计 token 消耗（来自 `threads.tokens_used`）。
+    #[serde(default)]
+    pub tokens_used: i64,
+    /// 启动该线程的 Codex CLI 版本（来自 `threads.cli_version`）。
+    #[serde(default)]
+    pub cli_version: String,
+    /// 线程内是否包含过用户事件（来自 `threads.has_user_event`），0 表示纯系统/工具。
+    #[serde(default)]
+    pub has_user_event: bool,
 }
 
 /// 各 provider 的线程数量。
@@ -339,7 +375,10 @@ pub fn status(data_dir: &Path) -> Result<ThreadStatus> {
 pub fn list_all() -> Result<Vec<ThreadInfo>> {
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
-    list_threads(&db_path)
+    let mut threads = list_threads(&db_path)?;
+    // 注入 pinned 字段：来自 ~/.codex/.codex-global-state.json 的 pinned-thread-ids
+    inject_pinned_from_global_state(&mut threads, &home);
+    Ok(threads)
 }
 
 /// 归一：将 Codex Desktop 主线程和历史 DEX 管理线程的 model_provider 改为当前 Codex 配置里的 provider。
@@ -912,12 +951,19 @@ fn is_safe_codex_rollout_path(home: &Path, path: &Path) -> bool {
 fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived
+        "SELECT id, title, model_provider, created_at_ms, updated_at_ms, archived,
+                cwd, git_branch, git_origin_url,
+                source, thread_source, tokens_used, cli_version, has_user_event
          FROM threads
          ORDER BY COALESCE(updated_at_ms, updated_at) DESC",
     )?;
     let threads = stmt
         .query_map([], |row| {
+            let source: Option<String> = row.get(9)?;
+            // source 是 "vscode" / "exec" / "cli" 时没有 JSON；只有 subagent 时是 JSON
+            // 形如 {"subagent":{"thread_spawn":{"parent_thread_id":"...","depth":1,
+            //   "agent_path":null,"agent_nickname":"Aquinas","agent_role":"explorer"}}}
+            let (agent_nickname, agent_role) = parse_subagent_meta(source.as_deref());
             Ok(ThreadInfo {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -925,10 +971,85 @@ fn list_threads(db_path: &Path) -> Result<Vec<ThreadInfo>> {
                 created_at_ms: row.get(3)?,
                 updated_at_ms: row.get(4)?,
                 archived: row.get::<_, i32>(5)? != 0,
+                pinned: false, // 由 list_all 后续注入
+                cwd: row.get(6)?,
+                git_branch: row.get(7)?,
+                git_origin_url: row.get(8)?,
+                source,
+                thread_source: row.get(10)?,
+                agent_nickname,
+                agent_role,
+                tokens_used: row.get::<_, i64>(11)?,
+                cli_version: row.get(12)?,
+                has_user_event: row.get::<_, i32>(13)? != 0,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(threads)
+}
+
+/// 从 Codex `threads.source` 字段的 JSON 解析 subagent 昵称和角色。
+/// 非 subagent 的 source 字段（如 "vscode"/"exec"/"cli"）返回 (None, None)。
+/// JSON 解析失败也不报错，返回 (None, None)。
+fn parse_subagent_meta(source: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(s) = source else {
+        return (None, None);
+    };
+    // 快速判定：非 JSON 直接返回
+    if !s.starts_with('{') {
+        return (None, None);
+    }
+    let v: Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    let spawn = v
+        .get("subagent")
+        .and_then(|x| x.get("thread_spawn"));
+    let nickname = spawn
+        .and_then(|x| x.get("agent_nickname"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let role = spawn
+        .and_then(|x| x.get("agent_role"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    (nickname, role)
+}
+
+/// 从 `.codex-global-state.json` 读 `pinned-thread-ids`，注入到每个 thread.pinned 字段。
+///
+/// pinned-thread-ids 存的是纯 UUID（不带 host 前缀），匹配 thread.id 的末段。
+fn inject_pinned_from_global_state(threads: &mut [ThreadInfo], data_dir: &Path) {
+    let pinned = read_pinned_thread_ids(data_dir);
+    let set: HashSet<&str> = pinned.iter().map(|s| s.as_str()).collect();
+    for t in threads.iter_mut() {
+        // thread.id 形如 "local:019e9543-..." 或纯 UUID；取末段（最后一个冒号后）做匹配
+        let bare = t.id.rsplit(':').next().unwrap_or(&t.id);
+        t.pinned = set.contains(bare);
+    }
+}
+
+/// 从 `.codex-global-state.json` 顶层读 `pinned-thread-ids`。
+/// 失败（文件不存在 / JSON 损坏 / 字段缺失）一律返回空 vec，不抛错。
+fn read_pinned_thread_ids(data_dir: &Path) -> Vec<String> {
+    let path = data_dir.join(".codex-global-state.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let v: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    v.get("pinned-thread-ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
@@ -4629,5 +4750,267 @@ mod tests {
         assert!(!orders.contains_key("/Users/me/empty-after-gc"));
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── pinned 注入 + 字段透传 ──
+
+    /// 构造一个临时数据目录：~/<tmp>/.codex-global-state.json + ~/<tmp>/sqlite/state_5.sqlite
+    /// 返回 (data_dir, db_path)。
+    fn make_temp_thread_fixture() -> (PathBuf, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("deecodex-thread-test-{}-{}", std::process::id(), nanos));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::create_dir_all(dir.join("sqlite")).expect("create sqlite subdir");
+        let db_path = dir.join("sqlite").join("state_5.sqlite");
+        (dir, db_path)
+    }
+
+    /// 在 db_path 建一个最小 threads 表 + 几条记录。
+    fn seed_thread_db(db_path: &Path, rows: &[(&str, &str, &str, &str, &str, i32, i32)]) {
+        let conn = Connection::open(db_path).expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                cwd TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                cli_version TEXT NOT NULL DEFAULT '',
+                has_user_event INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .expect("create table");
+        for (id, title, cwd, branch, origin, created, updated) in rows {
+            conn.execute(
+                "INSERT INTO threads (id, title, model_provider, created_at, updated_at, source, cwd, git_branch, git_origin_url, created_at_ms, updated_at_ms, thread_source, tokens_used, cli_version, has_user_event)
+                 VALUES (?1, ?2, 'test_provider', ?3, ?4, 'vscode', ?5, ?6, ?7, ?3, ?4, NULL, 0, '', 0)",
+                rusqlite::params![id, title, created, updated, cwd, branch, origin],
+            )
+            .expect("insert row");
+        }
+    }
+
+    /// 构造带 subagent / 不同 source / tokens_used / cli_version / has_user_event 的真实数据。
+    /// rows: (id, title, cwd, branch, origin, created, updated, source, thread_source, tokens, cli_version, has_user_event)
+    fn seed_thread_db_v2(
+        db_path: &Path,
+        rows: &[(
+            &str, &str, &str, &str, &str, i32, i32, &str, Option<&str>, i64, &str, i32,
+        )],
+    ) {
+        let conn = Connection::open(db_path).expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                cwd TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                cli_version TEXT NOT NULL DEFAULT '',
+                has_user_event INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .expect("create table");
+        for (id, title, cwd, branch, origin, created, updated, source, thread_source, tokens, cli_version, has_user_event) in
+            rows
+        {
+            conn.execute(
+                "INSERT INTO threads (id, title, model_provider, created_at, updated_at, source, cwd, git_branch, git_origin_url, created_at_ms, updated_at_ms, thread_source, tokens_used, cli_version, has_user_event)
+                 VALUES (?1, ?2, 'test_provider', ?3, ?4, ?5, ?6, ?7, ?8, ?3, ?4, ?9, ?10, ?11, ?12)",
+                rusqlite::params![id, title, created, updated, source, cwd, branch, origin, thread_source, tokens, cli_version, has_user_event],
+            )
+            .expect("insert row");
+        }
+    }
+
+    /// 写入 .codex-global-state.json 顶层 pinned-thread-ids。
+    fn write_pinned_global_state(data_dir: &Path, pinned: &[&str]) {
+        let state = json!({
+            "pinned-thread-ids": pinned,
+            "pinned-project-ids": [],
+        });
+        std::fs::write(
+            data_dir.join(".codex-global-state.json"),
+            serde_json::to_string_pretty(&state).unwrap(),
+        )
+        .expect("write global state");
+    }
+
+    #[test]
+    fn inject_pinned_matches_uuid_suffix() {
+        let (dir, db) = make_temp_thread_fixture();
+        // thread id 形如 "local:019e9543-..."；pinned-thread-ids 存纯 UUID
+        seed_thread_db(
+            &db,
+            &[
+                ("local:019e9543-1111-7a00-8000-aaaaaaaaaaaa", "线程A", "/Users/me/a", "main", "git@a.git", 1_700_000_000, 1_700_001_000),
+                ("local:019e9543-2222-7a00-8000-bbbbbbbbbbbb", "线程B", "/Users/me/b", "dev",  "git@b.git", 1_700_000_000, 1_700_002_000),
+            ],
+        );
+        write_pinned_global_state(
+            &dir,
+            &["019e9543-1111-7a00-8000-aaaaaaaaaaaa"],
+        );
+
+        let mut threads = list_threads(&db).expect("list_threads");
+        assert_eq!(threads.len(), 2);
+        // 初始 pinned=false
+        assert!(!threads[0].pinned);
+        assert!(!threads[1].pinned);
+        // 注入
+        inject_pinned_from_global_state(&mut threads, &dir);
+        let a = threads.iter().find(|t| t.title == "线程A").unwrap();
+        let b = threads.iter().find(|t| t.title == "线程B").unwrap();
+        assert!(a.pinned, "线程A 应被标记为置顶");
+        assert!(!b.pinned, "线程B 应保持未置顶");
+        // cwd / git_branch / git_origin_url 透传
+        assert_eq!(a.cwd.as_deref(), Some("/Users/me/a"));
+        assert_eq!(a.git_branch.as_deref(), Some("main"));
+        assert_eq!(a.git_origin_url.as_deref(), Some("git@a.git"));
+        assert_eq!(b.git_branch.as_deref(), Some("dev"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inject_pinned_handles_pure_uuid_id() {
+        // 兼容：thread id 直接就是纯 UUID（无 host: 前缀）也应当匹配
+        let (dir, db) = make_temp_thread_fixture();
+        seed_thread_db(
+            &db,
+            &[("019e9543-3333-7a00-8000-cccccccccccc", "纯UUID线程", "/x", "main", "", 1, 2)],
+        );
+        write_pinned_global_state(&dir, &["019e9543-3333-7a00-8000-cccccccccccc"]);
+        let mut threads = list_threads(&db).expect("list_threads");
+        inject_pinned_from_global_state(&mut threads, &dir);
+        assert!(threads[0].pinned, "纯 UUID id 也应被识别为置顶");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inject_pinned_missing_global_state_is_noop() {
+        // .codex-global-state.json 不存在时，全部保持 pinned=false，不报错
+        let (dir, db) = make_temp_thread_fixture();
+        seed_thread_db(
+            &db,
+            &[("local:019e9543-4444-7a00-8000-dddddddddddd", "X", "/x", "main", "", 1, 2)],
+        );
+        // 不写 global state
+        let mut threads = list_threads(&db).expect("list_threads");
+        inject_pinned_from_global_state(&mut threads, &dir);
+        assert!(!threads[0].pinned);
+        assert_eq!(threads[0].cwd.as_deref(), Some("/x"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── 第二批字段：source / thread_source / agent_nickname / agent_role / tokens_used / cli_version / has_user_event ──
+
+    #[test]
+    fn parse_subagent_meta_handles_all_source_kinds() {
+        // 1) vscode/exec/cli 走简单字符串路径，应返回 (None, None)
+        for s in ["vscode", "exec", "cli"] {
+            let (n, r) = parse_subagent_meta(Some(s));
+            assert_eq!((n, r), (None, None), "source={s} 不应解析出 nickname/role");
+        }
+        // 2) None
+        let (n, r) = parse_subagent_meta(None);
+        assert_eq!((n, r), (None, None));
+        // 3) 非法 JSON
+        let (n, r) = parse_subagent_meta(Some("{not json"));
+        assert_eq!((n, r), (None, None));
+        // 4) 合法 subagent JSON：完整字段
+        let json = r#"{"subagent":{"thread_spawn":{"parent_thread_id":"019df62c","depth":1,"agent_path":null,"agent_nickname":"Aquinas","agent_role":"explorer"}}}"#;
+        let (n, r) = parse_subagent_meta(Some(json));
+        assert_eq!(n.as_deref(), Some("Aquinas"));
+        assert_eq!(r.as_deref(), Some("explorer"));
+        // 5) 合法 subagent JSON：缺 agent_role
+        let json_no_role = r#"{"subagent":{"thread_spawn":{"parent_thread_id":"x","depth":1,"agent_nickname":"Bernoulli","agent_role":null}}}"#;
+        let (n, r) = parse_subagent_meta(Some(json_no_role));
+        assert_eq!(n.as_deref(), Some("Bernoulli"));
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn list_threads_extracts_subagent_from_source_json() {
+        let (dir, db) = make_temp_thread_fixture();
+        // 真实环境样本：subagent 的 source 是 JSON 字符串，nickname/role 嵌在 subagent.thread_spawn 内
+        let subagent_json = r#"{"subagent":{"thread_spawn":{"parent_thread_id":"019df62c-809a-7c23-baa0-5908591595f6","depth":1,"agent_path":null,"agent_nickname":"Aquinas","agent_role":"explorer"}}}"#;
+        seed_thread_db_v2(
+            &db,
+            &[
+                // (id, title, cwd, branch, origin, created, updated, source, thread_source, tokens, cli_ver, has_user)
+                ("local:11111111-aaaa-7000-8000-000000000001", "user线程", "/Users/me/u", "main", "", 1700000000, 1700001000, "vscode", Some("user"), 12_345, "0.140.0-alpha.2", 1),
+                ("local:22222222-bbbb-7000-8000-000000000002", "subagent线程", "/Users/me/s", "dev", "", 1700000000, 1700002000, subagent_json, Some("subagent"), 1_234_567, "0.140.0-alpha.2", 1),
+                ("local:33333333-cccc-7000-8000-000000000003", "纯系统线程", "/Users/me/p", "main", "", 1700000000, 1700003000, "vscode", None, 0, "0.137.0-alpha.4", 0),
+            ],
+        );
+        let threads = list_threads(&db).expect("list_threads");
+        assert_eq!(threads.len(), 3);
+
+        // 按 updated_at 倒序：3 > 2 > 1
+        let pure = threads.iter().find(|t| t.title == "纯系统线程").unwrap();
+        assert_eq!(pure.source.as_deref(), Some("vscode"));
+        assert_eq!(pure.thread_source, None);
+        assert_eq!(pure.agent_nickname, None);
+        assert_eq!(pure.agent_role, None);
+        assert_eq!(pure.tokens_used, 0);
+        assert_eq!(pure.cli_version, "0.137.0-alpha.4");
+        assert!(!pure.has_user_event);
+
+        let sub = threads.iter().find(|t| t.title == "subagent线程").unwrap();
+        // source 透传原始 JSON
+        assert!(sub.source.as_deref().unwrap().starts_with("{"));
+        assert_eq!(sub.thread_source.as_deref(), Some("subagent"));
+        // 关键：nickname/role 是从 source JSON 解析出来的，不是 NULL
+        assert_eq!(sub.agent_nickname.as_deref(), Some("Aquinas"));
+        assert_eq!(sub.agent_role.as_deref(), Some("explorer"));
+        assert_eq!(sub.tokens_used, 1_234_567);
+        assert!(sub.has_user_event);
+
+        let user = threads.iter().find(|t| t.title == "user线程").unwrap();
+        assert_eq!(user.source.as_deref(), Some("vscode"));
+        assert_eq!(user.thread_source.as_deref(), Some("user"));
+        assert_eq!(user.agent_nickname, None);
+        assert_eq!(user.tokens_used, 12_345);
+
+        let _ = dir;
+    }
+
+    #[test]
+    fn list_threads_cli_source_is_not_subagent() {
+        // 边界：source='cli' 看起来是个短字符串但不是 JSON，应正常透传
+        let (_dir, db) = make_temp_thread_fixture();
+        seed_thread_db_v2(
+            &db,
+            &[("local:99999999-eeee-7000-8000-000000000009", "CLI线程", "/x", "main", "", 1, 2, "cli", None, 0, "", 0)],
+        );
+        let threads = list_threads(&db).expect("list_threads");
+        let cli = &threads[0];
+        assert_eq!(cli.source.as_deref(), Some("cli"));
+        assert_eq!(cli.agent_nickname, None);
+        assert_eq!(cli.agent_role, None);
     }
 }
