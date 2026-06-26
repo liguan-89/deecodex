@@ -13,6 +13,15 @@ use super::dex_registry::{is_capability_enabled, load_capability_states};
 use super::dex_security::mask_sensitive_value;
 use deecodex::request_history::HistoryFilter;
 
+#[cfg(windows)]
+fn hide_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_window(_command: &mut std::process::Command) {}
+
 pub(super) fn dex_detect_ports_impl() -> Result<Value, String> {
     let args = load_args();
     let mut ports_to_check = vec![4446u16, 9222, 8080, 3000, 8000, 11434];
@@ -20,6 +29,28 @@ pub(super) fn dex_detect_ports_impl() -> Result<Value, String> {
         ports_to_check.push(args.port);
     }
 
+    dex_detect_ports_for_platform(&ports_to_check)
+}
+
+#[cfg(windows)]
+fn dex_detect_ports_for_platform(ports_to_check: &[u16]) -> Result<Value, String> {
+    let ports: Vec<Value> = ports_to_check
+        .iter()
+        .map(|port| {
+            let (pids, processes) = windows_port_processes(*port);
+            json!({
+                "port": port,
+                "in_use": !pids.is_empty(),
+                "pids": pids,
+                "processes": processes,
+            })
+        })
+        .collect();
+    Ok(json!({ "ports": ports }))
+}
+
+#[cfg(not(windows))]
+fn dex_detect_ports_for_platform(ports_to_check: &[u16]) -> Result<Value, String> {
     let mut port_results: Vec<Value> = Vec::new();
 
     for port in &ports_to_check {
@@ -76,6 +107,53 @@ pub(super) fn dex_detect_ports_impl() -> Result<Value, String> {
     }
 
     Ok(json!({ "ports": port_results }))
+}
+
+#[cfg(windows)]
+fn windows_port_processes(port: u16) -> (Vec<String>, Vec<String>) {
+    let script = format!(
+        r#"
+Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue |
+  Select-Object LocalPort,OwningProcess,@{{Name='ProcessName';Expression={{$p=Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($p) {{$p.ProcessName}} else {{''}}}}}} |
+  ConvertTo-Json -Compress
+"#
+    );
+    let mut cmd = std::process::Command::new("powershell.exe");
+    hide_window(&mut cmd);
+    let output = cmd.args(["-NoProfile", "-Command", &script]).output();
+
+    let Ok(out) = output else {
+        return (Vec::new(), Vec::new());
+    };
+    if !out.status.success() {
+        return (Vec::new(), Vec::new());
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let rows = match serde_json::from_str::<Value>(raw.trim()) {
+        Ok(Value::Array(rows)) => rows,
+        Ok(value) if value.is_object() => vec![value],
+        _ => Vec::new(),
+    };
+    let mut pids = Vec::new();
+    let mut processes = Vec::new();
+    for row in rows {
+        let Some(pid) = row
+            .get("OwningProcess")
+            .and_then(Value::as_i64)
+            .map(|pid| pid.to_string())
+        else {
+            continue;
+        };
+        let name = row
+            .get("ProcessName")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        pids.push(pid);
+        processes.push(name);
+    }
+    (pids, processes)
 }
 
 pub(super) fn dex_get_env_info_impl() -> Result<Value, String> {
@@ -422,26 +500,84 @@ pub(super) fn get_total_memory_gb() -> f64 {
             }
         }
     }
-    0.0
-}
-
-pub(super) fn get_disk_free_gb(path: &Path) -> f64 {
-    let output = std::process::Command::new("df")
-        .arg(path.to_string_lossy().as_ref())
-        .arg("-k")
-        .output();
-    if let Ok(out) = output {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Some(line) = s.lines().nth(1) {
-                let cols: Vec<&str> = line.split_whitespace().collect();
-                if cols.len() >= 4 {
-                    if let Ok(kb) = cols[3].parse::<f64>() {
-                        return kb / (1024.0 * 1024.0);
-                    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("powershell.exe");
+        hide_window(&mut cmd);
+        let output = cmd
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+            ])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if let Ok(bytes) = s.trim().parse::<f64>() {
+                    return (bytes / (1024.0 * 1024.0 * 1024.0) * 10.0).round() / 10.0;
                 }
             }
         }
     }
     0.0
+}
+
+pub(super) fn get_disk_free_gb(path: &Path) -> f64 {
+    #[cfg(target_os = "windows")]
+    {
+        let target = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        let script = format!(
+            r#"
+$item = Get-Item -LiteralPath {} -ErrorAction SilentlyContinue
+if ($item) {{
+  $drive = Get-PSDrive -Name $item.PSDrive.Name -ErrorAction SilentlyContinue
+  if ($drive) {{ [Math]::Round($drive.Free / 1GB, 3) }}
+}}
+"#,
+            powershell_single_quote(&target.to_string_lossy())
+        );
+        let mut cmd = std::process::Command::new("powershell.exe");
+        hide_window(&mut cmd);
+        let output = cmd.args(["-NoProfile", "-Command", &script]).output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if let Ok(gb) = s.trim().parse::<f64>() {
+                    return gb;
+                }
+            }
+        }
+        return 0.0;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = std::process::Command::new("df")
+            .arg(path.to_string_lossy().as_ref())
+            .arg("-k")
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                if let Some(line) = s.lines().nth(1) {
+                    let cols: Vec<&str> = line.split_whitespace().collect();
+                    if cols.len() >= 4 {
+                        if let Ok(kb) = cols[3].parse::<f64>() {
+                            return kb / (1024.0 * 1024.0);
+                        }
+                    }
+                }
+            }
+        }
+        0.0
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }

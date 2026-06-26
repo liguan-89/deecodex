@@ -10,6 +10,15 @@ use crate::ServerManager;
 use super::dex_protocol::get_active_account_info;
 use deecodex::request_history::HistoryFilter;
 
+#[cfg(windows)]
+fn hide_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_window(_command: &mut std::process::Command) {}
+
 pub(super) fn dex_config_backup_impl(
     action: String,
     name: Option<String>,
@@ -515,24 +524,25 @@ pub(super) fn dex_network_topology_impl() -> Result<Value, String> {
 
     #[cfg(target_os = "macos")]
     let ping_args: &[&str] = &["-c", "1", "-t", "1"];
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let ping_args: &[&str] = &["-n", "1", "-w", "1000"];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let ping_args: &[&str] = &["-c", "1", "-W", "1"];
 
-    let (upstream_reachable, latency_ms) = if let Ok(out) = std::process::Command::new("ping")
-        .args(ping_args)
-        .arg(host)
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            let ms = parse_ping_latency(&s);
-            (true, ms)
+    let mut ping_cmd = std::process::Command::new("ping");
+    hide_window(&mut ping_cmd);
+    let (upstream_reachable, latency_ms) =
+        if let Ok(out) = ping_cmd.args(ping_args).arg(host).output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let ms = parse_ping_latency(&s);
+                (true, ms)
+            } else {
+                (false, None)
+            }
         } else {
             (false, None)
-        }
-    } else {
-        (false, None)
-    };
+        };
 
     Ok(json!({
         "dns_servers": dns_servers,
@@ -607,7 +617,9 @@ pub(super) fn dex_ssl_check_impl() -> Result<Value, String> {
     let check_url = deecodex::providers::model_discovery_url(&profile, &upstream, "")
         .unwrap_or_else(|| upstream.trim_end_matches('/').to_string());
 
-    let output = std::process::Command::new("curl")
+    let mut curl_cmd = std::process::Command::new("curl");
+    hide_window(&mut curl_cmd);
+    let output = curl_cmd
         .args(["-sI", "--max-time", "10", &check_url])
         .output();
 

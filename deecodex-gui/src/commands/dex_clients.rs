@@ -11,6 +11,15 @@ use super::dex_cli::command_exists;
 use super::dex_cli::{command_first_line, find_command_path, get_cli_version_flexible};
 use super::dex_process::detect_process_instances;
 
+#[cfg(windows)]
+fn hide_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_window(_command: &mut std::process::Command) {}
+
 #[derive(Clone, Copy)]
 struct ClientAppSpec {
     kind: &'static str,
@@ -208,7 +217,9 @@ fn mac_desktop_app_path(spec: &ClientAppSpec) -> Option<PathBuf> {
 }
 
 fn windows_command_output(cmd: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(cmd).args(args).output().ok()?;
+    let mut command = std::process::Command::new(cmd);
+    hide_window(&mut command);
+    let output = command.args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -629,7 +640,9 @@ fn open_url_with_system(url: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        let mut command = std::process::Command::new("cmd");
+        hide_window(&mut command);
+        command
             .args(["/C", "start", "", url])
             .spawn()
             .map_err(|e| format!("打开下载页失败: {e}"))?;
@@ -661,12 +674,16 @@ fn launch_desktop_app(spec: &ClientAppSpec) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         if let Some(path) = windows_desktop_app_path(spec) {
-            std::process::Command::new(path)
+            let mut command = std::process::Command::new(path);
+            hide_window(&mut command);
+            command
                 .spawn()
                 .map_err(|e| format!("打开 {app_name} 失败: {e}"))?;
             return Ok(());
         }
-        std::process::Command::new("cmd")
+        let mut command = std::process::Command::new("cmd");
+        hide_window(&mut command);
+        command
             .args(["/C", "start", "", app_name])
             .spawn()
             .map_err(|e| format!("打开 {app_name} 失败: {e}"))?;
@@ -807,7 +824,9 @@ fn force_kill_pid(pid: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let status = std::process::Command::new("taskkill")
+        let mut command = std::process::Command::new("taskkill");
+        hide_window(&mut command);
+        let status = command
             .args(["/PID", pid, "/F"])
             .status()
             .map_err(|e| format!("执行 taskkill 失败: {e}"))?;

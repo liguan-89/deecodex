@@ -4,8 +4,27 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+#[cfg(windows)]
+fn hide_window(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_window(_command: &mut std::process::Command) {}
+
+#[cfg(windows)]
+fn hide_tokio_window(command: &mut tokio::process::Command) {
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_tokio_window(_command: &mut tokio::process::Command) {}
+
 pub(super) fn command_first_line(cmd: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(command_path_for_spawn(cmd))
+    let mut command = std::process::Command::new(command_path_for_spawn(cmd));
+    hide_window(&mut command);
+    command
         .args(args)
         .output()
         .ok()
@@ -218,33 +237,32 @@ pub(super) fn get_cli_version_flexible(cmd: &str) -> Option<String> {
 }
 
 pub(super) fn get_cli_version(cmd: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(command_path_for_spawn(cmd))
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                let text = if stdout.trim().is_empty() {
-                    stderr.as_ref()
-                } else {
-                    stdout.as_ref()
-                };
-                let version = text.lines().next().unwrap_or("").trim().to_string();
-                if version.is_empty() {
-                    None
-                } else {
-                    Some(version)
-                }
+    let mut command = std::process::Command::new(command_path_for_spawn(cmd));
+    hide_window(&mut command);
+    command.args(args).output().ok().and_then(|o| {
+        if o.status.success() {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let text = if stdout.trim().is_empty() {
+                stderr.as_ref()
             } else {
+                stdout.as_ref()
+            };
+            let version = text.lines().next().unwrap_or("").trim().to_string();
+            if version.is_empty() {
                 None
+            } else {
+                Some(version)
             }
-        })
+        } else {
+            None
+        }
+    })
 }
 
 pub(super) async fn run_readonly_cli_command(binary: &str, args: &[&str]) -> ReadonlyCliResult {
     let mut command = tokio::process::Command::new(command_path_for_spawn(binary));
+    hide_tokio_window(&mut command);
     command.args(args);
     let command_future = command.output();
     match tokio::time::timeout(Duration::from_secs(DEX_CLI_TIMEOUT_SECS), command_future).await {
