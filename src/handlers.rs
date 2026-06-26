@@ -868,7 +868,17 @@ fn effective_model_for_chat_account(
     }
     let default_model = account.default_model.trim();
     if !default_model.is_empty() {
-        return default_model.to_string();
+        // 兜底前先校验 default_model 是否适配当前 endpoint：
+        // 第三方上游不识别 Codex 默认 gpt-5.4-mini 等模型，会 400 杀流。
+        // 若 default_model 不在 endpoint.known_models 且 known_models 非空，
+        // 强制走 known_models[0]（该上游真实支持的能力）而非 default_model。
+        if endpoint
+            .known_models
+            .iter()
+            .any(|model| model.trim() == default_model)
+        {
+            return default_model.to_string();
+        }
     }
     endpoint
         .known_models
@@ -1160,11 +1170,10 @@ fn resolve_session_main_model_anchor_selection(
 }
 
 fn explicit_native_helper_model(selected_model: &str) -> String {
-    if codex_router_native_direct_model(selected_model) {
-        selected_model.to_string()
-    } else {
-        DEFAULT_NATIVE_HELPER_MODEL.into()
-    }
+    // 子调用跟随 Codex 桌面版当前选中的模型（包括第三方上游如 minimax-m3），
+    // 不再回退到 Codex 默认 gpt-5.5（第三方上游不识别会 400）。
+    // Codex 官方 gpt-5.5 路径由调用点的 native_direct_model 分支独立处理，不受此处影响。
+    selected_model.to_string()
 }
 
 struct ExplicitChatFallbackContext<'a> {
