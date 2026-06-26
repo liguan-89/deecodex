@@ -216,7 +216,9 @@ async fn collect_snapshot(client: &mut CdpClient) -> Result<Value, String> {
     // CDP Runtime.evaluate 响应：{ id, result: { result: { type, value } } }
     // 真正数据在 result.result.value；exceptionDetails 在 result.exceptionDetails。
     fn extract_value<'a>(v: &'a Value) -> Option<&'a Value> {
-        v.get("result").and_then(|r| r.get("result")).and_then(|r| r.get("value"))
+        v.get("result")
+            .and_then(|r| r.get("result"))
+            .and_then(|r| r.get("value"))
     }
 
     let bubbles: Vec<Value> = extract_value(&bubbles_val)
@@ -274,7 +276,9 @@ pub async fn cdp_threads_probe() -> Result<Value, String> {
 
     // 读取结果。Runtime.evaluate 响应：{ id, result: { result: { type, value } } }
     fn extract_value<'a>(v: &'a Value) -> Option<&'a Value> {
-        v.get("result").and_then(|r| r.get("result")).and_then(|r| r.get("value"))
+        v.get("result")
+            .and_then(|r| r.get("result"))
+            .and_then(|r| r.get("value"))
     }
     let install_value = extract_value(&install_resp)
         .and_then(|v| v.as_str())
@@ -335,8 +339,14 @@ pub async fn cdp_threads_probe() -> Result<Value, String> {
 }
 
 fn diff_snapshots(first: &Value, second: &Value) -> Value {
-    let bubble_count_first = first.get("bubble_count").and_then(|v| v.as_u64()).unwrap_or(0);
-    let bubble_count_second = second.get("bubble_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let bubble_count_first = first
+        .get("bubble_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let bubble_count_second = second
+        .get("bubble_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let last_first = first.get("last_bubble");
     let last_second = second.get("last_bubble");
 

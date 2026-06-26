@@ -7614,8 +7614,7 @@ pub async fn pin_thread(
     pinned: bool,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let home = deecodex::config::home_dir()
-        .ok_or_else(|| "无法确定 HOME 目录".to_string())?;
+    let home = deecodex::config::home_dir().ok_or_else(|| "无法确定 HOME 目录".to_string())?;
     let updated = deecodex::codex_threads::set_pinned_thread_id(&home, &thread_id, pinned)
         .map_err(|e| format!("置顶操作失败: {e}"))?;
     // 同步把 data_dir 推给 manager 防止外部修改路径错位（与 delete_thread_impl 一致）
@@ -7639,8 +7638,9 @@ pub async fn archive_thread(
     archived: bool,
 ) -> Result<Value, String> {
     let data_dir = manager.data_dir.lock().await.clone();
-    let (is_archived, archived_at_ms) = deecodex::codex_threads::set_thread_archived(&data_dir, &thread_id, archived)
-        .map_err(|e| format!("归档操作失败: {e}"))?;
+    let (is_archived, archived_at_ms) =
+        deecodex::codex_threads::set_thread_archived(&data_dir, &thread_id, archived)
+            .map_err(|e| format!("归档操作失败: {e}"))?;
     Ok(serde_json::json!({
         "thread_id": thread_id,
         "archived": is_archived,

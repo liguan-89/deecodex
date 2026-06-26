@@ -11,9 +11,11 @@ async fn main() {
     let result = cdp_debug_snapshot().await;
     match result {
         Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&v).unwrap_or_else(|e| {
-                format!("序列化失败: {e}")
-            }));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v)
+                    .unwrap_or_else(|e| { format!("序列化失败: {e}") })
+            );
         }
         Err(e) => {
             eprintln!("CDP 调试快照失败: {e}");

@@ -839,7 +839,11 @@ pub fn delete_thread(data_dir: &Path, thread_id: &str) -> Result<()> {
 /// 通过 SQLite 直接写，不改写 rollout 文件，不改 migration backup，
 /// 不动 .codex-global-state.json（这些是删除才需要做的清理）。
 /// 返回变更后的 `archived / archived_at_ms` 供前端做乐观更新。
-pub fn set_thread_archived(data_dir: &Path, thread_id: &str, archived: bool) -> Result<(bool, Option<i64>)> {
+pub fn set_thread_archived(
+    data_dir: &Path,
+    thread_id: &str,
+    archived: bool,
+) -> Result<(bool, Option<i64>)> {
     let _ = data_dir;
     let home = crate::config::home_dir().context("无法确定 HOME 目录")?;
     let db_path = find_state_db(&home).context("未找到 Codex state SQLite")?;
@@ -1062,9 +1066,7 @@ fn parse_subagent_meta(source: Option<&str>) -> (Option<String>, Option<String>)
         Ok(v) => v,
         Err(_) => return (None, None),
     };
-    let spawn = v
-        .get("subagent")
-        .and_then(|x| x.get("thread_spawn"));
+    let spawn = v.get("subagent").and_then(|x| x.get("thread_spawn"));
     let nickname = spawn
         .and_then(|x| x.get("agent_nickname"))
         .and_then(|x| x.as_str())
@@ -1132,9 +1134,7 @@ pub fn set_pinned_thread_id(data_dir: &Path, thread_id: &str, pinned: bool) -> R
 
     let bare = bare_thread_id(thread_id);
     {
-        let obj = v
-            .as_object_mut()
-            .context("Codex 全局状态不是 JSON 对象")?;
+        let obj = v.as_object_mut().context("Codex 全局状态不是 JSON 对象")?;
         let arr = obj
             .entry("pinned-thread-ids".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
@@ -2036,7 +2036,10 @@ fn count_non_unified_provider(conn: &Connection, target_provider: &str) -> Resul
 }
 
 fn managed_provider_filter_sql() -> &'static str {
-    "TRIM(model_provider) IN ('deecodex', 'deecodex_cli', 'deecodex_desktop', 'dex_router')"
+    // `'openai'` 也算作托管 provider：migrate 已经把历史 `deecodex*` / `dex_router`
+    // 全部收敛成 `openai`，白名单要把它包含进来，否则 `count_non_current_managed_threads`
+    // 会把收敛后的线程误算成"未归一"。
+    "TRIM(model_provider) IN ('deecodex', 'deecodex_cli', 'deecodex_desktop', 'dex_router', 'openai')"
 }
 
 fn count_non_current_managed_threads(conn: &Connection, target_provider: &str) -> Result<usize> {
@@ -4187,11 +4190,18 @@ mod tests {
         let backup_path = dir.join("thread_migration_backup.json");
         let cwd_backup_path = dir.join("thread_cwd_visibility_backup.json");
         let target_provider = current_thread_provider();
+        // fixture 用一个明确不等于 target_provider 的历史 provider，确保 unify 逻辑有活干。
+        // 之前用 "openai" 在两种模式都用 "openai" 后会变成 0 changes。
+        let legacy_provider = if target_provider == "deecodex" {
+            "openai"
+        } else {
+            "deecodex"
+        };
         create_test_threads_db_with_rows(
             &db_path,
             &[(
                 "needs-unify",
-                "openai",
+                legacy_provider,
                 "已有预览",
                 "已有预览",
                 "用户消息",
@@ -4874,7 +4884,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("deecodex-thread-test-{}-{}", std::process::id(), nanos));
+        let dir = std::env::temp_dir().join(format!(
+            "deecodex-thread-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::create_dir_all(dir.join("sqlite")).expect("create sqlite subdir");
         let db_path = dir.join("sqlite").join("state_5.sqlite");
@@ -4920,7 +4934,18 @@ mod tests {
     fn seed_thread_db_v2(
         db_path: &Path,
         rows: &[(
-            &str, &str, &str, &str, &str, i32, i32, &str, Option<&str>, i64, &str, i32,
+            &str,
+            &str,
+            &str,
+            &str,
+            &str,
+            i32,
+            i32,
+            &str,
+            Option<&str>,
+            i64,
+            &str,
+            i32,
         )],
     ) {
         let conn = Connection::open(db_path).expect("open db");
@@ -4945,8 +4970,20 @@ mod tests {
             )",
         )
         .expect("create table");
-        for (id, title, cwd, branch, origin, created, updated, source, thread_source, tokens, cli_version, has_user_event) in
-            rows
+        for (
+            id,
+            title,
+            cwd,
+            branch,
+            origin,
+            created,
+            updated,
+            source,
+            thread_source,
+            tokens,
+            cli_version,
+            has_user_event,
+        ) in rows
         {
             conn.execute(
                 "INSERT INTO threads (id, title, model_provider, created_at, updated_at, source, cwd, git_branch, git_origin_url, created_at_ms, updated_at_ms, thread_source, tokens_used, cli_version, has_user_event)
@@ -4977,14 +5014,27 @@ mod tests {
         seed_thread_db(
             &db,
             &[
-                ("local:019e9543-1111-7a00-8000-aaaaaaaaaaaa", "线程A", "/Users/me/a", "main", "git@a.git", 1_700_000_000, 1_700_001_000),
-                ("local:019e9543-2222-7a00-8000-bbbbbbbbbbbb", "线程B", "/Users/me/b", "dev",  "git@b.git", 1_700_000_000, 1_700_002_000),
+                (
+                    "local:019e9543-1111-7a00-8000-aaaaaaaaaaaa",
+                    "线程A",
+                    "/Users/me/a",
+                    "main",
+                    "git@a.git",
+                    1_700_000_000,
+                    1_700_001_000,
+                ),
+                (
+                    "local:019e9543-2222-7a00-8000-bbbbbbbbbbbb",
+                    "线程B",
+                    "/Users/me/b",
+                    "dev",
+                    "git@b.git",
+                    1_700_000_000,
+                    1_700_002_000,
+                ),
             ],
         );
-        write_pinned_global_state(
-            &dir,
-            &["019e9543-1111-7a00-8000-aaaaaaaaaaaa"],
-        );
+        write_pinned_global_state(&dir, &["019e9543-1111-7a00-8000-aaaaaaaaaaaa"]);
 
         let mut threads = list_threads(&db).expect("list_threads");
         assert_eq!(threads.len(), 2);
@@ -5012,7 +5062,15 @@ mod tests {
         let (dir, db) = make_temp_thread_fixture();
         seed_thread_db(
             &db,
-            &[("019e9543-3333-7a00-8000-cccccccccccc", "纯UUID线程", "/x", "main", "", 1, 2)],
+            &[(
+                "019e9543-3333-7a00-8000-cccccccccccc",
+                "纯UUID线程",
+                "/x",
+                "main",
+                "",
+                1,
+                2,
+            )],
         );
         write_pinned_global_state(&dir, &["019e9543-3333-7a00-8000-cccccccccccc"]);
         let mut threads = list_threads(&db).expect("list_threads");
@@ -5028,7 +5086,15 @@ mod tests {
         let (dir, db) = make_temp_thread_fixture();
         seed_thread_db(
             &db,
-            &[("local:019e9543-4444-7a00-8000-dddddddddddd", "X", "/x", "main", "", 1, 2)],
+            &[(
+                "local:019e9543-4444-7a00-8000-dddddddddddd",
+                "X",
+                "/x",
+                "main",
+                "",
+                1,
+                2,
+            )],
         );
         // 不写 global state
         let mut threads = list_threads(&db).expect("list_threads");
@@ -5075,9 +5141,48 @@ mod tests {
             &db,
             &[
                 // (id, title, cwd, branch, origin, created, updated, source, thread_source, tokens, cli_ver, has_user)
-                ("local:11111111-aaaa-7000-8000-000000000001", "user线程", "/Users/me/u", "main", "", 1700000000, 1700001000, "vscode", Some("user"), 12_345, "0.140.0-alpha.2", 1),
-                ("local:22222222-bbbb-7000-8000-000000000002", "subagent线程", "/Users/me/s", "dev", "", 1700000000, 1700002000, subagent_json, Some("subagent"), 1_234_567, "0.140.0-alpha.2", 1),
-                ("local:33333333-cccc-7000-8000-000000000003", "纯系统线程", "/Users/me/p", "main", "", 1700000000, 1700003000, "vscode", None, 0, "0.137.0-alpha.4", 0),
+                (
+                    "local:11111111-aaaa-7000-8000-000000000001",
+                    "user线程",
+                    "/Users/me/u",
+                    "main",
+                    "",
+                    1700000000,
+                    1700001000,
+                    "vscode",
+                    Some("user"),
+                    12_345,
+                    "0.140.0-alpha.2",
+                    1,
+                ),
+                (
+                    "local:22222222-bbbb-7000-8000-000000000002",
+                    "subagent线程",
+                    "/Users/me/s",
+                    "dev",
+                    "",
+                    1700000000,
+                    1700002000,
+                    subagent_json,
+                    Some("subagent"),
+                    1_234_567,
+                    "0.140.0-alpha.2",
+                    1,
+                ),
+                (
+                    "local:33333333-cccc-7000-8000-000000000003",
+                    "纯系统线程",
+                    "/Users/me/p",
+                    "main",
+                    "",
+                    1700000000,
+                    1700003000,
+                    "vscode",
+                    None,
+                    0,
+                    "0.137.0-alpha.4",
+                    0,
+                ),
             ],
         );
         let threads = list_threads(&db).expect("list_threads");
@@ -5118,7 +5223,20 @@ mod tests {
         let (_dir, db) = make_temp_thread_fixture();
         seed_thread_db_v2(
             &db,
-            &[("local:99999999-eeee-7000-8000-000000000009", "CLI线程", "/x", "main", "", 1, 2, "cli", None, 0, "", 0)],
+            &[(
+                "local:99999999-eeee-7000-8000-000000000009",
+                "CLI线程",
+                "/x",
+                "main",
+                "",
+                1,
+                2,
+                "cli",
+                None,
+                0,
+                "",
+                0,
+            )],
         );
         let threads = list_threads(&db).expect("list_threads");
         let cli = &threads[0];
@@ -5149,24 +5267,36 @@ mod tests {
         let (dir, _db) = make_temp_thread_fixture();
         write_full_global_state(&dir, &[]);
 
-        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
-            .expect("set pinned");
+        let updated =
+            set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
+                .expect("set pinned");
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0], "019e9543-aaaa-7a00-8000-000000000001");
 
         // 写盘后磁盘内容应同步
         let reread = read_pinned_thread_ids(&dir);
-        assert_eq!(reread, vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]);
+        assert_eq!(
+            reread,
+            vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]
+        );
 
         // .bak 文件被原子写一份
-        let backup = std::fs::read_to_string(dir.join(".codex-global-state.json.bak")).expect("read .bak");
+        let backup =
+            std::fs::read_to_string(dir.join(".codex-global-state.json.bak")).expect("read .bak");
         assert!(backup.contains("019e9543-aaaa-7a00-8000-000000000001"));
 
         // 其它顶层字段未被抹掉
         let v: Value = serde_json::from_str(&backup).unwrap();
         assert!(v.get("project-order").is_some());
         assert!(v.get("thread-project-assignments").is_some());
-        assert_eq!(v.get("pinned-project-ids").unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(
+            v.get("pinned-project-ids")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5177,8 +5307,9 @@ mod tests {
         write_full_global_state(&dir, &["019e9543-aaaa-7a00-8000-000000000001"]);
 
         // 同一个 id 再 pin 一次，应去重不重复
-        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
-            .expect("set pinned");
+        let updated =
+            set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
+                .expect("set pinned");
         assert_eq!(updated.len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -5196,9 +5327,13 @@ mod tests {
         );
 
         // 取消第一个
-        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", false)
-            .expect("set unpinned");
-        assert_eq!(updated, vec!["019e9543-bbbb-7a00-8000-000000000002".to_string()]);
+        let updated =
+            set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", false)
+                .expect("set unpinned");
+        assert_eq!(
+            updated,
+            vec!["019e9543-bbbb-7a00-8000-000000000002".to_string()]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5209,8 +5344,9 @@ mod tests {
         let (dir, _db) = make_temp_thread_fixture();
         write_full_global_state(&dir, &["019e9543-aaaa-7a00-8000-000000000001"]);
 
-        let updated = set_pinned_thread_id(&dir, "local:019e9543-cccc-7a00-8000-000000000099", false)
-            .expect("set unpinned not present");
+        let updated =
+            set_pinned_thread_id(&dir, "local:019e9543-cccc-7a00-8000-000000000099", false)
+                .expect("set unpinned not present");
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0], "019e9543-aaaa-7a00-8000-000000000001");
 
@@ -5225,7 +5361,10 @@ mod tests {
 
         let updated = set_pinned_thread_id(&dir, "019e9543-aaaa-7a00-8000-000000000001", true)
             .expect("set pinned pure uuid");
-        assert_eq!(updated, vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]);
+        assert_eq!(
+            updated,
+            vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5273,9 +5412,15 @@ mod tests {
         assert!(archived_at_ms.is_some(), "归档后 archived_at_ms 应有值");
         let archived_at = archived_at_ms.unwrap();
         // 应该是毫秒级，且接近当前时间
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         assert!(archived_at > 0);
-        assert!(archived_at <= now && now - archived_at < 5_000, "archived_at 与 now 差应 < 5s");
+        assert!(
+            archived_at <= now && now - archived_at < 5_000,
+            "archived_at 与 now 差应 < 5s"
+        );
 
         // 重新读 DB 确认持久化
         let conn = Connection::open(&db).expect("reopen");
@@ -5304,7 +5449,10 @@ mod tests {
         let (is_archived, archived_at_ms) =
             set_thread_archived_in_db(&db, id, false).expect("unarchive");
         assert!(!is_archived);
-        assert!(archived_at_ms.is_none(), "取消归档后 archived_at_ms 应为 None");
+        assert!(
+            archived_at_ms.is_none(),
+            "取消归档后 archived_at_ms 应为 None"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
