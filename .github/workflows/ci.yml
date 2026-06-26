@@ -40,10 +40,13 @@ jobs:
 
       - name: Build Tauri app
         working-directory: deecodex-gui
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx @tauri-apps/cli build
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
           name: deecodex-gui-windows-nsis
-          path: target/release/bundle/nsis/*.exe
+          path: target-mac/release/bundle/nsis/*.exe
