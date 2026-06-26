@@ -1,4 +1,4 @@
-mod commands;
+pub mod commands;
 
 use std::io::Write;
 use std::sync::Arc;
@@ -677,6 +677,7 @@ pub fn run() {
             commands::run_full_diagnostics,
             commands::launch_codex_cdp,
             commands::stop_codex_cdp,
+            commands::cdp_debug::cdp_debug_snapshot,
             commands::list_accounts,
             commands::get_active_account,
             commands::get_dex_assistant_account,

@@ -1,3 +1,4 @@
+pub mod cdp_debug;
 pub mod dex;
 pub mod dex_chat;
 pub mod dex_cli;
