@@ -526,30 +526,6 @@ fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
             parameters: empty_params(),
         },
         BuiltinToolSpec {
-            name: "delete_session",
-            tauri_cmd: "delete_session",
-            level: 3,
-            confirm: Some("确定要删除该会话吗？已备份，可撤销。"),
-            description: "删除指定会话",
-            capability: "deecodex.ops",
-            parameters: params(
-                json!({"session_type":{"type":"string","description":"responses 或 conversations"},"session_id":{"type":"string","description":"会话 ID"},"id":{"type":"string","description":"会话 ID 兼容字段"}}),
-                &[],
-            ),
-        },
-        BuiltinToolSpec {
-            name: "undo_delete_session",
-            tauri_cmd: "undo_delete_session",
-            level: 2,
-            confirm: None,
-            description: "撤销删除会话",
-            capability: "deecodex.ops",
-            parameters: params(
-                json!({"undo_token":{"type":"string","description":"撤销令牌"},"id":{"type":"string","description":"撤销令牌兼容字段"}}),
-                &[],
-            ),
-        },
-        BuiltinToolSpec {
             name: "get_threads_status",
             tauri_cmd: "get_threads_status",
             level: 0,

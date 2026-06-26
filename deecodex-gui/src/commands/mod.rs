@@ -7406,25 +7406,6 @@ pub async fn list_sessions(manager: State<'_, ServerManager>) -> Result<Value, S
     sessions::list_sessions_impl(manager).await
 }
 
-/// 删除会话（先备份）
-#[tauri::command]
-pub async fn delete_session(
-    manager: State<'_, ServerManager>,
-    session_type: String,
-    session_id: String,
-) -> Result<Value, String> {
-    sessions::delete_session_impl(manager, session_type, session_id).await
-}
-
-/// 撤销删除会话
-#[tauri::command]
-pub async fn undo_delete_session(
-    manager: State<'_, ServerManager>,
-    undo_token: String,
-) -> Result<Value, String> {
-    sessions::undo_delete_session_impl(manager, undo_token).await
-}
-
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 
 fn account_to_value(a: &deecodex::accounts::Account) -> Value {

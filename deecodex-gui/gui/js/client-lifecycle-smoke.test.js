@@ -63,6 +63,8 @@ const context = {
     }
     if (name === 'dex_pick_client_launch_dir') return '/tmp/project';
     if (name === 'dex_launch_client') return { ok: true };
+    if (name === 'get_config') return { codex_router_mode: context.currentConfig?.codex_router_mode || 'api' };
+    if (name === 'launch_codex_cdp') return { ok: true };
     return {};
   },
   showToast() {},
@@ -164,6 +166,20 @@ assert.strictEqual(context.statusClientProcessRunning('hermes'), false);
   const codexLaunch = calls.find(call => call.name === 'dex_launch_client');
   assert(pickDirCall < launchCall);
   assert.strictEqual(codexLaunch.args.cwd, '/tmp/project');
+
+  // Codex 桌面 + API 模式：点击应走 launch_codex_cdp（带 JS 注入）
+  calls.length = 0;
+  context.currentConfig.codex_router_mode = 'api';
+  await context.window.handleClientDockClick('codex_desktop');
+  assert(calls.some(call => call.name === 'launch_codex_cdp'));
+  assert(!calls.some(call => call.name === 'dex_launch_client'));
+
+  // Codex 桌面 + 智能路由模式：点击应走原 dex_launch_client（不注入）
+  calls.length = 0;
+  context.currentConfig.codex_router_mode = 'smart';
+  await context.window.handleClientDockClick('codex_desktop');
+  assert(calls.some(call => call.name === 'dex_launch_client'));
+  assert(!calls.some(call => call.name === 'launch_codex_cdp'));
 })().catch(error => {
   console.error(error);
   process.exit(1);

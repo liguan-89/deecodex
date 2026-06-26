@@ -307,20 +307,6 @@ pub(super) async fn dex_execute_tool_impl(
                 .await?
             }
             "list_sessions" => crate::commands::list_sessions(manager).await?,
-            "delete_session" => {
-                let id = opt_string(&args, "session_id")
-                    .or_else(|| opt_string(&args, "id"))
-                    .ok_or("缺少参数: session_id")?;
-                let session_type =
-                    opt_string(&args, "session_type").unwrap_or_else(|| "responses".to_string());
-                crate::commands::delete_session(manager, session_type, id).await?
-            }
-            "undo_delete_session" => {
-                let token = opt_string(&args, "undo_token")
-                    .or_else(|| opt_string(&args, "id"))
-                    .ok_or("缺少参数: undo_token")?;
-                crate::commands::undo_delete_session(manager, token).await?
-            }
             "get_threads_status" => crate::commands::get_threads_status(manager).await?,
             "list_threads" => crate::commands::list_threads().await?,
             "get_thread_content" => {

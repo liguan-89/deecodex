@@ -721,8 +721,6 @@ pub fn run() {
             commands::test_upstream_connectivity,
             commands::test_vision_connectivity,
             commands::list_sessions,
-            commands::delete_session,
-            commands::undo_delete_session,
             commands::list_request_history,
             commands::clear_request_history,
             commands::get_monthly_stats,

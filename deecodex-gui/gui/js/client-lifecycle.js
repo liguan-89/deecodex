@@ -396,6 +396,25 @@
         deeStorage.setItem(key, cwd);
       }
     }
+    // Codex 桌面：API 模式走 CDP 启动（带 JS 注入：模型解锁 + 中文支持）；
+    // 智能路由模式仍走原 dex_launch_client（纯启动，不注入）。
+    if (kind === 'codex_desktop') {
+      let mode = 'api';
+      try {
+        const cfg = await invoke('get_config');
+        if (cfg) mode = cfg.codex_router_mode || 'api';
+      } catch (_) {}
+      if (mode === 'api') {
+        try {
+          await invoke('launch_codex_cdp');
+          showToast(`${status.label || lifecycleLabel(kind)} 已启动（API 模式）`, 'success');
+          setTimeout(refreshClientLifecycleDock, 900);
+        } catch (error) {
+          showToast(`${status.label || lifecycleLabel(kind)} 启动失败: ` + error, 'error');
+        }
+        return;
+      }
+    }
     try {
       await invoke('dex_launch_client', { kind, cwd });
       showToast(`${status.label || lifecycleLabel(kind)} 已启动`, 'success');

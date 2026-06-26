@@ -40,6 +40,9 @@ function renderStatus() {
   const accounts = accountsData.accounts || [];
 
   const running = s.running;
+  // 智能路由模式不启用 CDP 注入（Codex 桌面卡片已分流），"启动 CDP"按钮隐藏。
+  const routerMode = currentConfig?.codex_router_mode || 'api';
+  const showCdpButton = routerMode === 'api';
   const clientKinds = (() => {
     const defaults = [
       { slug: 'codex', label: 'Codex' },
@@ -130,7 +133,7 @@ function renderStatus() {
           <span class="status-action-icon status-action-icon-diagnostics" aria-hidden="true"></span>
           <span>运行诊断</span>
         </button>
-        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex">
+        <button class="btn btn-ghost" onclick="mgmtLaunchCodex()" id="btnLaunchCodex"${showCdpButton ? '' : ' style="display:none"'}>
           <span class="status-action-icon ${window._cdpLaunched ? 'status-action-icon-stop' : 'status-action-icon-cdp'}" aria-hidden="true"></span>
           <span>${window._cdpLaunched ? '停止 CDP' : '启动 CDP'}</span>
         </button>
