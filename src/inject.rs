@@ -202,8 +202,38 @@ async fn handle_bridge(state: &AppState, path: &str, data: serde_json::Value) ->
         "/delete" => handle_delete(state, &data).await,
         "/undo" => handle_undo(state, &data).await,
         "/idb-report" => handle_idb_report(state, &data).await,
+        "/models" => handle_models(state).await,
         _ => serde_json::json!({"status": "failed", "message": "未知桥接路径"}),
     }
+}
+
+/// 返回 ~/.codex/models_deecodex.json 中的所有模型条目。
+/// Codex 桌面版 UI 通过桥接调用这个路径来扩展模型选择器。
+async fn handle_models(_state: &AppState) -> serde_json::Value {
+    let Some(home) = crate::codex_config::codex_home_dir() else {
+        return serde_json::json!({"status": "failed", "message": "无法定位 codex home"});
+    };
+    let path = home.join("models_deecodex.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            return serde_json::json!({"status": "failed", "message": format!("读取模型目录失败: {e}")});
+        }
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return serde_json::json!({"status": "failed", "message": format!("解析失败: {e}")});
+        }
+    };
+    let items = if parsed.is_array() {
+        parsed
+    } else if let Some(arr) = parsed.get("models").and_then(|v| v.as_array()) {
+        serde_json::Value::Array(arr.clone())
+    } else {
+        return serde_json::json!({"status": "failed", "message": "模型目录格式异常"});
+    };
+    serde_json::json!({"status": "ok", "models": items})
 }
 
 async fn handle_delete(state: &AppState, data: &serde_json::Value) -> serde_json::Value {
