@@ -104,3 +104,105 @@ curl -X POST 'https://api.statsigcdn.com/v1/initialize' \
 2. **响应体有时效性**。Statsig 配置中的 feature flag / 动态参数会随时间变化。本地缓存可能在数月后过期，Codex 部分新功能可能受影响。删除 `statsig_init_zh.json` 即可触发重新捕获。
 3. **不会捕获非 `/v1/initialize` 的请求**。如 `/v1/log_event` 等其他 Statsig 调用仍会发往 api.statsigcdn.com，被防火墙挡掉后只是日志事件丢失，不影响 UI。
 4. **CDP 拦截只在主进程**。如果 Codex 启用了多 renderer 进程（如未来版本），每个 renderer 需要独立的 CDP 连接 —— 当前 deecodex 只连第一个 Codex 页面目标。
+
+## 缓存文件结构详解
+
+`statsig_init_zh.json` 是 `POST https://ab.chatgpt.com/v1/rgstr` 的**完整 JSON 响应体**，
+Statsig 平台 `scrapi-nest` 服务端生成。下面是当前快照（~242 KB）的实际结构。
+
+### 顶层字段
+
+| 字段 | 值/类型 | 含义 |
+|---|---|---|
+| `generator` | `"scrapi-nest"` | 服务端生成器 |
+| `time` | `1782454509583` | 响应时间戳（毫秒） |
+| `target_app_used` | `"PUBLICLY-VISIBLE-codex-vscode"` | **Codex 在 Statsig 上的项目 ID**（Codex 是从 VSCode fork 出来的） |
+| `hashed_sdk_key_used` | `"2983049725"` | Codex 的 SDK key hash |
+| `full_checksum` | `"2479106285"` | 整响应的 djb2 校验和 |
+| `can_record_session` / `recording_blocked` / `session_recording_rate` | `true` / `false` / `1` | Session Replay 录屏配置 |
+| `company_lcut` | `1782454509583` | 公司级最后更新时间 |
+| `feature_gates` | 167 项 bool | 简单开关，约 24 KB（10%） |
+| `dynamic_configs` | 101 项 object | **动态参数对象，约 159 KB（66%，体积大头）** |
+| `layer_configs` | 46 项 object | Experiment Layer 元数据，约 58 KB（24%） |
+| `evaluated_keys` | `{stableID, customIDs}` | 评估用的用户标识（设备级，不是账号） |
+| `param_stores` / `sdkParams` | 空 | Codex 不使用这两类 |
+
+### 与中文 UI 相关的关键条目
+
+#### `dynamic_configs["118392242"]` —— i18n 总开关
+
+```json
+{ "enable_i18n": true, "locale_source": "IDE" }
+```
+
+- `enable_i18n: true` → Codex 加载 IntlProvider
+- `locale_source: "IDE"` → locale 从 Codex **设置面板**读，不是从 `navigator.language` 读
+
+> Codex 设置里把语言切到中文后，会在下次启动的 `/v1/rgstr` 请求 payload 里带上
+> `locale=zh-CN`，Statsig 才会回 `enable_i18n: true`；如果 Codex 设置没改中文，
+> Statsig 会回 `enable_i18n: false`，IntlProvider 的 `messages={}` 始终是空，
+> 系统 label 显示英文。
+
+**重要**：这条只**打开 i18n 框架**，**不带中文翻译字典**。Codex 桌面版只有部分模块
+（菜单、设置、对话框）内置 zh-CN 翻译；sidebar 的 `New chat / Search / Plugins /
+Pinned / Projects / Chats` 等标签是**硬编码英文**——这就是 L2 DOM 兜底翻译层必须
+独立存在的原因（详见本文档最上方"L2: DOM 兜底"）。
+
+#### `layer_configs["72216192"]`
+
+跟 `dynamic_configs["118392242"]` 指向同一个 value，是同一个开关在 Layer Experiment
+通道里的副本。
+
+### 其他重要 config
+
+```json
+"107580212": {
+  "available_models": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"],
+  "use_hidden_models": true,
+  "default_model": "gpt-5.4"
+}
+"2732759999": { "default_model": "gpt-5.2-codex" }
+"142810749" / "150585831" / "265038163" / "2356240226" / "4027591196": {
+  "enable_plugins": true,
+  "enable_tool_search": true,
+  "enable_tool_suggest": false,
+  "enable_tool_call_mcp_elicitation": true,
+  "enable_auth_elicitation": false
+}
+"26167635": {
+  "enabled": false,
+  "use_desktop_auth": false,
+  "use_streamlined_login_ux": true,
+  "use_hosted_login_success_page": false
+}
+```
+
+- **模型白名单 + 默认**走 `107580212`；deecodex 通过 `~/.codex/models_deecodex.json`
+  往里**新增**条目，Codex 把 `available_models` 当白名单再叠加自有合并
+- **插件/工具能力**走 `142810749` 那一组（5 条 ID 是同一个 Experiment Layer 的
+  不同切片，分配给不同的 user segment 看哪个开关组合）
+- **登录 UX** 走 `26167635`（`use_streamlined_login_ux: true` 是新版流程）
+
+### 体积分布
+
+| 区块 | 体积 | 占比 |
+|---|---|---|
+| `dynamic_configs` | ~159 KB | 66% |
+| `layer_configs` | ~58 KB | 24% |
+| `feature_gates` | ~24 KB | 10% |
+
+`dynamic_configs` 这么占体积，是因为**每条都带 `secondary_exposures` /
+`undelegated_secondary_exposures` 数组**——记录"这条 config 的评估经过了哪些 gate /
+experiment"，是 Statsig 服务端做 A/B 实验归因用的。Codex 有 46 个 Experiment
+Layer，叠加上每个 config 的 exposure 数组，单这部分就占 50%+ 体积。`feature_gates`
+反而很小，因为是纯 bool。
+
+### 隐私
+
+cache **不带任何用户隐私**：
+
+- `evaluated_keys.stableID` 是设备级随机 UUID（如 `62f0035f-eb75-4a36-b4c3-f3e11edc42bc`），不是账号
+- 没有 chat 内容、API key、邮箱
+- Codex 不会把 chat 内容塞进 Statsig 响应
+
+可以安全地跨设备拷贝、提交到 dotfiles 仓库。
