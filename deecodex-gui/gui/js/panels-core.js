@@ -1521,7 +1521,21 @@ async function saveConfig() {
       normalizeServiceHost(data.host) !== normalizeServiceHost(status.host || currentConfig.host) ||
       String(data.port || '') !== String(status.port || currentConfig.port || '')
     );
+    const modeChanged = (data.codex_router_mode || 'api') !== (currentConfig.codex_router_mode || 'api');
+    const wasRunning = Boolean(status.running);
     await invoke('save_config', { config: data });
+
+    // 切换路由模式时：网关在跑就自动停止（让用户重新启动以应用新模式），关闭状态不动。
+    if (modeChanged && wasRunning) {
+      try {
+        await invoke('stop_service');
+        showToast('路由模式已切换，网关已停止，请重新启动', 'info');
+      } catch (err) {
+        showToast('停止网关失败: ' + err, 'error');
+      }
+    } else if (modeChanged) {
+      showToast('路由模式已切换', 'success');
+    }
 
     const msg = endpointChanged ? '配置已保存，服务地址/端口重启后生效' : '配置已保存';
     if (sidebarMsg) { sidebarMsg.textContent = msg; sidebarMsg.className = 'sidebar-status success'; }
