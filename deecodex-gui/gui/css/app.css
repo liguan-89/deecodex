@@ -5290,6 +5290,23 @@ body {
 .threads-table td.td-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
 .thread-pin-icon { display: inline-block; font-size: 14px; line-height: 1; }
 .thread-pin-icon-empty { display: inline-block; width: 14px; height: 14px; }
+/* 置顶切换按钮：基线是隐形 + hover 显示，点击时短暂高亮 */
+.thread-pin-button {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm, 4px);
+  transition: background var(--transition, 160ms);
+  color: var(--text-muted, #888);
+}
+.thread-pin-button:hover { background: var(--accent-dim, rgba(0,200,232,0.14)); }
+.thread-pin-button.is-pinned { color: #f59e0b; opacity: 1; }
+.thread-pin-button.is-unpinned { opacity: 0.35; }
+.thread-pin-button.is-unpinned:hover { opacity: 1; }
+.thread-pin-button:focus-visible { outline: 2px solid var(--accent, #00c8e8); outline-offset: 1px; }
 /* subagent 线程的客户端列下加副文本（昵称 · 角色）*/
 .tag-subagent {
   background: rgba(168, 85, 247, 0.16);

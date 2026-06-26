@@ -7601,6 +7601,32 @@ pub async fn delete_thread(
     threads::delete_thread_impl(manager, thread_id).await
 }
 
+#[tauri::command]
+/// 置顶或取消置顶 Codex 线程。
+///
+/// 写 `~/.codex/.codex-global-state.json` 顶层 `pinned-thread-ids` 数组。
+/// 返回变更后的完整 pinned 列表，前端用其局部状态对齐，避免下一次 list 拉取。
+///
+/// `pinned=true` 追加（去重），`pinned=false` 移除。
+pub async fn pin_thread(
+    manager: State<'_, ServerManager>,
+    thread_id: String,
+    pinned: bool,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let home = deecodex::config::home_dir()
+        .ok_or_else(|| "无法确定 HOME 目录".to_string())?;
+    let updated = deecodex::codex_threads::set_pinned_thread_id(&home, &thread_id, pinned)
+        .map_err(|e| format!("置顶操作失败: {e}"))?;
+    // 同步把 data_dir 推给 manager 防止外部修改路径错位（与 delete_thread_impl 一致）
+    let _ = data_dir;
+    Ok(serde_json::json!({
+        "thread_id": thread_id,
+        "pinned": pinned,
+        "pinned_thread_ids": updated,
+    }))
+}
+
 /// 连通性检测结果
 struct ConnectivityResult {
     ok: bool,

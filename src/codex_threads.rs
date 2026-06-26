@@ -1052,6 +1052,60 @@ fn read_pinned_thread_ids(data_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 从 thread.id 提取 bare UUID（兼容 `local:UUID` 与纯 UUID 两种格式）。
+/// 与 `inject_pinned_from_global_state` 的匹配规则保持一致。
+fn bare_thread_id(id: &str) -> &str {
+    id.rsplit(':').next().unwrap_or(id)
+}
+
+/// 增删 `pinned-thread-ids` 数组中的某个 thread id（bare UUID）。
+///
+/// `pinned=true` 时追加（去重），`pinned=false` 时移除。返回变更后的完整列表。
+/// 失败（文件不存在 / JSON 损坏）抛错，由调用方决定是否兜底。
+///
+/// 写入走 `write_json_atomically`，自动保留 `.bak` 备份。
+pub fn set_pinned_thread_id(data_dir: &Path, thread_id: &str, pinned: bool) -> Result<Vec<String>> {
+    let path = data_dir.join(".codex-global-state.json");
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("读取 Codex 全局状态失败: {}", path.display()))?;
+    let mut v: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("解析 Codex 全局状态失败: {}", path.display()))?;
+
+    let bare = bare_thread_id(thread_id);
+    {
+        let obj = v
+            .as_object_mut()
+            .context("Codex 全局状态不是 JSON 对象")?;
+        let arr = obj
+            .entry("pinned-thread-ids".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !arr.is_array() {
+            anyhow::bail!("pinned-thread-ids 不是数组");
+        }
+        let arr = arr.as_array_mut().unwrap();
+        // 去重已有元素
+        arr.retain(|item| item.as_str() != Some(bare));
+        if pinned {
+            // 追加到末尾（保持用户置顶顺序）
+            arr.push(Value::String(bare.to_string()));
+        }
+    }
+
+    // v 的可变借用已释放（上面块结束），现在可以不可变借用传给写函数
+    write_json_atomically(&path, &v)
+        .with_context(|| format!("写回 Codex 全局状态失败: {}", path.display()))?;
+
+    // 返回最新列表
+    Ok(v.get("pinned-thread-ids")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 fn get_provider_summary(db_path: &Path) -> Result<Vec<ProviderSummary>> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
@@ -5012,5 +5066,108 @@ mod tests {
         assert_eq!(cli.source.as_deref(), Some("cli"));
         assert_eq!(cli.agent_nickname, None);
         assert_eq!(cli.agent_role, None);
+    }
+
+    // ── pin/unpin：写 .codex-global-state.json 顶层 pinned-thread-ids ──
+
+    /// 写一份保留所有顶层 key 的 global-state（避免 set_pinned_thread_id 把其它字段抹掉）
+    fn write_full_global_state(data_dir: &Path, pinned: &[&str]) {
+        let state = json!({
+            "pinned-thread-ids": pinned,
+            "pinned-project-ids": ["/Users/me/projects/test"],
+            "project-order": ["proj-a", "proj-b"],
+            "thread-project-assignments": {"thread-x": {"path": "/x"}},
+        });
+        std::fs::write(
+            data_dir.join(".codex-global-state.json"),
+            serde_json::to_string_pretty(&state).unwrap(),
+        )
+        .expect("write global state");
+    }
+
+    #[test]
+    fn set_pinned_appends_to_array() {
+        let (dir, _db) = make_temp_thread_fixture();
+        write_full_global_state(&dir, &[]);
+
+        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
+            .expect("set pinned");
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0], "019e9543-aaaa-7a00-8000-000000000001");
+
+        // 写盘后磁盘内容应同步
+        let reread = read_pinned_thread_ids(&dir);
+        assert_eq!(reread, vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]);
+
+        // .bak 文件被原子写一份
+        let backup = std::fs::read_to_string(dir.join(".codex-global-state.json.bak")).expect("read .bak");
+        assert!(backup.contains("019e9543-aaaa-7a00-8000-000000000001"));
+
+        // 其它顶层字段未被抹掉
+        let v: Value = serde_json::from_str(&backup).unwrap();
+        assert!(v.get("project-order").is_some());
+        assert!(v.get("thread-project-assignments").is_some());
+        assert_eq!(v.get("pinned-project-ids").unwrap().as_array().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_pinned_dedupes_existing_entry() {
+        let (dir, _db) = make_temp_thread_fixture();
+        write_full_global_state(&dir, &["019e9543-aaaa-7a00-8000-000000000001"]);
+
+        // 同一个 id 再 pin 一次，应去重不重复
+        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", true)
+            .expect("set pinned");
+        assert_eq!(updated.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_unpinned_removes_from_array() {
+        let (dir, _db) = make_temp_thread_fixture();
+        write_full_global_state(
+            &dir,
+            &[
+                "019e9543-aaaa-7a00-8000-000000000001",
+                "019e9543-bbbb-7a00-8000-000000000002",
+            ],
+        );
+
+        // 取消第一个
+        let updated = set_pinned_thread_id(&dir, "local:019e9543-aaaa-7a00-8000-000000000001", false)
+            .expect("set unpinned");
+        assert_eq!(updated, vec!["019e9543-bbbb-7a00-8000-000000000002".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_unpinned_idempotent_when_not_present() {
+        // 取消一个不在列表里的 id，应 noop，不报错
+        let (dir, _db) = make_temp_thread_fixture();
+        write_full_global_state(&dir, &["019e9543-aaaa-7a00-8000-000000000001"]);
+
+        let updated = set_pinned_thread_id(&dir, "local:019e9543-cccc-7a00-8000-000000000099", false)
+            .expect("set unpinned not present");
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0], "019e9543-aaaa-7a00-8000-000000000001");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_pinned_accepts_pure_uuid_input() {
+        // 不带 host: 前缀的纯 UUID 也能匹配
+        let (dir, _db) = make_temp_thread_fixture();
+        write_full_global_state(&dir, &[]);
+
+        let updated = set_pinned_thread_id(&dir, "019e9543-aaaa-7a00-8000-000000000001", true)
+            .expect("set pinned pure uuid");
+        assert_eq!(updated, vec!["019e9543-aaaa-7a00-8000-000000000001".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
