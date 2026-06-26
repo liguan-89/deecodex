@@ -88,6 +88,84 @@ impl CdpClient {
         Ok(())
     }
 
+    /// 启用 Fetch 域拦截。
+    ///
+    /// `patterns` 形如 `["ab.chatgpt.com", "ab.chatgpt.com/*"]`，控制哪些 URL 走拦截。
+    /// 调用后 Codex 发出的匹配请求会触发 `Fetch.requestPaused` 事件，
+    /// 必须用 `fetch_continue_request` / `fetch_fulfill_request` / `fetch_fail_request` 之一响应。
+    pub async fn fetch_enable(&mut self, patterns: &[&str]) -> Result<()> {
+        let id = self.next_id();
+        let payload = serde_json::json!({
+            "id": id,
+            "method": "Fetch.enable",
+            "params": {
+                "patterns": patterns.iter().map(|p| serde_json::json!({"urlPattern": p})).collect::<Vec<_>>()
+            }
+        });
+        self.send(&payload).await?;
+        self.wait_response(id).await?;
+        Ok(())
+    }
+
+    /// 放行一个被暂停的请求（继续走真实网络）。
+    #[allow(dead_code)]
+    pub async fn fetch_continue_request(&mut self, request_id: &str) -> Result<()> {
+        let payload = serde_json::json!({
+            "id": self.next_id(),
+            "method": "Fetch.continueRequest",
+            "params": { "requestId": request_id }
+        });
+        self.send(&payload).await
+    }
+
+    /// 用合成响应直接回填被暂停的请求（不发出真实网络请求）。
+    /// `body` 必须是 base64 编码后的字符串（CDP 协议要求）。
+    #[allow(dead_code)]
+    pub async fn fetch_fulfill_request(
+        &mut self,
+        request_id: &str,
+        status: u16,
+        headers: &[(&str, &str)],
+        body_b64: &str,
+    ) -> Result<()> {
+        let response_headers: Vec<Value> = headers
+            .iter()
+            .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
+            .collect();
+        let payload = serde_json::json!({
+            "id": self.next_id(),
+            "method": "Fetch.fulfillRequest",
+            "params": {
+                "requestId": request_id,
+                "responseCode": status,
+                "responseHeaders": response_headers,
+                "body": body_b64,
+            }
+        });
+        self.send(&payload).await
+    }
+
+    /// 让被暂停的请求失败（被 Network.aborted 之类的）。
+    #[allow(dead_code)]
+    pub async fn fetch_fail_request(&mut self, request_id: &str, reason: &str) -> Result<()> {
+        let payload = serde_json::json!({
+            "id": self.next_id(),
+            "method": "Fetch.failRequest",
+            "params": { "requestId": request_id, "errorReason": reason }
+        });
+        self.send(&payload).await
+    }
+
+    /// 通过已取走的 WebSocket 直接发送 CDP 消息（事件循环内使用）。
+    /// 避免在桥接循环里再造一层 CdpClient 包装。
+    pub async fn send_raw(ws: &mut CdpWsStream, payload: &Value) -> Result<()> {
+        let text = serde_json::to_string(payload)?;
+        ws.send(Message::Text(text))
+            .await
+            .context("CDP 发送消息失败")?;
+        Ok(())
+    }
+
     /// 发送 CDP 消息。
     async fn send(&mut self, payload: &Value) -> Result<()> {
         let text = serde_json::to_string(payload)?;
