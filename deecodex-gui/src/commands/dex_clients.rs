@@ -336,10 +336,18 @@ fn client_process_instances_for_spec(spec: &ClientAppSpec) -> Vec<Value> {
 }
 
 fn status_command_is_codex_desktop(command: &str) -> bool {
-    command.contains("/Codex.app/")
-        || command.contains("com.openai.codex")
-        || command.contains("Codex Helper")
-        || command.contains("Application Support/Codex")
+    let lower = command.to_ascii_lowercase().replace('\\', "/");
+    lower.contains("/codex.app/")
+        || lower.contains("com.openai.codex")
+        || lower.contains("codex helper")
+        || lower.contains("application support/codex")
+        || lower == "codex.exe"
+        || lower.contains("windowsapps")
+            && (lower.contains("codex.exe") || lower.contains("openai.codex"))
+        || lower.contains("/programs/codex/")
+            && (lower.contains("codex.exe") || lower.contains("codex helper"))
+        || lower.contains("/programs/openai/codex/")
+            && (lower.contains("codex.exe") || lower.contains("codex helper"))
         || command.trim() == "Codex"
 }
 
@@ -350,32 +358,67 @@ fn status_command_is_claude_desktop(command: &str) -> bool {
         || command.trim() == "Claude"
 }
 
-fn status_command_executable_name(command: &str) -> Option<&str> {
-    let first = command.split_whitespace().next()?;
-    Path::new(first).file_name()?.to_str()
+fn status_command_first_token(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    trimmed.split_whitespace().next().map(str::to_string)
+}
+
+fn status_command_executable_name(command: &str) -> Option<String> {
+    let first = status_command_first_token(command)?;
+    first
+        .rsplit(['/', '\\'])
+        .next()
+        .map(|name| name.trim_matches('"').to_ascii_lowercase())
 }
 
 fn status_command_has_args(command: &str) -> bool {
-    command.split_whitespace().nth(1).is_some()
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let Some(end) = rest.find('"') else {
+            return false;
+        };
+        return !rest[end + 1..].trim().is_empty();
+    }
+    trimmed.split_whitespace().nth(1).is_some()
 }
 
 fn status_command_uses_executable(command: &str, name: &str) -> bool {
     let Some(exe) = status_command_executable_name(command) else {
         return false;
     };
-    let first = command.split_whitespace().next().unwrap_or("");
-    if exe == name && first == name {
+    let exe_stem = exe
+        .strip_suffix(".exe")
+        .or_else(|| exe.strip_suffix(".cmd"))
+        .or_else(|| exe.strip_suffix(".bat"))
+        .unwrap_or(&exe);
+    let first = status_command_first_token(command).unwrap_or_default();
+    let first_lower = first.to_ascii_lowercase();
+    if exe_stem == name && first_lower == name {
         return true;
     }
-    if exe == name
-        && (first.contains(std::path::MAIN_SEPARATOR) || status_command_has_args(command))
+    if exe_stem == name
+        && (first.contains('/') || first.contains('\\') || status_command_has_args(command))
     {
         return true;
     }
     if (exe == "node" || exe == "nodejs")
-        && command
-            .split_whitespace()
-            .any(|part| Path::new(part).file_name().and_then(|v| v.to_str()) == Some(name))
+        && command.split_whitespace().any(|part| {
+            part.trim_matches('"')
+                .rsplit(['/', '\\'])
+                .next()
+                .map(|value| value.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
     {
         return true;
     }
@@ -1049,6 +1092,18 @@ mod tests {
         assert!(status_command_is_codex_cli("codex"));
         assert!(status_command_is_codex_cli("/usr/local/bin/codex"));
         assert!(status_command_is_codex_cli("codex --model gpt-5"));
+        assert!(status_command_is_codex_cli(
+            r#""C:\Users\me\AppData\Roaming\npm\codex.cmd" --model gpt-5"#
+        ));
+        assert!(status_command_is_codex_desktop(
+            r#"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0_x64__abc\app\Codex.exe"#
+        ));
+        assert!(status_command_is_codex_desktop(
+            r#"C:\Users\me\AppData\Local\Programs\Codex\Codex.exe --type=renderer"#
+        ));
+        assert!(!status_command_is_codex_cli(
+            r#"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0_x64__abc\app\Codex.exe"#
+        ));
         assert!(!status_command_is_claude_cli("Claude"));
         assert!(status_command_is_claude_cli("claude"));
         assert!(status_command_is_claude_cli("/usr/local/bin/claude"));
