@@ -3533,6 +3533,88 @@ fn normalize_mimo_responses_tools(req: &mut ResponsesRequest) -> Result<usize, S
     Ok(changed)
 }
 
+fn normalize_mimo_custom_tool_call_arguments(
+    map: &serde_json::Map<String, Value>,
+    name: &str,
+) -> Value {
+    if let Some(arguments) = map.get("arguments") {
+        return match arguments {
+            Value::String(text) if text.trim().is_empty() => Value::String("{}".into()),
+            Value::String(_) => arguments.clone(),
+            other => Value::String(serde_json::to_string(other).unwrap_or_else(|_| "{}".into())),
+        };
+    }
+
+    if let Some(input) = map.get("input") {
+        let key = if name == "apply_patch" {
+            "patch"
+        } else {
+            "input"
+        };
+        return Value::String(json!({ key: input }).to_string());
+    }
+
+    Value::String("{}".into())
+}
+
+fn normalize_mimo_responses_input_item(value: &mut Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            let mut changed = 0usize;
+            let item_type = map
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            match item_type.as_str() {
+                "custom_tool_call" => {
+                    let name = map
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or("apply_patch")
+                        .to_string();
+                    let arguments = normalize_mimo_custom_tool_call_arguments(map, &name);
+                    map.insert("type".into(), Value::String("function_call".into()));
+                    map.insert("name".into(), Value::String(name));
+                    map.insert("arguments".into(), arguments);
+                    map.remove("input");
+                    changed += 1;
+                }
+                "custom_tool_call_output" => {
+                    map.insert("type".into(), Value::String("function_call_output".into()));
+                    if !map.contains_key("status") {
+                        map.insert("status".into(), Value::String("completed".into()));
+                    }
+                    changed += 1;
+                }
+                _ => {}
+            }
+
+            for child in map.values_mut() {
+                changed += normalize_mimo_responses_input_item(child);
+            }
+            changed
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .map(normalize_mimo_responses_input_item)
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn normalize_mimo_responses_input_items(req: &mut ResponsesRequest) -> usize {
+    match &mut req.input {
+        ResponsesInput::Messages(items) => items
+            .iter_mut()
+            .map(normalize_mimo_responses_input_item)
+            .sum(),
+        ResponsesInput::Text(_) => 0,
+    }
+}
+
 fn apply_mimo_responses_tool_compatibility(
     account: &Account,
     endpoint: &EndpointConfig,
@@ -3543,12 +3625,8 @@ fn apply_mimo_responses_tool_compatibility(
         return Ok(());
     }
 
-    match normalize_mimo_responses_tools(req) {
-        Ok(changed) => {
-            if changed == 0 {
-                return Ok(());
-            }
-        }
+    let tool_changes = match normalize_mimo_responses_tools(req) {
+        Ok(changed) => changed,
         Err(tool_type) => {
             return Err(Box::new((
                 StatusCode::CONFLICT,
@@ -3565,6 +3643,10 @@ fn apply_mimo_responses_tool_compatibility(
             )
                 .into_response()));
         }
+    };
+    let input_changes = normalize_mimo_responses_input_items(req);
+    if tool_changes == 0 && input_changes == 0 {
+        return Ok(());
     }
 
     match serde_json::to_vec(req) {
@@ -3572,13 +3654,15 @@ fn apply_mimo_responses_tool_compatibility(
         Err(err) => warn!(
             account_id = %account.id,
             endpoint_id = %endpoint.id,
-            "MiMo Responses 工具兼容转换序列化失败，继续使用原始请求体: {err}"
+            "MiMo Responses 兼容转换序列化失败，继续使用原始请求体: {err}"
         ),
     }
     info!(
         account_id = %account.id,
         endpoint_id = %endpoint.id,
-        "MiMo Responses 已将可桥接工具转换为 function，并剥离不可桥接的可选原生工具"
+        tool_changes,
+        input_changes,
+        "MiMo Responses 已完成 function 工具与历史工具输入兼容转换"
     );
     Ok(())
 }
@@ -14953,6 +15037,53 @@ mod tests {
             .tools
             .iter()
             .all(|tool| tool.get("type").and_then(Value::as_str) == Some("function")));
+    }
+
+    #[test]
+    fn mimo_responses_tool_compat_converts_custom_tool_call_history_items() {
+        let mut req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "mimo-v2.5-pro",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_patch",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** Update File: /tmp/a.txt\n@@\n-old\n+new\n*** End Patch"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_patch",
+                    "output": "Exit code: 0\nSuccess."
+                },
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_args",
+                    "name": "custom_runner",
+                    "arguments": {"command": "echo ok"}
+                }
+            ]
+        }))
+        .unwrap();
+
+        let changed = normalize_mimo_responses_input_items(&mut req);
+
+        assert_eq!(changed, 3);
+        let ResponsesInput::Messages(items) = req.input else {
+            panic!("expected messages input");
+        };
+        assert_eq!(items[0]["type"], "function_call");
+        assert_eq!(items[0]["call_id"], "call_patch");
+        assert_eq!(items[0]["name"], "apply_patch");
+        assert!(items[0].get("input").is_none());
+        assert_eq!(
+            items[0]["arguments"],
+            "{\"patch\":\"*** Begin Patch\\n*** Update File: /tmp/a.txt\\n@@\\n-old\\n+new\\n*** End Patch\"}"
+        );
+        assert_eq!(items[1]["type"], "function_call_output");
+        assert_eq!(items[1]["call_id"], "call_patch");
+        assert_eq!(items[1]["status"], "completed");
+        assert_eq!(items[2]["type"], "function_call");
+        assert_eq!(items[2]["arguments"], "{\"command\":\"echo ok\"}");
     }
 
     #[test]
