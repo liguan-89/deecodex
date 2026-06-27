@@ -126,13 +126,13 @@ function showCodexQuickStartModal(status, options) {
           </div>
           <div class="config-field">
             <label>默认模型</label>
-            <select id="codexQuickDefaultModel">
+            <select id="codexQuickDefaultModel" disabled title="新手请保持默认；如需修改请前往「账号管理」">
               ${codexQuickModelOptions(models, defaultModel)}
             </select>
           </div>
           <div class="config-field wide">
             <label>DeepSeek Base URL</label>
-            <input type="text" id="codexQuickUpstream" value="${escAttr(status.upstream || 'https://api.deepseek.com/v1')}" placeholder="https://api.deepseek.com/v1">
+            <input type="text" id="codexQuickUpstream" value="${escAttr(status.upstream || 'https://api.deepseek.com/v1')}" placeholder="https://api.deepseek.com/v1" readonly title="新手请保持默认；如需修改请前往「账号管理」">
           </div>
           <div class="config-field wide">
             <label>DeepSeek API Key</label>

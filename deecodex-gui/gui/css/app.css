@@ -4556,6 +4556,28 @@ body {
   grid-column: 1 / -1;
 }
 
+/* 快捷配置对话框：默认模型与 Base URL 锁定为只读/禁用，
+   仅在本对话框内生效，避免新手小白误改后配置失败。
+   复杂定制请前往「账号管理」编辑。*/
+.codex-quick-fields select:disabled,
+.codex-quick-fields input[readonly] {
+  cursor: not-allowed;
+  color: var(--text-muted);
+  background: rgba(127, 147, 182, 0.06);
+  border-color: rgba(127, 147, 182, 0.18);
+  opacity: 0.78;
+}
+.codex-quick-fields select:disabled:hover,
+.codex-quick-fields input[readonly]:hover {
+  border-color: rgba(127, 147, 182, 0.18);
+}
+[data-theme="light"] .codex-quick-fields select:disabled,
+[data-theme="light"] .codex-quick-fields input[readonly] {
+  background: rgba(60, 64, 72, 0.04);
+  border-color: rgba(60, 64, 72, 0.12);
+  color: #5b6573;
+}
+
 .input-with-action {
   display: flex;
   align-items: stretch;
