@@ -673,6 +673,7 @@ pub fn run() {
             commands::check_upgrade,
             commands::run_upgrade,
             commands::restart_app,
+            commands::exit_app,
             commands::run_diagnostics,
             commands::run_full_diagnostics,
             commands::launch_codex_cdp,

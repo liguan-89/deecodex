@@ -3466,6 +3466,11 @@ pub fn restart_app(app: AppHandle) -> Result<(), String> {
     upgrade::restart_app(app)
 }
 
+#[tauri::command]
+pub fn exit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 // ── 账号管理 Tauri 命令 ────────────────────────────────────────────────────
 
 /// 获取账号列表，Key 字段脱敏后返回

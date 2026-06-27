@@ -162,6 +162,16 @@ manifest_path = out_dir / "latest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 expect_equal("manifest version", str(manifest.get("version", "")).lstrip("v"), version)
 
+force_update = manifest.get("force_update", False)
+if not isinstance(force_update, bool):
+    raise SystemExit("manifest force_update must be boolean when present")
+if "force_update_reason" in manifest and not isinstance(manifest.get("force_update_reason"), str):
+    raise SystemExit("manifest force_update_reason must be string when present")
+if "minimum_supported_version" in manifest:
+    minimum_supported_version = str(manifest.get("minimum_supported_version", "")).strip().lstrip("v")
+    if not re.match(r"^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?$", minimum_supported_version):
+        raise SystemExit(f"invalid minimum_supported_version: {manifest.get('minimum_supported_version')}")
+
 platforms = manifest.get("platforms") or {}
 mac = platforms.get("darwin-aarch64") or platforms.get("darwin-x86_64")
 if not isinstance(mac, dict):

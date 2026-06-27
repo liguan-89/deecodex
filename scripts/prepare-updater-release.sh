@@ -12,6 +12,9 @@ BUNDLE_DIR="$ROOT_DIR/target-mac/release/bundle"
 MAC_TARGETS="${DEX_AI_UPDATE_MAC_TARGETS:-darwin-aarch64}"
 NOTES="${DEX_AI_UPDATE_NOTES:-}"
 NOTES_FILE="${DEX_AI_UPDATE_NOTES_FILE:-}"
+FORCE_UPDATE="${DEX_AI_FORCE_UPDATE:-0}"
+FORCE_UPDATE_REASON="${DEX_AI_FORCE_UPDATE_REASON:-}"
+MIN_SUPPORTED_VERSION="${DEX_AI_MIN_SUPPORTED_VERSION:-}"
 
 mark_macos_build_artifacts_noindex() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -151,15 +154,16 @@ with tarfile.open(tarball, "r:gz") as tf:
         raise SystemExit(f"updater tarball version mismatch: expected {desired}, got {actual}")
 PY
 
-python3 - "$OUT_DIR/latest.json" "$VERSION" "$BASE_URL" "$MAC_TAR" "$MAC_SIG" "$MAC_TARGETS" "$NOTES" <<'PY'
+python3 - "$OUT_DIR/latest.json" "$VERSION" "$BASE_URL" "$MAC_TAR" "$MAC_SIG" "$MAC_TARGETS" "$NOTES" "$FORCE_UPDATE" "$FORCE_UPDATE_REASON" "$MIN_SUPPORTED_VERSION" <<'PY'
 import json
 import pathlib
 import sys
 import urllib.parse
 
-out, version, base_url, mac_tar, mac_sig, mac_targets, notes = sys.argv[1:8]
+out, version, base_url, mac_tar, mac_sig, mac_targets, notes, force_update, force_reason, min_supported = sys.argv[1:11]
 base_url = base_url.rstrip("/")
 mac_tar_url = urllib.parse.quote(mac_tar)
+force_enabled = force_update.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 manifest = {
     "version": version,
@@ -167,6 +171,13 @@ manifest = {
     "pub_date": None,
     "platforms": {},
 }
+
+if force_enabled:
+    manifest["force_update"] = True
+    if force_reason.strip():
+        manifest["force_update_reason"] = force_reason.strip()
+    if min_supported.strip():
+        manifest["minimum_supported_version"] = min_supported.strip().lstrip("v")
 
 for target in [item.strip() for item in mac_targets.split(",") if item.strip()]:
     manifest["platforms"][target] = {

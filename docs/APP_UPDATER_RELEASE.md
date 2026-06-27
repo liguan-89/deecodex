@@ -136,6 +136,33 @@ DEX_AI_UPDATE_MAC_TARGETS="darwin-aarch64,darwin-x86_64" ./scripts/prepare-updat
 DEX_AI_UPDATE_NOTES=$'新增应用内更新\\n优化支持项目入口' ./scripts/prepare-updater-release.sh
 ```
 
+## 强制更新
+
+普通版本不要开启强制更新。只有严重 bug、安全问题、路由/会话数据兼容问题这类必须让旧版停止继续使用的版本，才在生成发布目录时显式开启：
+
+```bash
+DEX_AI_UPDATE_BASE_URL="https://api.liguan.me/releases/dex-ai" \
+DEX_AI_UPDATE_NOTES_FILE="docs/releases/3.10.0.md" \
+DEX_AI_FORCE_UPDATE=1 \
+DEX_AI_FORCE_UPDATE_REASON="修复严重路由和会话索引问题，旧版本需要立即升级。" \
+DEX_AI_MIN_SUPPORTED_VERSION="3.9.10" \
+./scripts/prepare-updater-release.sh 3.10.0
+```
+
+字段含义：
+
+- `DEX_AI_FORCE_UPDATE=1`：把本次 `latest.json` 标记为强制更新。
+- `DEX_AI_FORCE_UPDATE_REASON`：给客户端展示的强制更新原因。
+- `DEX_AI_MIN_SUPPORTED_VERSION`：低于该版本的客户端必须更新；等于或高于该版本不强制。为空时，所有低于最新版本的客户端都会被强制更新。
+
+客户端行为：
+
+- 启动后自动检查 `latest.json`。
+- 命中强制更新时显示不可关闭的关键更新弹窗。
+- 自动下载并安装更新。
+- 安装完成后自动重启 DEX AI。
+- 下载或安装失败时只允许重试或退出，不进入主流程继续使用旧版。
+
 ## 本地验证
 
 发布目录生成后必须先本地验证：
