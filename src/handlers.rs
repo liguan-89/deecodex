@@ -829,6 +829,20 @@ fn router_effective_model_for_account(
     effective_model_for_chat_account(account, requested_model, endpoint, true)
 }
 
+/// 剥离 dex-ai 内部的「1M 上下文」后缀 `[1m]` / `[1M]`。
+///
+/// `known_models` 里 dex-ai 给开放了 1M 上下文的模型统一加 `[1m]` 后缀
+/// 标注能力（仅用于前端 UI 展示），但 DeepSeek / MiniMax / mimo 等上游
+/// API 都不接受带后缀的 model name（按 unsupported model 直接 400 杀流）。
+/// 路由选择阶段必须把 `[1m]` 后缀剥掉，转成上游真实 API 名。
+fn strip_one_m_context_suffix(model: &str) -> &str {
+    let trimmed = model.trim();
+    trimmed
+        .strip_suffix("[1m]")
+        .or_else(|| trimmed.strip_suffix("[1M]"))
+        .unwrap_or(trimmed)
+}
+
 fn translated_chat_effective_model_for_account(
     account: &Account,
     requested_model: &str,
@@ -850,10 +864,17 @@ fn effective_model_for_chat_account(
     if keep_native_gpt_models && codex_router_native_direct_model(requested_model) {
         return requested_model.to_string();
     }
+    // dex-ai 内部用 `[1m]` 后缀标注「该模型支持 1M 上下文」能力，但上游
+    // API（DeepSeek / MiniMax / mimo 等）都不接受带后缀的 model name。
+    // 先用「去后缀」的 normalized 版本查 model_map / known_models，让用户
+    // 在 Codex 直选 `xxx[1m]` 时也能命中真实上游模型名。
+    let normalized_requested = strip_one_m_context_suffix(requested_model);
     if let Some(mapped) = endpoint
         .model_map
         .get(requested_model)
         .or_else(|| account.model_map.get(requested_model))
+        .or_else(|| endpoint.model_map.get(normalized_requested))
+        .or_else(|| account.model_map.get(normalized_requested))
         .map(|model| model.trim())
         .filter(|model| !model.is_empty())
     {
@@ -862,7 +883,19 @@ fn effective_model_for_chat_account(
     if endpoint
         .known_models
         .iter()
-        .any(|model| model.trim() == requested_model)
+        .any(|model| model.trim() == normalized_requested)
+    {
+        return normalized_requested.to_string();
+    }
+    // 无后缀场景（normalized == requested_model）原值命中 → 用原值；
+    // 带后缀场景不再回退到带后缀值（DeepSeek / MiniMax / mimo 等上游 API
+    // 都不接受 `[1m]` 后缀，会按 unsupported model 杀流），交给下方
+    // default_model 兜底。
+    if normalized_requested == requested_model
+        && endpoint
+            .known_models
+            .iter()
+            .any(|model| model.trim() == requested_model)
     {
         return requested_model.to_string();
     }
@@ -877,15 +910,20 @@ fn effective_model_for_chat_account(
             .iter()
             .any(|model| model.trim() == default_model)
         {
-            return default_model.to_string();
+            // default_model 也按 `[1m]` 后缀规则剥掉，避免 fallback 链路
+            // 把带后缀值发到上游。
+            return strip_one_m_context_suffix(default_model).to_string();
         }
     }
+    // 最终兜底：known_models[0]，同样剥 `[1m]` 后缀。任何路径都不允许
+    // 把 dex-ai 内部 1M 标注后缀带到上游请求体里。
     endpoint
         .known_models
         .iter()
         .map(|model| model.trim())
         .find(|model| !model.is_empty())
-        .unwrap_or(requested_model)
+        .map(strip_one_m_context_suffix)
+        .unwrap_or(normalized_requested)
         .to_string()
 }
 
@@ -894,19 +932,31 @@ fn router_effective_model(requested_model: &str, endpoint: &EndpointConfig) -> S
     if !endpoint.kind.is_chat_like() {
         return requested_model.to_string();
     }
+    let normalized = strip_one_m_context_suffix(requested_model);
     if endpoint
         .known_models
         .iter()
-        .any(|model| model.trim() == requested_model)
+        .any(|model| model.trim() == normalized)
+    {
+        return normalized.to_string();
+    }
+    if normalized == requested_model
+        && endpoint
+            .known_models
+            .iter()
+            .any(|model| model.trim() == requested_model)
     {
         return requested_model.to_string();
     }
+    // 最终兜底也剥 `[1m]` 后缀，避免任何路径把 dex-ai 内部 1M 标注
+    // 带到上游请求体里（DeepSeek / MiniMax / mimo 等上游 API 都不接受）。
     endpoint
         .known_models
         .iter()
         .map(|model| model.trim())
         .find(|model| !model.is_empty())
-        .unwrap_or(requested_model)
+        .map(strip_one_m_context_suffix)
+        .unwrap_or(normalized)
         .to_string()
 }
 
@@ -1006,9 +1056,14 @@ fn resolve_explicit_dex_account_model_selection(
     requested_model: &str,
     tool_requirements: Option<&RouterToolRequirements>,
 ) -> Result<Option<AccountRouteSelection>, Box<Response>> {
-    let Some(model_ref) = codex_config::decode_dex_account_model_slug(requested_model) else {
+    let Some(mut model_ref) = codex_config::decode_dex_account_model_slug(requested_model) else {
         return Ok(None);
     };
+    // dex-ai 内部用 `[1m]` 后缀标注「该模型支持 1M 上下文」能力，但上游
+    // API（DeepSeek / MiniMax / mimo 等）都不接受带后缀的 model name。
+    // 在直选路径入口剥离后缀，让 selection.explicit_model 直接命中上游真实
+    // 模型名，避免 400 杀流。
+    model_ref.model = strip_one_m_context_suffix(&model_ref.model).to_string();
     let Some(account) = store.accounts.iter().find(|account| {
         account.id == model_ref.account_id
             && account.client_kind.is_codex()
@@ -13225,6 +13280,93 @@ mod tests {
 
         assert_eq!(non_explicit_messages.len(), 1);
         assert_eq!(responses_messages.len(), 1);
+    }
+
+    #[test]
+    fn chat_effective_model_strips_dex_ai_one_m_context_suffix() {
+        // 场景 1：直选 `deepseek-v4-pro[1m]`，known_models 同时含带后缀
+        // 和不带后缀版本，必须命中不带后缀的真实 API 名。
+        let mut account =
+            router_chat_account("deepseek", "pool-a", 100, 1, Some("deepseek-v4-pro"));
+        account.provider = "deepseek".into();
+        account.default_model = "deepseek-v4-pro".into();
+        account.endpoints[0].known_models = vec![
+            "deepseek-v4-pro[1m]".into(),
+            "deepseek-v4-pro".into(),
+            "deepseek-v4-flash".into(),
+        ];
+        let endpoint = account.endpoints[0].clone();
+
+        let effective = router_effective_model_for_account(&account, "deepseek-v4-pro[1m]", &endpoint);
+        assert_eq!(effective, "deepseek-v4-pro");
+
+        // 场景 2：直选大写 `[1M]` 同样剥后缀。
+        let effective_upper = router_effective_model_for_account(
+            &account,
+            "deepseek-v4-pro[1M]",
+            &endpoint,
+        );
+        assert_eq!(effective_upper, "deepseek-v4-pro");
+
+        // 场景 3：known_models 只有带后缀版本（极端情况），回退到 default_model 兜底，
+        // 不再保留带后缀值（上游 API 都不接受）。
+        let mut fallback_account =
+            router_chat_account("deepseek-fb", "pool-a", 100, 1, Some("deepseek-v4-pro"));
+        fallback_account.provider = "deepseek".into();
+        fallback_account.default_model = "deepseek-v4-pro".into();
+        fallback_account.endpoints[0].known_models = vec!["deepseek-v4-pro[1m]".into()];
+        let fallback_endpoint = fallback_account.endpoints[0].clone();
+        let fallback_effective = router_effective_model_for_account(
+            &fallback_account,
+            "deepseek-v4-pro[1m]",
+            &fallback_endpoint,
+        );
+        assert_eq!(fallback_effective, "deepseek-v4-pro");
+
+        // 场景 4：model_map 显式把 `[1m]` 映射到真实名，按用户配置优先。
+        let mut mapped_account =
+            router_chat_account("mapped", "pool-a", 100, 1, Some("deepseek-v4-pro"));
+        mapped_account.provider = "deepseek".into();
+        mapped_account.default_model = "deepseek-v4-pro".into();
+        mapped_account.endpoints[0].model_map.clear();
+        mapped_account.endpoints[0].model_map.insert(
+            "deepseek-v4-pro[1m]".into(),
+            "deepseek-v4-pro".into(),
+        );
+        mapped_account.endpoints[0].known_models = vec![
+            "deepseek-v4-pro[1m]".into(),
+            "deepseek-v4-pro".into(),
+        ];
+        let mapped_endpoint = mapped_account.endpoints[0].clone();
+        let mapped_effective = router_effective_model_for_account(
+            &mapped_account,
+            "deepseek-v4-pro[1m]",
+            &mapped_endpoint,
+        );
+        assert_eq!(mapped_effective, "deepseek-v4-pro");
+
+        // 场景 5：普通 model 名（无后缀）走原逻辑，无副作用。
+        let plain_effective =
+            router_effective_model_for_account(&account, "deepseek-v4-pro", &endpoint);
+        assert_eq!(plain_effective, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn chat_effective_model_normalized_lookup_hits_known_models_before_default() {
+        // 回归保护：用户直选 `mimo-v2.5-pro[1m]`，known_models 同时含两种 slug，
+        // 必须命中 normalized 的 `mimo-v2.5-pro` 而不是兜底 default_model。
+        let mut account = router_chat_account("mimo", "pool-a", 100, 1, Some("mimo-v2.5-pro"));
+        account.provider = "mimo".into();
+        account.default_model = "mimo-v2.5-pro".into();
+        account.endpoints[0].known_models = vec![
+            "mimo-v2.5-pro[1m]".into(),
+            "mimo-v2.5-pro".into(),
+        ];
+        let endpoint = account.endpoints[0].clone();
+
+        let effective =
+            router_effective_model_for_account(&account, "mimo-v2.5-pro[1m]", &endpoint);
+        assert_eq!(effective, "mimo-v2.5-pro");
     }
 
     #[test]
