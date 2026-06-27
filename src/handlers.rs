@@ -12685,6 +12685,11 @@ mod tests {
         let model_map = mapped_model
             .map(|model| json!({"gpt-5": model}))
             .unwrap_or_else(|| json!({}));
+        // 4e198efd 之后 codex 客户端跳过 model_map 路径，effective_model
+        // 走 default_model 兜底。这里把 default_model 同步设置，让
+        // dex_router_pool_chat_selection_sets_internal_upstream_model
+        // 之类的测试依然能验证 default_model 兜底命中。
+        let default_model = mapped_model.unwrap_or("");
         let mut account: Account = serde_json::from_value(json!({
             "id": id,
             "name": format!("Router {id}"),
@@ -12693,6 +12698,7 @@ mod tests {
             "client_surface": "desktop",
             "upstream": "https://openrouter.ai/api/v1",
             "api_key": format!("token-{id}"),
+            "default_model": default_model,
             "endpoints": [{
                 "id": format!("ep-{id}"),
                 "name": "Chat",

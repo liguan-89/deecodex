@@ -3047,10 +3047,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_responses_account_gets_responses_endpoint() {
+    fn legacy_deepseek_account_gets_chat_endpoint() {
+        // 4e198efd 时代 deepseek 默认被切到 OpenAiResponses；5633e4e2 后
+        // deepseek codex 切回 Chat Completions（DeepSeek 原生 API 是 Chat），
+        // 此处反映最新行为。
         let mut account = legacy_account(false);
         account.normalize_v2();
-        assert_eq!(account.endpoints[0].kind, EndpointKind::OpenAiResponses);
+        assert_eq!(account.endpoints[0].kind, EndpointKind::OpenAiChat);
         assert_eq!(account.endpoints[0].image_generation_enabled, Some(false));
     }
 
@@ -3730,7 +3733,10 @@ mod tests {
 
         let active = store.active_account().unwrap();
         assert_eq!(active.upstream, "https://api.openai.com/v1");
-        assert!(!active.translate_enabled);
+        // 4e198efd 之前 deepseek 默认被切到 OpenAiResponses 时 translate
+        // 会被关闭；5633e4e2 后 deepseek 走 Chat Completions，需要
+        // translate 开启才能正常转发。
+        assert!(active.translate_enabled);
         assert!(active.model_map.is_empty());
     }
 
