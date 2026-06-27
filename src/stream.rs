@@ -89,6 +89,7 @@ fn sanitize_minimax_pseudo_tool_markup(text: &str) -> String {
 struct MiniMaxPseudoToolMarkupSanitizer {
     enabled: bool,
     pending: String,
+    saw_tool_marker: bool,
 }
 
 impl MiniMaxPseudoToolMarkupSanitizer {
@@ -96,6 +97,7 @@ impl MiniMaxPseudoToolMarkupSanitizer {
         Self {
             enabled: minimax_pseudo_tool_markup_applies(model),
             pending: String::new(),
+            saw_tool_marker: false,
         }
     }
 
@@ -104,6 +106,9 @@ impl MiniMaxPseudoToolMarkupSanitizer {
             return chunk.to_string();
         }
 
+        if contains_minimax_pseudo_tool_marker(chunk) {
+            self.saw_tool_marker = true;
+        }
         self.pending.push_str(chunk);
         String::new()
     }
@@ -113,6 +118,10 @@ impl MiniMaxPseudoToolMarkupSanitizer {
             return String::new();
         }
         sanitize_minimax_pseudo_tool_markup(&std::mem::take(&mut self.pending))
+    }
+
+    fn saw_tool_marker(&self) -> bool {
+        self.saw_tool_marker
     }
 }
 
@@ -207,6 +216,10 @@ fn find_minimax_raw_tool_call_bounds(text: &str) -> Option<(usize, usize, usize,
 }
 
 fn parse_minimax_raw_tool_call(block: &str) -> Option<ToolCallAccum> {
+    parse_minimax_invoke_tool_call(block).or_else(|| parse_minimax_function_tool_call(block))
+}
+
+fn parse_minimax_invoke_tool_call(block: &str) -> Option<ToolCallAccum> {
     let invoke_start = block.find("<invoke")?;
     let invoke_tag_end = block[invoke_start..].find('>')? + invoke_start + 1;
     let invoke_tag = &block[invoke_start..invoke_tag_end];
@@ -223,6 +236,42 @@ fn parse_minimax_raw_tool_call(block: &str) -> Option<ToolCallAccum> {
         name,
         arguments: serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".into()),
     })
+}
+
+fn parse_minimax_function_tool_call(block: &str) -> Option<ToolCallAccum> {
+    let function_start = block.find("<function=")?;
+    let function_tag_end = block[function_start..].find('>')? + function_start + 1;
+    let function_tag = &block[function_start..function_tag_end];
+    let raw_name = function_tag
+        .strip_prefix("<function=")?
+        .strip_suffix('>')?
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'');
+    if raw_name.is_empty() {
+        return None;
+    }
+    let name = decode_minimal_xml_entities(raw_name);
+    let function_end = block[function_tag_end..]
+        .find("</function>")
+        .map(|idx| function_tag_end + idx)
+        .unwrap_or(block.len());
+    let body = &block[function_tag_end..function_end];
+    let arguments = parse_minimax_raw_parameters(body);
+
+    Some(ToolCallAccum {
+        id: String::new(),
+        name,
+        arguments: serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".into()),
+    })
+}
+
+fn contains_minimax_pseudo_tool_marker(text: &str) -> bool {
+    text.contains("]<]minimax[>[")
+        || text.contains("<tool_call>")
+        || text.contains("</tool_call>")
+        || text.contains("<minimax:tool_call")
+        || text.contains("invoke name")
 }
 
 fn parse_minimax_raw_parameters(body: &str) -> serde_json::Map<String, Value> {
@@ -1303,6 +1352,8 @@ pub fn translate_stream(
                 }
             }
         }
+        let malformed_minimax_tool_marker_seen =
+            pseudo_tool_markup_sanitizer.saw_tool_marker() && tool_calls.is_empty();
         for segment in think_parser.finish() {
             match segment {
                 ContentSegment::Reasoning(text) => {
@@ -1490,6 +1541,18 @@ pub fn translate_stream(
             "output_tokens": u.completion_tokens,
             "total_tokens": u.total_tokens
         }));
+
+        if malformed_minimax_tool_marker_seen && tool_calls.is_empty() {
+            let recovery_call = synthetic_toolchain_recovery_call(
+                &response_id,
+                &providers::ToolchainRecoveryTool::ExecCommandNoop,
+            );
+            warn!(
+                "MiniMax emitted malformed tool-call markup without a parseable function; injecting recovery tool call {}.",
+                recovery_call.name
+            );
+            tool_calls.insert(0, recovery_call);
+        }
 
         if let Some(coverage) = providers::pending_toolchain_coverage(&chat_req.messages) {
             if tool_calls.is_empty() {
@@ -2519,6 +2582,66 @@ mod tests {
         let arguments = tool_done.1["item"]["arguments"].as_str().unwrap();
         assert!(arguments.contains("\"cmd\":\"pwd\""));
         assert!(arguments.contains("\"workdir\":\"/tmp\""));
+    }
+
+    #[tokio::test]
+    async fn minimax_legacy_function_tool_call_is_converted_to_function_call() {
+        let raw = concat!(
+            "<tool_call>",
+            "<function=write_stdin>",
+            "<parameter name=\"session_id\">85966</parameter>",
+            "<parameter name=\"chars\">&#3;</parameter>",
+            "</function>",
+            "</tool_call>"
+        );
+        let (events, _) =
+            stream_events_for_text("MiniMax-M3", "resp_minimax_legacy_function_tool", raw).await;
+
+        let visible_text = events
+            .iter()
+            .filter(|(event_type, _)| event_type == "response.output_text.delta")
+            .filter_map(|(_, payload)| payload["delta"].as_str())
+            .collect::<String>();
+        assert!(!visible_text.contains("tool_call"));
+        assert!(!visible_text.contains("function="));
+
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected parsed MiniMax legacy tool call");
+        assert_eq!(tool_done.1["item"]["name"], "write_stdin");
+        let arguments = tool_done.1["item"]["arguments"].as_str().unwrap();
+        let arguments_json: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments_json["session_id"], 85966);
+        assert_eq!(arguments_json["chars"], "&#3;");
+    }
+
+    #[tokio::test]
+    async fn minimax_malformed_tool_marker_injects_recovery_tool_call() {
+        let raw = "处理中：]<]minimax[>[\n]<]minimax[>[\ninvoke name\n]<]minimax[>[</tool_call>";
+        let (events, sessions) =
+            stream_events_for_text("MiniMax-M3", "resp_minimax_malformed_tool_marker", raw).await;
+
+        let visible_text = events
+            .iter()
+            .filter(|(event_type, _)| event_type == "response.output_text.delta")
+            .filter_map(|(_, payload)| payload["delta"].as_str())
+            .collect::<String>();
+        assert!(!visible_text.contains("]<]minimax[>["));
+        assert!(!visible_text.contains("invoke name"));
+        assert!(!visible_text.contains("</tool_call>"));
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+
+        let stored = sessions
+            .get_response("resp_minimax_malformed_tool_marker")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
     }
 
     #[tokio::test]

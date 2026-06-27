@@ -1027,8 +1027,12 @@ function endpointKindUsesModelMapping(kind) {
     || kind === 'AnthropicMessages';
 }
 
-function isOpenAiNativeResponsesAccount(account) {
-  return isCodexAccount(account) && String(account?.provider || '').toLowerCase() === 'openai';
+function providerSupportsCodexResponses(provider) {
+  return ['openai', 'deepseek', 'minimax', 'mimo'].includes(String(provider || '').toLowerCase());
+}
+
+function isCodexNativeResponsesAccount(account) {
+  return isCodexAccount(account) && providerSupportsCodexResponses(account?.provider);
 }
 
 function endpointKindIsCustomResponses(kind) {
@@ -1055,14 +1059,14 @@ function normalizeResponsesKind(kind) {
 
 function isResponsesDirectFormAccount(account, endpoint = currentEndpoint(account)) {
   return isCodexAccount(account)
-    && (isOpenAiNativeResponsesAccount(account)
+    && (isCodexNativeResponsesAccount(account)
       || endpointKindIsResponsesDirect(endpoint?.kind)
       || endpointIsCodexOfficial(endpoint));
 }
 
 function endpointKindIsLockedForForm(account, endpoint = currentEndpoint(account)) {
   return isCodexAccount(account)
-    && (isOpenAiNativeResponsesAccount(account) || endpointIsCodexOfficial(endpoint));
+    && (isCodexNativeResponsesAccount(account) || endpointIsCodexOfficial(endpoint));
 }
 
 function legacyModelMapValues(modelMap) {
@@ -1111,19 +1115,19 @@ function retireCodexModelMapDraft(account) {
 
 function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(account)) {
   if (!isCodexAccount(account)) return account;
-  const forceOpenAiResponses = isOpenAiNativeResponsesAccount(account);
-  if (!forceOpenAiResponses && !endpointKindIsResponsesDirect(endpoint?.kind) && !endpointIsCodexOfficial(endpoint)) return account;
+  const forceNativeResponses = isCodexNativeResponsesAccount(account);
+  if (!forceNativeResponses && !endpointKindIsResponsesDirect(endpoint?.kind) && !endpointIsCodexOfficial(endpoint)) return account;
   if (!Array.isArray(account.endpoints)) account.endpoints = [];
   if (account.endpoints.length === 0) {
-    account.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(forceOpenAiResponses ? 'openai' : account.provider), account));
+    account.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(account.provider), account));
   }
   retireCodexModelMapDraft(account);
   const targetEndpointId = endpoint?.id || currentEndpoint(account)?.id || account.endpoints[0]?.id;
   const endpoints = account.endpoints;
   endpoints.forEach(endpoint => {
-    if (!forceOpenAiResponses && endpoint.id !== targetEndpointId) return;
-    if (!forceOpenAiResponses && !endpointKindIsResponsesDirect(endpoint.kind) && !endpointIsCodexOfficial(endpoint)) return;
-    endpoint.kind = forceOpenAiResponses ? 'open_ai_responses' : normalizeResponsesKind(endpoint.kind);
+    if (!forceNativeResponses && endpoint.id !== targetEndpointId) return;
+    if (!forceNativeResponses && !endpointKindIsResponsesDirect(endpoint.kind) && !endpointIsCodexOfficial(endpoint)) return;
+    endpoint.kind = forceNativeResponses ? 'open_ai_responses' : normalizeResponsesKind(endpoint.kind);
     endpoint.name = endpointKindLabel(endpoint.kind);
     endpoint.template_id = endpointIsCodexOfficial(endpoint)
       ? 'codex_official'
@@ -1301,7 +1305,7 @@ function providerDefaultTemplate(provider) {
       || templates.find(t => t.kind === 'anthropic_messages' || t.kind === 'AnthropicMessages')
       || null;
   }
-  if (provider === 'openai') {
+  if (providerSupportsCodexResponses(provider)) {
     return templates.find(t => t.id === 'responses_direct')
       || templates.find(t => t.kind === 'open_ai_responses' || t.kind === 'OpenAiResponses')
       || null;
@@ -1361,6 +1365,7 @@ function applyProviderSpecificEndpointDefaults(account) {
   if (!account || accountClientKind(account) !== 'codex') return account;
   if (String(account.provider || '').toLowerCase() !== 'mimo') return account;
   (account.endpoints || []).forEach(endpoint => {
+    if (endpointKindIsResponsesDirect(endpoint.kind)) return;
     if (!endpointKindUsesModelMapping(endpoint.kind)) return;
     endpoint.vision = {
       ...(endpoint.vision || {}),
@@ -1837,7 +1842,7 @@ function renderAccountDetail() {
             <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
             <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>
           </select>
-          <span class="hint">DeepSeek、OpenRouter 这类一般选 OpenAI Chat 兼容；只有上游原生支持 Responses API 时才选直连。</span>`;
+          <span class="hint">DeepSeek、MiniMax、MiMo 等已确认支持 Responses API 的供应商建议选直连；其他兼容站点再选 OpenAI Chat 兼容。</span>`;
   const modelSection = usesModelMapping ? `
     <section class="account-edit-section">
       <div class="account-section-head">

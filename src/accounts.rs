@@ -690,12 +690,16 @@ impl Account {
         format!("{}****{}", prefix, suffix)
     }
 
-    fn is_openai_native_responses(&self) -> bool {
-        self.client_kind.is_codex() && self.provider.eq_ignore_ascii_case("openai")
+    fn is_codex_native_responses_provider(&self) -> bool {
+        self.client_kind.is_codex()
+            && matches!(
+                self.provider.to_ascii_lowercase().as_str(),
+                "openai" | "deepseek" | "minimax" | "mimo"
+            )
     }
 
     fn is_responses_direct_account(&self) -> bool {
-        self.is_openai_native_responses()
+        self.is_codex_native_responses_provider()
             || self.endpoints.iter().any(|endpoint| {
                 endpoint.kind.is_responses_like() || endpoint.kind == EndpointKind::CodexOfficial
             })
@@ -710,7 +714,7 @@ impl Account {
     }
 
     fn normalize_responses_direct(&mut self) {
-        let force_openai_responses = self.is_openai_native_responses();
+        let force_native_responses = self.is_codex_native_responses_provider();
         if !self.is_responses_direct_account() {
             return;
         }
@@ -742,13 +746,13 @@ impl Account {
 
         let provider = self.provider.clone();
         for endpoint in &mut self.endpoints {
-            if !force_openai_responses
+            if !force_native_responses
                 && !endpoint.kind.is_responses_like()
                 && endpoint.kind != EndpointKind::CodexOfficial
             {
                 continue;
             }
-            if force_openai_responses {
+            if force_native_responses {
                 endpoint.kind = EndpointKind::OpenAiResponses;
             }
             endpoint.name = endpoint.kind.label().into();
@@ -1853,7 +1857,7 @@ pub fn get_endpoint_templates() -> Vec<EndpointTemplate> {
             default_path: "chat/completions".into(),
             default_vision_mode: VisionMode::Off,
             description:
-                "OpenAI Chat Completions 兼容协议；OpenRouter、DeepSeek 等聚合/兼容站点通常选择它"
+                "OpenAI Chat Completions 兼容协议；OpenRouter 或未确认 Responses 支持的兼容站点通常选择它"
                     .into(),
         },
         EndpointTemplate {
@@ -2799,6 +2803,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_minimax_codex_account_is_normalized_to_responses() {
+        let mut account = legacy_account(true);
+        account.provider = "minimax".into();
+        account.upstream = "https://api.minimaxi.com/v1".into();
+        account.normalize_v2();
+
+        let endpoint = account.endpoints.first().unwrap();
+        assert!(!account.translate_enabled);
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(endpoint.name, "OpenAI Responses");
+        assert!(endpoint.path.is_empty());
+        assert!(endpoint.model_map.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+    }
+
+    #[test]
+    fn legacy_deepseek_codex_account_is_normalized_to_responses() {
+        let mut account = legacy_account(true);
+        account.provider = "deepseek".into();
+        account.upstream = "https://api.deepseek.com/v1".into();
+        account.normalize_v2();
+
+        let endpoint = account.endpoints.first().unwrap();
+        assert!(!account.translate_enabled);
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
+        assert_eq!(endpoint.name, "OpenAI Responses");
+        assert!(endpoint.path.is_empty());
+        assert!(endpoint.model_map.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+    }
+
+    #[test]
     fn legacy_array_file_migrates_to_v2_store() {
         let account = legacy_account(true);
         let content = serde_json::to_string(&vec![account]).unwrap();
@@ -3054,7 +3090,7 @@ mod tests {
     }
 
     #[test]
-    fn mimo_codex_normalize_clears_model_map_and_keeps_vision_profiles() {
+    fn mimo_codex_normalize_clears_model_map_and_uses_native_responses_vision() {
         let mut account = legacy_account(true);
         account.provider = "mimo".into();
         account.upstream = "https://token-plan-cn.xiaomimimo.com/v1".into();
@@ -3070,22 +3106,16 @@ mod tests {
         account.normalize_v2();
 
         let endpoint = account.endpoints.first().unwrap();
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
         assert!(endpoint.model_map.is_empty());
         assert_eq!(endpoint.known_models, vec!["old-mapped-model"]);
+        assert!(endpoint.model_profiles.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Native);
         assert_eq!(
-            endpoint.model_vision_mode("mimo-v2.5-pro[1m]"),
-            VisionMode::Off
-        );
-        assert_eq!(endpoint.model_vision_mode("mimo-v2.5-pro"), VisionMode::Off);
-        assert_eq!(
-            endpoint.model_vision_mode("mimo-v2.5[1m]"),
+            endpoint.model_vision_mode("mimo-v2.5-pro"),
             VisionMode::Native
         );
         assert_eq!(endpoint.model_vision_mode("mimo-v2.5"), VisionMode::Native);
-        assert_eq!(
-            endpoint.model_vision_mode("mimo-v2-omni"),
-            VisionMode::Native
-        );
         assert!(account.model_map.is_empty());
     }
 
