@@ -120,25 +120,19 @@ pub async fn reset(provider: &str) {
     });
 }
 
-/// 测试辅助：清空所有熔断器状态（仅测试用）。
-#[cfg(test)]
-pub fn clear_all_for_test() {
-    BREAKERS.clear();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn closed_initially_allows() {
-        clear_all_for_test();
+        reset("test_provider_a").await;
         assert!(!is_open("test_provider_a").await);
     }
 
     #[tokio::test]
     async fn failures_below_threshold_keep_closed() {
-        clear_all_for_test();
+        reset("test_provider_b").await;
         for _ in 0..(DEFAULT_FAILURE_THRESHOLD - 1) {
             record_failure("test_provider_b").await;
         }
@@ -147,7 +141,7 @@ mod tests {
 
     #[tokio::test]
     async fn failures_at_threshold_open_breaker() {
-        clear_all_for_test();
+        reset("test_provider_c").await;
         for _ in 0..DEFAULT_FAILURE_THRESHOLD {
             record_failure("test_provider_c").await;
         }
@@ -156,7 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn success_closes_breaker_and_resets_count() {
-        clear_all_for_test();
+        reset("test_provider_d").await;
         for _ in 0..DEFAULT_FAILURE_THRESHOLD {
             record_failure("test_provider_d").await;
         }
@@ -172,7 +166,8 @@ mod tests {
 
     #[tokio::test]
     async fn providers_are_independent() {
-        clear_all_for_test();
+        reset("test_provider_e").await;
+        reset("test_provider_f").await;
         for _ in 0..DEFAULT_FAILURE_THRESHOLD {
             record_failure("test_provider_e").await;
         }
@@ -182,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn record_failure_on_open_state_is_noop() {
-        clear_all_for_test();
+        reset("test_provider_g").await;
         for _ in 0..DEFAULT_FAILURE_THRESHOLD {
             record_failure("test_provider_g").await;
         }
@@ -195,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn manually_reset_clears_breaker() {
-        clear_all_for_test();
+        reset("test_provider_h").await;
         for _ in 0..DEFAULT_FAILURE_THRESHOLD {
             record_failure("test_provider_h").await;
         }

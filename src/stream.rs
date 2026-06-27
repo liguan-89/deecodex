@@ -4465,9 +4465,6 @@ mod tests {
     async fn stream_provider_breaker_short_circuits_after_5_failures() {
         use crate::provider_breaker;
 
-        // 清空所有熔断器状态，避免并行测试污染
-        provider_breaker::clear_all_for_test();
-
         // 选一个独立 url pattern，guess_provider 推断出唯一 provider slug。
         // 这里用一个不存在的特殊域名（包含 "minimax" 关键字）确保落到 "minimax" slug。
         let provider_slug = "minimax";
