@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod anthropic;
+pub mod body_filter;
 pub mod cache;
 pub mod cdp;
 pub mod client_integrations;
