@@ -482,8 +482,9 @@ fn stage_messages(ctx: &DevPipelineContext, label: &str, prompt: &str) -> Vec<Ch
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()},
+
+            ..Default::default()
+        },
         ChatMessage {
             role: "user".into(),
             content: Some(Value::String(prompt.to_string())),
@@ -492,8 +493,9 @@ fn stage_messages(ctx: &DevPipelineContext, label: &str, prompt: &str) -> Vec<Ch
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()},
+
+            ..Default::default()
+        },
     ]
 }
 

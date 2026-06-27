@@ -4082,8 +4082,9 @@ fn make_chat_req() -> ChatRequest {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}],
+
+            ..Default::default()
+        }],
         tools: vec![],
         temperature: None,
         top_p: None,
@@ -4124,8 +4125,9 @@ fn make_stream_args(
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}],
+
+            ..Default::default()
+        }],
         request_input_items: vec![],
         store_response,
         conversation_id: None,
@@ -4182,8 +4184,9 @@ fn make_stream_args_custom(
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}],
+
+            ..Default::default()
+        }],
         request_input_items: vec![],
         store_response,
         conversation_id: None,

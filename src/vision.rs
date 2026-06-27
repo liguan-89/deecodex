@@ -284,8 +284,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![],
             temperature: None,
             top_p: None,
@@ -322,8 +323,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![],
             temperature: None,
             top_p: None,

@@ -1,8 +1,5 @@
 use async_stream::stream;
-use axum::response::{
-    sse::{Event, KeepAlive},
-    Sse,
-};
+use axum::response::{sse::Event, Sse};
 use eventsource_stream::Eventsource as EventsourceExt;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -60,6 +57,63 @@ fn needs_non_empty_final_message_guard(model: &str, guard_label: Option<&str>) -
 fn should_recover_promised_tool_call(model: &str, guard_label: Option<&str>, text: &str) -> bool {
     needs_non_empty_final_message_guard(model, guard_label)
         && providers::should_recover_promised_tool_call_text(text)
+}
+
+fn minimax_pseudo_tool_markup_applies(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("minimax")
+}
+
+fn sanitize_minimax_pseudo_tool_markup(text: &str) -> String {
+    if !text.contains("]<]minimax[>[")
+        && !text.contains("</tool_call>")
+        && !text.contains("<tool_call>")
+        && !text.contains("invoke name")
+    {
+        return text.to_string();
+    }
+
+    let mut cleaned = text
+        .replace("]<]minimax[>[", "")
+        .replace("</tool_call>", "")
+        .replace("<tool_call>", "");
+
+    cleaned = cleaned
+        .lines()
+        .filter(|line| line.trim() != "invoke name")
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    cleaned
+}
+
+struct MiniMaxPseudoToolMarkupSanitizer {
+    enabled: bool,
+    pending: String,
+}
+
+impl MiniMaxPseudoToolMarkupSanitizer {
+    fn new(model: &str) -> Self {
+        Self {
+            enabled: minimax_pseudo_tool_markup_applies(model),
+            pending: String::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &str) -> String {
+        if !self.enabled || chunk.is_empty() {
+            return chunk.to_string();
+        }
+
+        self.pending.push_str(chunk);
+        String::new()
+    }
+
+    fn finish(&mut self) -> String {
+        if !self.enabled || self.pending.is_empty() {
+            return String::new();
+        }
+        sanitize_minimax_pseudo_tool_markup(&std::mem::take(&mut self.pending))
+    }
 }
 
 fn synthetic_toolchain_recovery_call(
@@ -889,6 +943,7 @@ pub fn translate_stream(
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
         let mut think_parser = ThinkTagParser::new();
+        let mut pseudo_tool_markup_sanitizer = MiniMaxPseudoToolMarkupSanitizer::new(&model);
         // 诊断用：主循环退出时记录关键状态，便于断流场景定位根因
         let mut chunk_count: usize = 0;
         let mut last_event_data_prefix: String = String::new();
@@ -935,9 +990,10 @@ pub fn translate_stream(
                                         yield event;
                                     }
                                 }
-                                let content = choice.delta.content.as_deref().unwrap_or("");
+                                let raw_content = choice.delta.content.as_deref().unwrap_or("");
+                                let content = pseudo_tool_markup_sanitizer.push(raw_content);
                                 if !content.is_empty() {
-                                    for segment in think_parser.push(content) {
+                                    for segment in think_parser.push(&content) {
                                         match segment {
                                             ContentSegment::Reasoning(text) => {
                                                 for event in reasoning_segment_events(
@@ -1019,6 +1075,64 @@ pub fn translate_stream(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        let sanitized_tail = pseudo_tool_markup_sanitizer.finish();
+        if !sanitized_tail.is_empty() {
+            for segment in think_parser.push(&sanitized_tail) {
+                match segment {
+                    ContentSegment::Reasoning(text) => {
+                        for event in reasoning_segment_events(
+                            &mut seq,
+                            &mut emitted_reasoning_item,
+                            &mut accumulated_reasoning,
+                            &reasoning_item_id,
+                            &text,
+                        ) {
+                            yield event;
+                        }
+                    }
+                    ContentSegment::Text(text) => {
+                        for event in text_segment_events(
+                            &mut seq,
+                            &mut emitted_message_item,
+                            emitted_reasoning_item,
+                            &mut accumulated_text,
+                            &msg_item_id,
+                            &text,
+                        ) {
+                            yield event;
+                        }
+                    }
+                }
+            }
+        }
+        for segment in think_parser.finish() {
+            match segment {
+                ContentSegment::Reasoning(text) => {
+                    for event in reasoning_segment_events(
+                        &mut seq,
+                        &mut emitted_reasoning_item,
+                        &mut accumulated_reasoning,
+                        &reasoning_item_id,
+                        &text,
+                    ) {
+                        yield event;
+                    }
+                }
+                ContentSegment::Text(text) => {
+                    for event in text_segment_events(
+                        &mut seq,
+                        &mut emitted_message_item,
+                        emitted_reasoning_item,
+                        &mut accumulated_text,
+                        &msg_item_id,
+                        &text,
+                    ) {
+                        yield event;
                     }
                 }
             }
@@ -2154,6 +2268,48 @@ mod tests {
             .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
     }
 
+    #[tokio::test]
+    async fn minimax_pseudo_tool_markup_is_stripped_from_text_stream() {
+        let raw = "准备继续\n]<]minimax[>[\n]<]minimax[>[\ninvoke name\n]<]minimax[>[</tool_call>\n继续执行";
+        let (events, _) =
+            stream_events_for_text("MiniMax-M3", "resp_minimax_pseudo_markup", raw).await;
+
+        let visible_text = events
+            .iter()
+            .filter(|(event_type, _)| event_type == "response.output_text.delta")
+            .filter_map(|(_, payload)| payload["delta"].as_str())
+            .collect::<String>();
+
+        assert!(visible_text.contains("准备继续"));
+        assert!(visible_text.contains("继续执行"));
+        assert!(!visible_text.contains("]<]minimax[>["));
+        assert!(!visible_text.contains("</tool_call>"));
+        assert!(!visible_text.contains("<tool_call>"));
+        assert!(!visible_text
+            .lines()
+            .any(|line| line.trim() == "invoke name"));
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+    }
+
+    #[tokio::test]
+    async fn pseudo_tool_markup_sanitizer_is_minimax_scoped() {
+        let raw = "准备继续\n]<]minimax[>[\ninvoke name\n]<]minimax[>[</tool_call>\n继续执行";
+        let (events, _) =
+            stream_events_for_text("deepseek-v4-pro", "resp_non_minimax_pseudo_markup", raw).await;
+
+        let visible_text = events
+            .iter()
+            .filter(|(event_type, _)| event_type == "response.output_text.delta")
+            .filter_map(|(_, payload)| payload["delta"].as_str())
+            .collect::<String>();
+
+        assert!(visible_text.contains("]<]minimax[>["));
+        assert!(visible_text.contains("</tool_call>"));
+        assert!(visible_text.contains("invoke name"));
+    }
+
     fn assert_sequence_numbers(events: &[(String, serde_json::Value)]) {
         let mut last = 0_u64;
         for (event_type, payload) in events {
@@ -2977,8 +3133,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..24 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -3097,8 +3254,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..24 {
             let name = if idx == 0 {
                 "codex_app__read_thread_terminal"

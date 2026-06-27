@@ -815,8 +815,9 @@ fn append_tool_execution_guard(req: &mut ChatRequest, label: &str) {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()},
+
+            ..Default::default()
+        },
     );
 }
 
@@ -868,8 +869,9 @@ fn append_min_tool_call_guard(
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    
-        ..Default::default()});
+
+        ..Default::default()
+    });
 }
 
 fn append_toolchain_coverage_guard(
@@ -893,8 +895,9 @@ fn append_toolchain_coverage_guard(
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    
-        ..Default::default()});
+
+        ..Default::default()
+    });
 }
 
 fn append_toolchain_final_report_guard(req: &mut ChatRequest, label: &str) {
@@ -913,8 +916,9 @@ fn append_toolchain_final_report_guard(req: &mut ChatRequest, label: &str) {
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    
-        ..Default::default()});
+
+        ..Default::default()
+    });
 }
 
 pub fn mimo_pending_min_tool_calls(messages: &[ChatMessage]) -> Option<(usize, usize)> {
@@ -1774,8 +1778,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
             ],
@@ -1820,8 +1825,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
             ],
@@ -1860,8 +1866,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..5 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -1875,8 +1882,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -1885,8 +1893,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let mut req = ChatRequest {
@@ -1939,7 +1948,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
+
             ..Default::default()}];
         for idx in 0..24 {
             messages.push(ChatMessage {
@@ -1954,8 +1963,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -1964,8 +1974,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let mut req = ChatRequest {
@@ -2021,7 +2032,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
+
             ..Default::default()}];
         for (idx, name, output) in [
             (
@@ -2050,8 +2061,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!(output)),
@@ -2060,8 +2072,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         assert_eq!(pending_toolchain_coverage(&messages), None);
@@ -2079,7 +2092,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
+
             ..Default::default()}];
         for (idx, name) in [
             ("0", "codex_app__read_thread_terminal"),
@@ -2097,8 +2110,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2107,8 +2121,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let coverage = pending_toolchain_coverage(&messages).expect("expected coverage");
@@ -2130,7 +2145,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
+
             ..Default::default()}];
         for idx in 0..2 {
             messages.push(ChatMessage {
@@ -2145,8 +2160,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2155,8 +2171,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let coverage = pending_toolchain_coverage(&messages).expect("expected coverage");
@@ -2284,8 +2301,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
             ],
@@ -2325,8 +2343,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![],
             temperature: None,
             top_p: None,
@@ -2361,8 +2380,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
             ],
@@ -2397,8 +2417,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..11 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2412,8 +2433,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2422,8 +2444,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let mut req = ChatRequest {
@@ -2474,8 +2497,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..15 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2489,8 +2513,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2499,8 +2524,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let mut req = ChatRequest {
@@ -2541,8 +2567,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..7 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2556,8 +2583,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2566,8 +2594,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
         messages.push(ChatMessage {
             role: "assistant".into(),
@@ -2579,8 +2608,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()});
+
+            ..Default::default()
+        });
 
         let mut req = ChatRequest {
             model: "mimo-v2.5-pro".into(),
@@ -2634,8 +2664,9 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
-                
-                    ..Default::default()},
+
+                    ..Default::default()
+                },
                 ChatMessage {
                     role: "user".into(),
                     content: Some(json!("至少执行 24 次工具调用。")),
@@ -2644,8 +2675,9 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
-                
-                    ..Default::default()},
+
+                    ..Default::default()
+                },
             ],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
@@ -2693,8 +2725,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()}],
+
+                ..Default::default()
+            }],
             tools: vec![
                 json!({"type":"function","function":{"name":"exec_command","parameters":{"type":"object"}}}),
             ],

@@ -1525,8 +1525,9 @@ fn maybe_inject_explicit_model_identity(
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    
-        ..Default::default()};
+
+        ..Default::default()
+    };
     let insert_at = if messages
         .first()
         .is_some_and(|message| message.role == "system")
@@ -8475,8 +8476,9 @@ fn append_ocr_fallback_message(chat_req: &mut ChatRequest, ocr: local_ocr::OcrFa
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    
-        ..Default::default()});
+
+        ..Default::default()
+    });
 }
 
 async fn handle_responses_vlm_final_answer(
@@ -10159,8 +10161,9 @@ async fn handle_responses_inner(
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    
-                        ..Default::default()});
+
+                        ..Default::default()
+                    });
                     use_vision_transport = false;
                 }
                 Err(resp) => return resp,
@@ -11054,8 +11057,9 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    
-                        ..Default::default()});
+
+                        ..Default::default()
+                    });
 
                 let mut full_history = chat_req.messages.clone();
                 if let Some(reasoning) = assistant_msg.reasoning_content.clone() {
@@ -11314,8 +11318,9 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    
-                        ..Default::default()});
+
+                        ..Default::default()
+                    });
 
                 let mut full_history = chat_req.messages.clone();
                 full_history.push(assistant_msg);
@@ -13240,8 +13245,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()},
+
+                ..Default::default()
+            },
             ChatMessage {
                 role: "user".into(),
                 content: Some(Value::String("你是谁？".into())),
@@ -13250,8 +13256,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()},
+
+                ..Default::default()
+            },
         ];
 
         maybe_inject_explicit_model_identity(
@@ -13285,8 +13292,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()};
+
+            ..Default::default()
+        };
         let mut non_explicit_messages = vec![base_message.clone()];
         let mut responses_messages = vec![base_message];
 
@@ -13322,15 +13330,13 @@ mod tests {
         ];
         let endpoint = account.endpoints[0].clone();
 
-        let effective = router_effective_model_for_account(&account, "deepseek-v4-pro[1m]", &endpoint);
+        let effective =
+            router_effective_model_for_account(&account, "deepseek-v4-pro[1m]", &endpoint);
         assert_eq!(effective, "deepseek-v4-pro");
 
         // 场景 2：直选大写 `[1M]` 同样剥后缀。
-        let effective_upper = router_effective_model_for_account(
-            &account,
-            "deepseek-v4-pro[1M]",
-            &endpoint,
-        );
+        let effective_upper =
+            router_effective_model_for_account(&account, "deepseek-v4-pro[1M]", &endpoint);
         assert_eq!(effective_upper, "deepseek-v4-pro");
 
         // 场景 3：known_models 只有带后缀版本（极端情况），回退到 default_model 兜底，
@@ -13354,14 +13360,11 @@ mod tests {
         mapped_account.provider = "deepseek".into();
         mapped_account.default_model = "deepseek-v4-pro".into();
         mapped_account.endpoints[0].model_map.clear();
-        mapped_account.endpoints[0].model_map.insert(
-            "deepseek-v4-pro[1m]".into(),
-            "deepseek-v4-pro".into(),
-        );
-        mapped_account.endpoints[0].known_models = vec![
-            "deepseek-v4-pro[1m]".into(),
-            "deepseek-v4-pro".into(),
-        ];
+        mapped_account.endpoints[0]
+            .model_map
+            .insert("deepseek-v4-pro[1m]".into(), "deepseek-v4-pro".into());
+        mapped_account.endpoints[0].known_models =
+            vec!["deepseek-v4-pro[1m]".into(), "deepseek-v4-pro".into()];
         let mapped_endpoint = mapped_account.endpoints[0].clone();
         let mapped_effective = router_effective_model_for_account(
             &mapped_account,
@@ -13383,10 +13386,8 @@ mod tests {
         let mut account = router_chat_account("mimo", "pool-a", 100, 1, Some("mimo-v2.5-pro"));
         account.provider = "mimo".into();
         account.default_model = "mimo-v2.5-pro".into();
-        account.endpoints[0].known_models = vec![
-            "mimo-v2.5-pro[1m]".into(),
-            "mimo-v2.5-pro".into(),
-        ];
+        account.endpoints[0].known_models =
+            vec!["mimo-v2.5-pro[1m]".into(), "mimo-v2.5-pro".into()];
         let endpoint = account.endpoints[0].clone();
 
         let effective =

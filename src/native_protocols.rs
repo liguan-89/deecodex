@@ -214,8 +214,9 @@ fn chat_response_from_text(content: String, usage: Option<ChatUsage>) -> ChatRes
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()},
+
+                ..Default::default()
+            },
         }],
         usage,
     }
