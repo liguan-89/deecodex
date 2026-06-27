@@ -95,12 +95,14 @@ cd /Users/liguan/deecodex
 cd /Users/liguan/deecodex
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/dex-ai-updater.key")" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$HOME/.tauri/dex-ai-updater.key.password")" \
-cargo tauri build --manifest-path deecodex-gui/Cargo.toml
+cargo tauri build
 ```
+
+> 注：Tauri CLI 不支持 `--manifest-path`，构建必须在 `deecodex-gui/` 子目录执行，或在 workspace 根直接执行 `cargo tauri build`（cargo 会从根 `Cargo.toml` 找到 workspace 成员 `deecodex-gui` 的 `tauri.conf.json`）。
 
 macOS updater 产物是 `.app.tar.gz` 和 `.app.tar.gz.sig`；DMG 只用于手动安装。
 
-构建目录里的 `target-mac/release/bundle/macos/DEX AI.app` 只是中间产物。发布脚本会给该目录打 `.metadata_never_index`，避免 Spotlight / Launchpad 把构建产物也当成一份已安装应用，导致 Launchpad 里出现多个 DEX AI 图标。
+构建目录里的 `target-local/release/bundle/macos/DEX AI.app` 只是中间产物（路径由根目录 `.cargo/config.toml` 的 `target-dir` 决定）。发布脚本会给该目录打 `.metadata_never_index`，避免 Spotlight / Launchpad 把构建产物也当成一份已安装应用，导致 Launchpad 里出现多个 DEX AI 图标。
 
 ## 生成发布目录
 
