@@ -84,6 +84,14 @@ pub fn to_chat_request(
     model_map: &ModelMap,
     chinese_thinking: bool,
 ) -> TranslatedRequest {
+    let enriched_req = if req.previous_response_id.is_some() {
+        let mut cloned = req.clone();
+        enrich_input_with_cached_tool_calls(&mut cloned, sessions);
+        Some(cloned)
+    } else {
+        None
+    };
+    let req = enriched_req.as_ref().unwrap_or(req);
     let mut messages = history;
     let host_only_tools = collect_host_only_tools(&req.tools);
 
@@ -1730,6 +1738,42 @@ mod tests {
         );
         assert_eq!(chat.messages[1].role, "tool");
         assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn to_chat_request_replays_cached_tool_call_without_explicit_pre_enrichment() {
+        let sessions = SessionStore::new();
+        sessions.save_response(
+            "resp_prev_auto".into(),
+            json!({
+                "id": "resp_prev_auto",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "id": "fc_call_auto",
+                    "call_id": "call_auto",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"ls\"}",
+                    "status": "completed"
+                }]
+            }),
+        );
+        let mut req = base_req(ResponsesInput::Messages(vec![json!({
+            "type": "function_call_output",
+            "call_id": "call_auto",
+            "output": "{\"stdout\":\"ok\"}"
+        })]));
+        req.previous_response_id = Some("resp_prev_auto".into());
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].role, "assistant");
+        assert_eq!(
+            chat.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["arguments"],
+            "{\"cmd\":\"ls\"}"
+        );
+        assert_eq!(chat.messages[1].role, "tool");
     }
 
     #[test]
