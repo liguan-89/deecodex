@@ -1825,12 +1825,10 @@ pub fn translate_stream(
             }
         }
 
-        // runtime_feedback / request_history 改成 fire-and-forget。
-        // 若在 SSE stream 块内 await，yield `response.completed` 后 HTTP 响应
-        // 不会立即关闭，Codex 客户端一直等连接关闭造成假「断流」。
-        // 现象：minimax / mimo 这类不发 [DONE] SSE 终止符的 provider 尤其明显，
-        // 走 `allow_missing_done` fallback 后 stream 块在 await 处阻塞，
-        // 客户端 UI 卡住直到 HTTP 关闭。
+        // runtime_feedback / request_history 在 yield `response.completed` 之后
+        // 同步 await：保证 record 在 stream 块关闭前完成，下游 `request_history.list`
+        // 紧接着调用能查到本条记录。fire-and-forget 在单线程 runtime 下会撞调度
+        // 竞态，且 record 耗时通常 < 10ms，延迟 HTTP 关闭可忽略。
         let rh = request_history.clone();
         let hc = history_context.clone();
         let url_for_record = upstream_url.clone();
@@ -1839,24 +1837,23 @@ pub fn translate_stream(
         let usage_for_record = completion_usage.clone();
         let feedback = runtime_feedback.clone();
         let started_at_ms = start.elapsed().as_millis() as u64;
-        tokio::spawn(async move {
-            feedback.success(&model_for_record).await;
-            let _ = rh.record(hc.record(
-                resp_id_for_record,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                model_for_record,
-                "completed".into(),
-                usage_for_record.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
-                usage_for_record.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
-                started_at_ms,
-                url_for_record,
-                String::new(),
-                history_cache_hit,
-            )).await;
-        });
+        feedback.success(&model_for_record).await;
+        let _ = rh.record(hc.record(
+            resp_id_for_record,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            model_for_record,
+            "completed".into(),
+            usage_for_record.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+            usage_for_record.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+            started_at_ms,
+            url_for_record,
+            String::new(),
+            history_cache_hit,
+        ))
+        .await;
     };
 
     // 不开 keep_alive：stream 块 yield 完最后一个事件后立即结束，HTTP

@@ -906,6 +906,11 @@ fn effective_model_for_chat_account(
         // 第三方上游不识别 Codex 默认 gpt-5.4-mini 等模型，会 400 杀流。
         // 若 default_model 不在 endpoint.known_models 且 known_models 非空，
         // 强制走 known_models[0]（该上游真实支持的能力）而非 default_model。
+        // known_models 未声明（空）时信任 default_model：表示上游可能接受
+        // 任意模型，避免把上游不认识的 Codex 默认模型发过去。
+        if endpoint.known_models.is_empty() {
+            return strip_one_m_context_suffix(default_model).to_string();
+        }
         if endpoint
             .known_models
             .iter()
