@@ -8319,6 +8319,73 @@ fn patch_missing_function_call_namespaces(
     serde_json::to_vec(&value).map(axum::body::Bytes::from)
 }
 
+fn normalize_function_call_arguments_for_upstream(
+    body: &axum::body::Bytes,
+    req: &mut ResponsesRequest,
+) -> Result<axum::body::Bytes, serde_json::Error> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    let patched = value
+        .get_mut("input")
+        .map(normalize_function_call_arguments_in_value)
+        .unwrap_or(false);
+    if !patched {
+        return Ok(body.clone());
+    }
+
+    if let Ok(updated_req) = serde_json::from_value::<ResponsesRequest>(value.clone()) {
+        *req = updated_req;
+    }
+    serde_json::to_vec(&value).map(axum::body::Bytes::from)
+}
+
+fn normalize_function_call_arguments_in_value(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut patched = false;
+            let is_function_call = map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|typ| typ == "function_call");
+            if is_function_call {
+                patched |= normalize_function_call_arguments_object(map);
+            }
+            for child in map.values_mut() {
+                patched |= normalize_function_call_arguments_in_value(child);
+            }
+            patched
+        }
+        Value::Array(items) => {
+            let mut patched = false;
+            for item in items {
+                patched |= normalize_function_call_arguments_in_value(item);
+            }
+            patched
+        }
+        _ => false,
+    }
+}
+
+fn normalize_function_call_arguments_object(map: &mut serde_json::Map<String, Value>) -> bool {
+    match map.get_mut("arguments") {
+        Some(Value::String(arguments)) => {
+            if arguments.trim().is_empty() || serde_json::from_str::<Value>(arguments).is_err() {
+                *arguments = "{}".into();
+                return true;
+            }
+            false
+        }
+        Some(arguments) => {
+            let normalized = serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into());
+            *arguments = Value::String(normalized);
+            true
+        }
+        None => {
+            map.insert("arguments".into(), Value::String("{}".into()));
+            true
+        }
+    }
+}
+
 fn namespace_tools_index(tools: &[Value]) -> HashMap<String, String> {
     let mut namespaces_by_tool: HashMap<String, HashSet<String>> = HashMap::new();
     for tool in tools {
@@ -8676,6 +8743,7 @@ async fn handle_responses_bypass(
     let model = req.model.clone();
     let mut body = body;
     body = patch_missing_function_call_namespaces(&body, &mut req).unwrap_or(body);
+    body = normalize_function_call_arguments_for_upstream(&body, &mut req).unwrap_or(body);
     if let Some(service_tier) = req.service_tier.as_deref() {
         body = patch_body_string_field(&body, "service_tier", service_tier).unwrap_or(body);
     }
@@ -14529,6 +14597,59 @@ mod tests {
         );
 
         assert_eq!(retry, Some(30));
+    }
+
+    #[test]
+    fn responses_bypass_normalizes_function_call_arguments_for_strict_upstreams() {
+        let body = axum::body::Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "MiniMax-M3",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_empty",
+                        "name": "exec_command",
+                        "arguments": ""
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_object",
+                        "name": "write_stdin",
+                        "arguments": {"session_id": 1, "chars": "x"}
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_invalid",
+                        "name": "read_file",
+                        "arguments": "{bad json"
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_valid",
+                        "name": "list_files",
+                        "arguments": "{\"path\":\"/tmp\"}"
+                    }
+                ],
+                "stream": true
+            }))
+            .unwrap(),
+        );
+        let mut req: ResponsesRequest = serde_json::from_slice(&body).unwrap();
+
+        let patched = normalize_function_call_arguments_for_upstream(&body, &mut req).unwrap();
+        let value: Value = serde_json::from_slice(&patched).unwrap();
+        let input = value["input"].as_array().unwrap();
+
+        assert_eq!(input[0]["arguments"], "{}");
+        assert_eq!(input[1]["arguments"], "{\"chars\":\"x\",\"session_id\":1}");
+        assert_eq!(input[2]["arguments"], "{}");
+        assert_eq!(input[3]["arguments"], "{\"path\":\"/tmp\"}");
+        if let ResponsesInput::Messages(items) = req.input {
+            assert_eq!(items[0]["arguments"], "{}");
+            assert_eq!(items[2]["arguments"], "{}");
+        } else {
+            panic!("expected message input");
+        }
     }
 
     #[test]
