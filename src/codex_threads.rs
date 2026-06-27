@@ -1744,6 +1744,12 @@ fn append_unique(items: &mut Vec<String>, value: &str) -> bool {
     true
 }
 
+fn remove_value(items: &mut Vec<String>, value: &str) -> bool {
+    let before = items.len();
+    items.retain(|item| item != value);
+    before != items.len()
+}
+
 fn remove_deleted_thread_from_desktop_state(db_path: &Path, thread_id: &str) -> Result<usize> {
     let Some(global_path) = codex_global_state_path(db_path) else {
         return Ok(0);
@@ -2537,7 +2543,7 @@ fn get_desktop_project_index_status(
             .and_then(|item| item.get("threadIds"))
             .and_then(Value::as_array)
             .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(thread_id)));
-        if assigned && ordered && projectless.contains(thread_id) {
+        if assigned && ordered && !projectless.contains(thread_id) {
             indexed_count += 1;
         } else {
             pending_count += 1;
@@ -2657,7 +2663,7 @@ fn repair_desktop_project_index(
                 next_assignments.insert(thread_id.clone(), assignment);
                 changed += 1;
             }
-            changed += append_unique(&mut next_projectless, thread_id) as usize;
+            changed += remove_value(&mut next_projectless, thread_id) as usize;
             if next_hints.get(thread_id).and_then(Value::as_str) != Some(project.as_str()) {
                 next_hints.insert(thread_id.clone(), Value::String(project.clone()));
                 changed += 1;
@@ -4514,7 +4520,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some("ordered-thread")));
+            .all(|value| value.as_str() != Some("ordered-thread")));
 
         let conn = Connection::open(&db_path).expect("open db");
         let status = get_desktop_project_index_status(&db_path, &conn).expect("project status");

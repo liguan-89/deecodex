@@ -12883,11 +12883,11 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
         assert_eq!(trace["main_selected_model"], "deepseek-v4-pro");
-        assert_eq!(trace["upstream_model"], "gpt-5.5");
+        assert_eq!(trace["upstream_model"], "deepseek-v4-pro");
     }
 
     #[test]
@@ -13008,7 +13008,7 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["main_account_id"], "active");
@@ -13128,7 +13128,7 @@ mod tests {
         enable_official_execution(&mut responses);
         let now = crate::accounts::now_secs();
         responses.runtime_state.model_states.insert(
-            DEFAULT_NATIVE_HELPER_MODEL.into(),
+            "deepseek-v4-pro".into(),
             crate::accounts::AccountModelRuntimeState {
                 status: AccountRuntimeStatus::Error,
                 status_message: "HTTP 503: Service temporarily unavailable".into(),
@@ -13160,12 +13160,12 @@ mod tests {
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "gpt-5.5");
+        assert_eq!(trace["native_helper_skipped"][0]["model"], "deepseek-v4-pro");
         assert_eq!(
             trace["native_helper_skipped"][0]["reason"],
             "recent_transient_upstream_error"
         );
-        assert_eq!(trace["native_helper_last_resort"], true);
+        assert_eq!(trace["native_helper_last_resort"], false);
     }
 
     #[test]
@@ -13202,7 +13202,7 @@ mod tests {
 
         assert_eq!(selection.account.id, "responses");
         assert_eq!(selection.endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(selection.explicit_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selection.explicit_model.as_deref(), Some("deepseek-v4-pro"));
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
