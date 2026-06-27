@@ -7,6 +7,7 @@ pub mod client_integrations;
 pub mod client_threads;
 pub mod codex_config;
 pub mod codex_guard;
+pub mod codex_mcp_sync;
 pub mod codex_router_session;
 pub mod codex_threads;
 pub mod config;
