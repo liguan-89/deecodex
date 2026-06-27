@@ -4556,6 +4556,55 @@ body {
   grid-column: 1 / -1;
 }
 
+.input-with-action {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+.input-with-action > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.btn-open-key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--accent);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn-open-key:hover {
+  background: rgba(0, 200, 232, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-open-key:active {
+  background: rgba(0, 200, 232, 0.2);
+}
+.btn-open-key .open-key-arrow {
+  font-size: 13px;
+  line-height: 1;
+}
+[data-theme="light"] .btn-open-key {
+  background: #f4f5f7;
+  border-color: #d8dde4;
+  color: #0a8aa6;
+}
+[data-theme="light"] .btn-open-key:hover {
+  background: rgba(10, 138, 166, 0.1);
+  border-color: #0a8aa6;
+}
+
 .codex-quick-actions {
   display: flex;
   gap: 10px;

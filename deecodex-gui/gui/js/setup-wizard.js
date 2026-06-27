@@ -136,7 +136,13 @@ function showCodexQuickStartModal(status, options) {
           </div>
           <div class="config-field wide">
             <label>DeepSeek API Key</label>
-            <input type="password" id="codexQuickApiKey" value="" placeholder="输入 DeepSeek API Key" autocomplete="off">
+            <div class="input-with-action">
+              <input type="password" id="codexQuickApiKey" value="" placeholder="输入 DeepSeek API Key" autocomplete="off">
+              <button type="button" class="btn-open-key" id="codexQuickOpenDeepseekBtn" title="前往 DeepSeek 开放平台获取 API Key">
+                <span>获取 Key</span>
+                <span aria-hidden="true" class="open-key-arrow">↗</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -155,6 +161,7 @@ function showCodexQuickStartModal(status, options) {
   document.getElementById('codexQuickLaterBtn')?.addEventListener('click', dismissCodexQuickStart);
   document.getElementById('codexQuickFetchModelsBtn')?.addEventListener('click', codexQuickFetchModels);
   document.getElementById('codexQuickApplyBtn')?.addEventListener('click', codexQuickApply);
+  document.getElementById('codexQuickOpenDeepseekBtn')?.addEventListener('click', codexQuickOpenDeepseekPlatform);
 }
 
 function bindCodexQuickModeCards() {
@@ -190,6 +197,16 @@ function codexQuickSetModels(models, preferred) {
   (models || []).forEach(push);
   existing.forEach(push);
   select.innerHTML = codexQuickModelOptions(merged, preferred || merged[0]);
+}
+
+async function codexQuickOpenDeepseekPlatform() {
+  if (codexQuickStartBusy) return;
+  const url = 'https://platform.deepseek.com/';
+  try {
+    await invoke('open_external_url', { url });
+  } catch (error) {
+    showToast('打开 DeepSeek 平台失败: ' + error, 'error');
+  }
 }
 
 async function codexQuickFetchModels() {
