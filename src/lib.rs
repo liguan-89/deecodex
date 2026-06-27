@@ -10,6 +10,7 @@ pub mod codex_router_session;
 pub mod codex_threads;
 pub mod config;
 pub mod dev_pipeline;
+pub mod error_normalize;
 pub mod executor;
 pub mod files;
 pub mod handlers;

@@ -11,6 +11,7 @@ mod codex_router_session;
 mod codex_threads;
 mod config;
 mod dev_pipeline;
+mod error_normalize;
 mod executor;
 mod files;
 mod handlers;

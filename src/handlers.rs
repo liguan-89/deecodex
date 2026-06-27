@@ -8,6 +8,7 @@ use crate::accounts::{
 use crate::anthropic;
 use crate::cache::RequestCache;
 use crate::config::Args;
+use crate::error_normalize::chat_error_to_response_error;
 use crate::executor::{ComputerActionInvocation, LocalExecutorConfig, McpToolInvocation};
 use crate::metrics::Metrics;
 use crate::ratelimit::RateLimiter;
@@ -10893,7 +10894,28 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
             runtime_feedback
                 .failure(&model, status.as_u16(), body.clone(), retry_after)
                 .await;
+            // 归一化上游错误体：minimax/mimo `base_resp` / OpenAI `error` / 裸字符串 / 顶层 detail 全部统一到
+            // `{"error": {message, type, code, param}}` 形态，便于 Codex 客户端解析和展示。
+            let parsed_body = serde_json::from_str::<Value>(&body).ok();
+            let normalized_error =
+                chat_error_to_response_error(parsed_body.as_ref())["error"].clone();
+            let normalized_message = normalized_error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or(&body)
+                .to_string();
             if store_response {
+                let stored_error = json!({
+                    "code": normalized_error
+                        .get("code")
+                        .cloned()
+                        .unwrap_or(json!(status.as_u16())),
+                    "message": normalized_message.clone(),
+                    "type": normalized_error
+                        .get("type")
+                        .cloned()
+                        .unwrap_or(json!("upstream_error")),
+                });
                 save_response_unless_cancelled(
                     &state.sessions,
                     response_id.clone(),
@@ -10905,7 +10927,7 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                             "status": "failed",
                             "model": model,
                             "output": [],
-                            "error": {"code": status.as_u16().to_string(), "message": body.clone()}
+                            "error": stored_error
                             }),
                             req,
                         ),
@@ -10928,19 +10950,14 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                     false,
                 ))
                 .await;
-            // 上游可能返回 HTML，Codex 期望 JSON，统一转为 JSON 错误
-            let error_message = if body.trim_start().starts_with('<') {
-                format!("upstream returned {}", status.as_u16())
-            } else {
-                body
-            };
             (
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
                 Json(json!({
                     "error": {
-                        "code": status.as_u16().to_string(),
-                        "message": error_message,
-                        "type": "upstream_error"
+                        "code": normalized_error.get("code").cloned().unwrap_or(json!(status.as_u16())),
+                        "message": normalized_message,
+                        "type": normalized_error.get("type").cloned().unwrap_or(json!("upstream_error")),
+                        "param": normalized_error.get("param").cloned().unwrap_or(Value::Null),
                     }
                 })),
             )
