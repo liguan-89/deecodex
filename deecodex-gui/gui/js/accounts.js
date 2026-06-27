@@ -1028,7 +1028,7 @@ function endpointKindUsesModelMapping(kind) {
 }
 
 function providerSupportsCodexResponses(provider) {
-  return ['openai', 'deepseek', 'minimax', 'mimo'].includes(String(provider || '').toLowerCase());
+  return ['openai', 'minimax', 'mimo'].includes(String(provider || '').toLowerCase());
 }
 
 function isCodexNativeResponsesAccount(account) {

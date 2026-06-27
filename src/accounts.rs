@@ -710,7 +710,7 @@ impl Account {
         self.client_kind.is_codex()
             && matches!(
                 self.provider.to_ascii_lowercase().as_str(),
-                "openai" | "deepseek" | "minimax" | "mimo"
+                "openai" | "minimax" | "mimo"
             )
     }
 
@@ -730,6 +730,7 @@ impl Account {
     }
 
     fn normalize_responses_direct(&mut self) {
+        self.normalize_deepseek_codex_chat_endpoint();
         let force_native_responses = self.is_codex_native_responses_provider();
         if !self.is_responses_direct_account() {
             return;
@@ -799,6 +800,33 @@ impl Account {
                     &endpoint.kind,
                 ));
             }
+            endpoint.context_window_override = None;
+            endpoint.reasoning_effort_override = None;
+            endpoint.thinking_tokens = None;
+        }
+    }
+
+    fn normalize_deepseek_codex_chat_endpoint(&mut self) {
+        if !self.client_kind.is_codex() || !self.provider.eq_ignore_ascii_case("deepseek") {
+            return;
+        }
+        self.upstream = normalize_responses_base_url(&self.upstream);
+        for endpoint in &mut self.endpoints {
+            endpoint.base_url = normalize_responses_base_url(&endpoint.base_url);
+            if !endpoint.kind.is_responses_like() {
+                continue;
+            }
+            endpoint.kind = EndpointKind::OpenAiChat;
+            endpoint.name = endpoint.kind.label().into();
+            endpoint.template_id = "deepseek".into();
+            endpoint.path = "chat/completions".into();
+            endpoint.model_map.clear();
+            endpoint.model_profiles.clear();
+            endpoint.vision = VisionConfig {
+                mode: VisionMode::Off,
+                ..VisionConfig::default()
+            };
+            endpoint.image_generation_enabled = Some(false);
             endpoint.context_window_override = None;
             endpoint.reasoning_effort_override = None;
             endpoint.thinking_tokens = None;
@@ -2511,10 +2539,19 @@ mod provider_tests {
             let account = &store.accounts[0];
             let endpoint = &account.endpoints[0];
 
-            assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses, "{provider}");
+            let expected_kind = if provider == "deepseek" {
+                EndpointKind::OpenAiChat
+            } else {
+                EndpointKind::OpenAiResponses
+            };
+            assert_eq!(endpoint.kind, expected_kind, "{provider}");
             assert_eq!(account.upstream, expected_base_url, "{provider}");
             assert_eq!(endpoint.base_url, expected_base_url, "{provider}");
-            assert!(endpoint.path.is_empty(), "{provider}");
+            if provider == "deepseek" {
+                assert_eq!(endpoint.path, "chat/completions", "{provider}");
+            } else {
+                assert!(endpoint.path.is_empty(), "{provider}");
+            }
         }
     }
 
@@ -2914,19 +2951,65 @@ mod tests {
     }
 
     #[test]
-    fn legacy_deepseek_codex_account_is_normalized_to_responses() {
+    fn legacy_deepseek_codex_account_stays_on_chat_completions() {
         let mut account = legacy_account(true);
         account.provider = "deepseek".into();
         account.upstream = "https://api.deepseek.com/v1".into();
         account.normalize_v2();
 
         let endpoint = account.endpoints.first().unwrap();
-        assert!(!account.translate_enabled);
-        assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses);
-        assert_eq!(endpoint.name, "OpenAI Responses");
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(endpoint.name, "Chat Completions");
         assert!(endpoint.path.is_empty());
         assert!(endpoint.model_map.is_empty());
-        assert_eq!(endpoint.vision.mode, VisionMode::Native);
+        assert_eq!(endpoint.vision.mode, VisionMode::Off);
+    }
+
+    #[test]
+    fn existing_deepseek_responses_endpoint_is_migrated_back_to_chat() {
+        let mut account = legacy_account(true);
+        account.provider = "deepseek".into();
+        account.upstream = "https://api.deepseek.com/v1".into();
+        account.endpoints = vec![EndpointConfig {
+            id: "endpoint_deepseek_responses".into(),
+            name: "OpenAI Responses".into(),
+            kind: EndpointKind::OpenAiResponses,
+            base_url: "https://api.deepseek.com/v1/responses".into(),
+            path: String::new(),
+            template_id: "responses_direct".into(),
+            template_version: 1,
+            model_map: HashMap::from([("gpt-5.5".into(), "deepseek-v4-pro".into())]),
+            known_models: vec!["deepseek-v4-pro".into(), "deepseek-v4-flash".into()],
+            model_profiles: HashMap::new(),
+            vision: VisionConfig {
+                mode: VisionMode::Native,
+                ..VisionConfig::default()
+            },
+            image_generation_enabled: Some(true),
+            custom_headers: HashMap::new(),
+            request_timeout_secs: None,
+            max_retries: None,
+            context_window_override: Some(1000000),
+            reasoning_effort_override: Some("high".into()),
+            thinking_tokens: Some(16000),
+            fast_mode_enabled: false,
+            fast_service_tier: "auto".into(),
+            balance_url: String::new(),
+        }];
+        account.normalize_v2();
+
+        let endpoint = account.endpoints.first().unwrap();
+        assert_eq!(endpoint.kind, EndpointKind::OpenAiChat);
+        assert_eq!(endpoint.name, "OpenAI Chat");
+        assert_eq!(endpoint.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(endpoint.path, "chat/completions");
+        assert_eq!(endpoint.template_id, "deepseek");
+        assert!(endpoint.model_map.is_empty());
+        assert_eq!(endpoint.vision.mode, VisionMode::Off);
+        assert_eq!(endpoint.image_generation_enabled, Some(false));
+        assert_eq!(endpoint.context_window_override, None);
+        assert_eq!(endpoint.reasoning_effort_override, None);
+        assert_eq!(endpoint.thinking_tokens, None);
     }
 
     #[test]

@@ -3379,6 +3379,210 @@ fn apply_endpoint_image_generation_declaration(
     Ok(())
 }
 
+fn mimo_responses_accepts_tool_type(typ: &str) -> bool {
+    matches!(typ, "function")
+}
+
+fn response_function_tool_from_custom(tool: &Value) -> Value {
+    let Some(obj) = tool.as_object() else {
+        return tool.clone();
+    };
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("custom_tool");
+    let desc = obj.get("description").and_then(Value::as_str).unwrap_or("");
+    let parameters = if name == "apply_patch" {
+        json!({
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "Patch text to apply to the local workspace. Use the Codex apply_patch format beginning with *** Begin Patch and ending with *** End Patch."
+                }
+            },
+            "required": ["patch"],
+            "additionalProperties": false
+        })
+    } else {
+        json!({
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": format!("Input for {name}")
+                }
+            }
+        })
+    };
+    json!({
+        "type": "function",
+        "name": name,
+        "description": if name == "apply_patch" && desc.trim().is_empty() {
+            "Apply a source-code patch to the local workspace so Codex can show file edit diff statistics."
+        } else {
+            desc
+        },
+        "parameters": parameters
+    })
+}
+
+fn chat_function_tool_to_responses_function(tool: Value) -> Option<Value> {
+    let obj = tool.as_object()?;
+    if obj.get("type").and_then(Value::as_str) != Some("function") {
+        return None;
+    }
+    let function = obj.get("function").and_then(Value::as_object)?;
+    let name = function.get("name")?.clone();
+    let mut out = serde_json::Map::new();
+    out.insert("type".into(), json!("function"));
+    out.insert("name".into(), name);
+    if let Some(description) = function.get("description") {
+        out.insert("description".into(), description.clone());
+    }
+    if let Some(parameters) = function.get("parameters") {
+        out.insert("parameters".into(), parameters.clone());
+    }
+    if let Some(strict) = function.get("strict") {
+        out.insert("strict".into(), strict.clone());
+    }
+    Some(Value::Object(out))
+}
+
+fn response_function_tools_from_bridgeable_tool(tool: &Value) -> Vec<Value> {
+    let typ = tool.get("type").and_then(Value::as_str).unwrap_or("");
+    if typ == "function" {
+        return vec![tool.clone()];
+    }
+    if typ == "custom" {
+        return vec![response_function_tool_from_custom(tool)];
+    }
+    if matches!(
+        typ,
+        "web_search"
+            | "web_search_preview"
+            | "web_fetch"
+            | "web_fetch_preview"
+            | "image_generation"
+            | "image_generation_preview"
+            | "image2"
+            | "file_search"
+            | "file_search_preview"
+            | "code_interpreter"
+    ) {
+        return Vec::new();
+    }
+
+    let converted = translate::convert_tool(tool);
+    if let Some(items) = converted.as_array() {
+        return items
+            .iter()
+            .filter_map(|item| chat_function_tool_to_responses_function(item.clone()))
+            .collect();
+    }
+    chat_function_tool_to_responses_function(converted)
+        .into_iter()
+        .collect()
+}
+
+fn normalize_mimo_responses_tool_choice(
+    choice: &mut Option<Value>,
+) -> Result<Option<String>, String> {
+    let Some(value) = choice else {
+        return Ok(None);
+    };
+    let Some(obj) = value.as_object() else {
+        return Ok(None);
+    };
+    let typ = obj.get("type").and_then(Value::as_str).unwrap_or("");
+    match typ {
+        "custom" => {
+            if let Some(name) = obj.get("name").and_then(Value::as_str) {
+                *value = json!({"type": "function", "name": name});
+            }
+            Ok(None)
+        }
+        "function" | "auto" | "none" | "" => Ok(None),
+        other => Ok(Some(other.to_string())),
+    }
+}
+
+fn normalize_mimo_responses_tools(req: &mut ResponsesRequest) -> Result<usize, String> {
+    let unsupported_tool_choice = normalize_mimo_responses_tool_choice(&mut req.tool_choice)?;
+
+    let mut changed = 0usize;
+    let mut normalized = Vec::with_capacity(req.tools.len());
+    for tool in req.tools.drain(..) {
+        let typ = tool.get("type").and_then(Value::as_str).unwrap_or("");
+        if mimo_responses_accepts_tool_type(typ) {
+            normalized.push(tool);
+        } else {
+            let converted = response_function_tools_from_bridgeable_tool(&tool);
+            if converted.is_empty() {
+                changed += 1;
+            } else {
+                normalized.extend(converted);
+                changed += 1;
+            }
+        }
+    }
+    if let Some(tool_type) = unsupported_tool_choice {
+        return Err(tool_type);
+    }
+    req.tools = normalized;
+    Ok(changed)
+}
+
+fn apply_mimo_responses_tool_compatibility(
+    account: &Account,
+    endpoint: &EndpointConfig,
+    req: &mut ResponsesRequest,
+    body: &mut axum::body::Bytes,
+) -> Result<(), Box<Response>> {
+    if !account.provider.eq_ignore_ascii_case("mimo") || !endpoint.kind.is_responses_like() {
+        return Ok(());
+    }
+
+    match normalize_mimo_responses_tools(req) {
+        Ok(changed) => {
+            if changed == 0 {
+                return Ok(());
+            }
+        }
+        Err(tool_type) => {
+            return Err(Box::new((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": {
+                        "message": format!(
+                            "MiMo Responses 当前只支持普通 function 工具，不支持工具类型「{}」。请切换到 GPT/Responses helper，或改用不依赖该原生工具的模型请求。",
+                            if tool_type.trim().is_empty() { "unknown" } else { tool_type.as_str() }
+                        ),
+                        "type": "capability_error",
+                        "code": "mimo_responses_tool_type_not_supported"
+                    }
+                })),
+            )
+                .into_response()));
+        }
+    }
+
+    match serde_json::to_vec(req) {
+        Ok(updated) => *body = axum::body::Bytes::from(updated),
+        Err(err) => warn!(
+            account_id = %account.id,
+            endpoint_id = %endpoint.id,
+            "MiMo Responses 工具兼容转换序列化失败，继续使用原始请求体: {err}"
+        ),
+    }
+    info!(
+        account_id = %account.id,
+        endpoint_id = %endpoint.id,
+        "MiMo Responses 已将可桥接工具转换为 function，并剥离不可桥接的可选原生工具"
+    );
+    Ok(())
+}
+
 fn native_computer_tool_type(typ: &str) -> bool {
     matches!(
         typ,
@@ -8742,6 +8946,11 @@ async fn handle_responses_bypass(
     let model_map = ModelMap::new();
     let model = req.model.clone();
     let mut body = body;
+    if let Err(response) =
+        apply_mimo_responses_tool_compatibility(&account, &endpoint, &mut req, &mut body)
+    {
+        return *response;
+    }
     body = patch_missing_function_call_namespaces(&body, &mut req).unwrap_or(body);
     body = normalize_function_call_arguments_for_upstream(&body, &mut req).unwrap_or(body);
     if let Some(service_tier) = req.service_tier.as_deref() {
@@ -14650,6 +14859,100 @@ mod tests {
         } else {
             panic!("expected message input");
         }
+    }
+
+    #[test]
+    fn mimo_responses_tool_compat_converts_custom_and_strips_optional_native_tools() {
+        let mut req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "mimo-v2.5-pro",
+            "input": "改文件",
+            "tools": [
+                {"type": "custom", "name": "apply_patch", "description": "apply patch"},
+                {"type": "web_search_preview"},
+                {
+                    "type": "function",
+                    "name": "echo",
+                    "description": "echo",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                        "additionalProperties": false
+                    }
+                }
+            ],
+            "tool_choice": {"type": "custom", "name": "apply_patch"}
+        }))
+        .unwrap();
+
+        let changed = normalize_mimo_responses_tools(&mut req).unwrap();
+
+        assert_eq!(changed, 2);
+        assert_eq!(req.tools.len(), 2);
+        assert_eq!(req.tools[0]["type"], "function");
+        assert_eq!(req.tools[0]["name"], "apply_patch");
+        assert_eq!(
+            req.tools[0]["parameters"]["properties"]["patch"]["type"],
+            "string"
+        );
+        assert_eq!(req.tools[1]["name"], "echo");
+        assert_eq!(
+            req.tool_choice,
+            Some(json!({"type": "function", "name": "apply_patch"}))
+        );
+    }
+
+    #[test]
+    fn mimo_responses_tool_compat_rejects_explicit_unsupported_native_tool_choice() {
+        let mut req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "mimo-v2.5-pro",
+            "input": "搜索",
+            "tools": [{"type": "web_search_preview"}],
+            "tool_choice": {"type": "web_search_preview"}
+        }))
+        .unwrap();
+
+        let err = normalize_mimo_responses_tools(&mut req).unwrap_err();
+
+        assert_eq!(err, "web_search_preview");
+    }
+
+    #[test]
+    fn mimo_responses_tool_compat_bridges_namespace_and_computer_tools_to_functions() {
+        let mut req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "mimo-v2.5-pro",
+            "input": "截图",
+            "tools": [
+                {"type": "computer_use_preview", "display_width": 1024, "display_height": 768, "environment": "browser"},
+                {
+                    "type": "namespace",
+                    "name": "computer_use",
+                    "tools": [
+                        {
+                            "name": "get_app_state",
+                            "description": "Get app state",
+                            "parameters": {"type": "object", "properties": {}, "additionalProperties": false}
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let changed = normalize_mimo_responses_tools(&mut req).unwrap();
+        let names: Vec<String> = req
+            .tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        assert_eq!(changed, 2);
+        assert!(names.contains(&"local_computer".to_string()));
+        assert!(names.contains(&"computer_use__get_app_state".to_string()));
+        assert!(req
+            .tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) == Some("function")));
     }
 
     #[test]
