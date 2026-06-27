@@ -13165,7 +13165,10 @@ mod tests {
         assert!(selection.requires_computer);
         assert_eq!(trace["native_helper_reroute"], true);
         assert_eq!(trace["native_helper_reason"], "strong_computer_signal");
-        assert_eq!(trace["native_helper_skipped"][0]["model"], "deepseek-v4-pro");
+        assert_eq!(
+            trace["native_helper_skipped"][0]["model"],
+            "deepseek-v4-pro"
+        );
         assert_eq!(
             trace["native_helper_skipped"][0]["reason"],
             "recent_transient_upstream_error"

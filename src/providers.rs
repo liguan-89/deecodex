@@ -617,6 +617,10 @@ pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
         return false;
     }
     let lower = text.to_ascii_lowercase();
+    if looks_like_final_answer_text(text, &lower) {
+        return false;
+    }
+
     let promises_next_action = [
         "让我重写",
         "让我运行",
@@ -637,6 +641,11 @@ pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
         "我来查看",
         "我来检查",
         "我来修复",
+        "我先修复",
+        "我先检查",
+        "我先查看",
+        "我先运行",
+        "我先执行",
         "我来创建",
         "我来写",
         "我来写完整",
@@ -694,6 +703,10 @@ pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
         "开始写完整",
         "开始动手",
         "开始分别读取",
+        "并行修复",
+        "并行检查",
+        "并行处理",
+        "并行执行",
         "继续执行",
         "继续修复",
         "继续检查",
@@ -743,11 +756,11 @@ pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
         ]
         .iter()
         .any(|marker| lower.contains(marker));
-    if !promises_next_action {
-        return false;
-    }
+    promises_next_action || looks_like_intermediate_tool_work_text(text, &lower)
+}
 
-    let final_answer_markers = [
+fn looks_like_final_answer_text(text: &str, lower: &str) -> bool {
+    [
         "已完成",
         "已经完成",
         "完成了",
@@ -756,10 +769,55 @@ pub fn should_recover_promised_tool_call_text(text: &str) -> bool {
         "结果如下",
         "保存在",
         "以下是",
+        "总结",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+        || lower.contains("final answer")
+        || lower.contains("summary")
+        || lower.contains("completed")
+}
+
+fn looks_like_intermediate_tool_work_text(text: &str, lower: &str) -> bool {
+    let action_verbs = [
+        "修复", "检查", "查看", "运行", "执行", "修改", "处理", "清理", "生成", "创建", "写入",
+        "读取", "删除", "打开", "点击", "搜索", "调用", "测试", "验证", "提交", "构建", "重启",
+        "定位", "排查",
     ];
-    !final_answer_markers
-        .iter()
-        .any(|marker| text.contains(marker))
+    let progress_markers = [
+        "先",
+        "并行",
+        "逐一",
+        "逐个",
+        "继续",
+        "开始",
+        "接下来",
+        "下一步",
+        "现在",
+        "马上",
+        "下面",
+        "然后",
+        "策略",
+    ];
+    let english_actions = [
+        "fix", "check", "inspect", "run", "execute", "modify", "write", "read", "open", "click",
+        "search", "test", "verify", "build",
+    ];
+    let english_progress = [
+        "next", "now", "then", "first", "continue", "starting", "plan", "strategy",
+    ];
+
+    let has_action = action_verbs.iter().any(|marker| text.contains(marker))
+        || english_actions.iter().any(|marker| lower.contains(marker));
+    if !has_action {
+        return false;
+    }
+
+    let has_progress = progress_markers.iter().any(|marker| text.contains(marker))
+        || english_progress.iter().any(|marker| lower.contains(marker));
+    let open_ended = text.ends_with('：') || text.ends_with(':') || text.ends_with("：\n");
+
+    has_progress || open_ended
 }
 
 fn tool_execution_guard(label: &str) -> String {

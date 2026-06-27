@@ -116,6 +116,164 @@ impl MiniMaxPseudoToolMarkupSanitizer {
     }
 }
 
+struct MiniMaxRawToolCallParser {
+    enabled: bool,
+    pending: String,
+}
+
+impl MiniMaxRawToolCallParser {
+    fn new(model: &str) -> Self {
+        Self {
+            enabled: minimax_pseudo_tool_markup_applies(model),
+            pending: String::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: &str, tool_calls: &mut BTreeMap<usize, ToolCallAccum>) -> String {
+        if !self.enabled || chunk.is_empty() {
+            return chunk.to_string();
+        }
+
+        self.pending.push_str(chunk);
+        self.drain_completed(tool_calls)
+    }
+
+    fn finish(&mut self, tool_calls: &mut BTreeMap<usize, ToolCallAccum>) -> String {
+        if !self.enabled || self.pending.is_empty() {
+            return String::new();
+        }
+        let visible = self.drain_completed(tool_calls);
+        if self.pending.contains("<minimax:tool_call") || self.pending.contains("<tool_call") {
+            self.pending.clear();
+            return visible;
+        }
+        visible + &std::mem::take(&mut self.pending)
+    }
+
+    fn drain_completed(&mut self, tool_calls: &mut BTreeMap<usize, ToolCallAccum>) -> String {
+        let mut visible = String::new();
+        loop {
+            let Some((start, start_tag_len, end, end_tag_len)) =
+                find_minimax_raw_tool_call_bounds(&self.pending)
+            else {
+                break;
+            };
+
+            visible.push_str(&self.pending[..start]);
+            let block = &self.pending[start + start_tag_len..end];
+            if let Some(mut tool_call) = parse_minimax_raw_tool_call(block) {
+                let next_index = tool_calls.keys().next_back().map_or(0, |idx| idx + 1);
+                if tool_call.id.is_empty() {
+                    tool_call.id = format!("call_minimax_raw_{next_index}");
+                }
+                tool_calls.insert(next_index, tool_call);
+            }
+            self.pending.replace_range(..end + end_tag_len, "");
+        }
+
+        if let Some(start) = self
+            .pending
+            .find("<minimax:tool_call")
+            .or_else(|| self.pending.find("<tool_call"))
+        {
+            visible.push_str(&self.pending[..start]);
+            self.pending.replace_range(..start, "");
+        } else {
+            visible.push_str(&std::mem::take(&mut self.pending));
+        }
+        visible
+    }
+}
+
+fn find_minimax_raw_tool_call_bounds(text: &str) -> Option<(usize, usize, usize, usize)> {
+    let minimax_start = text
+        .find("<minimax:tool_call")
+        .map(|idx| (idx, "</minimax:tool_call>"));
+    let plain_start = text.find("<tool_call").map(|idx| (idx, "</tool_call>"));
+    let (start, end_tag) = match (minimax_start, plain_start) {
+        (Some(left), Some(right)) => {
+            if left.0 <= right.0 {
+                left
+            } else {
+                right
+            }
+        }
+        (Some(found), None) | (None, Some(found)) => found,
+        (None, None) => return None,
+    };
+    let tag_end = text[start..].find('>')? + start + 1;
+    let end = text[tag_end..].find(end_tag)? + tag_end;
+    Some((start, tag_end - start, end, end_tag.len()))
+}
+
+fn parse_minimax_raw_tool_call(block: &str) -> Option<ToolCallAccum> {
+    let invoke_start = block.find("<invoke")?;
+    let invoke_tag_end = block[invoke_start..].find('>')? + invoke_start + 1;
+    let invoke_tag = &block[invoke_start..invoke_tag_end];
+    let name = xml_attr(invoke_tag, "name")?;
+    let invoke_end = block[invoke_tag_end..]
+        .find("</invoke>")
+        .map(|idx| invoke_tag_end + idx)
+        .unwrap_or(block.len());
+    let body = &block[invoke_tag_end..invoke_end];
+    let arguments = parse_minimax_raw_parameters(body);
+
+    Some(ToolCallAccum {
+        id: String::new(),
+        name,
+        arguments: serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".into()),
+    })
+}
+
+fn parse_minimax_raw_parameters(body: &str) -> serde_json::Map<String, Value> {
+    let mut args = serde_json::Map::new();
+    let mut rest = body;
+    while let Some(start) = rest.find("<parameter") {
+        let after_start = &rest[start..];
+        let Some(tag_end_rel) = after_start.find('>') else {
+            break;
+        };
+        let tag = &after_start[..tag_end_rel + 1];
+        let Some(name) = xml_attr(tag, "name") else {
+            rest = &after_start[tag_end_rel + 1..];
+            continue;
+        };
+        let value_start = start + tag_end_rel + 1;
+        let Some(value_end_rel) = rest[value_start..].find("</parameter>") else {
+            break;
+        };
+        let raw_value = &rest[value_start..value_start + value_end_rel];
+        args.insert(name, parse_minimax_parameter_value(raw_value));
+        rest = &rest[value_start + value_end_rel + "</parameter>".len()..];
+    }
+    args
+}
+
+fn parse_minimax_parameter_value(raw: &str) -> Value {
+    let value = decode_minimal_xml_entities(raw.trim());
+    serde_json::from_str(&value).unwrap_or(Value::String(value))
+}
+
+fn xml_attr(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=");
+    let start = tag.find(&needle)? + needle.len();
+    let quote = tag[start..].chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let value_start = start + quote.len_utf8();
+    let value_end = tag[value_start..].find(quote)? + value_start;
+    Some(decode_minimal_xml_entities(&tag[value_start..value_end]))
+}
+
+fn decode_minimal_xml_entities(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 fn synthetic_toolchain_recovery_call(
     response_id: &str,
     tool: &providers::ToolchainRecoveryTool,
@@ -943,6 +1101,7 @@ pub fn translate_stream(
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
         let mut think_parser = ThinkTagParser::new();
+        let mut raw_tool_call_parser = MiniMaxRawToolCallParser::new(&model);
         let mut pseudo_tool_markup_sanitizer = MiniMaxPseudoToolMarkupSanitizer::new(&model);
         // 诊断用：主循环退出时记录关键状态，便于断流场景定位根因
         let mut chunk_count: usize = 0;
@@ -991,7 +1150,9 @@ pub fn translate_stream(
                                     }
                                 }
                                 let raw_content = choice.delta.content.as_deref().unwrap_or("");
-                                let content = pseudo_tool_markup_sanitizer.push(raw_content);
+                                let parsed_content =
+                                    raw_tool_call_parser.push(raw_content, &mut tool_calls);
+                                let content = pseudo_tool_markup_sanitizer.push(&parsed_content);
                                 if !content.is_empty() {
                                     for segment in think_parser.push(&content) {
                                         match segment {
@@ -1074,6 +1235,38 @@ pub fn translate_stream(
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        let raw_tool_tail = raw_tool_call_parser.finish(&mut tool_calls);
+        let sanitized_tail = pseudo_tool_markup_sanitizer.push(&raw_tool_tail);
+        if !sanitized_tail.is_empty() {
+            for segment in think_parser.push(&sanitized_tail) {
+                match segment {
+                    ContentSegment::Reasoning(text) => {
+                        for event in reasoning_segment_events(
+                            &mut seq,
+                            &mut emitted_reasoning_item,
+                            &mut accumulated_reasoning,
+                            &reasoning_item_id,
+                            &text,
+                        ) {
+                            yield event;
+                        }
+                    }
+                    ContentSegment::Text(text) => {
+                        for event in text_segment_events(
+                            &mut seq,
+                            &mut emitted_message_item,
+                            emitted_reasoning_item,
+                            &mut accumulated_text,
+                            &msg_item_id,
+                            &text,
+                        ) {
+                            yield event;
                         }
                     }
                 }
@@ -2291,6 +2484,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn minimax_raw_xml_tool_call_is_converted_to_function_call() {
+        let raw = concat!(
+            "准备执行",
+            "<minimax:tool_call>",
+            "<invoke name=\"exec_command\">",
+            "<parameter name=\"cmd\">pwd</parameter>",
+            "<parameter name=\"workdir\">/tmp</parameter>",
+            "</invoke>",
+            "</minimax:tool_call>",
+            "继续"
+        );
+        let (events, _) =
+            stream_events_for_text("MiniMax-M3", "resp_minimax_raw_xml_tool", raw).await;
+
+        let visible_text = events
+            .iter()
+            .filter(|(event_type, _)| event_type == "response.output_text.delta")
+            .filter_map(|(_, payload)| payload["delta"].as_str())
+            .collect::<String>();
+        assert!(visible_text.contains("准备执行"));
+        assert!(visible_text.contains("继续"));
+        assert!(!visible_text.contains("tool_call"));
+        assert!(!visible_text.contains("invoke"));
+
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected parsed MiniMax raw tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        let arguments = tool_done.1["item"]["arguments"].as_str().unwrap();
+        assert!(arguments.contains("\"cmd\":\"pwd\""));
+        assert!(arguments.contains("\"workdir\":\"/tmp\""));
+    }
+
+    #[tokio::test]
+    async fn minimax_raw_xml_tool_call_can_span_stream_chunks() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"准备<minimax:tool_call><invoke name=\\\"exec_command\\\"><parameter name=\\\"cmd\\\">\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"pwd</parameter></invoke></minimax:tool_call>完成\"},\"finish_reason\":null}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let upstream_url = spawn_sse_server(body).await;
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("请运行 pwd。")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+
+            ..Default::default()
+        }];
+        let sessions = SessionStore::new();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url.clone(),
+            api_key: String::new(),
+            chat_req: base_chat_request("MiniMax-M3", messages.clone()),
+            response_id: "resp_minimax_raw_xml_split".into(),
+            sessions,
+            prior_messages: vec![],
+            request_messages: messages,
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: "MiniMax-M3".into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: None,
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url,
+            allow_missing_done: false,
+            task_loop_guard_label: None,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+
+        let res = translate_stream(args).into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+        let tool_done = events
+            .iter()
+            .find(|(event_type, payload)| {
+                event_type == "response.output_item.done"
+                    && payload["item"]["type"] == "function_call"
+            })
+            .expect("expected split raw MiniMax tool call");
+        assert_eq!(tool_done.1["item"]["name"], "exec_command");
+        assert!(tool_done.1["item"]["arguments"]
+            .as_str()
+            .is_some_and(|arguments| arguments.contains("\"cmd\":\"pwd\"")));
+    }
+
+    #[tokio::test]
     async fn pseudo_tool_markup_sanitizer_is_minimax_scoped() {
         let raw = "准备继续\n]<]minimax[>[\ninvoke name\n]<]minimax[>[</tool_call>\n继续执行";
         let (events, _) =
@@ -2880,6 +3185,96 @@ mod tests {
 
         let stored = sessions
             .get_response("resp_minimax_promised_full_write")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_parallel_fix_phrase_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_parallel_fix",
+            "并行修复 5 个问题：",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions.get_response("resp_minimax_parallel_fix").unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_first_fix_phrase_without_tool_calls_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_first_fix",
+            "`formatDreamMentionPolicy` 在 main.tsx 顶部 import 了，但 formatters.ts 里没导出。我先修复 formatters.ts + db.ts + learningEvaluation.ts + learningStrategy.ts 几个点，并行：",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions.get_response("resp_minimax_first_fix").unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_generic_intermediate_work_phrase_injects_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_generic_intermediate_work",
+            "下面开始处理数据库迁移和测试失败：",
+        )
+        .await;
+
+        assert_has_exec_recovery_tool(&events);
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_minimax_generic_intermediate_work")
+            .unwrap();
+        assert_eq!(stored["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn minimax_completed_answer_with_next_steps_does_not_inject_recovery_tool() {
+        let (events, sessions) = stream_events_for_text(
+            "MiniMax-M3",
+            "resp_minimax_completed_with_next_steps",
+            "已完成修复。下一步建议：安装新版后再跑一次回归测试。",
+        )
+        .await;
+
+        assert!(!events.iter().any(|(event_type, payload)| {
+            event_type == "response.output_item.done" && payload["item"]["type"] == "function_call"
+        }));
+        assert!(events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.completed"));
+        assert!(!events
+            .iter()
+            .any(|(event_type, _)| event_type == "response.failed"));
+
+        let stored = sessions
+            .get_response("resp_minimax_completed_with_next_steps")
             .unwrap();
         assert_eq!(stored["status"], "completed");
     }
