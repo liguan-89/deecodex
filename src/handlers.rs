@@ -9884,7 +9884,7 @@ async fn bypass_send_request(
 #[allow(clippy::too_many_arguments)]
 async fn handle_responses_inner(
     state: AppState,
-    req: ResponsesRequest,
+    mut req: ResponsesRequest,
     raw_body: axum::body::Bytes,
     local_output_prefix_items: Vec<Value>,
     local_input_suffix_items: Vec<Value>,
@@ -9911,6 +9911,15 @@ async fn handle_responses_inner(
     let history = Vec::new();
 
     let original_model = req.model.clone();
+    let enriched_tool_calls =
+        translate::enrich_input_with_cached_tool_calls(&mut req, &state.sessions);
+    if enriched_tool_calls > 0 {
+        debug!(
+            previous_response_id = ?req.previous_response_id,
+            enriched_tool_calls,
+            "已从 previous_response_id 补齐 Chat 兼容上游所需的 assistant tool call 历史"
+        );
+    }
     let mut request_input_items = response_input_items(&req);
     request_input_items.extend(local_input_suffix_items);
     let route_trace = selected_endpoint

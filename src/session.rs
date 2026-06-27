@@ -448,6 +448,28 @@ impl SessionStore {
         self.input_items.get(response_id).map(|v| v.clone())
     }
 
+    pub fn response_tool_call_items(&self, response_id: &str) -> Vec<Value> {
+        self.responses
+            .get(response_id)
+            .and_then(|response| {
+                response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|item| {
+                                item.get("type")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(is_responses_tool_call_item)
+                            })
+                            .cloned()
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
     pub fn save_conversation(&self, conversation_id: String, messages: Vec<ChatMessage>) {
         let is_new = self
             .conversations
@@ -543,6 +565,13 @@ impl Default for SessionStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn is_responses_tool_call_item(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call" | "custom_tool_call" | "mcp_tool_call" | "computer_call"
+    )
 }
 
 #[cfg(test)]

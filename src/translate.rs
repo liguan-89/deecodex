@@ -1,10 +1,73 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
 use tracing::info;
 
 use crate::{session::SessionStore, types::*, utils::normalize_apply_patch_input};
+
+pub fn enrich_input_with_cached_tool_calls(
+    req: &mut ResponsesRequest,
+    sessions: &SessionStore,
+) -> usize {
+    let Some(previous_response_id) = req.previous_response_id.as_deref() else {
+        return 0;
+    };
+    let cached_calls = sessions.response_tool_call_items(previous_response_id);
+    if cached_calls.is_empty() {
+        return 0;
+    }
+
+    let ResponsesInput::Messages(items) = &mut req.input else {
+        return 0;
+    };
+
+    let cached_by_call_id: HashMap<String, Value> = cached_calls
+        .into_iter()
+        .filter_map(|item| {
+            let call_id = item.get("call_id").and_then(Value::as_str)?;
+            Some((call_id.to_string(), item))
+        })
+        .collect();
+    if cached_by_call_id.is_empty() {
+        return 0;
+    }
+
+    let mut seen_call_ids: HashSet<String> = items
+        .iter()
+        .filter(|item| {
+            item.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(is_assistant_tool_call_item)
+        })
+        .filter_map(|item| {
+            item.get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+
+    let mut enriched = 0usize;
+    let mut next_items = Vec::with_capacity(items.len() + cached_by_call_id.len());
+    for item in std::mem::take(items) {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+        if is_tool_output_item(item_type) {
+            if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                if !seen_call_ids.contains(call_id) {
+                    if let Some(cached) = cached_by_call_id.get(call_id) {
+                        next_items.push(cached.clone());
+                        seen_call_ids.insert(call_id.to_string());
+                        enriched += 1;
+                    }
+                }
+            }
+        }
+        next_items.push(item);
+    }
+
+    *items = next_items;
+    enriched
+}
 
 /// Result of converting a Responses API request into a Chat Completions request.
 pub struct TranslatedRequest {
@@ -788,6 +851,17 @@ fn is_assistant_tool_call_item(item_type: &str) -> bool {
     matches!(
         item_type,
         "function_call" | "custom_tool_call" | "mcp_tool_call" | "computer_call"
+    )
+}
+
+fn is_tool_output_item(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call_output"
+            | "mcp_tool_call_output"
+            | "custom_tool_call_output"
+            | "tool_search_output"
+            | "computer_call_output"
     )
 }
 
@@ -1616,6 +1690,46 @@ mod tests {
         assert_eq!(chat.messages.len(), 1);
         let calls = chat.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn cached_previous_response_tool_call_is_replayed_before_tool_output() {
+        let sessions = SessionStore::new();
+        sessions.save_response(
+            "resp_prev".into(),
+            json!({
+                "id": "resp_prev",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "id": "fc_call_1",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"pwd\"}",
+                    "status": "completed"
+                }]
+            }),
+        );
+        let mut req = base_req(ResponsesInput::Messages(vec![json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "{\"stdout\":\"/tmp\"}"
+        })]));
+        req.previous_response_id = Some("resp_prev".into());
+
+        let enriched = enrich_input_with_cached_tool_calls(&mut req, &sessions);
+        assert_eq!(enriched, 1);
+
+        let chat = to_chat_request(&req, vec![], &sessions, &empty_map(), false).chat;
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].role, "assistant");
+        assert_eq!(
+            chat.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["name"],
+            "exec_command"
+        );
+        assert_eq!(chat.messages[1].role, "tool");
+        assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("call_1"));
     }
 
     #[test]
