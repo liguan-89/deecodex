@@ -841,6 +841,10 @@ pub fn translate_stream(
         let mut stream_completed = false;
         let mut stream_error: Option<String> = None;
         let mut think_parser = ThinkTagParser::new();
+        // 诊断用：主循环退出时记录关键状态，便于断流场景定位根因
+        let mut chunk_count: usize = 0;
+        let mut last_event_data_prefix: String = String::new();
+        let mut last_text_bucket: usize = 0;
 
         while let Some(ev) = source.next().await {
             match ev {
@@ -852,6 +856,7 @@ pub fn translate_stream(
                 Ok(ev) if ev.data.trim() == "[DONE]" => { stream_completed = true; break; }
                 Ok(ev) if ev.data.is_empty() => continue,
                 Ok(ev) => {
+                    last_event_data_prefix = ev.data.chars().take(120).collect();
                     match serde_json::from_str::<ChatStreamChunk>(&ev.data) {
                         Err(e) => {
                             warn!("chunk parse: {} — data prefix: {}", e, &ev.data[..ev.data.len().min(120)]);
@@ -859,6 +864,7 @@ pub fn translate_stream(
                             break;
                         }
                         Ok(chunk) => {
+                            chunk_count += 1;
                             // Capture usage from final chunk (enabled via stream_options.include_usage)
                             if chunk.usage.is_some() {
                                 final_usage = chunk.usage;
@@ -906,6 +912,19 @@ pub fn translate_stream(
                                                     &text,
                                                 ) {
                                                     yield event;
+                                                }
+                                                // 诊断用：每 200 字节打一次累计状态，便于对比客户端/daemon 文本量
+                                                let bucket = accumulated_text.len() / 200;
+                                                if bucket != last_text_bucket {
+                                                    last_text_bucket = bucket;
+                                                    info!(
+                                                        "SSE chunk accumulated: model={} chunks={} \
+                                                         text_len={} text_head={:?}",
+                                                        model,
+                                                        chunk_count,
+                                                        accumulated_text.len(),
+                                                        accumulated_text.chars().take(100).collect::<String>()
+                                                    );
                                                 }
                                             }
                                         }
@@ -955,6 +974,26 @@ pub fn translate_stream(
                     }
                 }
             }
+        }
+
+        info!(
+            "SSE stream loop exited: model={} chunks={} completed={} error={:?} \
+             accumulated_text_len={} last_event_data_prefix={:?}",
+            model,
+            chunk_count,
+            stream_completed,
+            stream_error,
+            accumulated_text.len(),
+            last_event_data_prefix
+        );
+        if !stream_completed {
+            warn!(
+                "SSE stream fallback branch: model={} allow_missing_done={} \
+                 accumulated_text_len={}",
+                model,
+                allow_missing_done,
+                accumulated_text.len()
+            );
         }
 
         if !stream_completed {

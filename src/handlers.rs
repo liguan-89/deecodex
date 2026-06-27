@@ -10144,6 +10144,32 @@ async fn handle_responses_inner(
     providers::adapt_chat_request(&provider_profile, &mut chat_req);
     let adapted_reasoning_effort = chat_req.reasoning_effort.clone();
     let adapted_thinking = chat_req.thinking.clone();
+    let adapted_reasoning_split = chat_req.reasoning_split;
+    let adapted_stream_options = chat_req.stream_options.clone();
+    // minimax 协议调试：打印翻译后发往上游的关键字段，便于对照上游 OpenAPI schema
+    if provider_profile.slug == "minimax" {
+        let last_msg = chat_req.messages.last();
+        let last_role = last_msg.map(|m| m.role.as_str()).unwrap_or("");
+        let last_content = last_msg
+            .and_then(|m| m.content.as_ref())
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        info!(
+            "minimax upstream request fields: model={} reasoning_effort={:?} \
+             thinking={:?} reasoning_split={:?} stream_options={:?} msg_count={} \
+             tool_count={} last_role={} last_content_head={:?}",
+            chat_req.model,
+            adapted_reasoning_effort,
+            adapted_thinking,
+            adapted_reasoning_split,
+            adapted_stream_options.as_ref().map(|o| o.include_usage),
+            chat_req.messages.len(),
+            chat_req.tools.len(),
+            last_role,
+            last_content,
+        );
+    }
     let tool_names: Vec<&str> = chat_req
         .tools
         .iter()

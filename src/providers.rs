@@ -528,6 +528,9 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
 
     if profile.slug == "minimax" {
         normalize_minimax_thinking(&mut req.thinking);
+        // minimax OpenAI 兼容路径 schema 中没有 reasoning_effort 字段，
+        // 上游会按 OpenAI 同类未知参数忽略；显式清零避免污染上游请求体。
+        req.reasoning_effort = None;
         if minimax_model_supports_reasoning_split(&req.model) {
             req.reasoning_split = Some(true);
         }
@@ -1740,7 +1743,9 @@ mod tests {
 
         adapt_chat_request(&minimax, &mut req);
 
-        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+        // minimax OpenAI 兼容路径 schema 没有 reasoning_effort 字段，
+        // adapt_chat_request 会清零避免污染上游请求体
+        assert_eq!(req.reasoning_effort, None);
         assert_eq!(req.thinking, Some(json!({"type":"adaptive"})));
         assert_eq!(req.reasoning_split, Some(true));
         assert_eq!(req.parallel_tool_calls, None);
