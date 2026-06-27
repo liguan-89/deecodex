@@ -105,9 +105,9 @@ function renderThreads() {
   <div class="threads-list-head">线程列表</div>
   <div class="threads-table-wrap">
     <table class="threads-table">
-      <thead><tr><th class="th-pin">📌</th><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>操作</th></tr></thead>
-      <tbody id="threadsTableBody"><tr><td colspan="6" class="threads-empty-cell">加载中...</td></tr></tbody>
-      <tfoot><tr class="threads-table-spacer"><td colspan="6"></td></tr></tfoot>
+      <thead><tr><th>标题</th><th>客户端</th><th>模型/Provider</th><th>更新时间</th><th>操作</th></tr></thead>
+      <tbody id="threadsTableBody"><tr><td colspan="5" class="threads-empty-cell">加载中...</td></tr></tbody>
+      <tfoot><tr class="threads-table-spacer"><td colspan="5"></td></tr></tfoot>
     </table>
   </div>`;
 }
@@ -136,7 +136,7 @@ async function refreshThreads() {
   } catch (err) {
     showToast('加载线程数据失败: ' + err, 'error');
     const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="threads-error-cell">加载失败: ' + esc(String(err)) + '</td></tr>';
   }
 }
 
@@ -222,7 +222,7 @@ function renderThreadSourceDiagnostics(sources) {
 
 function renderThreadRows(list) {
   if (!list || list.length === 0) {
-    return '<tr><td colspan="6" class="threads-empty-cell">无线程数据</td></tr>';
+    return '<tr><td colspan="5" class="threads-empty-cell">无线程数据</td></tr>';
   }
   return list.map(t => {
     const kind = normalizeThreadClientKind(t.client_kind);
@@ -266,13 +266,6 @@ function renderThreadRows(list) {
     const deleteAction = t.delete_available
       ? `<button type="button" class="thread-row-action danger" onclick="event.stopPropagation();deleteThreadRow('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}')" title="删除 Codex 线程" aria-label="删除 Codex 线程">${threadLineActionIcon('trash')}</button>`
       : '';
-    // 置顶按钮：仅 codex 客户端可点（其他客户端无真源）；点击调 pin_thread IPC。
-    // 非 codex 客户端显示 readonly 图标，禁用状态。
-    const pinned = !!(t.pinned);
-    const pinCanToggle = kind === 'codex';
-    const pinCell = pinCanToggle
-      ? `<button type="button" class="thread-pin-button ${pinned ? 'is-pinned' : 'is-unpinned'}" onclick="event.stopPropagation();togglePin('${escAttr(threadJsArg(t.native_id))}', ${!pinned})" title="${pinned ? '取消置顶' : '置顶'}" aria-label="${pinned ? '取消置顶' : '置顶'}" aria-pressed="${pinned}">${pinned ? '📌' : '📍'}</button>`
-      : `<span class="thread-pin-icon thread-pin-icon-empty" title="非 Codex 客户端不支持置顶" aria-label="非 Codex 客户端不支持置顶"></span>`;
     // 客户端列：subagent 时显示「subagent: Aquinas」+ role 副标签
     const sourceRaw = String(t.source || '').trim();
     const threadSource = String(t.thread_source || '').trim();
@@ -295,7 +288,6 @@ function renderThreadRows(list) {
     const rowClick = t.detail_available ? ` onclick="openThread('${escAttr(threadJsArg(kind))}','${escAttr(threadJsArg(t.native_id))}','${escAttr(threadJsArg(threadKey))}')"` : '';
     const rowTitle = [t.title, t.native_id ? `线程 ID: ${t.native_id}` : ''].filter(Boolean).join('\n');
     return `<tr class="${rowClass}"${rowClick}>
-      <td class="td-pin">${pinCell}</td>
       <td title="${escAttr(rowTitle)}"><span class="td-title-text">${esc(t.title || '(无标题)')}</span>${meta}</td>
       <td>${clientCell}</td>
       <td>${esc(provider)}</td>
@@ -492,37 +484,6 @@ async function deleteThreadRow(clientKind, nativeId) {
     refreshThreads();
   } catch (err) {
     showToast('删除失败: ' + err, 'error');
-  }
-}
-
-/// 切换 Codex 线程置顶状态。
-/// 乐观更新本地 _threadsData（不等待后端），失败时回滚并提示。
-async function togglePin(nativeId, nextPinned) {
-  if (!_threadsData) {
-    showToast('线程数据尚未加载', 'error');
-    return;
-  }
-  // 找到行 + 备份旧值
-  const idx = _threadsData.list.findIndex(t => String(t.native_id) === String(nativeId));
-  if (idx < 0) {
-    showToast('未找到线程 ' + nativeId, 'error');
-    return;
-  }
-  const oldPinned = !!_threadsData.list[idx].pinned;
-  // 乐观更新
-  _threadsData.list[idx].pinned = nextPinned;
-  try {
-    await invoke('pin_thread', { threadId: String(nativeId), pinned: !!nextPinned });
-    showToast(nextPinned ? '已置顶' : '已取消置顶', 'success');
-    // 不整体 refresh，避免当前行焦点跳动；只重渲染本行
-    const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
-  } catch (err) {
-    // 回滚
-    _threadsData.list[idx].pinned = oldPinned;
-    showToast('置顶操作失败: ' + err, 'error');
-    const tbody = document.getElementById('threadsTableBody');
-    if (tbody) tbody.innerHTML = renderThreadRows(filteredThreadList(_threadsData.list));
   }
 }
 

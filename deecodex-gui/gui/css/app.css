@@ -2345,12 +2345,11 @@ body {
   top: 0;
   z-index: 1;
 }
-.threads-table th:nth-child(1) { width: 36px; }
-.threads-table th:nth-child(2) { width: 36%; }
-.threads-table th:nth-child(3) { width: 14%; }
-.threads-table th:nth-child(4) { width: 18%; }
-.threads-table th:nth-child(5) { width: 18%; }
-.threads-table th:nth-child(6) { width: 12%; }
+.threads-table th:nth-child(1) { width: 44%; }
+.threads-table th:nth-child(2) { width: 13%; }
+.threads-table th:nth-child(3) { width: 20%; }
+.threads-table th:nth-child(4) { width: 16%; }
+.threads-table th:nth-child(5) { width: 7%; }
 .threads-table td {
   padding: 5px 9px; border-bottom: 1px solid var(--border-subtle);
   font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
@@ -2361,7 +2360,6 @@ body {
   font-family: var(--font-sans);
   font-size: 12.5px;
   font-weight: 500;
-  position: relative; padding-right: 50px;
 }
 .threads-table .tag {
   padding: 2px 6px;
@@ -5280,37 +5278,30 @@ body {
 .thread-row { cursor: pointer; transition: background var(--transition); }
 .thread-row:hover { background: var(--accent-dim); }
 /* 当前活跃线程：左侧蓝条 + 浅蓝底色，区别于 hover */
-.thread-row-active {
-  background: var(--accent-dim);
+/* 当前打开线程高亮：macOS Finder 风格 — 左侧 3px 蓝条 + 整行非常淡背景（10% 不透明度），
+   不再吞掉标题列宽度。浅色主题下蓝条加深以保持可见度。 */
+.thread-row-active > td {
+  background: rgba(0, 200, 232, 0.06);
   box-shadow: inset 3px 0 0 0 var(--accent);
+  color: var(--text-heading);  /* 加深文字色，避免被淡背景稀释 */
+  font-weight: 550;
 }
-.thread-row-active:hover { background: var(--accent-soft); }
+.thread-row-active:hover > td {
+  background: rgba(0, 200, 232, 0.12);
+}
+/* 浅色主题加深蓝条对比度 + 标题文字进一步加深 */
+[data-theme="light"] .thread-row-active > td {
+  box-shadow: inset 3px 0 0 0 #008ca3;
+  color: #0a1929;  /* 接近黑色，在浅青背景上对比度清晰 */
+}
+[data-theme="light"] .thread-row-active > td:first-child {
+  color: #000;
+}
 /* 已归档线程：灰度降低 + 标题加删除线，区别于 thread-row-muted（不可点击）*/
 .thread-row-archived .td-title-text { text-decoration: line-through; opacity: 0.6; }
 .thread-row-archived { opacity: 0.7; }
 .thread-row-archived:hover { opacity: 1; }
 .thread-row-action.is-archived { color: var(--accent, #00c8e8); }
-/* 置顶列：固定窄列宽，emoji 居中 */
-.threads-table th.th-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
-.threads-table td.td-pin { width: 36px; text-align: center; padding-left: 0; padding-right: 0; }
-.thread-pin-icon { display: inline-block; font-size: 14px; line-height: 1; }
-.thread-pin-icon-empty { display: inline-block; width: 14px; height: 14px; }
-/* 置顶切换按钮：基线是隐形 + hover 显示，点击时短暂高亮 */
-.thread-pin-button {
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm, 4px);
-  transition: background var(--transition, 160ms);
-  color: var(--text-muted, #888);
-}
-.thread-pin-button:hover { background: var(--accent-dim, rgba(0,200,232,0.14)); }
-.thread-pin-button.is-pinned { color: #f59e0b; opacity: 1; }
-.thread-pin-button.is-unpinned { opacity: 0.35; }
-.thread-pin-button.is-unpinned:hover { opacity: 1; }
 .thread-pin-button:focus-visible { outline: 2px solid var(--accent, #00c8e8); outline-offset: 1px; }
 /* subagent 线程的客户端列下加副文本（昵称 · 角色）*/
 .tag-subagent {
@@ -7253,6 +7244,18 @@ body {
 [data-theme="light"] .gateway-version .update-dot {
   background: var(--amber);
   box-shadow: 0 0 4px var(--amber);
+}
+
+/* 亮色全局升级提示框：跟随主题避免深色突兀 */
+[data-theme="light"] .global-update-prompt {
+  background: rgba(255, 252, 245, 0.98);
+  border-color: rgba(245, 158, 11, 0.45);
+  box-shadow: 0 12px 28px rgba(120, 80, 20, 0.14);
+}
+[data-theme="light"] .global-update-prompt:hover,
+[data-theme="light"] .global-update-prompt:focus-visible {
+  background: rgba(255, 244, 230, 1);
+  border-color: rgba(245, 158, 11, 0.7);
 }
 
 /* 主题切换按钮 */
@@ -14380,25 +14383,24 @@ body {
   color: var(--text-secondary);
 }
 
-.threads-table th:nth-child(1) { width: 37%; }
+.threads-table th:nth-child(1) { width: 44%; }
 .threads-table th:nth-child(2) { width: 13%; }
-.threads-table th:nth-child(3) { width: 17%; }
+.threads-table th:nth-child(3) { width: 20%; }
 .threads-table th:nth-child(4) { width: 16%; }
-.threads-table th:nth-child(5) { width: 10%; }
-.threads-table th:nth-child(6) { width: 7%; }
+.threads-table th:nth-child(5) { width: 7%; }
 
 .threads-table td:first-child {
-  padding-right: 11px;
+  padding-right: 0;
 }
 
-.threads-table th:nth-child(6),
-.threads-table td:nth-child(6) {
+.threads-table th:nth-child(5),
+.threads-table td:nth-child(5) {
   text-align: right;
   white-space: nowrap;
 }
 
 .threads-table td:nth-child(2),
-.threads-table td:nth-child(6) {
+.threads-table td:nth-child(5) {
   overflow: visible;
 }
 
@@ -15320,16 +15322,16 @@ body {
     min-width: 58px;
   }
 
-  .threads-table th:nth-child(5),
-  .threads-table td:nth-child(5) {
+  /* 窄屏下隐藏「更新时间」列 */
+  .threads-table th:nth-child(4),
+  .threads-table td:nth-child(4) {
     display: none;
   }
 
-  .threads-table th:nth-child(1) { width: 46%; }
+  .threads-table th:nth-child(1) { width: 50%; }
   .threads-table th:nth-child(2) { width: 18%; }
-  .threads-table th:nth-child(3) { width: 20%; }
-  .threads-table th:nth-child(4) { width: 10%; }
-  .threads-table th:nth-child(6) { width: 6%; }
+  .threads-table th:nth-child(3) { width: 24%; }
+  .threads-table th:nth-child(5) { width: 8%; }
 }
 
 /* 线程聚合收口：压住早期控制台样式，改成与请求历史一致的轻量白底节奏。 */
@@ -15559,10 +15561,11 @@ body {
   table-layout: fixed;
 }
 
-.primary-page-shell-threads .threads-table th:nth-child(1) { width: 42%; }
+/* shell 列宽与 HTML 5 列（标题/客户端/模型/更新时间/操作）对齐 */
+.primary-page-shell-threads .threads-table th:nth-child(1) { width: 44%; }
 .primary-page-shell-threads .threads-table th:nth-child(2) { width: 13%; }
 .primary-page-shell-threads .threads-table th:nth-child(3) { width: 20%; }
-.primary-page-shell-threads .threads-table th:nth-child(4) { width: 18%; }
+.primary-page-shell-threads .threads-table th:nth-child(4) { width: 16%; }
 .primary-page-shell-threads .threads-table th:nth-child(5) { width: 7%; }
 
 .primary-page-shell-threads .threads-table th,
@@ -15659,10 +15662,10 @@ body {
     flex-wrap: wrap;
   }
 
-  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 46%; }
-  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 15%; }
-  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 21%; }
-  .primary-page-shell-threads .threads-table th:nth-child(4) { width: 12%; }
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 44%; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 14%; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 23%; }
+  .primary-page-shell-threads .threads-table th:nth-child(4) { width: 13%; }
   .primary-page-shell-threads .threads-table th:nth-child(5) { width: 6%; }
 }
 
@@ -15672,10 +15675,10 @@ body {
     display: none;
   }
 
-  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 54%; }
-  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 18%; }
-  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 21%; }
-  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 7%; }
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 50%; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 23%; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 22%; }
+  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 5%; }
 }
 
 /* 线程聚合二次收口：与请求历史页统一统计、分段筛选和轻列表。 */
