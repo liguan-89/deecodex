@@ -130,15 +130,6 @@ pub fn clear_all_for_test() {
 mod tests {
     use super::*;
 
-    /// 测试用例需要用超短 cooldown 验证"冷却到点后状态"语义。
-    /// 这里通过直接 mutate opened_at 来绕过 DEFAULT_COOLDOWN。
-    fn force_opened_with_age(provider: &str, age: std::time::Duration) {
-        mutate(provider, |state| {
-            state.consecutive_failures = DEFAULT_FAILURE_THRESHOLD;
-            state.opened_at = Some(Instant::now().checked_sub(age).unwrap_or_else(Instant::now));
-        });
-    }
-
     #[tokio::test]
     async fn closed_initially_allows() {
         clear_all_for_test();

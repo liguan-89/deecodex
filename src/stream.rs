@@ -17,7 +17,7 @@ use crate::{
         McpToolOutput,
     },
     metrics::Metrics,
-    providers,
+    provider_breaker, providers,
     request_history::{HistoryContext, RequestHistoryStore},
     runtime_feedback::RuntimeFeedbackSink,
     session::SessionStore,
@@ -570,7 +570,11 @@ fn reasoning_delta_text(delta: &crate::types::ChatDelta) -> Option<String> {
     let details = delta.reasoning_details.as_ref()?;
     let mut chunks = Vec::new();
     collect_reasoning_detail_text(details, &mut chunks);
-    let non_empty: String = chunks.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("");
+    let non_empty: String = chunks
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("");
     if non_empty.is_empty() {
         None
     } else {
@@ -656,6 +660,33 @@ pub fn translate_stream(
     let event_stream = stream! {
         let executors = executors.read().await.clone();
         let mut seq = 0_u32;
+        // 熔断器：上游 provider（如 minimax）连续失败时直接 short-circuit，
+        // 避免 5xx 风暴雪崩到所有调用方。
+        let provider_slug = providers::guess_provider(&url);
+        if provider_breaker::is_open(provider_slug).await {
+            warn!("provider {provider_slug} 熔断器已打开，short-circuit 请求 {response_id}");
+            let failed = json!({
+                "id": &response_id,
+                "object": "response",
+                "status": "failed",
+                "model": &model,
+                "output": [],
+                "error": {
+                    "code": "circuit_open",
+                    "message": format!("provider {provider_slug} circuit breaker is open"),
+                    "type": "upstream_error",
+                }
+            });
+            if store_response {
+                sessions.save_response(response_id.clone(), failed.clone());
+            }
+            yield event_with_sequence(
+                &mut seq,
+                "response.failed",
+                json!({"type": "response.failed", "response": failed}),
+            );
+            return;
+        }
         yield event_with_sequence(
             &mut seq,
             "response.created",
@@ -720,7 +751,10 @@ pub fn translate_stream(
             };
 
             match builder.json(&req_to_send).send().await {
-                Ok(r) if r.status().is_success() => break r,
+                Ok(r) if r.status().is_success() => {
+                    provider_breaker::record_success(provider_slug).await;
+                    break r;
+                }
                 Ok(r) => {
                     let status = r.status();
                     let status_code = status.as_u16();
@@ -751,6 +785,8 @@ pub fn translate_stream(
                         continue;
                     }
 
+                    // 重试耗尽 / 非 retryable 错误才计入 provider 熔断器
+                    provider_breaker::record_failure(provider_slug).await;
                     let error_msg = if body.trim_start().starts_with('<') {
                         format!("upstream HTTP {}", status_code)
                     } else {
@@ -1560,7 +1596,7 @@ pub fn translate_stream(
             tool_calls: assistant_tool_calls,
             tool_call_id: None,
             name: None,
-        
+
             ..Default::default()};
 
         if !accumulated_reasoning.is_empty() {
@@ -1593,7 +1629,7 @@ pub fn translate_stream(
                 },
                 tool_call_id: None,
                 name: None,
-            
+
                 ..Default::default()});
             sessions.save_conversation(id, conversation_messages);
         }
@@ -2055,8 +2091,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2348,8 +2385,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..18 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2363,8 +2401,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2373,8 +2412,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let sessions = SessionStore::new();
@@ -2460,8 +2500,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
         for idx in 0..5 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2475,8 +2516,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2485,8 +2527,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let sessions = SessionStore::new();
@@ -2572,8 +2615,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2772,8 +2816,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2854,8 +2899,9 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        
-            ..Default::default()}];
+
+            ..Default::default()
+        }];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2946,8 +2992,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2956,8 +3003,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let sessions = SessionStore::new();
@@ -3069,8 +3117,9 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -3079,8 +3128,9 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            
-                ..Default::default()});
+
+                ..Default::default()
+            });
         }
 
         let sessions = SessionStore::new();
@@ -3441,7 +3491,10 @@ mod tests {
             reasoning_details: Some(json!([{"text": "fallback"}])),
             ..Default::default()
         };
-        assert_eq!(reasoning_delta_text(&delta).as_deref(), Some("minimax-style"));
+        assert_eq!(
+            reasoning_delta_text(&delta).as_deref(),
+            Some("minimax-style")
+        );
 
         // 优先级 3：reasoning_details 数组（mimo / OpenRouter 风格）
         let delta = ChatDelta {
@@ -3731,5 +3784,110 @@ mod tests {
         assert_eq!(events[2].1["item"]["type"], "computer_call");
         assert_eq!(events[2].1["item"]["action"]["type"], "screenshot");
         assert_eq!(events[3].0, "response.completed");
+    }
+
+    /// 端到端验证：上游连续 5 次失败 → 下一次请求应被 provider 熔断器 short-circuit，
+    /// 不发请求到上游，直接 yield response.failed（code=circuit_open）。
+    #[tokio::test]
+    async fn stream_provider_breaker_short_circuits_after_5_failures() {
+        use crate::provider_breaker;
+
+        // 清空所有熔断器状态，避免并行测试污染
+        provider_breaker::clear_all_for_test();
+
+        // 选一个独立 url pattern，guess_provider 推断出唯一 provider slug。
+        // 这里用一个不存在的特殊域名（包含 "minimax" 关键字）确保落到 "minimax" slug。
+        let provider_slug = "minimax";
+        provider_breaker::reset(provider_slug).await;
+
+        // 直接喂 5 次失败（避免跑 5 次 stream 真实连接，慢且污染大）
+        for _ in 0..provider_breaker::DEFAULT_FAILURE_THRESHOLD {
+            provider_breaker::record_failure(provider_slug).await;
+        }
+        assert!(provider_breaker::is_open(provider_slug).await);
+
+        // 跑 1 次 stream，期望 short-circuit
+        let model = "test-circuit-model";
+        let response_id = "resp_circuit_test";
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(json!("trigger breaker")),
+            reasoning_content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            ..Default::default()
+        }];
+        // url 含 "minimax" 让 guess_provider 推断为 "minimax"（与上面喂的 slug 一致）
+        let upstream_url =
+            "https://api.minimaxi-internal-test.example/v1/chat/completions".to_string();
+        let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
+        let args = StreamArgs {
+            client: reqwest::Client::new(),
+            url: upstream_url,
+            api_key: String::new(),
+            chat_req: base_chat_request(model, messages),
+            response_id: response_id.into(),
+            sessions: SessionStore::new(),
+            prior_messages: vec![],
+            request_messages: vec![],
+            request_input_items: vec![],
+            store_response: true,
+            conversation_id: None,
+            response_extra: json!({}),
+            model: model.into(),
+            model_map: ModelMap::new(),
+            cache: None,
+            cache_key: None,
+            token_tracker: Arc::new(TokenTracker::default()),
+            metrics: Arc::new(Metrics::new()),
+            executors: Arc::new(tokio::sync::RwLock::new(LocalExecutorConfig::default())),
+            allowed_mcp_servers: vec![],
+            allowed_computer_displays: vec![],
+            custom_headers: Default::default(),
+            request_timeout_secs: Some(5),
+            max_retries: Some(0),
+            request_history: history,
+            history_context: HistoryContext::default(),
+            codex_router_sessions: None,
+            upstream_url: "http://placeholder/v1/chat/completions".into(),
+            allow_missing_done: false,
+            task_loop_guard_label: None,
+            runtime_feedback: test_runtime_feedback_sink(),
+            start: std::time::Instant::now(),
+        };
+        let sse = translate_stream(args);
+        let res = sse.into_response();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let events = parse_sse_events(&bytes);
+
+        // 应当只有 1 个 response.failed 事件，code=circuit_open，且不包含任何上游 chunk
+        let failed = events
+            .iter()
+            .find(|(t, _)| t == "response.failed")
+            .expect("response.failed should be emitted on short-circuit");
+        assert_eq!(failed.1["response"]["status"], "failed");
+        assert_eq!(failed.1["response"]["error"]["code"], "circuit_open");
+        assert_eq!(failed.1["response"]["error"]["type"], "upstream_error");
+        assert!(
+            failed.1["response"]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("circuit breaker"),
+            "message should mention circuit breaker, got: {:?}",
+            failed.1["response"]["error"]["message"]
+        );
+        assert!(
+            events
+                .iter()
+                .all(|(t, _)| t != "response.output_text.delta"),
+            "no upstream chunks should reach client when circuit is open"
+        );
+
+        // 清理：reset 熔断器避免污染其他测试
+        provider_breaker::reset(provider_slug).await;
     }
 }
