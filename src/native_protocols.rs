@@ -214,7 +214,8 @@ fn chat_response_from_text(content: String, usage: Option<ChatUsage>) -> ChatRes
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
         }],
         usage,
     }
@@ -256,6 +257,7 @@ mod tests {
             role: role.into(),
             content: Some(json!(content)),
             reasoning_content: None,
+            reasoning: None,
             reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,

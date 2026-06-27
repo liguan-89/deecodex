@@ -1524,7 +1524,8 @@ fn maybe_inject_explicit_model_identity(
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    };
+    
+        ..Default::default()};
     let insert_at = if messages
         .first()
         .is_some_and(|message| message.role == "system")
@@ -8473,7 +8474,8 @@ fn append_ocr_fallback_message(chat_req: &mut ChatRequest, ocr: local_ocr::OcrFa
         tool_calls: None,
         tool_call_id: None,
         name: None,
-    });
+    
+        ..Default::default()});
 }
 
 async fn handle_responses_vlm_final_answer(
@@ -10156,7 +10158,8 @@ async fn handle_responses_inner(
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    });
+                    
+                        ..Default::default()});
                     use_vision_transport = false;
                 }
                 Err(resp) => return resp,
@@ -11034,7 +11037,8 @@ async fn handle_blocking(args: BlockingArgs<'_>) -> Response {
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    });
+                    
+                        ..Default::default()});
 
                 let mut full_history = chat_req.messages.clone();
                 if let Some(reasoning) = assistant_msg.reasoning_content.clone() {
@@ -11293,7 +11297,8 @@ async fn handle_anthropic_messages(args: AnthropicArgs<'_>) -> Response {
                         tool_calls: None,
                         tool_call_id: None,
                         name: None,
-                    });
+                    
+                        ..Default::default()});
 
                 let mut full_history = chat_req.messages.clone();
                 full_history.push(assistant_msg);
@@ -13218,7 +13223,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
             ChatMessage {
                 role: "user".into(),
                 content: Some(Value::String("你是谁？".into())),
@@ -13227,7 +13233,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
         ];
 
         maybe_inject_explicit_model_identity(
@@ -13261,7 +13268,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        };
+        
+            ..Default::default()};
         let mut non_explicit_messages = vec![base_message.clone()];
         let mut responses_messages = vec![base_message];
 

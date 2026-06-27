@@ -552,17 +552,29 @@ fn parse_local_mcp_arguments(raw: &str) -> LocalMcpCall {
     }
 }
 
+/// 从 ChatDelta 提取 reasoning 文本，按上游字段穷举优先级兜底：
+/// 1. `reasoning_content`（OpenAI / DeepSeek 风格，字符串）
+/// 2. `reasoning`（MiniMax / 部分 Anthropic 风格接口，字符串）
+/// 3. `reasoning_details`（mimo / OpenRouter 风格，数组/对象）
+///
+/// 参照 cc-switch `extract_reasoning_field_text` 的 3 档穷举思路，
+/// 不依赖 provider meta，避免单家字段漂移时丢思考内容。
+/// 空字符串会过滤掉，避免空 reasoning 污染 prompt cache。
 fn reasoning_delta_text(delta: &crate::types::ChatDelta) -> Option<String> {
     if let Some(text) = delta.reasoning_content.as_deref().filter(|s| !s.is_empty()) {
+        return Some(text.to_string());
+    }
+    if let Some(text) = delta.reasoning.as_deref().filter(|s| !s.is_empty()) {
         return Some(text.to_string());
     }
     let details = delta.reasoning_details.as_ref()?;
     let mut chunks = Vec::new();
     collect_reasoning_detail_text(details, &mut chunks);
-    if chunks.is_empty() {
+    let non_empty: String = chunks.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("");
+    if non_empty.is_empty() {
         None
     } else {
-        Some(chunks.join(""))
+        Some(non_empty)
     }
 }
 
@@ -1548,7 +1560,8 @@ pub fn translate_stream(
             tool_calls: assistant_tool_calls,
             tool_call_id: None,
             name: None,
-        };
+        
+            ..Default::default()};
 
         if !accumulated_reasoning.is_empty() {
             sessions.store_turn_reasoning(&request_messages, &assistant_msg, accumulated_reasoning.clone());
@@ -1580,7 +1593,8 @@ pub fn translate_stream(
                 },
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
             sessions.save_conversation(id, conversation_messages);
         }
 
@@ -1661,22 +1675,45 @@ pub fn translate_stream(
             }
         }
 
-        runtime_feedback.success(&model).await;
-        let _ = request_history.record(history_context.record(
-            response_id,
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-            model,
-            "completed".into(),
-            completion_usage.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
-            completion_usage.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
-            start.elapsed().as_millis() as u64,
-            upstream_url,
-            String::new(),
-            history_cache_hit,
-        )).await;
+        // runtime_feedback / request_history 改成 fire-and-forget。
+        // 若在 SSE stream 块内 await，yield `response.completed` 后 HTTP 响应
+        // 不会立即关闭，Codex 客户端一直等连接关闭造成假「断流」。
+        // 现象：minimax / mimo 这类不发 [DONE] SSE 终止符的 provider 尤其明显，
+        // 走 `allow_missing_done` fallback 后 stream 块在 await 处阻塞，
+        // 客户端 UI 卡住直到 HTTP 关闭。
+        let rh = request_history.clone();
+        let hc = history_context.clone();
+        let url_for_record = upstream_url.clone();
+        let resp_id_for_record = response_id.clone();
+        let model_for_record = model.clone();
+        let usage_for_record = completion_usage.clone();
+        let feedback = runtime_feedback.clone();
+        let started_at_ms = start.elapsed().as_millis() as u64;
+        tokio::spawn(async move {
+            feedback.success(&model_for_record).await;
+            let _ = rh.record(hc.record(
+                resp_id_for_record,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                model_for_record,
+                "completed".into(),
+                usage_for_record.as_ref().and_then(|u| u["input_tokens"].as_u64()).unwrap_or(0) as u32,
+                usage_for_record.as_ref().and_then(|u| u["output_tokens"].as_u64()).unwrap_or(0) as u32,
+                started_at_ms,
+                url_for_record,
+                String::new(),
+                history_cache_hit,
+            )).await;
+        });
     };
 
-    Sse::new(event_stream).keep_alive(KeepAlive::default())
+    // 不开 keep_alive：stream 块 yield 完最后一个事件后立即结束，HTTP
+    // 响应同步关闭，Codex 客户端不会等 15s 心跳超时。原 keep_alive 让 axum
+    // 在 stream 块结束与 HTTP 关闭之间留 keep-alive 周期，对不发 [DONE] 的
+    // provider（如 minimax / mimo）造成假「断流」——客户端 UI 一直等连接关闭。
+    Sse::new(event_stream)
 }
 
 /// Replay a cached response as a full SSE event stream.
@@ -1886,7 +1923,11 @@ pub fn translate_cached(
             cached.text.len(), cached.reasoning.len(), cached.tool_calls.len());
     };
 
-    Sse::new(event_stream).keep_alive(KeepAlive::default())
+    // 不开 keep_alive：stream 块 yield 完最后一个事件后立即结束，HTTP
+    // 响应同步关闭，Codex 客户端不会等 15s 心跳超时。原 keep_alive 让 axum
+    // 在 stream 块结束与 HTTP 关闭之间留 keep-alive 周期，对不发 [DONE] 的
+    // provider（如 minimax / mimo）造成假「断流」——客户端 UI 一直等连接关闭。
+    Sse::new(event_stream)
 }
 
 #[cfg(test)]
@@ -1894,7 +1935,7 @@ mod tests {
     use super::*;
     use crate::accounts::{Account, AccountStore, ACCOUNT_STORE_VERSION};
     use crate::cache::CachedUsage;
-    use crate::types::CachedTokenDetails;
+    use crate::types::{CachedTokenDetails, ChatDelta};
     use axum::response::IntoResponse;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2014,7 +2055,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2306,7 +2348,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
         for idx in 0..18 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2320,7 +2363,8 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2329,7 +2373,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            });
+            
+                ..Default::default()});
         }
 
         let sessions = SessionStore::new();
@@ -2415,7 +2460,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
         for idx in 0..5 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2429,7 +2475,8 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2438,7 +2485,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            });
+            
+                ..Default::default()});
         }
 
         let sessions = SessionStore::new();
@@ -2524,7 +2572,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2723,7 +2772,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2804,7 +2854,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
 
         let sessions = SessionStore::new();
         let history = Arc::new(RequestHistoryStore::new(std::path::Path::new(":memory:")).unwrap());
@@ -2880,7 +2931,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
         for idx in 0..24 {
             messages.push(ChatMessage {
                 role: "assistant".into(),
@@ -2894,7 +2946,8 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -2903,7 +2956,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            });
+            
+                ..Default::default()});
         }
 
         let sessions = SessionStore::new();
@@ -2995,7 +3049,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        }];
+        
+            ..Default::default()}];
         for idx in 0..24 {
             let name = if idx == 0 {
                 "codex_app__read_thread_terminal"
@@ -3014,7 +3069,8 @@ mod tests {
                 })]),
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
             messages.push(ChatMessage {
                 role: "tool".into(),
                 content: Some(json!("ok")),
@@ -3023,7 +3079,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some(format!("call_{idx}")),
                 name: None,
-            });
+            
+                ..Default::default()});
         }
 
         let sessions = SessionStore::new();
@@ -3364,6 +3421,55 @@ mod tests {
         assert_eq!(json["call_id"], "m1");
         assert_eq!(json["status"], "completed");
         assert_eq!(json["output"]["content"][0]["text"], "ok");
+    }
+
+    #[test]
+    fn reasoning_delta_text_prefers_reasoning_content_then_reasoning_then_details() {
+        // 优先级 1：reasoning_content（OpenAI/DeepSeek 风格）
+        let delta = ChatDelta {
+            reasoning_content: Some("primary".into()),
+            reasoning: Some("fallback-1".into()),
+            reasoning_details: Some(json!([{"text": "fallback-2"}])),
+            ..Default::default()
+        };
+        assert_eq!(reasoning_delta_text(&delta).as_deref(), Some("primary"));
+
+        // 优先级 2：reasoning 字符串（MiniMax 等 style），reasoning_content 缺失时兜底
+        let delta = ChatDelta {
+            reasoning_content: None,
+            reasoning: Some("minimax-style".into()),
+            reasoning_details: Some(json!([{"text": "fallback"}])),
+            ..Default::default()
+        };
+        assert_eq!(reasoning_delta_text(&delta).as_deref(), Some("minimax-style"));
+
+        // 优先级 3：reasoning_details 数组（mimo / OpenRouter 风格）
+        let delta = ChatDelta {
+            reasoning_content: None,
+            reasoning: None,
+            reasoning_details: Some(json!([
+                {"type": "reasoning.text", "text": "chunk-1"},
+                {"type": "reasoning.text", "text": "chunk-2"},
+            ])),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasoning_delta_text(&delta).as_deref(),
+            Some("chunk-1chunk-2")
+        );
+
+        // 全部为空字符串时返回 None（避免空 reasoning 污染 prompt cache）
+        let delta = ChatDelta {
+            reasoning_content: Some(String::new()),
+            reasoning: Some(String::new()),
+            reasoning_details: Some(json!([{"text": ""}])),
+            ..Default::default()
+        };
+        assert_eq!(reasoning_delta_text(&delta), None);
+
+        // 全部 None
+        let delta = ChatDelta::default();
+        assert_eq!(reasoning_delta_text(&delta), None);
     }
 
     #[test]

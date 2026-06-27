@@ -555,6 +555,7 @@ mod tests {
             role: role.into(),
             content: content.map(|s| serde_json::Value::String(s.to_string())),
             reasoning_content: None,
+            reasoning: None,
             reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,

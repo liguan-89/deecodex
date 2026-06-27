@@ -186,7 +186,7 @@ pub struct StreamOptions {
     pub include_usage: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ChatMessage {
     pub role: String,
     /// Can be a plain string or a multimodal array
@@ -194,6 +194,10 @@ pub struct ChatMessage {
     pub content: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// 部分 provider（MiniMax / 一些 Anthropic 风格接口）用 `reasoning` 字符串
+    /// 字段回传思考内容，与 `reasoning_content` 语义等价；序列化时与上游字段名对齐。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_details: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,6 +277,10 @@ pub struct ChatDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// 部分 provider 用 `reasoning` 字符串字段回传思考内容（与
+    /// `reasoning_content` 语义等价），按 cc-switch 的 3 档穷举顺序兜底提取。
+    #[serde(default)]
+    pub reasoning: Option<String>,
     #[serde(default)]
     pub reasoning_details: Option<Value>,
     #[serde(default)]

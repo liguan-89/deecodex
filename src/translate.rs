@@ -66,7 +66,8 @@ pub fn to_chat_request(
             tool_calls: None,
             tool_call_id: None,
             name: None,
-        };
+        
+            ..Default::default()};
         if messages.is_empty() || messages[0].role != "system" {
             messages.insert(0, system_msg);
         } else {
@@ -85,7 +86,8 @@ pub fn to_chat_request(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            });
+            
+                ..Default::default()});
         }
         ResponsesInput::Messages(items) => {
             let mut i = 0;
@@ -133,7 +135,8 @@ pub fn to_chat_request(
                         tool_calls: Some(grouped),
                         tool_call_id: None,
                         name: None,
-                    };
+                    
+                        ..Default::default()};
                     if msg.reasoning_content.is_none() {
                         msg.reasoning_content = sessions.get_turn_reasoning(&messages, &msg);
                     }
@@ -187,7 +190,8 @@ pub fn to_chat_request(
                                         })]),
                                         tool_call_id: None,
                                         name: None,
-                                    });
+                                    
+                                        ..Default::default()});
                                 }
                             }
                             let success = item
@@ -208,7 +212,8 @@ pub fn to_chat_request(
                                 tool_calls: None,
                                 tool_call_id: Some(call_id.to_string()),
                                 name: None,
-                            });
+                            
+                                ..Default::default()});
                         }
                         _ => {
                             let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
@@ -226,7 +231,8 @@ pub fn to_chat_request(
                                 tool_calls: None,
                                 tool_call_id: None,
                                 name: None,
-                            };
+                            
+                                ..Default::default()};
                             if has_img {
                                 has_images = true;
                                 // Reconstruct multimodal content with images
@@ -1176,7 +1182,8 @@ pub fn from_chat_response(
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
         });
 
     let raw_reasoning_content = choice.message.reasoning_content.clone().unwrap_or_default();
@@ -1684,7 +1691,8 @@ mod tests {
             ]),
             tool_call_id: None,
             name: None,
-        };
+        
+            ..Default::default()};
         let history = vec![
             ChatMessage {
                 role: "user".into(),
@@ -1694,7 +1702,8 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
             prev,
         ];
         let req = base_req(ResponsesInput::Messages(vec![
@@ -1847,7 +1856,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -1883,7 +1893,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -1921,7 +1932,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -1970,7 +1982,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -1995,7 +2008,8 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -2028,7 +2042,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -2061,7 +2076,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -2116,7 +2132,8 @@ mod tests {
                     ]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };
@@ -2378,7 +2395,8 @@ mod tests {
                     })]),
                     tool_call_id: None,
                     name: None,
-                },
+                
+                    ..Default::default()},
             }],
             usage: None,
         };

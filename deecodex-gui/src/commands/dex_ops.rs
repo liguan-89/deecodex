@@ -324,6 +324,7 @@ pub(super) async fn dex_speed_test_impl() -> Result<Value, String> {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                ..Default::default()
             }],
             tools: vec![],
             temperature: None,

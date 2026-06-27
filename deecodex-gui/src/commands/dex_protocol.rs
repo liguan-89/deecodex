@@ -340,6 +340,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    ..Default::default()
                 },
                 deecodex::types::ChatMessage {
                     role: "user".into(),
@@ -349,6 +350,7 @@ mod tests {
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
+                    ..Default::default()
                 },
             ],
             tools: vec![json!({

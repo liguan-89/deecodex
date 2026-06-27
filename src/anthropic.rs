@@ -146,7 +146,8 @@ pub fn response_to_chat(value: Value) -> ChatResponse {
                 },
                 tool_call_id: None,
                 name: None,
-            },
+            
+                ..Default::default()},
         }],
         usage,
     }
@@ -312,6 +313,7 @@ mod tests {
             role: role.into(),
             content: Some(content),
             reasoning_content: None,
+            reasoning: None,
             reasoning_details: None,
             tool_calls: None,
             tool_call_id: None,
@@ -427,7 +429,8 @@ mod tests {
             })]),
             tool_call_id: None,
             name: None,
-        };
+        
+            ..Default::default()};
         let tool = ChatMessage {
             role: "tool".into(),
             content: Some(Value::String("file text".into())),
@@ -436,7 +439,8 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_1".into()),
             name: None,
-        };
+        
+            ..Default::default()};
         let chat = ChatRequest {
             model: "claude-sonnet-4-5".into(),
             messages: vec![assistant, tool],
