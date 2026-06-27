@@ -8,7 +8,11 @@ VERSION="${VERSION#v}"
 
 BASE_URL="${DEX_AI_UPDATE_BASE_URL:-https://api.liguan.me/releases/dex-ai}"
 OUT_DIR="${DEX_AI_UPDATE_OUT_DIR:-$ROOT_DIR/dist/updater-release/$VERSION}"
-BUNDLE_DIR="$ROOT_DIR/target-mac/release/bundle"
+TARGET_DIR="$(grep -E '^target-dir[[:space:]]*=' "$ROOT_DIR/.cargo/config.toml" 2>/dev/null | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' | head -n1)"
+if [[ -z "$TARGET_DIR" ]]; then
+  TARGET_DIR="target"
+fi
+BUNDLE_DIR="$ROOT_DIR/$TARGET_DIR/release/bundle"
 MAC_TARGETS="${DEX_AI_UPDATE_MAC_TARGETS:-darwin-aarch64}"
 NOTES="${DEX_AI_UPDATE_NOTES:-}"
 NOTES_FILE="${DEX_AI_UPDATE_NOTES_FILE:-}"
