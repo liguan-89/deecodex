@@ -1888,7 +1888,7 @@ fn project_label(path: &str) -> String {
         .to_string()
 }
 
-// 判定一个 workspace root 路径是否是 Codex Desktop 自身的会话目录。
+// 判定一个 workspace root 路径是否是 Codex Desktop 自身生成的会话/临时工作区。
 // 这类路径不应该作为项目根出现在 global-state.json 中，因此 prune 时
 // 需要把它们从 workspace roots、labels、assignments 等字段里清除。
 // 这里只识别明显属于会话/运行时数据的目录，其他路径一律视为合法
@@ -1899,6 +1899,28 @@ fn is_session_dir(path: &str) -> bool {
         || path.ends_with("/.codex/sessions")
         || path.ends_with("/.codex/archived_sessions")
         || path.contains("/.deecodex/")
+        || is_codex_documents_temp_workspace(path)
+}
+
+fn is_codex_documents_temp_workspace(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.windows(3).any(|window| {
+        window[0] == "Documents" && window[1] == "Codex" && is_iso_date_dir(window[2])
+    })
+}
+
+fn is_iso_date_dir(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[8..].iter().all(u8::is_ascii_digit)
 }
 fn project_for_thread(cwd: &str, known_roots: &BTreeSet<String>) -> Option<String> {
     let mut best: Option<&String> = None;
@@ -4745,16 +4767,28 @@ mod tests {
         assert!(is_session_dir("/Users/me/.codex/sessions"));
         assert!(is_session_dir("/Users/me/.codex/archived_sessions"));
         assert!(is_session_dir("/Users/me/.deecodex/runtime/foo"));
+        assert!(is_session_dir("/Users/me/Documents/Codex/2026-06-25/ni"));
+        assert!(is_session_dir(
+            "/Users/me/Documents/Codex/2026-06-25/new-chat-2"
+        ));
+        assert!(is_session_dir(
+            "C:\\Users\\me\\Documents\\Codex\\2026-06-25\\new-chat"
+        ));
         // 普通工程根/任意目录都不能被误判为 session dir
         assert!(!is_session_dir("/Users/me/projects/deecodex-gui"));
-        assert!(!is_session_dir("/Users/me/Documents/Codex/2026-06-25/ni"));
+        assert!(!is_session_dir(
+            "/Users/me/Documents/CodexProjects/2026-06-25/ni"
+        ));
+        assert!(!is_session_dir(
+            "/Users/me/Documents/Codex/not-a-date/project"
+        ));
         assert!(!is_session_dir("/Users/me/.codex/config.toml"));
         assert!(!is_session_dir("/Users/me/.codex/worktrees/8c23/deecodex"));
     }
 
     #[test]
     fn prune_invalid_desktop_project_state_keeps_non_session_paths() {
-        // session dir 黑名单只删 session 类路径，工程根（含/不含标记）一律保留。
+        // 只删除 Codex 运行态/自动对话工作区路径，普通工程根一律保留。
         let mut state = json!({
             "electron-saved-workspace-roots": [
                 "/Users/me/projects/codex-relay",
@@ -4788,8 +4822,8 @@ mod tests {
 
         let changed = prune_invalid_desktop_project_state(&mut state);
         assert!(
-            changed >= 5,
-            "应至少清掉 5 处 session dir 引用，实际 {changed}"
+            changed >= 8,
+            "应至少清掉 8 处 Codex 运行态/对话工作区引用，实际 {changed}"
         );
 
         let saved = state["electron-saved-workspace-roots"].as_array().unwrap();
@@ -4797,7 +4831,6 @@ mod tests {
             saved.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
             vec![
                 "/Users/me/projects/codex-relay",
-                "/Users/me/Documents/Codex/2026-06-25/ni",
                 "/Users/me/notes/no-marker-dir",
             ]
         );
@@ -4811,13 +4844,14 @@ mod tests {
         let assignments = state["thread-project-assignments"].as_object().unwrap();
         assert!(assignments.contains_key("thread-1"));
         assert!(!assignments.contains_key("thread-2"));
-        assert!(assignments.contains_key("thread-3"));
+        assert!(!assignments.contains_key("thread-3"));
         let hints = state["thread-workspace-root-hints"].as_object().unwrap();
         assert!(!hints.contains_key("thread-2"));
+        assert!(!hints.contains_key("thread-4"));
         let orders = state["sidebar-project-thread-orders"].as_object().unwrap();
         assert!(orders.contains_key("/Users/me/projects/codex-relay"));
         assert!(!orders.contains_key("/Users/me/.codex/sessions"));
-        assert!(orders.contains_key("/Users/me/Documents/Codex/2026-06-25/ni"));
+        assert!(!orders.contains_key("/Users/me/Documents/Codex/2026-06-25/ni"));
     }
 
     #[test]
