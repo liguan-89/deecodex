@@ -22,6 +22,7 @@ mod metrics;
 mod native_protocols;
 mod oauth_accounts;
 mod prompts;
+mod provider_breaker;
 mod providers;
 mod ratelimit;
 mod request_history;

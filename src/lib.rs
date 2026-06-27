@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod native_protocols;
 pub mod oauth_accounts;
 pub mod prompts;
+pub mod provider_breaker;
 pub mod providers;
 pub mod ratelimit;
 pub mod request_history;
