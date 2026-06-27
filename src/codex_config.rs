@@ -1025,7 +1025,9 @@ fn dex_catalog_account_models(
             let models = models
                 .into_iter()
                 .map(|model| model.trim().to_string())
-                .filter(|model| !model.is_empty())
+                .filter(|model| {
+                    !model.is_empty() && !crate::providers::model_is_image_generation_only(model)
+                })
                 .collect::<std::collections::BTreeSet<_>>();
             for model in models {
                 let context_window_override =
@@ -1270,6 +1272,9 @@ fn prepend_dex_account_catalog_models(
     let mut added = std::collections::HashSet::new();
     let mut account_entries = Vec::new();
     for account_model in account_models {
+        if crate::providers::model_is_image_generation_only(&account_model.model) {
+            continue;
+        }
         let slug = encode_dex_account_model_slug(
             &account_model.account_id,
             &account_model.endpoint_id,
@@ -2967,6 +2972,65 @@ wire_api = "responses"
         assert!(models
             .iter()
             .any(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.4")));
+    }
+
+    #[test]
+    fn context_catalog_skips_image_generation_only_account_models() {
+        let input = serde_json::json!({
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "display_name": "GPT-5.5",
+                    "context_window": 272000,
+                    "max_context_window": 272000,
+                    "visibility": "list",
+                    "supported_in_api": true
+                }
+            ]
+        });
+        let account_models = vec![
+            DexCatalogAccountModel {
+                account_id: "acct_1".into(),
+                endpoint_id: "ep_1".into(),
+                account_name: "日日新".into(),
+                endpoint_name: "OpenAI Chat".into(),
+                endpoint_kind: crate::accounts::EndpointKind::OpenAiChat,
+                provider: "deepseek".into(),
+                model: "sensenova-6.7-flash-lite".into(),
+                context_window_override: None,
+            },
+            DexCatalogAccountModel {
+                account_id: "acct_1".into(),
+                endpoint_id: "ep_1".into(),
+                account_name: "日日新".into(),
+                endpoint_name: "OpenAI Chat".into(),
+                endpoint_kind: crate::accounts::EndpointKind::OpenAiChat,
+                provider: "deepseek".into(),
+                model: "sensenova-u1-fast".into(),
+                context_window_override: None,
+            },
+        ];
+
+        let output =
+            build_context_catalog(input, None, &account_models, &[], DEX_ROUTER_PROVIDER).unwrap();
+        let models = output["models"].as_array().unwrap();
+        let decoded_models = models
+            .iter()
+            .filter_map(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .and_then(decode_dex_account_model_slug)
+                    .map(|slug| slug.model)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(decoded_models
+            .iter()
+            .any(|model| model == "sensenova-6.7-flash-lite"));
+        assert!(!decoded_models
+            .iter()
+            .any(|model| model == "sensenova-u1-fast"));
     }
 
     #[test]

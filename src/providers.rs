@@ -486,6 +486,16 @@ pub fn guess_provider(upstream: &str) -> &str {
     }
 }
 
+pub fn model_is_image_generation_only(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    matches!(model.as_str(), "sensenova-u1-fast")
+}
+
+pub fn model_is_sensenova_chat_model(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model.starts_with("sensenova-") && !model_is_image_generation_only(&model)
+}
+
 pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
     let caps = &profile.capabilities;
 
@@ -515,7 +525,12 @@ pub fn adapt_chat_request(profile: &ProviderProfile, req: &mut ChatRequest) {
     }
 
     match caps.reasoning {
-        ReasoningMode::DeepSeek => {}
+        ReasoningMode::DeepSeek => {
+            if model_is_sensenova_chat_model(&req.model) {
+                req.reasoning_effort = None;
+                req.thinking = None;
+            }
+        }
         ReasoningMode::OpenAi => {
             req.thinking = None;
         }
@@ -1734,6 +1749,9 @@ pub fn parse_models_response(profile: &ProviderProfile, body: &serde_json::Value
             .collect();
     }
     models
+        .into_iter()
+        .filter(|model| !model_is_image_generation_only(model))
+        .collect()
 }
 
 #[cfg(test)]
@@ -3013,6 +3031,17 @@ mod tests {
         );
         assert_eq!(models, vec!["mimo-v2-omni", "mimo-v2.5-pro"]);
 
+        let deepseek = profile_by_slug("deepseek");
+        let models = parse_models_response(
+            &deepseek,
+            &json!({"data":[
+                {"id":"sensenova-6.7-flash-lite"},
+                {"id":"sensenova-u1-fast"},
+                {"id":"deepseek-v4-pro"}
+            ]}),
+        );
+        assert_eq!(models, vec!["sensenova-6.7-flash-lite", "deepseek-v4-pro"]);
+
         let longcat = profile_by_slug("longcat");
         assert_eq!(
             model_discovery_url(&longcat, "https://api.longcat.chat/openai", "ak").unwrap(),
@@ -3082,6 +3111,36 @@ mod tests {
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
         assert!(req.thinking.is_some());
         assert_eq!(req.web_search_options, None);
+        assert_eq!(req.parallel_tool_calls, None);
+    }
+
+    #[test]
+    fn sensenova_chat_model_under_deepseek_profile_strips_deepseek_reasoning_fields() {
+        let mut req = ChatRequest {
+            model: "sensenova-6.7-flash-lite".into(),
+            messages: vec![],
+            tools: vec![],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            stream: true,
+            reasoning_effort: Some("high".into()),
+            thinking: Some(json!({"type":"enabled"})),
+            reasoning_split: None,
+            tool_choice: None,
+            parallel_tool_calls: Some(true),
+            response_format: None,
+            user: None,
+            stream_options: Some(crate::types::StreamOptions {
+                include_usage: true,
+            }),
+            web_search_options: None,
+        };
+
+        adapt_chat_request(&profile_by_slug("deepseek"), &mut req);
+
+        assert_eq!(req.reasoning_effort, None);
+        assert_eq!(req.thinking, None);
         assert_eq!(req.parallel_tool_calls, None);
     }
 

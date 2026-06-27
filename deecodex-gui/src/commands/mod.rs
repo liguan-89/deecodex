@@ -6360,7 +6360,10 @@ fn model_fallback_candidates(
         .chain(profile_models.iter().map(String::as_str))
     {
         let model = model.trim();
-        if model.is_empty() || !seen.insert(model.to_string()) {
+        if model.is_empty()
+            || deecodex::providers::model_is_image_generation_only(model)
+            || !seen.insert(model.to_string())
+        {
             continue;
         }
         models.push(model.to_string());
@@ -9205,6 +9208,31 @@ mod tests {
 
         assert_eq!(models[0], "mimo-v2.5-pro");
         assert!(models.iter().any(|model| model == "mimo-v2.5"));
+    }
+
+    #[test]
+    fn account_to_value_hides_image_generation_only_models_from_chat_lists() {
+        let mut account = test_account("dex");
+        account.provider = "deepseek".into();
+        account.default_model = "sensenova-u1-fast".into();
+        account.normalize_v2();
+        account.endpoints[0].known_models = vec![
+            "sensenova-6.7-flash-lite".into(),
+            "sensenova-u1-fast".into(),
+            "deepseek-v4-pro".into(),
+        ];
+
+        let value = account_to_value_with_endpoint(&account, account.endpoints.first());
+        let models = value["known_models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+
+        assert!(models.contains(&"sensenova-6.7-flash-lite"));
+        assert!(models.contains(&"deepseek-v4-pro"));
+        assert!(!models.contains(&"sensenova-u1-fast"));
     }
 
     #[test]
