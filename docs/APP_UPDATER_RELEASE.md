@@ -95,12 +95,14 @@ cd /Users/liguan/deecodex
 cd /Users/liguan/deecodex
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/dex-ai-updater.key")" \
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$HOME/.tauri/dex-ai-updater.key.password")" \
-cargo tauri build --manifest-path deecodex-gui/Cargo.toml
+cargo tauri build
 ```
+
+> 注：Tauri CLI 不支持 `--manifest-path`，构建必须在 `deecodex-gui/` 子目录执行，或在 workspace 根直接执行 `cargo tauri build`（cargo 会从根 `Cargo.toml` 找到 workspace 成员 `deecodex-gui` 的 `tauri.conf.json`）。
 
 macOS updater 产物是 `.app.tar.gz` 和 `.app.tar.gz.sig`；DMG 只用于手动安装。
 
-构建目录里的 `target-mac/release/bundle/macos/DEX AI.app` 只是中间产物。发布脚本会给该目录打 `.metadata_never_index`，避免 Spotlight / Launchpad 把构建产物也当成一份已安装应用，导致 Launchpad 里出现多个 DEX AI 图标。
+构建目录里的 `target-local/release/bundle/macos/DEX AI.app` 只是中间产物（路径由根目录 `.cargo/config.toml` 的 `target-dir` 决定）。发布脚本会给该目录打 `.metadata_never_index`，避免 Spotlight / Launchpad 把构建产物也当成一份已安装应用，导致 Launchpad 里出现多个 DEX AI 图标。
 
 ## 生成发布目录
 
@@ -135,6 +137,33 @@ DEX_AI_UPDATE_MAC_TARGETS="darwin-aarch64,darwin-x86_64" ./scripts/prepare-updat
 ```bash
 DEX_AI_UPDATE_NOTES=$'新增应用内更新\\n优化支持项目入口' ./scripts/prepare-updater-release.sh
 ```
+
+## 强制更新
+
+普通版本不要开启强制更新。只有严重 bug、安全问题、路由/会话数据兼容问题这类必须让旧版停止继续使用的版本，才在生成发布目录时显式开启：
+
+```bash
+DEX_AI_UPDATE_BASE_URL="https://api.liguan.me/releases/dex-ai" \
+DEX_AI_UPDATE_NOTES_FILE="docs/releases/3.10.0.md" \
+DEX_AI_FORCE_UPDATE=1 \
+DEX_AI_FORCE_UPDATE_REASON="修复严重路由和会话索引问题，旧版本需要立即升级。" \
+DEX_AI_MIN_SUPPORTED_VERSION="3.9.10" \
+./scripts/prepare-updater-release.sh 3.10.0
+```
+
+字段含义：
+
+- `DEX_AI_FORCE_UPDATE=1`：把本次 `latest.json` 标记为强制更新。
+- `DEX_AI_FORCE_UPDATE_REASON`：给客户端展示的强制更新原因。
+- `DEX_AI_MIN_SUPPORTED_VERSION`：低于该版本的客户端必须更新；等于或高于该版本不强制。为空时，所有低于最新版本的客户端都会被强制更新。
+
+客户端行为：
+
+- 启动后自动检查 `latest.json`。
+- 命中强制更新时显示不可关闭的关键更新弹窗。
+- 自动下载并安装更新。
+- 安装完成后自动重启 DEX AI。
+- 下载或安装失败时只允许重试或退出，不进入主流程继续使用旧版。
 
 ## 本地验证
 
