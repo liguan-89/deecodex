@@ -55,37 +55,6 @@
     if (btn) btn.disabled = false;
   }
 
-  async function presetModelMapping() {
-    const cfg = await invoke('get_config').catch(() => ({}));
-    let map = {};
-    try {
-      map = JSON.parse(cfg.model_map || '{}');
-    } catch (_) {}
-    const defaults = {
-      'gpt-5.5': 'deepseek-v4-pro',
-      'gpt-5.4': 'deepseek-v4-flash',
-      'gpt-5.4-mini': 'deepseek-v4-flash',
-      'gpt-5.3-codex': 'deepseek-v4-pro',
-      'gpt-5.2': 'deepseek-v4-flash',
-      'codex-auto-review': 'deepseek-v4-flash',
-      'gpt-4o': 'deepseek-v4-pro',
-      'gpt-4o-mini': 'deepseek-v4-pro',
-      'gpt-4.1': 'deepseek-v4-pro',
-      'o3-model': 'deepseek-v4-pro',
-      'o4-model': 'deepseek-v4-pro',
-    };
-    let changed = false;
-    for (const [key, value] of Object.entries(defaults)) {
-      if (!map[key]) {
-        map[key] = value;
-        changed = true;
-      }
-    }
-    if (changed) {
-      await invoke('save_config', { config: { ...cfg, model_map: JSON.stringify(map) } });
-    }
-  }
-
   async function autoCheckUpgrade() {
     restoreStoredUpdateInfo();
     applyUpdateIndicator(deeStorage.getItem('updateAvailable') === '1');
@@ -299,7 +268,6 @@
 
   window.mgmtLaunchCodex = mgmtLaunchCodex;
   window.mgmtToggle = mgmtToggle;
-  window.presetModelMapping = presetModelMapping;
   window.autoCheckUpgrade = autoCheckUpgrade;
   window.applyUpdateIndicator = applyUpdateIndicator;
   window.showStoredUpdatePrompt = showStoredUpdatePrompt;

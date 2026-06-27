@@ -6374,9 +6374,6 @@ fn model_discovery_urls(
     api_key: &str,
 ) -> Vec<String> {
     let mut urls = Vec::new();
-    if let Some(url) = deecodex::providers::model_discovery_url(profile, upstream, api_key) {
-        urls.push(url);
-    }
     let base = upstream.trim().trim_end_matches('/');
     let lower = base.to_ascii_lowercase();
     for suffix in ["/responses", "/chat/completions"] {
@@ -6384,6 +6381,9 @@ fn model_discovery_urls(
             let keep_len = base.len().saturating_sub(suffix.len());
             urls.push(format!("{}/models", &base[..keep_len]));
         }
+    }
+    if let Some(url) = deecodex::providers::model_discovery_url(profile, upstream, api_key) {
+        urls.push(url);
     }
     if !base.is_empty() {
         urls.push(format!("{base}/models"));
@@ -9165,6 +9165,29 @@ mod tests {
                 "deepseek-v4-pro".to_string(),
                 "deepseek-v4-flash".to_string(),
                 "deepseek-chat".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_discovery_urls_try_models_from_trimmed_responses_or_chat_endpoint() {
+        let minimax = deecodex::providers::profile_by_slug("minimax");
+        assert_eq!(
+            model_discovery_urls(&minimax, "https://api.minimaxi.com/v1/responses", "sk"),
+            vec![
+                "https://api.minimaxi.com/v1/models".to_string(),
+                "https://api.minimaxi.com/v1/responses/models".to_string(),
+            ]
+        );
+        assert_eq!(
+            model_discovery_urls(
+                &minimax,
+                "https://api.minimaxi.com/v1/chat/completions",
+                "sk"
+            ),
+            vec![
+                "https://api.minimaxi.com/v1/models".to_string(),
+                "https://api.minimaxi.com/v1/chat/completions/models".to_string(),
             ]
         );
     }

@@ -317,6 +317,22 @@ impl EndpointKind {
     }
 }
 
+fn normalize_responses_base_url(url: &str) -> String {
+    let mut normalized = url.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/responses"] {
+        if normalized
+            .to_ascii_lowercase()
+            .ends_with(&suffix.to_ascii_lowercase())
+        {
+            let new_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(new_len);
+            normalized = normalized.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    normalized
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VisionMode {
@@ -768,6 +784,7 @@ impl Account {
                 _ => "responses_direct".into(),
             };
             if endpoint.kind != EndpointKind::CustomResponses {
+                endpoint.base_url = normalize_responses_base_url(&endpoint.base_url);
                 endpoint.path.clear();
             }
             endpoint.model_map.clear();
@@ -2421,6 +2438,84 @@ mod provider_tests {
         assert!(endpoint.fast_mode_enabled);
         assert_eq!(endpoint.request_timeout_secs, Some(42));
         assert_eq!(endpoint.max_retries, Some(4));
+    }
+
+    #[test]
+    fn codex_responses_normalization_trims_full_endpoint_url_to_base_url() {
+        let cases = [
+            (
+                "openai",
+                "https://api.openai.com/v1/chat/completions",
+                "https://api.openai.com/v1",
+            ),
+            (
+                "openai",
+                "https://api.openai.com/v1/responses",
+                "https://api.openai.com/v1",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1/chat/completions",
+                "https://api.deepseek.com/v1",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1/responses",
+                "https://api.deepseek.com/v1",
+            ),
+            (
+                "minimax",
+                "https://api.minimaxi.com/v1/chat/completions",
+                "https://api.minimaxi.com/v1",
+            ),
+            (
+                "minimax",
+                "https://api.minimaxi.com/v1/responses",
+                "https://api.minimaxi.com/v1",
+            ),
+            (
+                "mimo",
+                "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+                "https://token-plan-cn.xiaomimimo.com/v1",
+            ),
+            (
+                "mimo",
+                "https://token-plan-cn.xiaomimimo.com/v1/responses",
+                "https://token-plan-cn.xiaomimimo.com/v1",
+            ),
+        ];
+
+        for (provider, full_url, expected_base_url) in cases {
+            let raw = json!({
+                "version": 3,
+                "accounts": [{
+                    "id": format!("{provider}-1"),
+                    "name": provider,
+                    "provider": provider,
+                    "client_kind": "codex",
+                    "upstream": full_url,
+                    "api_key": "sk-test",
+                    "translate_enabled": true,
+                    "endpoints": [{
+                        "id": format!("endpoint_{provider}"),
+                        "name": "Chat",
+                        "kind": "open_ai_chat",
+                        "base_url": full_url,
+                        "path": "chat/completions"
+                    }]
+                }],
+                "active_id": format!("{provider}-1")
+            });
+            let mut store: AccountStore = serde_json::from_value(raw).unwrap();
+            store.normalize_v2();
+            let account = &store.accounts[0];
+            let endpoint = &account.endpoints[0];
+
+            assert_eq!(endpoint.kind, EndpointKind::OpenAiResponses, "{provider}");
+            assert_eq!(account.upstream, expected_base_url, "{provider}");
+            assert_eq!(endpoint.base_url, expected_base_url, "{provider}");
+            assert!(endpoint.path.is_empty(), "{provider}");
+        }
     }
 
     #[test]

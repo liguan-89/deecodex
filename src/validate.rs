@@ -858,8 +858,8 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
         {
             return DiagnosticItem {
                 status: Status::Pass,
-                check_name: "模型映射".into(),
-                message: "当前活跃账号走 Responses/官方端点，模型映射不是必需项".into(),
+                check_name: "模型选择".into(),
+                message: "当前活跃账号使用 Responses/官方端点，已使用模型直选".into(),
                 detail: Some(format!(
                     "账号: {}, 端点: {}",
                     account.name,
@@ -875,11 +875,13 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
     let raw = ctx.model_map.trim();
     if raw.is_empty() || raw == "{}" {
         return DiagnosticItem {
-            status: Status::Warn,
-            check_name: "模型映射".into(),
-            message: "模型映射为空，Codex 请求的模型名无法转换".into(),
+            status: Status::Info,
+            check_name: "模型选择".into(),
+            message: "Codex 账号使用模型直选，未启用旧模型转换表".into(),
             detail: None,
-            suggestion: Some("请在「账号管理 → 模型映射」中配置模型对应关系".into()),
+            suggestion: Some(
+                "请在账号管理中刷新模型列表，并在 Codex 模型下拉中选择账号模型项".into(),
+            ),
         };
     }
 
@@ -888,10 +890,10 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
         Err(e) => {
             return DiagnosticItem {
                 status: Status::Fail,
-                check_name: "模型映射".into(),
-                message: "模型映射 JSON 解析失败".into(),
+                check_name: "历史模型配置".into(),
+                message: "历史模型转换表 JSON 解析失败".into(),
                 detail: Some(e.to_string()),
-                suggestion: Some("请检查模型映射的 JSON 格式".into()),
+                suggestion: Some("建议清空旧 model_map，Codex 账号改用账号模型直选".into()),
             };
         }
     };
@@ -901,10 +903,10 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
         None => {
             return DiagnosticItem {
                 status: Status::Fail,
-                check_name: "模型映射".into(),
-                message: "模型映射不是有效的 JSON 对象".into(),
+                check_name: "历史模型配置".into(),
+                message: "历史模型转换表不是有效的 JSON 对象".into(),
                 detail: None,
-                suggestion: Some("请使用正确的 JSON 对象格式配置模型映射".into()),
+                suggestion: Some("建议清空旧 model_map，Codex 账号改用账号模型直选".into()),
             };
         }
     };
@@ -918,23 +920,25 @@ fn check_model_mapping(ctx: &DiagnosticContext) -> DiagnosticItem {
 
     if missing.is_empty() {
         DiagnosticItem {
-            status: Status::Pass,
-            check_name: "模型映射".into(),
+            status: Status::Info,
+            check_name: "历史模型配置".into(),
             message: format!(
-                "模型映射完整（已覆盖 {} 个 Codex 模型）",
+                "检测到历史模型转换表（覆盖 {} 个历史 Codex 模型），仅作为兼容数据保留",
                 accounts::CODEX_MODEL_LIST.len()
             ),
             detail: Some(format!("映射条目总数: {}", map_obj.len())),
-            suggestion: None,
+            suggestion: Some(
+                "新账号请使用模型直选；保存 Codex 账号后旧映射会迁移到模型列表并清空".into(),
+            ),
         }
     } else {
         let names: Vec<String> = missing.iter().map(|m| m.to_string()).collect();
         DiagnosticItem {
-            status: Status::Warn,
-            check_name: "模型映射".into(),
-            message: format!("缺少 {} 个常见模型的映射", missing.len()),
+            status: Status::Info,
+            check_name: "历史模型配置".into(),
+            message: format!("检测到历史模型转换表，缺少 {} 个历史模型项", missing.len()),
             detail: Some(names.join(", ")),
-            suggestion: Some("请在「账号管理 → 模型映射」中补全缺失的模型对应关系".into()),
+            suggestion: Some("无需补齐旧映射；请刷新模型列表并使用账号模型直选".into()),
         }
     }
 }
@@ -1995,22 +1999,13 @@ fn check_api_key(args: &Args, diags: &mut Vec<Diagnostic>) {
 fn check_model_map(args: &Args, diags: &mut Vec<Diagnostic>) {
     let raw = args.model_map.trim();
     if raw.is_empty() || raw == "{}" {
-        diags.push(Diagnostic {
-            severity: Severity::Warn,
-            category: "model_map",
-            message: "模型映射为空——Codex 请求的模型名将无法转换为上游模型".into(),
-        });
         return;
     }
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => {
             if let Some(obj) = v.as_object() {
                 if obj.is_empty() {
-                    diags.push(Diagnostic {
-                        severity: Severity::Warn,
-                        category: "model_map",
-                        message: "模型映射为空对象——Codex 请求的模型名将无法转换".into(),
-                    });
+                    return;
                 }
             }
         }
@@ -2018,7 +2013,7 @@ fn check_model_map(args: &Args, diags: &mut Vec<Diagnostic>) {
             diags.push(Diagnostic {
                 severity: Severity::Error,
                 category: "model_map",
-                message: format!("模型映射 JSON 解析失败: {}", e),
+                message: format!("历史模型转换表 JSON 解析失败: {}", e),
             });
         }
     }
@@ -2735,14 +2730,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_map_is_warn() {
+    fn empty_model_map_is_ignored() {
         let args = base_args();
         let diags = validate(&args);
         assert!(
             diags
                 .iter()
-                .any(|d| d.category == "model_map" && d.severity == Severity::Warn),
-            "空模型映射应产生警告诊断，实际: {:?}",
+                .all(|d| !(d.category == "model_map" && d.severity == Severity::Warn)),
+            "空历史模型配置不应产生警告诊断，实际: {:?}",
             diags
         );
     }
@@ -2756,7 +2751,7 @@ mod tests {
             diags
                 .iter()
                 .any(|d| d.category == "model_map" && d.severity == Severity::Error),
-            "无效的模型映射 JSON 应产生错误诊断，实际: {:?}",
+            "无效的历史模型配置 JSON 应产生错误诊断，实际: {:?}",
             diags
         );
     }
@@ -2829,14 +2824,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_map_is_warn_new() {
+    fn empty_model_map_is_info_new() {
         let ctx = test_context();
         let item = check_model_mapping(&ctx);
-        assert_eq!(item.status, Status::Warn);
+        assert_eq!(item.status, Status::Info);
     }
 
     #[test]
-    fn model_map_with_all_models_is_pass() {
+    fn model_map_with_all_models_is_compat_info() {
         let mut ctx = test_context();
         let mut map = serde_json::Map::new();
         for model in accounts::CODEX_MODEL_LIST {
@@ -2844,11 +2839,11 @@ mod tests {
         }
         ctx.model_map = serde_json::to_string(&map).unwrap();
         let item = check_model_mapping(&ctx);
-        assert_eq!(item.status, Status::Pass);
+        assert_eq!(item.status, Status::Info);
     }
 
     #[test]
-    fn model_map_missing_some_is_warn() {
+    fn model_map_missing_some_is_compat_info() {
         let mut ctx = test_context();
         let map = serde_json::json!({
             "gpt-5.5": "openai/gpt-5.5",
@@ -2856,7 +2851,7 @@ mod tests {
         });
         ctx.model_map = serde_json::to_string(&map).unwrap();
         let item = check_model_mapping(&ctx);
-        assert_eq!(item.status, Status::Warn);
+        assert_eq!(item.status, Status::Info);
         let detail = item.detail.unwrap();
         assert!(detail.contains("gpt-5.4-mini") || detail.contains("gpt-5.3-codex"));
     }

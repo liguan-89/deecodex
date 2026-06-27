@@ -867,19 +867,21 @@ fn effective_model_for_chat_account(
     }
     // dex-ai 内部用 `[1m]` 后缀标注「该模型支持 1M 上下文」能力，但上游
     // API（DeepSeek / MiniMax / mimo 等）都不接受带后缀的 model name。
-    // 先用「去后缀」的 normalized 版本查 model_map / known_models，让用户
-    // 在 Codex 直选 `xxx[1m]` 时也能命中真实上游模型名。
+    // Codex 账号已切到模型直选，旧 model_map 只作为配置迁移来源，不再
+    // 参与运行时路由；非 Codex 客户端仍保留槽位兼容。
     let normalized_requested = strip_one_m_context_suffix(requested_model);
-    if let Some(mapped) = endpoint
-        .model_map
-        .get(requested_model)
-        .or_else(|| account.model_map.get(requested_model))
-        .or_else(|| endpoint.model_map.get(normalized_requested))
-        .or_else(|| account.model_map.get(normalized_requested))
-        .map(|model| model.trim())
-        .filter(|model| !model.is_empty())
-    {
-        return mapped.to_string();
+    if !account.client_kind.is_codex() {
+        if let Some(mapped) = endpoint
+            .model_map
+            .get(requested_model)
+            .or_else(|| account.model_map.get(requested_model))
+            .or_else(|| endpoint.model_map.get(normalized_requested))
+            .or_else(|| account.model_map.get(normalized_requested))
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+        {
+            return mapped.to_string();
+        }
     }
     if endpoint
         .known_models
@@ -7336,7 +7338,7 @@ async fn handle_responses_for_selection(
         return response;
     }
 
-    // 直连模式：仅做模型映射，其他全部透传
+    // 直连模式：只做必要的请求体规范化，其他全部透传
     if endpoint.kind.is_responses_like() {
         return handle_responses_bypass(
             state,
@@ -8627,7 +8629,7 @@ async fn handle_responses_bypass(
     }
 
     // Responses 直连用于转发 Codex 原生请求，默认保留请求体里的模型名。
-    // Chat 兼容端点才需要 Responses -> Chat 的模型映射。
+    // Chat 兼容端点才需要 Responses -> Chat 的模型名落点转换。
     let mut route_trace = selected_endpoint
         .as_ref()
         .and_then(|selection| selection.route_trace.clone());
@@ -8937,7 +8939,7 @@ async fn handle_codex_official(
                 match serde_json::to_vec(&req) {
                     Ok(updated) => body = axum::body::Bytes::from(updated),
                     Err(err) => {
-                        warn!("Codex 官方请求模型映射序列化失败，继续使用原始请求体: {err}");
+                        warn!("Codex 官方请求模型名规范化序列化失败，继续使用原始请求体: {err}");
                     }
                 }
             }
@@ -13371,15 +13373,16 @@ mod tests {
         );
         assert_eq!(fallback_effective, "deepseek-v4-pro");
 
-        // 场景 4：model_map 显式把 `[1m]` 映射到真实名，按用户配置优先。
+        // 场景 4：Codex Chat 执行账号不再读取旧 model_map，真实模型名
+        // 只能来自模型直选、known_models 或 default_model。
         let mut mapped_account =
-            router_chat_account("mapped", "pool-a", 100, 1, Some("deepseek-v4-pro"));
+            router_chat_account("mapped", "pool-a", 100, 1, Some("wrong-model"));
         mapped_account.provider = "deepseek".into();
         mapped_account.default_model = "deepseek-v4-pro".into();
-        mapped_account.endpoints[0].model_map.clear();
-        mapped_account.endpoints[0]
-            .model_map
-            .insert("deepseek-v4-pro[1m]".into(), "deepseek-v4-pro".into());
+        mapped_account.endpoints[0].model_map.insert(
+            "deepseek-v4-pro[1m]".into(),
+            "wrong-model-from-legacy-map".into(),
+        );
         mapped_account.endpoints[0].known_models =
             vec!["deepseek-v4-pro[1m]".into(), "deepseek-v4-pro".into()];
         let mapped_endpoint = mapped_account.endpoints[0].clone();

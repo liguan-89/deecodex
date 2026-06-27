@@ -252,6 +252,19 @@ vm.createContext(context);
 const source = fs.readFileSync(path.join(__dirname, 'accounts.js'), 'utf8');
 vm.runInContext(source, context, { filename: 'accounts.js' });
 
+[
+  ['https://api.openai.com/v1/chat/completions', 'https://api.openai.com/v1'],
+  ['https://api.openai.com/v1/responses', 'https://api.openai.com/v1'],
+  ['https://api.deepseek.com/v1/chat/completions', 'https://api.deepseek.com/v1'],
+  ['https://api.deepseek.com/v1/responses', 'https://api.deepseek.com/v1'],
+  ['https://api.minimaxi.com/v1/chat/completions', 'https://api.minimaxi.com/v1'],
+  ['https://api.minimaxi.com/v1/responses', 'https://api.minimaxi.com/v1'],
+  ['https://token-plan-cn.xiaomimimo.com/v1/chat/completions', 'https://token-plan-cn.xiaomimimo.com/v1'],
+  ['https://token-plan-cn.xiaomimimo.com/v1/responses', 'https://token-plan-cn.xiaomimimo.com/v1'],
+].forEach(([input, expected]) => {
+  assert.strictEqual(context.normalizeResponsesBaseUrl(input), expected);
+});
+
 context.editingAccount = context.accountsData.accounts.find(account => account.id === 'h1');
 context.accountsView = 'edit';
 const editablePanel = context.renderAccountsPanel();
@@ -283,7 +296,7 @@ assert(detail.includes('最近备份'));
 assert(!detail.includes('account-section-desc'));
 assert(!detail.includes('只记录外部客户端配置操作'));
 assert(detail.includes('page-back-button account-back-link'));
-assert(detail.includes('客户端模型映射'));
+assert(detail.includes('客户端模型槽位'));
 assert(detail.includes('model.default'));
 assert(detail.includes('model-map-head client-model-map-head client-model-template'));
 assert(detail.includes('model-row client-model-row client-model-template'));
@@ -452,7 +465,7 @@ context.editingAccount = {
   name: 'OpenAI Responses',
   provider: 'openai',
   client_kind: 'codex',
-  upstream: 'https://dex.jinpai.lat/v1',
+  upstream: 'https://dex.jinpai.lat/v1/chat/completions',
   api_key: 'sk-responses',
   model_map: { 'gpt-5.5': 'other-model' },
   context_window_override: 1000000,
@@ -465,7 +478,7 @@ context.editingAccount = {
   endpoints: [{
     id: 'ep-responses',
     kind: 'open_ai_chat',
-    base_url: 'https://dex.jinpai.lat/v1',
+    base_url: 'https://dex.jinpai.lat/v1/chat/completions',
     path: 'chat/completions',
     model_map: { 'gpt-5.5': 'other-model' },
     model_profiles: { 'other-model': { vision_mode: 'glue' } },
@@ -478,7 +491,7 @@ context.editingAccount = {
 const responsesDirectDetail = context.renderAccountsPanel();
 assert(!responsesDirectDetail.includes('model-map-table'));
 assert(!responsesDirectDetail.includes('fetchAndPopulateModels()'));
-assert(!responsesDirectDetail.includes('+ 添加模型映射'));
+assert(!responsesDirectDetail.includes('+ 添加历史模型配置'));
 assert(!responsesDirectDetail.includes('Responses 直连保留 Codex 原始模型名'));
 assert(!responsesDirectDetail.includes('<div class="section-sub-label">图片处理</div>'));
 assert(!responsesDirectDetail.includes('能力补全'));
@@ -489,6 +502,7 @@ assert(!responsesDirectDetail.includes('<select id="edit_endpoint_kind">'));
 assert(responsesDirectDetail.includes('id="edit_endpoint_kind" value="open_ai_responses"'));
 assert(responsesDirectDetail.includes('id="edit_image_generation_enabled" checked'));
 assert.strictEqual(context.editingAccount.endpoints[0].kind, 'open_ai_responses');
+assert.strictEqual(context.editingAccount.endpoints[0].base_url, 'https://dex.jinpai.lat/v1');
 assert.strictEqual(context.editingAccount.endpoints[0].path, '');
 assert.strictEqual(context.editingAccount.endpoints[0].image_generation_enabled, true);
 assert.strictEqual(JSON.stringify(context.editingAccount.model_map), '{}');

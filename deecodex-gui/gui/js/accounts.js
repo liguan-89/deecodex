@@ -828,7 +828,7 @@ function renderClientAccountDetail() {
 
     <section class="account-edit-section">
       <div class="account-section-head">
-        <div class="section-sub-label">客户端模型映射</div>
+        <div class="section-sub-label">客户端模型槽位</div>
       </div>
       <div class="section-action-row">
         <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
@@ -1039,6 +1039,17 @@ function endpointKindIsCustomResponses(kind) {
   return kind === 'custom_responses' || kind === 'CustomResponses';
 }
 
+function normalizeResponsesBaseUrl(url) {
+  let normalized = String(url || '').trim().replace(/\/+$/, '');
+  for (const suffix of ['/chat/completions', '/responses']) {
+    if (normalized.toLowerCase().endsWith(suffix)) {
+      normalized = normalized.slice(0, -suffix.length).replace(/\/+$/, '');
+      break;
+    }
+  }
+  return normalized;
+}
+
 function defaultEndpointImageGenerationEnabled(account, endpoint) {
   if (endpointIsCodexOfficial(endpoint)) return true;
   const kind = normalizeResponsesKind(endpoint?.kind);
@@ -1132,7 +1143,10 @@ function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(acc
     endpoint.template_id = endpointIsCodexOfficial(endpoint)
       ? 'codex_official'
       : (endpointKindIsCustomResponses(endpoint.kind) ? (endpoint.template_id || 'custom_responses') : 'responses_direct');
-    if (!endpointKindIsCustomResponses(endpoint.kind)) endpoint.path = '';
+    if (!endpointKindIsCustomResponses(endpoint.kind)) {
+      endpoint.base_url = normalizeResponsesBaseUrl(endpoint.base_url || account.upstream);
+      endpoint.path = '';
+    }
     if (typeof endpoint.image_generation_enabled !== 'boolean') {
       endpoint.image_generation_enabled = defaultEndpointImageGenerationEnabled(account, endpoint);
     }
@@ -1843,25 +1857,7 @@ function renderAccountDetail() {
             <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>
           </select>
           <span class="hint">DeepSeek、MiniMax、MiMo 等已确认支持 Responses API 的供应商建议选直连；其他兼容站点再选 OpenAI Chat 兼容。</span>`;
-  const modelSection = usesModelMapping ? `
-    <section class="account-edit-section">
-      <div class="account-section-head">
-        <div class="section-sub-label">模型</div>
-      </div>
-      <div class="section-action-row">
-        <button class="btn btn-ghost" onclick="fetchAndPopulateModels()">从上游获取模型列表</button>
-        <span id="modelFetchStatus"></span>
-      </div>
-      <div class="model-map-table">
-        <div class="model-map-head">
-          <span>Codex 请求模型</span>
-          <span>上游模型</span>
-          <span>图片处理</span>
-        </div>
-        <div id="modelMapRows">${renderModelMappingRows(knownModels)}</div>
-      </div>
-      <div class="model-add-row"><button onclick="addModelRow('modelMapRows', '${escAttr(JSON.stringify(knownModels))}')">+ 添加模型映射</button></div>
-    </section>` : '';
+  const modelSection = '';
   const passthroughModel = responsesDirect || ep.kind === 'codex_official' || ep.kind === 'CodexOfficial';
   const visionSectionTitle = passthroughModel ? '图片处理' : '其他模型图片处理';
   const visionTargetLabel = passthroughModel ? '当前端点' : '其他模型';
@@ -1869,7 +1865,7 @@ function renderAccountDetail() {
     ? 'Responses 直连保留 Codex 原始模型名；这里仅设置图片输入处理策略。'
     : (ep.kind === 'codex_official' || ep.kind === 'CodexOfficial')
       ? 'Codex 官方账号使用官方模型名；这里仅设置图片输入处理策略。'
-    : '模型映射行优先生效；这里处理临时模型或未列出的模型。';
+    : '这里处理当前端点未声明图片能力时的降级策略。';
   const visionSection = responsesDirectForm ? '' : `
     <section class="account-edit-section">
       <div class="account-section-head">
@@ -2556,7 +2552,7 @@ function updateClientProviderDefaults() {
   }
 }
 
-// ── 模型映射编辑辅助 ──
+// ── 历史模型配置迁移辅助 ──
 
 function removeModelMapRow(btn) {
   const row = btn.closest('.model-row');
@@ -3969,9 +3965,6 @@ async function fetchAndPopulateModels() {
     );
     if (upstreamModels.length > 0) {
       if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
-      // 重新渲染模型映射行
-      const knownModels = getProviderKnownModels(editingAccount?.provider || '');
-      document.getElementById('modelMapRows').innerHTML = renderModelMappingRows(knownModels);
     } else {
       if (statusEl) statusEl.innerHTML = '<span class="status-muted">上游未返回模型</span>';
     }

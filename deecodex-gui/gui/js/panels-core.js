@@ -1208,7 +1208,7 @@ function renderHelp() {
     <div class="help-toc">
       <a onclick="document.getElementById('h-quickstart').scrollIntoView({behavior:'smooth'})">快速开始</a>
       <a onclick="document.getElementById('h-codex-config').scrollIntoView({behavior:'smooth'})">Codex 配置</a>
-      <a onclick="document.getElementById('h-model-map').scrollIntoView({behavior:'smooth'})">模型映射</a>
+      <a onclick="document.getElementById('h-model-select').scrollIntoView({behavior:'smooth'})">模型选择</a>
       <a onclick="document.getElementById('h-commands').scrollIntoView({behavior:'smooth'})">管理命令</a>
       <a onclick="document.getElementById('h-support').scrollIntoView({behavior:'smooth'})">支持项目</a>
       <a onclick="document.getElementById('h-faq').scrollIntoView({behavior:'smooth'})">常见问题</a>
@@ -1221,7 +1221,7 @@ function renderHelp() {
         <li>打开 Codex 设置 → 找到「模型提供商」或「自定义 Provider」</li>
         <li>将 API 地址设为 <strong>http://127.0.0.1:4446/v1</strong>；技术预览路由使用 <strong>http://127.0.0.1:4446/codex-router/v1</strong></li>
         <li>API Key 可填任意值（如果 DEX AI 未开启客户端认证）</li>
-        <li>模型名填写 DEX AI 模型映射中的任一 Codex 侧名称，如 <strong>gpt-5.5</strong></li>
+        <li>在 Codex 模型下拉中选择 DEX AI 生成的账号模型项，或使用账号管理中的默认模型</li>
       </ul>
       <p>配置完成后发送一条测试消息，观察 DEX AI 日志应有 ← codex 和 → upstream 输出。</p>
     </div>
@@ -1248,22 +1248,14 @@ function renderHelp() {
       </ul>
     </div>
 
-    <div class="help-section" id="h-model-map">
-      <h3>模型映射</h3>
-      <p>模型映射定义了 <strong>Codex 使用的模型名 → DeepSeek 实际模型名</strong> 的对应关系。</p>
-      <p>默认映射：</p>
-      <div class="code-block"><pre><span class="key">"gpt-5.5"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5.4"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"gpt-5.4-mini"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"gpt-5.3-codex"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-5.2"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"codex-auto-review"</span>: <span class="str">"deepseek-v4-flash"</span>
-<span class="key">"gpt-4o"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-4o-mini"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"gpt-4.1"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"o3-model"</span>: <span class="str">"deepseek-v4-pro"</span>
-<span class="key">"o4-model"</span>: <span class="str">"deepseek-v4-pro"</span></pre></div>
-      <p>键名<strong>大小写敏感</strong>。新模型发布后需更新此映射表。</p>
+    <div class="help-section" id="h-model-select">
+      <h3>模型选择</h3>
+      <p>Codex 账号现在使用模型直选：账号管理会读取上游模型列表，并生成 <strong>账号名 / 模型名</strong> 形式的模型项。</p>
+      <ul>
+        <li>选择账号模型项后，DEX AI 直接使用该账号和真实上游模型名请求。</li>
+        <li>DeepSeek、MiniMax、MiMo、OpenAI 等支持 Responses API 的 Codex 账号默认走 Responses 直连。</li>
+        <li>历史模型转换表只作为旧配置迁移来源读取一次，不再作为新配置入口。</li>
+      </ul>
     </div>
 
     <div class="help-section" id="h-commands">
@@ -1308,7 +1300,7 @@ function renderHelp() {
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 提示 model not found</button>
-          <div class="faq-a">Codex 请求的模型名未在 DEX AI 模型映射中找到。在配置面板的「配置 → 模型映射」中添加对应条目，或检查 Codex 中填写的模型名大小写是否与映射键名一致。</div>
+          <div class="faq-a">请先在账号管理中测试上游连接并刷新模型列表，然后在 Codex 模型下拉中选择对应的账号模型项。若模型仍缺失，检查账号是否启用、端点协议是否为 Responses 直连，以及上游 /models 是否返回该模型。</div>
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 对话一直转圈不响应</button>
@@ -1324,7 +1316,7 @@ function renderHelp() {
         </div>
         <div class="faq-item">
           <button class="faq-q" onclick="toggleFaq(this)"><span class="faq-chevron" aria-hidden="true"></span> 保存配置后什么时候生效？</button>
-          <div class="faq-a">多数配置保存后即时生效（如模型映射、Token 检测参数）。端口、数据目录等核心配置需要重启 DEX AI 才会生效。</div>
+          <div class="faq-a">多数配置保存后即时生效（如账号、模型列表、Token 检测参数）。端口、数据目录等核心配置需要重启 DEX AI 才会生效。</div>
         </div>
       </div>
     </div>
