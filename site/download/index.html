@@ -151,6 +151,103 @@
       font-size: 13px;
     }
     footer a { color: var(--muted); }
+    .community {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      display: flex;
+      gap: 24px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .community-info { flex: 1 1 280px; min-width: 0; }
+    .community-info h3 { margin: 0 0 8px; font-size: 16px; }
+    .community-info p { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+    .community-info .warn {
+      color: #ffb3b3;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .community-qr {
+      flex: 0 0 auto;
+      width: 160px;
+      height: 160px;
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px;
+    }
+    .community-qr img { display: block; width: 100%; height: 100%; }
+    .screenshot {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .screenshot h3 {
+      margin: 0 0 16px;
+      font-size: 16px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .screenshot a {
+      display: block;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #fff;
+    }
+    .screenshot img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .screenshot-cap {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .features {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .features h3 {
+      margin: 0 0 16px;
+      font-size: 16px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .feature {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .feature .icon {
+      font-size: 18px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+    .feature .title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .feature .desc {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
   </style>
 </head>
 <body>
@@ -189,6 +286,71 @@
     <section class="notes">
       <h3>本次更新</h3>
       <div id="notes" class="notes-content notes-loading">加载中…</div>
+    </section>
+
+    <section class="features">
+      <h3>产品功能</h3>
+      <div class="features-grid">
+        <div class="feature">
+          <div class="icon">🔁</div>
+          <div class="title">多账号 · 多端点</div>
+          <div class="desc">一套配置管理 OpenAI、Anthropic、Codex、第三方中转等不同供应商；同一供应商下可并存多个端点并独立切换协议。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🧩</div>
+          <div class="title">Codex / Responses 协议兼容</div>
+          <div class="desc">自动在 Chat Completions 与 Responses 协议之间翻译，Codex 桌面客户端可直接接入第三方模型，无需额外配置。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🛣</div>
+          <div class="title">智能模型路由</div>
+          <div class="desc">按账号、端点、模型槽位和视觉策略路由请求，跨供应商时自动剥离不兼容参数（如 reasoning_effort、thinking），避免 400 错误。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">📦</div>
+          <div class="title">插件市场</div>
+          <div class="desc">内置插件市场，支持安装、更新、卸载；按未安装 / 已安装 / 可更新三态区分点击行为。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🤖</div>
+          <div class="title">DEX 助手</div>
+          <div class="desc">内置 AI 助手面板，支持工具调用、附件输入、对话搜索、快捷键绑定，可与本地工作区联动。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🛡</div>
+          <div class="title">诊断与熔断</div>
+          <div class="desc">内置端口探测、健康概览、网络检查、SSL 校验；Provider 级熔断器避免上游 5xx 风暴雪崩到所有调用方。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🚀</div>
+          <div class="title">应用内自动更新</div>
+          <div class="desc">Tauri updater 签名更新，命中强制策略时弹出不可关闭的关键更新弹窗，旧版自动升级到当前最新版。</div>
+        </div>
+        <div class="feature">
+          <div class="icon">🧹</div>
+          <div class="title">请求历史 · 线程聚合</div>
+          <div class="desc">按账号 / 端点 / 时间范围聚合请求日志与会话线程，支持校准、还原、清理与导出报告。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="screenshot">
+      <h3>应用预览</h3>
+      <a href="screenshot-app.png" target="_blank">
+        <img src="screenshot-app.png" alt="DEX AI 主界面截图" loading="lazy" />
+      </a>
+      <p class="screenshot-cap">服务概览：账号管理、请求历史、客户端接入、插件市场等模块。</p>
+    </section>
+
+    <section class="community">
+      <div class="community-info">
+        <h3>加入交流群</h3>
+        <p>扫码加入 <strong>DEX 交流一群（CODEX &amp; CLAUDE）</strong>，反馈问题、跟进新版本。</p>
+        <p class="warn">⚠ 该二维码 7 天内有效（7 月 6 日前），过期后请通过页面底部的联系方式索取最新二维码。</p>
+      </div>
+      <div class="community-qr">
+        <img src="qrcode-wechat.png" alt="DEX 交流一群微信群二维码" />
+      </div>
     </section>
 
     <footer>
