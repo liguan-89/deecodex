@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>下载 DEX AI</title>
+  <meta name="description" content="DEX AI 桌面客户端下载：支持 macOS 和 Windows。" />
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #1a1d24;
+      --border: #2a2f3a;
+      --text: #e7e9ee;
+      --muted: #9aa3b2;
+      --accent: #4f8cff;
+      --accent-hover: #6a9fff;
+      --disabled: #3a3f4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 64px 24px 48px;
+    }
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 32px;
+      letter-spacing: -0.5px;
+    }
+    header p {
+      margin: 0 0 32px;
+      color: var(--muted);
+    }
+    .version-badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      vertical-align: middle;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    .card h2 {
+      margin: 0 0 4px;
+      font-size: 18px;
+    }
+    .card .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 20px;
+    }
+    .download-btn {
+      display: inline-block;
+      padding: 12px 20px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 500;
+      text-align: center;
+      transition: background 0.15s;
+    }
+    .download-btn:hover { background: var(--accent-hover); }
+    .download-btn.disabled {
+      background: var(--disabled);
+      color: var(--muted);
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .filename {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+    .switch {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .switch a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .switch a:hover { text-decoration: underline; }
+    .notes {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .notes h3 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .notes-content :where(h1, h2, h3) { margin-top: 1.2em; margin-bottom: 0.4em; }
+    .notes-content h1 { font-size: 20px; }
+    .notes-content h2 { font-size: 17px; }
+    .notes-content h3 { font-size: 15px; color: var(--text); }
+    .notes-content p { margin: 0.5em 0; }
+    .notes-content :where(ul, ol) { padding-left: 1.5em; }
+    .notes-content li { margin: 0.25em 0; }
+    .notes-content code {
+      background: var(--bg);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .notes-loading { color: var(--muted); font-style: italic; }
+    .error {
+      background: #3a1f1f;
+      border: 1px solid #6b2c2c;
+      border-radius: 8px;
+      padding: 12px 16px;
+      color: #ffb3b3;
+      font-size: 14px;
+    }
+    footer {
+      margin-top: 32px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    footer a { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>下载 DEX AI<span id="version-badge" class="version-badge" hidden></span></h1>
+      <p>选择你的系统，下载最新版本。</p>
+    </header>
+
+    <section id="error-box" class="error" hidden></section>
+
+    <div class="cards">
+      <div class="card" id="card-mac">
+        <h2>macOS</h2>
+        <p class="sub">Apple Silicon (M1/M2/M3/M4)</p>
+        <a id="btn-mac" class="download-btn" href="#" hidden>下载 .dmg</a>
+        <div id="filename-mac" class="filename" hidden></div>
+        <div class="switch">
+          使用 Intel 芯片的 Mac？
+          <a id="link-mac-other" href="#">下载 Intel 版</a>
+        </div>
+      </div>
+
+      <div class="card" id="card-win">
+        <h2>Windows</h2>
+        <p class="sub">Windows 10 / 11 (x64)</p>
+        <a id="btn-win" class="download-btn" href="#" hidden>下载安装程序</a>
+        <div id="filename-win" class="filename" hidden></div>
+        <div class="switch">
+          已安装旧版？
+          <a href="#" id="link-inapp">应用内「检查更新」即可</a>
+        </div>
+      </div>
+    </div>
+
+    <section class="notes">
+      <h3>本次更新</h3>
+      <div id="notes" class="notes-content notes-loading">加载中…</div>
+    </section>
+
+    <footer>
+      <div>下载页 · <a href="/releases/dex-ai/">查看所有版本</a></div>
+    </footer>
+  </div>
+
+  <script>
+    // Tauri updater 在 macOS 和 Windows 上分别维护独立的 latest.json：
+    //   macOS  → /releases/dex-ai/latest.json            (platforms.darwin-aarch64)
+    //   Windows → /releases/dex-ai/windows/latest.json   (platforms.windows-x86_64)
+    // 下载页按平台分别拉对应的清单，互不污染。
+    const MAC_MANIFEST = "/releases/dex-ai/latest.json";
+    const WIN_MANIFEST = "/releases/dex-ai/windows/latest.json";
+
+    const PLATFORM = {
+      isMac: /Mac|iPhone|iPad|iPod/.test(navigator.platform) ||
+             /Mac/.test(navigator.userAgent),
+      isWin: /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent),
+    };
+
+    function showError(msg) {
+      const box = document.getElementById("error-box");
+      box.textContent = msg;
+      box.hidden = false;
+    }
+
+    function renderNotes(notes) {
+      const el = document.getElementById("notes");
+      el.classList.remove("notes-loading");
+      if (!notes) {
+        el.textContent = "（无更新说明）";
+        return;
+      }
+      // 简单 Markdown：标题 / 列表 / 代码块（不引第三方库）
+      const lines = notes.split(/\r?\n/);
+      const html = [];
+      let inList = false;
+      let inCode = false;
+      let para = [];
+      const flushPara = () => {
+        if (para.length) {
+          html.push("<p>" + inline(para.join(" ")) + "</p>");
+          para = [];
+        }
+      };
+      const flushList = () => {
+        if (inList) { html.push("</ul>"); inList = false; }
+      };
+      function inline(s) {
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/`([^`]+)`/g, "<code>$1</code>");
+      }
+      for (const line of lines) {
+        if (line.startsWith("```")) {
+          flushPara(); flushList();
+          if (inCode) { html.push("</code></pre>"); inCode = false; }
+          else { html.push("<pre><code>"); inCode = true; }
+          continue;
+        }
+        if (inCode) { html.push(line.replace(/</g, "&lt;") + "\n"); continue; }
+        const h = line.match(/^(#{1,3})\s+(.*)$/);
+        if (h) {
+          flushPara(); flushList();
+          html.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
+          continue;
+        }
+        const li = line.match(/^\s*[-*]\s+(.*)$/);
+        if (li) {
+          flushPara();
+          if (!inList) { html.push("<ul>"); inList = true; }
+          html.push("<li>" + inline(li[1]) + "</li>");
+          continue;
+        }
+        if (line.trim() === "") { flushPara(); flushList(); continue; }
+        para.push(line);
+      }
+      flushPara(); flushList();
+      if (inCode) html.push("</code></pre>");
+      el.innerHTML = html.join("");
+    }
+
+    function applyManifest(manifest, platformKey, btnId, filenameId, fallbackName) {
+      const platform = manifest.platforms && manifest.platforms[platformKey];
+      const btn = document.getElementById(btnId);
+      const fname = document.getElementById(filenameId);
+      if (!platform || !platform.url) return false;
+      btn.href = platform.url;
+      btn.hidden = false;
+      fname.textContent = fallbackName || platform.url.split("/").pop();
+      fname.hidden = false;
+      return true;
+    }
+
+    function setBadge(version) {
+      const badge = document.getElementById("version-badge");
+      badge.textContent = "v" + version;
+      badge.hidden = false;
+    }
+
+    async function loadManifest(url) {
+      const r = await fetch(url, { cache: "no-cache" });
+      if (!r.ok) throw new Error("HTTP " + r.status + " on " + url);
+      return await r.json();
+    }
+
+    (async () => {
+      let macManifest = null, winManifest = null, firstErr = null;
+
+      try { macManifest = await loadManifest(MAC_MANIFEST); }
+      catch (e) { firstErr = firstErr || ("macOS 更新清单加载失败：" + e.message); }
+      try { winManifest = await loadManifest(WIN_MANIFEST); }
+      catch (e) { firstErr = firstErr || ("Windows 更新清单加载失败：" + e.message); }
+
+      // 版本号以 macOS latest 为准（macOS 是日常主交付链路）
+      const version = (macManifest && macManifest.version) ||
+                      (winManifest && winManifest.version) || "";
+      if (version) setBadge(version);
+
+      let macOk = false, winOk = false;
+      if (macManifest) {
+        macOk = applyManifest(macManifest, "darwin-aarch64", "btn-mac", "filename-mac", "DEX AI.dmg");
+        const intel = applyManifest(macManifest, "darwin-x86_64", "link-mac-other", null, null);
+        const linkOther = document.getElementById("link-mac-other");
+        if (!intel) { linkOther.remove(); }
+        else { linkOther.textContent = "下载 Intel 版"; }
+      }
+      if (winManifest) {
+        winOk = applyManifest(winManifest, "windows-x86_64", "btn-win", "filename-win", "DEX AI Setup.exe");
+      }
+
+      if (macManifest) {
+        renderNotes(macManifest.notes);
+      } else if (winManifest) {
+        renderNotes(winManifest.notes);
+      } else {
+        const el = document.getElementById("notes");
+        el.classList.remove("notes-loading");
+        el.textContent = "（更新说明暂不可用）";
+      }
+
+      if (!macOk) {
+        document.getElementById("btn-mac").classList.add("disabled");
+        document.getElementById("btn-mac").textContent = "暂不可用";
+        document.getElementById("btn-mac").hidden = false;
+      }
+      if (!winOk) {
+        document.getElementById("btn-win").classList.add("disabled");
+        document.getElementById("btn-win").textContent = "暂不可用";
+        document.getElementById("btn-win").hidden = false;
+      }
+
+      if (firstErr && !macOk && !winOk) {
+        showError(firstErr + "。请检查网络后刷新。");
+      } else if (firstErr) {
+        // 单边失败只在控制台提示，不打扰用户
+        console.warn(firstErr);
+      }
+
+      // 平台提示：当前系统可能与默认下载不匹配
+      if (PLATFORM.isMac) {
+        document.getElementById("card-win").style.opacity = "0.7";
+      } else if (PLATFORM.isWin) {
+        document.getElementById("card-mac").style.opacity = "0.7";
+      }
+    })();
+  </script>
+</body>
+</html>

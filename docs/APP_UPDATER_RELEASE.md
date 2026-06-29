@@ -208,3 +208,20 @@ https://api.liguan.me/releases/dex-ai/<version>/mac/DEX AI.app.tar.gz
 只有远端 `latest.json`、远端 updater tar 包内版本、当前发布版本三者一致，发布才算完成。
 
 上传后，旧版本 DEX AI 的服务概览页点击“检查更新”，应能看到新版本并执行“下载并安装”。
+
+## 用户下载页
+
+除了应用内更新源，服务器还对外提供一个用户下载页，给首次安装 / 手动重装的用户提供 macOS 和 Windows 的下载入口：
+
+```text
+https://api.liguan.me/download/
+```
+
+- 页面源码在仓库 `site/download/index.html`，单文件零依赖（自带 CSS / Markdown 渲染，无第三方 JS）。
+- 部署位置：`/var/www/dex-ai/download/index.html`，由 nginx `location ^~ /download/` 提供。
+- 页面运行时按用户 UA 判断平台，并按平台分别拉对应的 Tauri updater 清单：
+  - macOS：`/releases/dex-ai/latest.json`，从 `platforms["darwin-aarch64"].url` 取 `.dmg` 链接。
+  - Windows：`/releases/dex-ai/windows/latest.json`，从 `platforms["windows-x86_64"].url` 取 `setup.exe` 链接。
+- macOS / Windows 用两份独立的 `latest.json`，因为历史上 Windows 包发布在 `/releases/dex-ai/windows/` 子树、Tauri updater 也独立指向这条清单；下载页只是把两边的最新版本号和 notes 拼到一起展示。
+- 版本号、release notes、下载链接全部从 `latest.json` 动态读取，发新版本不需要改这个页面。
+- 修改页面后只需要把 `site/download/index.html` 覆盖上传到 `/var/www/dex-ai/download/index.html` 即可，nginx 不需要 reload。
