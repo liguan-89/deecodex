@@ -3,31 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DEX AI — Download</title>
-  <meta name="description" content="DEX AI 桌面客户端下载：支持 macOS 与 Windows，模型路由、协议兼容、DEX 助手与插件市场。" />
-
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Noto+Serif+SC:wght@400;600&display=swap" rel="stylesheet">
+  <title>下载 DEX AI</title>
+  <meta name="description" content="DEX AI 桌面客户端下载：支持 macOS 和 Windows。" />
 
   <style>
     :root {
-      --bg:        #fafaf7;
-      --paper:     #f4f2ec;
-      --ink:       #0a0a0a;
-      --ink-soft:  #4a4a48;
-      --ink-mute:  #8a8a86;
-      --rule:      #1a1a1a;
-      --hair:      rgba(10,10,10,0.12);
-      --accent:    #ff4d2e;
-      --accent-ink:#0a0a0a;
+      --bg:        #ffffff;
+      --surface:   #f7f7f8;
+      --border:    #e5e5e8;
+      --ink:       #18181b;
+      --ink-soft:  #52525b;
+      --ink-mute:  #8a8a92;
+      --accent:    #2563eb;
+      --accent-ink:#ffffff;
 
-      --display:   "Instrument Serif", "Noto Serif SC", "Source Han Serif SC", serif;
-      --body:      "IBM Plex Sans", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-      --mono:      "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, monospace;
+      --body:      -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 
-      --gutter:    32px;
-      --max:       1240px;
+      --radius:    8px;
+      --gutter:    24px;
+      --max:       960px;
     }
 
     * { box-sizing: border-box; }
@@ -36,718 +30,400 @@
       background: var(--bg);
       color: var(--ink);
       font-family: var(--body);
-      font-weight: 400;
-      font-size: 16px;
+      font-size: 15px;
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
-      font-feature-settings: "ss01", "ss02", "kern";
     }
-    a { color: inherit; text-decoration: none; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img { display: block; max-width: 100%; height: auto; }
 
-    /* —— 顶栏：masthead ——————————————————————————————— */
-    .masthead {
-      border-bottom: 1px solid var(--ink);
-      position: sticky;
-      top: 0;
-      background: var(--bg);
-      z-index: 10;
-    }
-    .masthead-inner {
-      max-width: var(--max);
-      margin: 0 auto;
-      padding: 14px var(--gutter);
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 24px;
-    }
-    .brand {
-      font-family: var(--display);
-      font-size: 22px;
-      letter-spacing: -0.01em;
-    }
-    .brand em { font-style: italic; color: var(--accent); }
-    .meta {
-      display: flex;
-      gap: 28px;
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-soft);
-    }
-    .meta span { white-space: nowrap; }
-    .meta .dot { color: var(--accent); }
-
-    /* —— 主体容器 ————————————————————————————————— */
     .page {
       max-width: var(--max);
       margin: 0 auto;
-      padding: 0 var(--gutter) 80px;
+      padding: 0 var(--gutter) 64px;
     }
 
-    section {
-      padding: 56px 0;
-      border-bottom: 1px solid var(--hair);
+    /* —— header ————————————————————— */
+    header {
+      padding: 48px 0 32px;
     }
-    section:last-of-type { border-bottom: none; }
-
-    .eyebrow {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--ink-mute);
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
+    .brand {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: -0.01em;
     }
-    .eyebrow .num {
-      color: var(--accent);
+    header h1 {
+      margin: 24px 0 8px;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+    header h1 .version {
+      display: inline-block;
+      margin-left: 12px;
+      padding: 3px 10px;
+      font-size: 13px;
       font-weight: 500;
-    }
-
-    /* —— Hero ——————————————————————————————————— */
-    .hero {
-      padding-top: 96px;
-      padding-bottom: 96px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 64px;
-      align-items: end;
-    }
-    .hero h1 {
-      font-family: var(--display);
-      font-weight: 400;
-      font-size: clamp(56px, 8vw, 120px);
-      line-height: 0.96;
-      letter-spacing: -0.025em;
-      margin: 18px 0 0;
-    }
-    .hero h1 em { font-style: italic; }
-    .hero h1 .accent { color: var(--accent); font-style: italic; }
-    .hero-lede {
-      font-size: 17px;
-      line-height: 1.6;
       color: var(--ink-soft);
-      max-width: 36ch;
-      margin: 0 0 28px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      vertical-align: middle;
     }
-    .hero-side {
-      border-left: 1px solid var(--hair);
-      padding-left: 32px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-    .version-row {
-      display: flex;
-      align-items: baseline;
-      gap: 16px;
-    }
-    .version-num {
-      font-family: var(--display);
-      font-size: 56px;
-      line-height: 1;
-      letter-spacing: -0.02em;
-    }
-    .version-num em { color: var(--accent); font-style: normal; }
-    .version-label {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--ink-mute);
-    }
-    .release-date {
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--ink-soft);
-    }
-    .hero-side p {
+    header p {
       margin: 0;
       color: var(--ink-soft);
-      max-width: 38ch;
+      font-size: 15px;
     }
 
-    /* —— 下载区 ————————————————————————————————— */
+    /* —— section —————————————————— */
+    section {
+      margin-top: 40px;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0 0 16px;
+    }
+
+    /* —— download cards —————————— */
     .downloads {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0;
-      border-top: 1px solid var(--ink);
-      border-bottom: 1px solid var(--ink);
+      gap: 16px;
     }
     .download-card {
-      padding: 48px 40px 56px;
-      position: relative;
-      transition: background 0.2s ease;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      background: var(--bg);
     }
-    .download-card + .download-card {
-      border-left: 1px solid var(--ink);
-    }
-    .download-card:hover { background: var(--paper); }
     .download-card.dim { opacity: 0.55; }
-    .download-card.dim:hover { background: var(--bg); }
-    .download-card.dim .download-btn { pointer-events: none; }
-
-    .download-platform {
+    .platform {
       display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      margin-bottom: 24px;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
     }
-    .platform-name {
-      font-family: var(--display);
-      font-size: 40px;
-      line-height: 1;
-      letter-spacing: -0.02em;
-    }
-    .platform-arch {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
+    .platform .arch {
+      font-size: 12px;
+      font-weight: 400;
       color: var(--ink-mute);
     }
-    .download-meta {
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--ink-soft);
-      margin: 0 0 28px;
-      display: flex;
-      gap: 18px;
+    .meta-line {
+      margin: 8px 0 16px;
+      font-size: 12.5px;
+      color: var(--ink-mute);
     }
-    .download-meta span::before {
-      content: "·";
-      margin-right: 18px;
-      color: var(--hair);
-    }
-    .download-meta span:first-child::before { content: ""; margin: 0; }
     .download-btn {
       display: inline-flex;
       align-items: center;
-      gap: 12px;
-      padding: 16px 22px;
-      background: var(--ink);
-      color: var(--bg);
-      font-family: var(--mono);
-      font-size: 13px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+      gap: 6px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      transition: background 0.15s;
     }
-    .download-btn:hover { background: var(--accent); color: var(--accent-ink); }
-    .download-btn:active { transform: translateY(1px); }
-    .download-btn .arrow {
-      display: inline-block;
-      transition: transform 0.2s ease;
-    }
-    .download-btn:hover .arrow { transform: translateX(4px); }
-    .download-btn.disabled,
-    .download-btn[aria-disabled="true"] {
-      background: transparent;
+    .download-btn:hover { background: #1d4ed8; text-decoration: none; }
+    .download-btn.disabled {
+      background: var(--surface);
       color: var(--ink-mute);
-      border: 1px solid var(--hair);
+      border: 1px solid var(--border);
       cursor: not-allowed;
+      pointer-events: none;
     }
-    .download-filename {
-      margin-top: 16px;
-      font-family: var(--mono);
-      font-size: 11px;
+    .filename {
+      margin-top: 10px;
+      font-size: 11.5px;
       color: var(--ink-mute);
       word-break: break-all;
-      min-height: 1.4em;
+    }
+    .alt-link {
+      margin-top: 12px;
+      font-size: 13px;
     }
 
-    /* —— 特性 —————————————————————————————————— */
-    .features-head {
+    /* —— features ————————————————— */
+    .features {
       display: grid;
-      grid-template-columns: 1fr 2fr;
-      gap: 64px;
-      align-items: end;
-      margin-bottom: 48px;
-    }
-    .features-head h2 {
-      font-family: var(--display);
-      font-weight: 400;
-      font-size: clamp(40px, 5vw, 64px);
-      line-height: 1.02;
-      letter-spacing: -0.02em;
-      margin: 12px 0 0;
-    }
-    .features-head h2 em { color: var(--accent); font-style: italic; }
-    .features-head p {
-      margin: 0;
-      color: var(--ink-soft);
-      max-width: 44ch;
-      font-size: 16px;
-    }
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      border-top: 1px solid var(--ink);
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
     }
     .feature {
-      padding: 28px 24px 32px;
-      border-right: 1px solid var(--hair);
-      border-bottom: 1px solid var(--hair);
-      position: relative;
-      min-height: 180px;
-      transition: background 0.2s ease;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
     }
-    .feature:hover { background: var(--paper); }
-    .feature:nth-child(4n) { border-right: none; }
-    .feature:nth-last-child(-n+4) { border-bottom: none; }
-    .feature-num {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.18em;
-      color: var(--ink-mute);
-      margin-bottom: 18px;
-      display: flex;
-      justify-content: space-between;
-    }
-    .feature-num em { color: var(--accent); font-style: normal; }
     .feature-title {
-      font-family: var(--display);
-      font-size: 22px;
-      line-height: 1.15;
-      letter-spacing: -0.01em;
-      margin: 0 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14.5px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .feature-title .icon {
+      font-size: 16px;
+      line-height: 1;
     }
     .feature-desc {
-      font-size: 13.5px;
-      line-height: 1.55;
-      color: var(--ink-soft);
-      margin: 0;
-    }
-
-    /* —— 截图 —————————————————————————————————— */
-    .screenshot-wrap {
-      display: grid;
-      grid-template-columns: 1fr 2fr;
-      gap: 64px;
-      align-items: start;
-    }
-    .screenshot-meta h2 {
-      font-family: var(--display);
-      font-weight: 400;
-      font-size: clamp(40px, 5vw, 64px);
-      line-height: 1.02;
-      letter-spacing: -0.02em;
-      margin: 12px 0 16px;
-    }
-    .screenshot-meta p {
-      color: var(--ink-soft);
-      margin: 0 0 24px;
-    }
-    .screenshot-list {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--ink-soft);
-    }
-    .screenshot-list li {
-      padding: 8px 0;
-      border-top: 1px solid var(--hair);
-      display: flex;
-      justify-content: space-between;
-    }
-    .screenshot-list li:last-child { border-bottom: 1px solid var(--hair); }
-    .screenshot-list li::before {
-      content: "→";
-      color: var(--accent);
-      margin-right: 8px;
-    }
-    .screenshot-frame {
-      border: 1px solid var(--ink);
-      background: #fff;
-      padding: 12px 12px 0;
-      box-shadow: 12px 12px 0 var(--paper);
-    }
-    .screenshot-frame img {
-      display: block;
-      width: 100%;
-      height: auto;
-    }
-    .screenshot-caption {
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.06em;
-      color: var(--ink-mute);
-      padding: 12px 0;
-      text-align: right;
-    }
-
-    /* —— Release notes ————————————————————————————— */
-    .notes-wrap {
-      display: grid;
-      grid-template-columns: 1fr 2fr;
-      gap: 64px;
-    }
-    .notes-meta h2 {
-      font-family: var(--display);
-      font-weight: 400;
-      font-size: clamp(40px, 5vw, 64px);
-      line-height: 1.02;
-      letter-spacing: -0.02em;
-      margin: 12px 0 16px;
-    }
-    .notes-meta p { color: var(--ink-soft); margin: 0; }
-    .notes-body {
-      border-left: 1px solid var(--ink);
-      padding-left: 32px;
-    }
-    .notes-content { font-size: 15.5px; line-height: 1.7; }
-    .notes-content :where(h1, h2, h3) {
-      font-family: var(--display);
-      font-weight: 400;
-      letter-spacing: -0.01em;
-      margin-top: 1.4em;
-      margin-bottom: 0.4em;
-    }
-    .notes-content h1 { font-size: 28px; }
-    .notes-content h2 { font-size: 22px; }
-    .notes-content h3 { font-size: 18px; }
-    .notes-content p { margin: 0.6em 0; color: var(--ink-soft); }
-    .notes-content :where(ul, ol) { padding-left: 1.4em; }
-    .notes-content li { margin: 0.4em 0; color: var(--ink-soft); }
-    .notes-content code {
-      font-family: var(--mono);
-      font-size: 0.88em;
-      background: var(--paper);
-      padding: 1px 6px;
-      border: 1px solid var(--hair);
-    }
-    .notes-content pre {
-      font-family: var(--mono);
       font-size: 13px;
-      background: var(--paper);
-      border: 1px solid var(--hair);
-      padding: 14px 18px;
-      overflow-x: auto;
+      color: var(--ink-soft);
+      line-height: 1.5;
+      margin: 0;
     }
-    .notes-loading { color: var(--ink-mute); font-style: italic; }
 
-    /* —— 群码 ————————————————————————————————— */
-    .community-wrap {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 64px;
-      align-items: start;
+    /* —— screenshot —————————————— */
+    .screenshot {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      padding: 12px;
     }
-    .community-meta h2 {
-      font-family: var(--display);
-      font-weight: 400;
-      font-size: clamp(40px, 5vw, 64px);
-      line-height: 1.02;
-      letter-spacing: -0.02em;
-      margin: 12px 0 16px;
+    .screenshot img {
+      border-radius: 4px;
     }
-    .community-meta h2 em { color: var(--accent); font-style: italic; }
-    .community-meta p { color: var(--ink-soft); margin: 0 0 16px; max-width: 50ch; }
-    .community-meta .warn {
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--accent);
-      letter-spacing: 0.04em;
-      padding: 12px 16px;
-      border: 1px solid var(--accent);
-      margin-top: 20px;
-      max-width: 50ch;
-    }
-    .qr-frame {
-      border: 1px solid var(--ink);
-      background: #fff;
+
+    /* —— notes ——————————————————— */
+    .notes {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
+      background: var(--surface);
     }
-    .qr-frame img {
-      display: block;
-      width: 100%;
-      height: auto;
+    .notes-content { font-size: 14.5px; line-height: 1.65; }
+    .notes-content :where(h1, h2, h3) {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink);
+      margin: 1.2em 0 0.4em;
     }
-    .qr-caption {
-      font-family: var(--mono);
+    .notes-content :where(h1) { font-size: 18px; margin-top: 0; }
+    .notes-content p { margin: 0.5em 0; color: var(--ink-soft); }
+    .notes-content :where(ul) { padding-left: 1.4em; margin: 0.4em 0; }
+    .notes-content li { margin: 0.25em 0; color: var(--ink-soft); }
+    .notes-content code {
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.9em;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .notes-loading { color: var(--ink-mute); }
+
+    /* —— community —————————————— */
+    .community {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: start;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .community-info h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .community-info p {
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+    .community-info .warn {
+      margin-top: 10px;
+      padding: 8px 12px;
+      font-size: 12.5px;
+      color: #b45309;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+    }
+    .qr {
+      width: 140px;
+      padding: 8px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .qr img { width: 100%; height: auto; }
+    .qr-cap {
+      margin-top: 6px;
       font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
       color: var(--ink-mute);
       text-align: center;
-      padding-top: 12px;
-      border-top: 1px solid var(--hair);
     }
 
-    /* —— 页脚 —————————————————————————————————— */
-    .footer {
-      border-top: 1px solid var(--ink);
-      padding: 28px 0 0;
-      margin-top: 40px;
+    /* —— footer —————————————————— */
+    footer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-soft);
-    }
-    .footer a:hover { color: var(--accent); }
-    .footer .issue {
-      color: var(--accent);
+      font-size: 12.5px;
+      color: var(--ink-mute);
     }
 
-    /* —— Reveal 动画 ———————————————————————————— */
-    .reveal {
-      opacity: 0;
-      transform: translateY(12px);
-      transition: opacity 0.6s ease, transform 0.6s ease;
-    }
-    .reveal.in {
-      opacity: 1;
-      transform: none;
-    }
-
-    /* —— 错误条 ————————————————————————————————— */
-    .error-box {
-      background: var(--paper);
-      border: 1px solid var(--accent);
-      padding: 14px 18px;
-      color: var(--accent);
-      font-family: var(--mono);
-      font-size: 12px;
-      margin: 24px 0;
+    /* —— error ——————————————————— */
+    .error {
+      margin: 16px 0;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #b91c1c;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: var(--radius);
     }
 
-    /* —— 响应式 ————————————————————————————————— */
-    @media (max-width: 920px) {
-      :root { --gutter: 20px; }
-      .hero { grid-template-columns: 1fr; gap: 40px; padding-top: 56px; padding-bottom: 56px; }
-      .hero-side { border-left: none; border-top: 1px solid var(--hair); padding-left: 0; padding-top: 24px; }
-      .downloads { grid-template-columns: 1fr; }
-      .download-card + .download-card { border-left: none; border-top: 1px solid var(--ink); }
-      .features-grid { grid-template-columns: repeat(2, 1fr); }
-      .feature { border-right: 1px solid var(--hair) !important; border-bottom: 1px solid var(--hair) !important; }
-      .feature:nth-child(2n) { border-right: none !important; }
-      .feature:nth-last-child(-n+4) { border-bottom: 1px solid var(--hair) !important; }
-      .feature:nth-last-child(-n+2) { border-bottom: none !important; }
-      .features-head, .screenshot-wrap, .notes-wrap, .community-wrap {
-        grid-template-columns: 1fr;
-        gap: 32px;
-      }
-      .notes-body { border-left: none; border-top: 1px solid var(--ink); padding-left: 0; padding-top: 24px; }
-      .screenshot-frame { box-shadow: 6px 6px 0 var(--paper); }
-      .meta { display: none; }
-    }
-    @media (max-width: 520px) {
-      .features-grid { grid-template-columns: 1fr; }
-      .feature { border-right: none !important; }
-      .feature:last-child { border-bottom: none !important; }
+    /* —— responsive ————————————— */
+    @media (max-width: 640px) {
+      :root { --gutter: 16px; }
+      header { padding: 32px 0 24px; }
+      header h1 { font-size: 22px; }
+      .downloads, .features { grid-template-columns: 1fr; }
+      .community { grid-template-columns: 1fr; }
+      .qr { width: 160px; margin: 0 auto; }
+      footer { flex-direction: column; gap: 4px; }
     }
   </style>
 </head>
 <body>
-
-  <header class="masthead">
-    <div class="masthead-inner">
-      <a href="/download/" class="brand">DEX <em>AI</em></a>
-      <div class="meta">
-        <span>Desktop Client</span>
-        <span><span class="dot">●</span> v<span id="topbar-version">—</span></span>
-        <span>macOS · Windows</span>
-      </div>
-    </div>
-  </header>
-
   <main class="page">
 
-    <!-- HERO ============================================ -->
-    <section class="hero">
-      <div class="reveal">
-        <div class="eyebrow"><span><span class="num">№ 001</span> · Download Edition</span></div>
-        <h1>The gateway<br/>for <span class="accent">every</span> model<br/>you use.</h1>
-      </div>
-      <div class="hero-side reveal">
-        <p class="hero-lede">DEX AI 是一款桌面端的 AI 网关与协议层。它把你的多账号、多供应商、多端点统一在一个本地进程里，让 Codex 桌面客户端、第三方 IDE、CLI 工具都能无缝接入。</p>
-        <div class="version-row">
-          <div class="version-num">v<em id="hero-version">3.9.11</em></div>
-          <div class="version-label">Latest Release</div>
-        </div>
-        <p class="release-date" id="release-date">Released · 2026-06-28</p>
-        <p>选择你的系统，下载并拖入 <span class="version-label" style="color: var(--ink)">/Applications</span> 即可使用。已安装旧版的用户可直接应用内升级。</p>
-      </div>
-    </section>
+    <header>
+      <div class="brand">DEX AI</div>
+      <h1>下载桌面客户端<span class="version" id="version-badge" hidden></span></h1>
+      <p>macOS 和 Windows 版本。已安装的用户可应用内升级。</p>
+    </header>
 
-    <!-- DOWNLOADS ===================================== -->
+    <div id="error-box" class="error" hidden></div>
+
+    <!-- downloads -->
     <section>
-      <div class="eyebrow" style="margin-bottom: 32px"><span><span class="num">§ 02</span> · Get the binary</span></div>
+      <div class="section-title">下载</div>
       <div class="downloads">
-
         <div class="download-card" id="card-mac">
-          <div class="download-platform">
-            <div class="platform-name">macOS</div>
-            <div class="platform-arch">Apple Silicon · arm64</div>
+          <div class="platform">
+            macOS
+            <span class="arch">Apple Silicon · arm64</span>
           </div>
-          <div class="download-meta">
-            <span id="mac-size">.dmg · 27.2 MB</span>
-            <span id="mac-sha">SHA verified</span>
+          <div class="meta-line"><span id="mac-size">.dmg</span></div>
+          <a id="btn-mac" class="download-btn" href="#" hidden>下载 .dmg</a>
+          <div id="filename-mac" class="filename" hidden></div>
+          <div class="alt-link">
+            <span id="link-mac-other-wrap">
+              Intel Mac：<a id="link-mac-other" href="#">下载 x86_64 版本</a>
+            </span>
           </div>
-          <a id="btn-mac" class="download-btn" href="#" hidden>
-            Download <span class="arrow">→</span>
-          </a>
-          <div id="filename-mac" class="download-filename" hidden></div>
-          <p style="margin-top: 28px; font-size: 13px; color: var(--ink-soft)">
-            Intel Mac？<a id="link-mac-other" href="#" style="border-bottom: 1px solid var(--ink)">下载 x86_64 版本</a>
-          </p>
         </div>
 
         <div class="download-card" id="card-win">
-          <div class="download-platform">
-            <div class="platform-name">Windows</div>
-            <div class="platform-arch">x86_64 · Win 10+</div>
+          <div class="platform">
+            Windows
+            <span class="arch">x86_64 · Windows 10+</span>
           </div>
-          <div class="download-meta">
-            <span id="win-size">.exe · 14.9 MB</span>
-            <span id="win-sha">Code-signed</span>
-          </div>
-          <a id="btn-win" class="download-btn" href="#" hidden>
-            Download <span class="arrow">→</span>
-          </a>
-          <div id="filename-win" class="download-filename" hidden></div>
-          <p style="margin-top: 28px; font-size: 13px; color: var(--ink-soft)">
-            已安装旧版？直接应用内「检查更新」即可。
-          </p>
-        </div>
-
-      </div>
-    </section>
-
-    <!-- FEATURES ======================================= -->
-    <section>
-      <div class="features-head">
-        <div class="reveal">
-          <div class="eyebrow"><span><span class="num">§ 03</span> · Capabilities</span></div>
-          <h2>Eight <em>core</em><br/>primitives.</h2>
-        </div>
-        <p class="reveal">从账号管理到协议翻译，从模型路由到熔断保护——DEX AI 把分散在不同 SaaS 后台的能力收回本地，给开发者一个可控的 AI 基础设施。</p>
-      </div>
-
-      <div class="features-grid">
-        <div class="feature reveal">
-          <div class="feature-num"><span>01</span><em>—</em></div>
-          <h3 class="feature-title">多账号 · 多端点</h3>
-          <p class="feature-desc">一套配置管理 OpenAI、Anthropic、Codex、第三方中转等不同供应商；同一供应商下可并存多个端点并独立切换协议。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>02</span><em>—</em></div>
-          <h3 class="feature-title">Codex 协议兼容</h3>
-          <p class="feature-desc">自动在 Chat Completions 与 Responses 协议之间翻译，Codex 桌面客户端可直接接入第三方模型，零额外配置。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>03</span><em>—</em></div>
-          <h3 class="feature-title">智能模型路由</h3>
-          <p class="feature-desc">按账号、端点、模型槽位和视觉策略路由请求，跨供应商时自动剥离不兼容参数（reasoning_effort / thinking），避免 400。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>04</span><em>—</em></div>
-          <h3 class="feature-title">Provider 熔断</h3>
-          <p class="feature-desc">连续 5 次失败自动打开熔断器，60 秒内阻断该 provider 流量，避免上游 5xx 风暴雪崩到所有调用方。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>05</span><em>—</em></div>
-          <h3 class="feature-title">DEX 助手</h3>
-          <p class="feature-desc">内置 AI 助手面板，支持工具调用、附件输入、对话搜索、快捷键绑定，可与本地工作区联动。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>06</span><em>—</em></div>
-          <h3 class="feature-title">插件市场</h3>
-          <p class="feature-desc">内置插件市场，支持安装 / 更新 / 卸载；按未安装、已安装、可更新三态区分点击行为。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>07</span><em>—</em></div>
-          <h3 class="feature-title">诊断 & 日志</h3>
-          <p class="feature-desc">端口探测、健康概览、网络检查、SSL 校验、自检报告导出——让本地网关的每一处异常都可被定位。</p>
-        </div>
-        <div class="feature reveal">
-          <div class="feature-num"><span>08</span><em>—</em></div>
-          <h3 class="feature-title">应用内自动更新</h3>
-          <p class="feature-desc">Tauri updater 签名更新；命中强制策略时弹出不可关闭的关键更新弹窗，旧版必须升级到当前最新版。</p>
+          <div class="meta-line"><span id="win-size">.exe</span></div>
+          <a id="btn-win" class="download-btn" href="#" hidden>下载安装程序</a>
+          <div id="filename-win" class="filename" hidden></div>
         </div>
       </div>
     </section>
 
-    <!-- SCREENSHOT ===================================== -->
+    <!-- features -->
     <section>
-      <div class="screenshot-wrap">
-        <div class="screenshot-meta reveal">
-          <div class="eyebrow"><span><span class="num">§ 04</span> · In the wild</span></div>
-          <h2>One local<br/>control plane.</h2>
-          <p>从单一的服务概览面板管理账号、路由、客户端与日志。无需登录 SaaS 后台，所有配置与历史都在你的机器上。</p>
-          <ul class="screenshot-list">
-            <li><span>Service Overview</span><span>01</span></li>
-            <li><span>Account Manager</span><span>02</span></li>
-            <li><span>Request History</span><span>03</span></li>
-            <li><span>Plugin Marketplace</span><span>04</span></li>
-            <li><span>DEX Assistant</span><span>05</span></li>
-          </ul>
+      <div class="section-title">功能</div>
+      <div class="features">
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>多账号 · 多端点</div>
+          <p class="feature-desc">一套配置管理 OpenAI / Anthropic / Codex / 第三方中转；同供应商多端点并存。</p>
         </div>
-        <div class="reveal">
-          <div class="screenshot-frame">
-            <img src="screenshot-app.png" alt="DEX AI 主界面截图" />
-            <div class="screenshot-caption">FIG. 01 — Main dashboard, v3.9.11</div>
-          </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>Codex 协议兼容</div>
+          <p class="feature-desc">Chat Completions ↔ Responses 自动翻译，Codex 桌面客户端零配置接入第三方模型。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>智能模型路由</div>
+          <p class="feature-desc">按账号 / 端点 / 视觉策略路由；跨供应商自动剥离不兼容参数。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>Provider 熔断</div>
+          <p class="feature-desc">连续 5 次失败打开熔断器，60 秒内阻断该 provider，避免上游 5xx 雪崩。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>DEX 助手</div>
+          <p class="feature-desc">内置 AI 助手面板，工具调用 / 附件输入 / 快捷键，与本地工作区联动。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>插件市场</div>
+          <p class="feature-desc">安装 / 更新 / 卸载；按未安装、已安装、可更新三态区分点击行为。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>诊断 & 日志</div>
+          <p class="feature-desc">端口探测、健康概览、网络检查、SSL 校验、自检报告导出。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>应用内自动更新</div>
+          <p class="feature-desc">Tauri updater 签名更新；强制策略下旧版必须升级到最新。</p>
         </div>
       </div>
     </section>
 
-    <!-- RELEASE NOTES ================================== -->
+    <!-- screenshot -->
     <section>
-      <div class="notes-wrap">
-        <div class="notes-meta reveal">
-          <div class="eyebrow"><span><span class="num">§ 05</span> · Changelog</span></div>
-          <h2>What changed<br/>this release.</h2>
-          <p>每一次发版都对应一份发布说明。下面的内容从 <code style="font-family: var(--mono); font-size: 13px; background: var(--paper); padding: 1px 6px">latest.json</code> 动态拉取，无需修改本页。</p>
-        </div>
-        <div class="notes-body reveal">
-          <div id="notes" class="notes-content notes-loading">Loading release notes…</div>
-        </div>
+      <div class="section-title">应用预览</div>
+      <div class="screenshot">
+        <a href="screenshot-app.png" target="_blank"><img src="screenshot-app.png" alt="DEX AI 主界面" /></a>
       </div>
     </section>
 
-    <!-- COMMUNITY ====================================== -->
+    <!-- notes -->
     <section>
-      <div class="community-wrap">
-        <div class="community-meta reveal">
-          <div class="eyebrow"><span><span class="num">§ 06</span> · Community</span></div>
-          <h2>Join the <em>conversation</em>.</h2>
-          <p>扫码加入 <strong>DEX 交流一群（CODEX &amp; CLAUDE）</strong>，反馈问题、跟进新版本、聊聊本地 AI 网关这件事本身。</p>
-          <p>本群为开发者交流群，发版、bug、路由策略变更会第一时间同步；非技术类广告请勿打扰。</p>
+      <div class="section-title">本次更新</div>
+      <div class="notes">
+        <div id="notes" class="notes-content notes-loading">加载中…</div>
+      </div>
+    </section>
+
+    <!-- community -->
+    <section>
+      <div class="section-title">加入交流群</div>
+      <div class="community">
+        <div class="community-info">
+          <h3>DEX 交流一群（CODEX &amp; CLAUDE）</h3>
+          <p>反馈问题、跟进新版本、聊本地 AI 网关这件事本身。</p>
           <div class="warn">⚠ 二维码 7 天内有效（7 月 6 日前），过期后请通过页面底部联系方式索取最新二维码。</div>
         </div>
-        <div class="reveal">
-          <div class="qr-frame">
-            <img src="qrcode-wechat.png" alt="DEX 交流一群微信群二维码" />
-            <div class="qr-caption">WeChat Group · Scan to join</div>
-          </div>
+        <div>
+          <div class="qr"><img src="qrcode-wechat.png" alt="微信群二维码" /></div>
+          <div class="qr-cap">微信扫一扫</div>
         </div>
       </div>
     </section>
 
-    <!-- FOOTER ========================================= -->
-    <div class="footer">
-      <span>DEX AI · Open-source gateway for local AI workflows</span>
-      <span>Issues → <a class="issue" href="mailto:liguan@liguan.me">liguan@liguan.me</a></span>
-    </div>
+    <footer>
+      <span>DEX AI · 本地 AI 网关</span>
+      <span>联系：<a href="mailto:liguan@liguan.me">liguan@liguan.me</a></span>
+    </footer>
 
   </main>
-
-  <div id="error-box" class="error-box page" style="display:none"></div>
 
   <script>
     // Tauri updater 在 macOS 和 Windows 上分别维护独立的 latest.json：
@@ -764,14 +440,7 @@
     function showError(msg) {
       const box = document.getElementById("error-box");
       box.textContent = msg;
-      box.style.display = "block";
-    }
-
-    function setVersion(version) {
-      if (!version) return;
-      document.getElementById("topbar-version").textContent = version;
-      const hv = document.getElementById("hero-version");
-      if (hv) hv.textContent = version;
+      box.hidden = false;
     }
 
     function applyManifest(manifest, platformKey, btnId, filenameId) {
@@ -786,10 +455,17 @@
       return true;
     }
 
+    function setVersion(version) {
+      if (!version) return;
+      const badge = document.getElementById("version-badge");
+      badge.textContent = "v" + version;
+      badge.hidden = false;
+    }
+
     function humanSize(bytes) {
       if (!bytes) return "";
       const mb = bytes / (1024 * 1024);
-      return mb.toFixed(1) + " MB";
+      return ".dmg · " + mb.toFixed(1) + " MB";
     }
 
     async function probeSize(url) {
@@ -808,9 +484,7 @@
       const lines = notes.split(/\r?\n/);
       const html = [];
       let inList = false, inCode = false, para = [];
-      const flushPara = () => {
-        if (para.length) { html.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; }
-      };
+      const flushPara = () => { if (para.length) { html.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
       const flushList = () => { if (inList) { html.push("</ul>"); inList = false; } };
       function inline(s) {
         return s
@@ -840,16 +514,16 @@
 
     async function loadManifest(url) {
       const r = await fetch(url, { cache: "no-cache" });
-      if (!r.ok) throw new Error("HTTP " + r.status + " on " + url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
       return await r.json();
     }
 
     (async () => {
       let macManifest = null, winManifest = null, firstErr = null;
       try { macManifest = await loadManifest(MAC_MANIFEST); }
-      catch (e) { firstErr = firstErr || ("macOS 更新清单加载失败：" + e.message); }
+      catch (e) { firstErr = firstErr || ("macOS 清单加载失败：" + e.message); }
       try { winManifest = await loadManifest(WIN_MANIFEST); }
-      catch (e) { firstErr = firstErr || ("Windows 更新清单加载失败：" + e.message); }
+      catch (e) { firstErr = firstErr || ("Windows 清单加载失败：" + e.message); }
 
       const version = (macManifest && macManifest.version) || (winManifest && winManifest.version);
       if (version) setVersion(version);
@@ -858,36 +532,33 @@
       if (macManifest) {
         macOk = applyManifest(macManifest, "darwin-aarch64", "btn-mac", "filename-mac");
         const intel = applyManifest(macManifest, "darwin-x86_64", "link-mac-other", null);
-        if (!intel) { const a = document.getElementById("link-mac-other"); if (a) a.parentElement.remove(); }
+        if (!intel) { const w = document.getElementById("link-mac-other-wrap"); if (w) w.style.display = "none"; }
       }
       if (winManifest) {
         winOk = applyManifest(winManifest, "windows-x86_64", "btn-win", "filename-win");
       }
 
-      // 文件大小探测（HEAD 请求，不下载）
       if (macOk) {
         const sz = await probeSize(document.getElementById("btn-mac").href);
-        if (sz) document.getElementById("mac-size").textContent = ".dmg · " + humanSize(sz);
+        if (sz) document.getElementById("mac-size").textContent = ".dmg · " + (sz / 1048576).toFixed(1) + " MB";
       }
       if (winOk) {
         const sz = await probeSize(document.getElementById("btn-win").href);
-        if (sz) document.getElementById("win-size").textContent = ".exe · " + humanSize(sz);
+        if (sz) document.getElementById("win-size").textContent = ".exe · " + (sz / 1048576).toFixed(1) + " MB";
       }
 
       if (!macOk) {
         const btn = document.getElementById("btn-mac");
         btn.hidden = false;
-        btn.setAttribute("aria-disabled", "true");
         btn.classList.add("disabled");
-        btn.innerHTML = 'Unavailable <span class="arrow">×</span>';
+        btn.textContent = "暂不可用";
         document.getElementById("card-mac").classList.add("dim");
       }
       if (!winOk) {
         const btn = document.getElementById("btn-win");
         btn.hidden = false;
-        btn.setAttribute("aria-disabled", "true");
         btn.classList.add("disabled");
-        btn.innerHTML = 'Unavailable <span class="arrow">×</span>';
+        btn.textContent = "暂不可用";
         document.getElementById("card-win").classList.add("dim");
       }
 
@@ -902,15 +573,8 @@
       if (firstErr && !macOk && !winOk) showError(firstErr + "。请检查网络后刷新。");
       else if (firstErr) console.warn(firstErr);
 
-      // 平台提示：当前系统与默认下载不匹配时把另一卡淡出
       if (PLATFORM.isMac) document.getElementById("card-win").classList.add("dim");
       else if (PLATFORM.isWin) document.getElementById("card-mac").classList.add("dim");
-
-      // Staggered reveal
-      const targets = document.querySelectorAll(".reveal");
-      targets.forEach((el, i) => {
-        setTimeout(() => el.classList.add("in"), 80 * i + 80);
-      });
     })();
   </script>
 </body>
