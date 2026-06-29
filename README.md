@@ -72,7 +72,7 @@ Codex CLI  →  /v1/responses
 
 欢迎加入 deecodex 交流群，一起讨论、反馈、共建。
 
-<img src="https://github.com/liguan-89/deecodex/releases/download/v2.0.0/deecodex-qr-202605.jpg" width="200" alt="deecodex 交流群" />
+<img src="https://github.com/liguan-89/deecodex/releases/download/v3.9.11/deecodex-qr-202607.jpg" width="200" alt="deecodex 交流群（7 月 6 日前有效）" />
 
 ---
 
