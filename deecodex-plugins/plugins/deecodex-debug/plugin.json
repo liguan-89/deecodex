@@ -1,0 +1,51 @@
+{
+  "id": "dexai-debug",
+  "name": "DEXAI Debug",
+  "version": "0.1.5",
+  "description": "DEXAI Debug 远程调试插件：短码授权、全程审计与敏感脱敏，支持 CLI / GUI 双入口",
+  "author": "DEX AI",
+  "kind": "integration",
+  "tags": [
+    "debug",
+    "remote",
+    "tailnet",
+    "diagnose"
+  ],
+  "first_party": true,
+  "lifecycle": {
+    "autostart": "host_ready",
+    "requires_gateway": false,
+    "restart_policy": "on_failure",
+    "shutdown_timeout_ms": 10000
+  },
+  "entry": {
+    "runtime": "node",
+    "script": "index.js"
+  },
+  "permissions": [
+    "network",
+    "secrets"
+  ],
+  "features": [
+    {
+      "id": "remote-debug",
+      "kind": "service",
+      "label": "DEXAI Debug",
+      "description": "远程环境调试服务（独立实例，短码授权，全程审计）",
+      "methods": {
+        "status": "debug.status",
+        "enable": "debug.enable",
+        "disable": "debug.disable",
+        "shortcode": "debug.shortcode",
+        "sessions": "debug.sessions",
+        "audit": "debug.audit",
+        "system": "debug.system.info",
+        "service": "debug.service.status",
+        "config": "debug.config.peek",
+        "logs": "debug.logs.tail",
+        "network": "debug.network.check",
+        "exec": "debug.exec"
+      }
+    }
+  ]
+}

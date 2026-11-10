@@ -1,0 +1,4816 @@
+const CODEX_MODEL_LIST = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2', 'codex-auto-review'];
+const MIMO_CODING_MODEL = 'mimo-v2.5-pro';
+const MIMO_VISION_MODEL = 'mimo-v2.5';
+const MIMO_CHAT_MODELS = [MIMO_CODING_MODEL, MIMO_VISION_MODEL, 'mimo-v2-omni', 'mimo-v2-pro'];
+const CLIENT_KIND_LABELS = {
+  codex: 'Codex',
+  claude_code: 'Claude',
+  hermes: 'Hermes',
+  generic_client: '通用客户端',
+  dsh: 'DeepSeek Harness',
+  pi: 'Pi',
+  opencode: 'OpenCode',
+  workbuddy: 'WorkBuddy',
+};
+const CLIENT_SURFACE_LABELS = {
+  cli: 'CLI',
+  desktop: '桌面版',
+};
+const ACCOUNTS_CLIENT_KIND_KEY = 'deecodex.accountsClientKind';
+const ACCOUNTS_CLIENT_SURFACE_KEY = 'deecodex.accountsClientSurface';
+/// 国产厂商的 API Key 申请/控制台地址（账号编辑“上游 URL”旁“获取 API Key”按钮使用）。
+const PROVIDER_KEY_CONSOLE_URL = {
+  deepseek: 'https://platform.deepseek.com/api_keys',
+  kimi: 'https://platform.moonshot.cn/console/api-keys',
+  minimax: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+  mimo: 'https://platform.xiaomimimo.com/',
+  longcat: 'https://platform.longcat.chat/',
+  glm: 'https://open.bigmodel.cn/usercenter/apikeys',
+  qwen: 'https://bailian.console.aliyun.com/?apiKey=1',
+};
+var oauthLoginState = null;
+var oauthLoginPollTimer = null;
+var selectedClientSurface = typeof selectedClientSurface === 'string' ? selectedClientSurface : 'cli';
+
+function providerBadgeClass(p) {
+  return 'badge-provider badge-' + (p || 'custom');
+}
+
+function providerLogoSlug(p) {
+  return ['deepseek', 'kimi', 'minimax', 'mimo', 'longcat', 'qwen', 'glm', 'openai', 'anthropic', 'google-ai', 'hermes', 'claude', 'codex', 'claude-code', 'dsh', 'pi', 'opencode', 'workbuddy'].includes(p)
+    ? p
+    : 'custom';
+}
+
+function providerLogoSrc(p) {
+  const files = {
+    deepseek: 'deepseek.png',
+    kimi: 'kimi.png',
+    minimax: 'minimax.webp',
+    mimo: 'mimo.webp',
+    longcat: 'longcat.png',
+    qwen: 'qwen.svg',
+    anthropic: 'anthropic.png',
+    claude: 'anthropic.png',
+    glm: 'glm-wordmark.png',
+    openai: 'openai.png',
+    codex: 'codex.png',
+    'claude-code': 'claude-code.png',
+    hermes: 'hermes.png',
+    dsh: 'dsh.png',
+    pi: 'pi.png',
+    opencode: 'opencode.png',
+    workbuddy: 'workbuddy.png',
+  };
+  const slug = providerLogoSlug(p);
+  return `assets/provider-logos/${files[slug] || slug + '.svg'}`;
+}
+
+function providerIcon(p, label) {
+  const slug = providerLogoSlug(p);
+  return `<img class="provider-logo-img provider-logo-${escAttr(slug)}" src="${providerLogoSrc(p)}" alt="${escAttr(label || p || '自定义')}">`;
+}
+
+function renderProviderBadge(p) {
+  const slug = p || 'custom';
+  return `<span class="${providerBadgeClass(slug)}"><img src="${providerLogoSrc(slug)}" alt="" aria-hidden="true">${esc(slug)}</span>`;
+}
+
+function normalizeClientKind(kind) {
+  const raw = String(kind || 'codex').trim();
+  const value = raw.replace(/[-\s]+/g, '_').toLowerCase();
+  if (value === 'claudecode' || value === 'claude_cli' || value === 'claude_desktop') return 'claude_code';
+  if (value === 'genericclient') return 'generic_client';
+  // OpenCode CLI 与桌面共用同一账号体系（account_kind=opencode）。
+  if (value === 'opencode_cli' || value === 'opencode_desktop') return 'opencode';
+  // Hermes CLI 与桌面共用同一账号体系（account_kind=hermes）。
+  if (value === 'hermes_desktop') return 'hermes';
+  return ['codex', 'claude_code', 'hermes', 'generic_client', 'dsh', 'pi', 'opencode', 'workbuddy'].includes(value) ? value : 'codex';
+}
+
+function accountClientKind(a) {
+  const candidates = [
+    a?.client_kind,
+    a?.clientKind,
+    a?.client_type,
+    a?.kind,
+    a?.client_options?.client_kind,
+    a?.client_options?.kind,
+    a?.target,
+  ].filter(value => value && value !== 'client_config' && value !== 'codex_proxy');
+  for (const candidate of candidates) {
+    const normalized = normalizeClientKind(candidate);
+    if (normalized !== 'codex' || String(candidate || '').toLowerCase() === 'codex') return normalized;
+  }
+  const provider = String(a?.provider || '').toLowerCase();
+  if (provider === 'hermes') return 'hermes';
+  const name = String(a?.name || '').toLowerCase();
+  if (name.includes('hermes')) return 'hermes';
+  if (name.includes('claude')) return 'claude_code';
+  return 'codex';
+}
+
+function isCodexAccount(a) {
+  return accountClientKind(a) === 'codex';
+}
+
+function clientKindSupportsSurface(kind) {
+  const normalized = normalizeClientKind(kind);
+  return normalized === 'codex' || normalized === 'claude_code';
+}
+
+function normalizeClientSurface(surface) {
+  const value = String(surface || 'cli').toLowerCase();
+  return value === 'desktop' ? 'desktop' : 'cli';
+}
+
+function selectedSurfaceForKind(kind) {
+  return clientKindSupportsSurface(kind) ? normalizeClientSurface(selectedClientSurface) : 'cli';
+}
+
+function currentCodexRouterMode() {
+  const cfg = typeof currentConfig !== 'undefined' ? currentConfig : null;
+  const raw = String(
+    accountsData?.codex_router_mode
+    || accountsData?.current_mode
+    || cfg?.codex_router_mode
+    || 'api'
+  ).toLowerCase();
+  return ['api', 'relay', 'smart'].includes(raw) ? raw : 'api';
+}
+
+function isRelayModeForCurrentCodexSelection() {
+  return normalizeClientKind(selectedClientKind) === 'codex'
+    && currentCodexRouterMode() === 'relay';
+}
+
+function accountClientSurface(a) {
+  const kind = accountClientKind(a);
+  if (!clientKindSupportsSurface(kind)) return 'cli';
+  return normalizeClientSurface(a?.client_surface || a?.client_options?.client_surface || 'cli');
+}
+
+function clientSurfaceLabel(surface) {
+  return CLIENT_SURFACE_LABELS[normalizeClientSurface(surface)] || 'CLI';
+}
+
+function clientSurfaceTitle(kind, surface) {
+  const normalized = normalizeClientKind(kind);
+  const base = CLIENT_KIND_LABELS[normalized] || normalized;
+  if (!clientKindSupportsSurface(normalized)) return base;
+  return `${base} ${normalizeClientSurface(surface) === 'desktop' ? '桌面版' : 'CLI'}`;
+}
+
+function accountDisplayTitle(a) {
+  const provider = getProviderPreset(a?.provider);
+  const providerLabel = provider?.label || '';
+  const name = String(a?.name || providerLabel || '').trim();
+  const suffix = /\s*账号\s*$/;
+  if (providerLabel && suffix.test(name)) {
+    const base = name.replace(suffix, '').trim();
+    if (base === providerLabel || base.toLowerCase() === String(a?.provider || '').toLowerCase()) return providerLabel;
+  }
+  return name.replace(suffix, '').trim() || providerLabel || name;
+}
+
+function officialAccountEmail(a) {
+  const options = a?.client_options || {};
+  return options?.oauth?.email
+    || options?.oauth_quota?.usage_email
+    || options?.oauth_quota?.email
+    || a?.email
+    || '';
+}
+
+function accountRuntimeBadge(a) {
+  const status = a?.runtime_state?.status || 'active';
+  const labels = {
+    active: '',
+    quota_exceeded: '配额',
+  };
+  const label = labels[status] || '';
+  if (!label) return '';
+  const retry = a?.runtime_state?.next_retry_after;
+  const title = retry ? `下一次重试：${new Date(Number(retry) * 1000).toLocaleString()}` : label;
+  return `<span class="runtime-badge runtime-${escAttr(status)}" title="${escAttr(title)}">${esc(label)}</span>`;
+}
+
+function endpointIsCodexOfficial(endpoint) {
+  const kind = endpoint?.kind || '';
+  return kind === 'codex_official' || kind === 'CodexOfficial';
+}
+
+function isCodexOfficialAccount(a) {
+  if (!isCodexAccount(a)) return false;
+  return Array.isArray(a?.endpoints) && a.endpoints.some(endpointIsCodexOfficial);
+}
+
+function urlHost(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    if (typeof URL === 'function') return new URL(text).host.toLowerCase();
+  } catch (_) {
+    // 继续走轻量 fallback。
+  }
+  const match = text.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function isOfficialOpenAiBaseUrl(value) {
+  return urlHost(value) === 'api.openai.com';
+}
+
+function isOfficialOpenAiAccount(a) {
+  if (!isCodexAccount(a)) return false;
+  if (String(a?.provider || '').toLowerCase() !== 'openai') return false;
+  const urls = [
+    a?.upstream,
+    ...(Array.isArray(a?.endpoints) ? a.endpoints.map(endpoint => endpoint?.base_url) : []),
+  ];
+  return urls.some(isOfficialOpenAiBaseUrl);
+}
+
+function isRelayModeMainAccountVisible(a) {
+  return isCodexOfficialAccount(a) || isOfficialOpenAiAccount(a);
+}
+
+function activeRelayOfficialAccount(list = accountsData.accounts || []) {
+  if (!isRelayModeForCurrentCodexSelection()) return null;
+  const activeSurface = selectedSurfaceForKind('codex');
+  const activeId = activeAccountIdForSelection('codex', activeSurface);
+  if (!activeId) return null;
+  return (list || []).find(account =>
+    account?.id === activeId
+    && accountClientKind(account) === 'codex'
+    && accountClientSurface(account) === activeSurface
+    && isRelayModeMainAccountVisible(account)
+  ) || null;
+}
+
+function accountRouting(a) {
+  const raw = a?.routing || a?.client_options?.routing || {};
+  const enabled = raw.enabled !== false && raw.disabled !== true;
+  const weight = Math.max(1, Math.min(100, Number(raw.weight || 1)));
+  const official = isCodexOfficialAccount(a);
+  const anchorEnabled = typeof raw.anchor_enabled === 'boolean' ? raw.anchor_enabled : official;
+  const executionEnabled = typeof raw.execution_enabled === 'boolean' ? raw.execution_enabled : !official;
+  const nativeComputerPolicy = raw.native_computer_policy === 'strip_and_continue'
+    ? 'strip_and_continue'
+    : 'helper_required';
+  return {
+    enabled,
+    anchor_enabled: enabled && anchorEnabled,
+    execution_enabled: enabled && executionEnabled,
+    pool: String(raw.pool || 'codex-official'),
+    priority: Number(raw.priority || 0),
+    weight,
+    native_computer_policy: nativeComputerPolicy,
+  };
+}
+
+function loginAnchorAccountIdForList(list, surface = selectedSurfaceForKind('codex')) {
+  const target = normalizeClientSurface(surface);
+  const official = (list || []).filter(account =>
+    isCodexOfficialAccount(account)
+    && accountClientSurface(account) === target
+    && accountRouting(account).enabled
+  );
+  if (!official.length) return '';
+  const activeId = activeAccountIdForSelection('codex', target);
+  const active = official.find(account => account.id === activeId && accountRouting(account).anchor_enabled);
+  if (active) return active.id;
+  const explicit = official.find(account => {
+    const raw = account?.routing || account?.client_options?.routing || {};
+    return raw.anchor_enabled === true;
+  });
+  if (explicit) return explicit.id;
+  const effective = official.find(account => accountRouting(account).anchor_enabled);
+  return effective?.id || '';
+}
+
+function renderMiniRoutingSwitch(id, checked, label, mode, className = '') {
+  const accountId = escAttr(id || '');
+  const checkedAttr = checked ? 'checked' : '';
+  const disabledAttr = accountId ? '' : ' disabled';
+  const caption = mode === 'anchor' ? '登录' : '执行';
+  return `<label class="account-mini-switch ${escAttr(className)}" title="${escAttr(label)}">
+    <span class="account-switch-caption">${esc(caption)}</span>
+    <input type="checkbox" aria-label="${escAttr(label)}" ${checkedAttr}${disabledAttr}${accountId ? ` onchange="toggleAccountRouting('${accountId}', '${escAttr(mode)}', this.checked)"` : ''}>
+    <span class="account-switch-track" aria-hidden="true"></span>
+  </label>`;
+}
+
+function renderCodexAnchorSwitch(a, anchorAccountId = '', activeHtml = '') {
+  if (!isCodexAccount(a)) return '';
+  const official = isCodexOfficialAccount(a);
+  if (!official) return '';
+  const accountId = a?.id || '';
+  const anchorEnabled = official && accountId && accountId === anchorAccountId;
+  return `<span class="account-routing-row">${renderMiniRoutingSwitch(accountId, anchorEnabled, anchorEnabled ? '登录态已启用' : '启用为唯一登录态', 'anchor', 'anchor-switch')}${activeHtml}</span>`;
+}
+
+function renderCodexExecutionSwitch(a, activeHtml = '') {
+  if (!isCodexAccount(a)) return '';
+  const routing = accountRouting(a);
+  const accountId = a?.id || '';
+  return `<span class="account-routing-row">${renderMiniRoutingSwitch(accountId, routing.execution_enabled, routing.execution_enabled ? '执行已启用' : '执行已停用', 'execution', 'execution-switch')}${activeHtml}</span>`;
+}
+
+function runtimeStatusLabel(status) {
+  const labels = {
+    active: '正常',
+    error: '错误',
+    cooling_down: '错误',
+    quota_exceeded: '配额耗尽',
+    Active: '正常',
+    Error: '错误',
+    CoolingDown: '错误',
+    QuotaExceeded: '配额耗尽',
+  };
+  return labels[status] || status || '正常';
+}
+
+function formatRuntimeDate(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '—';
+  return new Date(n * 1000).toLocaleString();
+}
+
+function renderCodexRouterPanel(a) {
+  if (!isCodexAccount(a)) return '';
+  const routing = accountRouting(a);
+  const official = isCodexOfficialAccount(a);
+  const surface = accountClientSurface(a);
+  const ep = currentEndpoint(a);
+  const showNativePolicy = surface === 'desktop' && endpointKindIsChat(ep?.kind) && !official;
+  const accountId = escAttr(a.id || '');
+  return `<section class="account-edit-section codex-router-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">Router 路由</div>
+    </div>
+    <div class="config-fields">
+      ${official ? `<div class="config-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="edit_routing_anchor_enabled" ${routing.anchor_enabled ? 'checked' : ''}>
+          保持官方登录态
+        </label>
+        <span class="hint">只负责让 Codex Desktop 保留官方登录态和能力入口，不代表参与模型响应。</span>
+      </div>` : ''}
+      <div class="config-field">
+        <label class="toggle-label">
+          <input type="checkbox" id="edit_routing_execution_enabled" ${routing.execution_enabled ? 'checked' : ''}>
+          参与模型执行
+        </label>
+        <span class="hint">${official ? '官方号默认关闭；只有明确开启后才会作为执行候选。' : '开启后作为同池执行账号，由 Router 按能力、优先级和权重选择。'}</span>
+      </div>
+      <div class="config-field">
+        <label>Pool</label>
+        <input type="text" id="edit_routing_pool" value="${escAttr(routing.pool)}" placeholder="codex-official">
+      </div>
+      <div class="config-field">
+        <label>优先级</label>
+        <input type="number" id="edit_routing_priority" value="${Number(routing.priority || 0)}" min="-1000" max="1000" step="1">
+      </div>
+      <div class="config-field">
+        <label>权重</label>
+        <input type="number" id="edit_routing_weight" value="${Number(routing.weight || 1)}" min="1" max="100" step="1">
+      </div>
+      ${showNativePolicy ? `<div class="config-field">
+        <label>Computer Use</label>
+        <select id="edit_routing_native_computer_policy">
+          <option value="helper_required" ${routing.native_computer_policy !== 'strip_and_continue' ? 'selected' : ''}>原生 helper 接管</option>
+          <option value="strip_and_continue" ${routing.native_computer_policy === 'strip_and_continue' ? 'selected' : ''}>剥离并继续</option>
+        </select>
+        <span class="hint">历史会话残留 Computer Use 原生工具链时，剥离原生项后继续交给当前 Chat 模型；真实 Computer Use 能力会降级。</span>
+      </div>` : ''}
+    </div>
+    <div class="official-runtime-actions">
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="applyAccountRoutingFromDetail('${accountId}')">应用路由</button>` : ''}
+    </div>
+  </section>`;
+}
+
+function renderCodexOfficialRuntimePanel(a) {
+  if (!endpointIsCodexOfficial(currentEndpoint(a)) && !isCodexOfficialAccount(a)) return '';
+  const runtime = a?.runtime_state || {};
+  const modelStates = runtime.model_states && typeof runtime.model_states === 'object' ? runtime.model_states : {};
+  const rows = Object.entries(modelStates);
+  const accountId = escAttr(a.id || '');
+  return `<section class="account-edit-section official-runtime-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">官方登录态</div>
+    </div>
+    <div class="official-runtime-summary">
+      <div>${esc(officialAccountEligibility(a))}</div>
+      <span>${esc(officialRuntimeSummaryText(a))}</span>
+    </div>
+    <div class="official-runtime-actions">
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="clearAccountCooldown('${accountId}')">清除运行态限制</button>` : ''}
+      ${a.id ? `<button type="button" class="btn btn-ghost" onclick="resetAccountRuntime('${accountId}')">重置运行态</button>` : ''}
+    </div>
+    <div class="official-quota-panel" id="official-quota-${accountId}">
+      ${renderOfficialQuotaSnapshot(a)}
+    </div>
+    <div class="runtime-state-grid">
+      <div><span>状态</span><strong>${esc(runtimeStatusLabel(runtime.status || 'active'))}</strong></div>
+      <div><span>下一恢复</span><strong>${esc(formatRuntimeDate(runtime.next_retry_after))}</strong></div>
+      <div><span>成功</span><strong>${Number(runtime.success || 0)}</strong></div>
+      <div><span>失败</span><strong>${Number(runtime.failed || 0)}</strong></div>
+    </div>
+    <div class="runtime-model-table">
+      <div class="runtime-model-head">
+        <span>模型</span>
+        <span>状态</span>
+        <span>下一恢复</span>
+        <span>说明</span>
+      </div>
+      ${rows.length ? rows.map(([model, state]) => `<div class="runtime-model-row">
+        <span title="${escAttr(model)}">${esc(model)}</span>
+        <span>${esc(runtimeStatusLabel(state?.status || 'active'))}</span>
+        <span>${esc(formatRuntimeDate(state?.next_retry_after))}</span>
+        <span title="${escAttr(state?.status_message || '')}">${esc(state?.status_message || '—')}</span>
+      </div>`).join('') : `<div class="runtime-model-empty">${esc(runtimeModelEmptyText(a))}</div>`}
+    </div>
+  </section>`;
+}
+
+function runtimeModelEmptyText(a) {
+  const runtime = a?.runtime_state || {};
+  const success = Number(runtime.success || 0);
+  const failed = Number(runtime.failed || 0);
+  const quota = officialQuotaSnapshot(a);
+  if (success || failed || quota) {
+    return '暂无模型级限制；账号级请求和额度状态见上方统计，当前没有单模型限制。';
+  }
+  return '暂无模型级限制；尚无请求记录，当前按可用处理。';
+}
+
+function officialAccountEligibility(a) {
+  const routing = accountRouting(a);
+  const runtime = a?.runtime_state || {};
+  const retry = Number(runtime.next_retry_after || 0);
+  const now = Math.floor(Date.now() / 1000);
+  if (!routing.anchor_enabled) return '登录态停用';
+  if ((runtime.status || 'active') === 'quota_exceeded' && retry && retry > now) return '配额恢复中';
+  if ((runtime.status || 'active') === 'error') return '最近错误';
+  return routing.execution_enabled ? '登录态+执行' : '登录态账号';
+}
+
+function officialRuntimeSummaryText(a) {
+  const runtime = a?.runtime_state || {};
+  const success = Number(runtime.success || 0);
+  const failed = Number(runtime.failed || 0);
+  const retry = runtime.next_retry_after ? `，恢复 ${formatRuntimeDate(runtime.next_retry_after)}` : '';
+  if (!success && !failed) return `尚无请求记录${retry}`;
+  return `成功 ${success} / 失败 ${failed}${retry}`;
+}
+
+function officialQuotaSnapshot(a) {
+  const quota = a?.client_options?.oauth_quota;
+  return quota && typeof quota === 'object' && !Array.isArray(quota) ? quota : null;
+}
+
+function quotaPercent(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function quotaResetText(value) {
+  const ts = Number(value || 0);
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function planDisplayName(plan) {
+  const raw = String(plan || '').trim();
+  if (!raw) return '未知';
+  if (raw.length <= 3) return raw.toUpperCase();
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function renderOfficialQuotaLine(label, remaining, used, resetAt) {
+  const pct = quotaPercent(remaining);
+  const usedPct = quotaPercent(used);
+  const pctText = pct === null ? '—' : `${pct}%`;
+  const usedText = usedPct === null ? '' : `已用 ${usedPct}%`;
+  const resetText = quotaResetText(resetAt);
+  return `<div class="official-quota-line">
+    <div class="official-quota-line-head">
+      <span>${esc(label)}</span>
+      <strong>${esc(pctText)} <em>${esc(resetText)}</em></strong>
+    </div>
+    <div class="official-quota-track" title="${escAttr(`${label} ${pctText}${usedText ? `，${usedText}` : ''}`)}">
+      <div class="official-quota-fill" style="width:${pct === null ? 0 : pct}%"></div>
+    </div>
+  </div>`;
+}
+
+function renderOfficialQuotaInfo(info, options = {}) {
+  const official = info?.official || info || {};
+  const status = options.suppressPoolStatus && official.status_label === '未参与账号池' ? '可用' : (official.status_label || '可用');
+  const plan = planDisplayName(official.plan_type || official.plan || '');
+  const recover = Number(official.next_recover_at || 0);
+  const note = official.message || '显示 ChatGPT WHAM usage 返回的 Codex 额度窗口。';
+  const recoverText = recover ? `恢复 ${formatRuntimeDate(recover)}` : '未触发限制';
+  const hasRealQuota = official.hours_5_remaining_percent != null || official.weekly_remaining_percent != null;
+  if (hasRealQuota) {
+    const statusHead = status && status !== '可用'
+      ? `<div class="balance-official-head"><span>${esc(status)}</span></div>`
+      : '';
+    return `<div class="balance-pill balance-official ${official.quota_exceeded ? 'quota-hit' : ''}" title="${escAttr(note)}">
+      ${statusHead}
+      <div class="official-quota-bars">
+        ${renderOfficialQuotaLine('5h', official.hours_5_remaining_percent, official.hours_5_used_percent, official.hours_5_reset_at)}
+        ${renderOfficialQuotaLine('7d', official.weekly_remaining_percent, official.weekly_used_percent, official.weekly_reset_at)}
+      </div>
+    </div>`;
+  }
+  return `<div class="balance-pill balance-official ${official.quota_exceeded ? 'quota-hit' : ''}" title="${escAttr(note)}">
+    <div class="balance-official-head">
+      <span>${esc(status)}</span>
+      <strong>${esc(recoverText)}</strong>
+    </div>
+    <div class="balance-official-metrics">
+      <span class="balance-quota"><em>计划</em><strong>${esc(plan)}</strong></span>
+      <span class="balance-quota"><em>5h</em><strong>${formatThousands(official.requests_5h)} 次</strong></span>
+      <span class="balance-quota"><em>7d</em><strong>${formatThousands(official.requests_7d)} 次</strong></span>
+    </div>
+  </div>`;
+}
+
+function renderOfficialQuotaSnapshot(a) {
+  const snapshot = officialQuotaSnapshot(a);
+  if (snapshot) return renderOfficialQuotaInfo(snapshot);
+  return `<div class="official-quota-empty">尚未检测额度状态；检测上游连通性后会显示 Codex 5 小时/周剩余额度、套餐和恢复时间。</div>`;
+}
+
+function renderOfficialCardStatus(a, options = {}) {
+  const snapshot = officialQuotaSnapshot(a);
+  if (snapshot) return renderOfficialQuotaInfo(snapshot, options);
+  const runtime = a?.runtime_state || {};
+  const status = runtime.status || 'active';
+  return `<div class="official-card-status runtime-${escAttr(status)}" title="${escAttr(officialRuntimeSummaryText(a))}">
+    <span>${esc(officialAccountEligibility(a))}</span>
+    <strong>${esc(officialRuntimeSummaryText(a))}</strong>
+  </div>`;
+}
+
+function renderRouterStatusOverview() {
+  return '';
+}
+
+function clientAccountHasIssue(a) {
+  if (!a || isCodexAccount(a)) return false;
+  const status = clientAccountStatusReport(a) || a.last_check;
+  if (!status) return false;
+  return status.ok === false;
+}
+
+function clientAccountStatusReport(a) {
+  if (!a || isCodexAccount(a)) return null;
+  return a._client_status_report || a.last_check?.details || null;
+}
+
+function clientAccountApplied(a) {
+  return clientAccountActive(a);
+}
+
+function renderClientCardStatusSummary(report, applied) {
+  if (!report) {
+    return '<div class="client-status-summary"><span class="status-muted">未检查</span></div>';
+  }
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const hasError = diagnostics.some(item => item.level === 'error');
+  if (report.ok === false || hasError) {
+    return '<div class="client-status-summary"><span class="status-error">需处理</span></div>';
+  }
+  return `<div class="client-status-summary"><span class="status-ok">${applied ? '已写入' : '可写入'}</span></div>`;
+}
+
+function getClientProfile(kind) {
+  const slug = normalizeClientKind(kind);
+  return clientProfiles.find(profile => normalizeClientKind(profile.slug || profile.kind) === slug) || null;
+}
+
+function clientSecretLabel(kind) {
+  const slug = normalizeClientKind(kind);
+  if (slug === 'claude_code') return 'Claude 鉴权变量';
+  if (slug === 'hermes') return 'Hermes .env Key';
+  return 'Key 环境变量名';
+}
+
+function renderClaudeAuthEnvSelect(value) {
+  const current = value || 'ANTHROPIC_API_KEY';
+  return `<select id="edit_client_auth_env">
+    <option value="ANTHROPIC_API_KEY" ${current === 'ANTHROPIC_API_KEY' ? 'selected' : ''}>ANTHROPIC_API_KEY</option>
+    <option value="ANTHROPIC_AUTH_TOKEN" ${current === 'ANTHROPIC_AUTH_TOKEN' ? 'selected' : ''}>ANTHROPIC_AUTH_TOKEN</option>
+  </select>`;
+}
+
+function clientModelSlots(kind) {
+  const profile = getClientProfile(kind);
+  const slug = normalizeClientKind(kind);
+  const claudeSlots = [
+    { key: 'default', label: '主模型', target: 'ANTHROPIC_MODEL', required: true },
+    { key: 'sonnet', label: 'Sonnet 模型', target: 'ANTHROPIC_DEFAULT_SONNET_MODEL' },
+    { key: 'opus', label: 'Opus 模型', target: 'ANTHROPIC_DEFAULT_OPUS_MODEL' },
+    { key: 'haiku', label: 'Haiku 模型', target: 'ANTHROPIC_DEFAULT_HAIKU_MODEL' },
+  ];
+  if (profile && Array.isArray(profile.model_slots) && profile.model_slots.length) {
+    if (slug === 'claude_code') {
+      const profileByKey = new Map(profile.model_slots.map(slot => [slot.key, slot]));
+      const merged = claudeSlots.map(slot => ({ ...slot, ...(profileByKey.get(slot.key) || {}) }));
+      profile.model_slots.forEach(slot => {
+        if (!claudeSlots.some(base => base.key === slot.key)) merged.push(slot);
+      });
+      return merged;
+    }
+    return profile.model_slots;
+  }
+  if (slug === 'claude_code') return claudeSlots;
+  if (slug === 'hermes') return [
+    { key: 'default', label: '主模型', target: 'model.default', required: true },
+    { key: 'vision', label: '视觉辅助模型', target: 'auxiliary.vision.model' },
+    { key: 'web_extract', label: '网页提取模型', target: 'auxiliary.web_extract.model' },
+    { key: 'compression', label: '压缩模型', target: 'auxiliary.compression.model' },
+    { key: 'session_search', label: '会话检索模型', target: 'auxiliary.session_search.model' },
+    { key: 'title_generation', label: '标题生成模型', target: 'auxiliary.title_generation.model' },
+  ];
+  return [
+    { key: 'default', label: '默认模型', target: 'OPENAI_MODEL', required: true },
+    { key: 'fast', label: '快速模型', target: 'OPENAI_FAST_MODEL' },
+    { key: 'reasoning', label: '推理模型', target: 'OPENAI_REASONING_MODEL' },
+    { key: 'vision', label: '视觉模型', target: 'OPENAI_VISION_MODEL' },
+  ];
+}
+
+function clientModelMap(account) {
+  const map = account?.client_options?.model_map;
+  return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+}
+
+const CLAUDE_ONE_M_SUFFIX = '[1m]';
+
+function isClaudeOneMModelSlot(kind, key) {
+  return normalizeClientKind(kind) === 'claude_code'
+    && ['default', 'sonnet', 'opus', 'haiku'].includes(String(key || ''));
+}
+
+function stripClaudeOneMSuffix(value) {
+  return String(value || '').trim().replace(/\s*\[1m\]$/i, '');
+}
+
+function hasClaudeOneMSuffix(value) {
+  return /\[1m\]$/i.test(String(value || '').trim());
+}
+
+function clientIcon(kind) {
+  const slug = normalizeClientKind(kind);
+  const logo = slug === 'claude_code' ? 'claude-code' : (slug === 'generic_client' ? 'custom' : slug);
+  return `<span class="client-logo-box client-logo-${escAttr(slug)}"><img class="client-logo-img" src="${providerLogoSrc(logo)}" alt="" aria-hidden="true"></span>`;
+}
+
+function lineActionIcon(name) {
+  return `<span class="line-action-icon line-action-icon-${escAttr(name)}" aria-hidden="true"></span>`;
+}
+
+function renderAccountIconAction(label, icon, onclick, className = '', disabled = false) {
+  const disabledAttr = disabled ? ' disabled' : '';
+  const onclickAttr = onclick && !disabled ? ` onclick="${onclick}"` : '';
+  return `<button type="button" class="account-action account-icon-btn ${className}"${onclickAttr}${disabledAttr} title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    ${lineActionIcon(icon)}
+  </button>`;
+}
+
+function renderToolbarIconAction(label, icon, onclick, className = 'btn-ghost') {
+  return `<button type="button" class="btn ${className} account-toolbar-icon" onclick="${onclick}" title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    ${lineActionIcon(icon)}
+  </button>`;
+}
+
+function renderToolbarTextAction(label, text, onclick, className = 'btn-ghost') {
+  return `<button type="button" class="btn ${className} account-toolbar-text" onclick="${onclick}" title="${escAttr(label)}" aria-label="${escAttr(label)}">${esc(text)}</button>`;
+}
+
+function cardEndpointKind(account) {
+  if (isCodexAccount(account)) return currentEndpoint(account)?.kind || 'open_ai_chat';
+  const kind = accountClientKind(account);
+  if (kind === 'claude_code' || account?.provider === 'anthropic') return 'anthropic_messages';
+  return 'open_ai_chat';
+}
+
+function cardUpstream(account) {
+  if (isCodexAccount(account)) return currentEndpoint(account)?.base_url || account?.upstream || '';
+  return account?.upstream || account?.client_options?.base_url || '';
+}
+
+function renderClientSwitcher(list) {
+  const counts = accountsData.client_counts || {};
+  const relayMode = currentCodexRouterMode() === 'relay';
+  const profiles = clientProfiles.length ? clientProfiles : [
+    { slug: 'codex', label: 'Codex', description: 'deecodex 代理账号' },
+    { slug: 'claude_code', label: 'Claude Code', description: 'Claude 本地配置' },
+    { slug: 'hermes', label: 'Hermes', description: 'Hermes 配置' },
+    { slug: 'generic_client', label: '通用客户端', description: 'OpenAI 兼容 Env' },
+  ];
+  const tabs = profiles.flatMap(profile => {
+    const kind = normalizeClientKind(profile.slug || profile.kind);
+    if (!clientKindSupportsSurface(kind)) return [{ profile, kind, surface: 'cli' }];
+    return [
+      { profile, kind, surface: 'desktop' },
+      { profile, kind, surface: 'cli' },
+    ];
+  });
+  return `<div class="client-switcher" role="tablist" aria-label="账号客户端分类">
+    ${tabs.map(tab => {
+      const { profile, kind, surface } = tab;
+      const supportsSurface = clientKindSupportsSurface(kind);
+      const clientAccounts = list.filter(a => accountClientKind(a) === kind && (!supportsSurface || accountClientSurface(a) === surface));
+      const count = relayMode && kind === 'codex'
+        ? relayChannelsForSurface(surface).length
+        : (supportsSurface ? clientAccounts.length : (counts[kind] || clientAccounts.length || 0));
+      const issueCount = clientAccounts.filter(clientAccountHasIssue).length;
+      const active = kind === selectedClientKind && (!supportsSurface || selectedSurfaceForKind(kind) === surface) ? ' active' : '';
+      const issueClass = issueCount ? ' has-issues' : '';
+      const label = supportsSurface ? clientSurfaceTitle(kind, surface) : (CLIENT_KIND_LABELS[kind] || profile.label || kind);
+      const icon = supportsSurface
+        ? `<span class="surface-icon-stack">${clientIcon(kind)}<span class="surface-glyph surface-${surface}" aria-hidden="true"></span></span>`
+        : clientIcon(kind);
+      return `<button type="button" class="client-tab client-kind-${escAttr(kind)} client-surface-${escAttr(surface)}${supportsSurface ? ' account-surface-tab' : ''}${active}${issueClass}" onclick="selectClientKind('${escAttr(kind)}', '${escAttr(surface)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}" role="tab" aria-selected="${active ? 'true' : 'false'}">
+        ${icon}
+        ${count > 0 ? `<em>${count}</em>` : ''}
+        ${issueCount ? `<strong class="client-tab-alert" title="${escAttr(issueCount + ' 个账号最近检查异常')}">${issueCount}</strong>` : ''}
+      </button>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderClientAccountDetail() {
+  const a = editingAccount;
+  const kind = accountClientKind(a);
+  const surface = accountClientSurface(a);
+  const profile = getClientProfile(kind) || {};
+  const configPath = a.client_options?.config_path || '';
+  const configHint = kind === 'claude_code' && surface === 'desktop'
+    ? '~/Library/Application Support/Claude-3p/configLibrary/<id>.json'
+    : (profile.config_path_hint || '');
+  const apiKeyEnv = a.client_options?.api_key_env || defaultApiKeyEnvForClient(a);
+  const authEnv = a.client_options?.auth_env || apiKeyEnv;
+  const proxyEnabled = Boolean(a.client_options?.proxy_recording_enabled);
+  const proxyBaseUrl = a.client_options?.proxy_base_url || '';
+  const secretHint = kind === 'hermes'
+    ? 'Hermes 会把非密钥配置写入 config.yaml，密钥写入 .env。'
+    : '写入前会展示脱敏 diff，不显示完整密钥。';
+  return `${renderClientAccountBreadcrumb(a)}
+  <div class="account-form client-account-form">
+    ${renderClientCredentialSection(a, kind, surface, profile)}
+    ${renderClientModelSlotsSection(a, kind)}
+    ${renderClientConfigWriteSection(a, kind, configPath, configHint, apiKeyEnv, authEnv, proxyEnabled, proxyBaseUrl, secretHint)}
+    ${renderClientBackupsSection(a)}
+    ${renderClientEventsSection(a)}
+    ${renderClientAccountActions(a)}
+  </div>`;
+}
+
+function renderClientAccountBreadcrumb(a) {
+  return `<div class="breadcrumb account-detail-breadcrumb">
+    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
+  </div>
+  <div class="page-header account-detail-header">
+    <div class="account-detail-title">
+      ${clientIcon(accountClientKind(a))}
+      <div>
+        <div class="account-detail-heading">
+          <h2>${esc(accountDisplayTitle(a))}</h2>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderClientCredentialSection(a, kind, surface, profile) {
+  return `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">${esc(clientSurfaceTitle(kind, surface))}</div>
+    </div>
+    <div class="config-fields">
+      <div class="config-field">
+        <label>账号名称</label>
+        <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+      </div>
+      <div class="config-field">
+        <label>供应商</label>
+        <select id="edit_client_provider" onchange="updateClientProviderDefaults()">
+          ${providersForClientKind(kind).map(p => `<option value="${escAttr(p.slug)}" ${a.provider === p.slug ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="config-field wide">
+        <label>目标客户端 Base URL</label>
+        <input type="text" id="edit_upstream" value="${escAttr(a.upstream)}" placeholder="${escAttr(profile.default_base_url || 'https://api.example.com/v1')}">
+        <span class="hint">这个 URL 会写入目标客户端配置；非 Codex 账号不会走 deecodex 代理翻译。</span>
+      </div>
+      <div class="config-field">
+        <label>默认模型</label>
+        <input type="text" id="edit_default_model" value="${escAttr(a.default_model || '')}" placeholder="${escAttr(profile.default_model || 'model-name')}">
+      </div>
+      <div class="config-field">
+        <label>API Key</label>
+        <div class="pass-group ${hasStoredPrimaryApiKey(a) ? 'has-copy' : ''}">
+          <input type="password" id="edit_api_key" value="${escAttr(displayStoredSecret(a.api_key, hasStoredPrimaryApiKey(a)))}" placeholder="输入 API 密钥" autocomplete="off">
+          ${hasStoredPrimaryApiKey(a) ? secretCopyButton('api_key') : ''}
+          <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderClientModelSlotsSection(a, kind) {
+  return `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">客户端模型槽位</div>
+    </div>
+    <div class="section-action-row">
+      <button class="btn btn-ghost" onclick="fetchClientModels()">从上游获取模型列表</button>
+      <span id="clientModelFetchStatus"></span>
+    </div>
+    <div class="model-map-table client-model-map-table${kind === 'claude_code' ? ' claude-one-m-table' : ''}">
+      <div class="model-map-head client-model-map-head client-model-template${kind === 'claude_code' ? ' claude-one-m-head' : ''}">
+        <span>客户端槽位</span>
+        <span>上游模型</span>
+        <span>${kind === 'claude_code' ? '1M 上下文' : ''}</span>
+      </div>
+      <div id="clientModelMapRows">${renderClientModelMappingRows(a)}</div>
+    </div>
+    <div class="model-add-row"><button onclick="addClientModelRow()">+ 添加自定义槽位</button></div>
+  </section>`;
+}
+
+function renderClientConfigWriteSection(a, kind, configPath, configHint, apiKeyEnv, authEnv, proxyEnabled, proxyBaseUrl, secretHint) {
+  return `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">配置写入</div>
+    </div>
+    <div class="config-fields">
+      <div class="config-field">
+        <label>配置路径 <span class="optional-label">可选</span></label>
+        <input type="text" id="edit_client_config_path" value="${escAttr(configPath)}" placeholder="${escAttr(configHint)}">
+      </div>
+      <div class="config-field">
+        <label>请求历史代理</label>
+        <label class="history-toggle${proxyEnabled ? ' on' : ''}" id="edit_client_proxy_toggle" onclick="toggleClientProxyRecording()">
+          <div class="toggle-dot"></div> 启用记录
+        </label>
+        <span class="hint">${proxyEnabled && proxyBaseUrl ? esc(proxyBaseUrl) : '开启后写入本地代理 URL，并用代理 token 识别账号。'}</span>
+      </div>
+      <div class="config-field">
+        <label>Key 环境变量名</label>
+        <input type="text" id="edit_client_api_key_env" value="${escAttr(apiKeyEnv)}" placeholder="OPENAI_API_KEY">
+        <span class="hint">${esc(secretHint)}</span>
+      </div>
+      ${kind === 'claude_code' ? `<div class="config-field">
+        <label>${clientSecretLabel(kind)}</label>
+        ${renderClaudeAuthEnvSelect(authEnv)}
+        <span class="hint">兼容 Claude Code 的 API Key 和 Auth Token 两种本地环境变量。</span>
+      </div>` : `<div class="config-field">
+        <label>${clientSecretLabel(kind)}</label>
+        <input type="text" value="${escAttr(apiKeyEnv)}" disabled>
+      </div>
+      `}
+    </div>
+    <div class="section-action-row">
+      ${a.id ? `<button class="btn btn-ghost" onclick="refreshClientAccountStatus('${escAttr(a.id)}')">刷新状态</button>` : ''}
+      ${a.id ? `<button class="btn btn-ghost" onclick="editConfigFile('${escAttr(a.id)}')">编辑配置文件</button>` : ''}
+      <button class="btn btn-ghost" onclick="dryRunEditingClientAccount()">预检当前表单</button>
+      <span id="clientDryRunStatus"></span>
+    </div>
+    <div id="clientApplyPreview" class="client-apply-preview"></div>
+  </section>`;
+}
+
+function renderClientBackupsSection(a) {
+  return `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div>
+        <div class="section-sub-label">最近备份</div>
+      </div>
+      ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientBackupsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
+    </div>
+    <div id="clientBackupList" class="client-backup-list">
+      <span class="status-muted">${a.id ? '加载中...' : '保存账号后显示备份'}</span>
+    </div>
+  </section>`;
+}
+
+function renderClientEventsSection(a) {
+  return `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div>
+        <div class="section-sub-label">最近配置事件</div>
+      </div>
+      ${a.id ? `<button class="btn btn-ghost btn-small" onclick="fetchClientEventsForDetail('${escAttr(a.id)}')">刷新</button>` : ''}
+    </div>
+    <div id="clientEventLog" class="client-event-log">
+      <span class="status-muted">${a.id ? '加载中...' : '保存账号后显示事件'}</span>
+    </div>
+  </section>`;
+}
+
+function renderClientAccountActions(a) {
+  return `<div class="accounts-actions">
+    <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+    ${a.id ? `<button class="btn btn-ghost" onclick="saveAndApplyClientAccount('${escAttr(a.id)}')">保存并写入配置</button>` : ''}
+    <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
+  </div>`;
+}
+
+/// 记录账号管理当前打开的客户端 + 表面，下次进入恢复（无记录时默认 Codex 桌面版）。
+function persistClientSelection() {
+  try {
+    if (typeof deeStorage === 'undefined' || !deeStorage || typeof deeStorage.setItem !== 'function') return;
+    deeStorage.setItem(ACCOUNTS_CLIENT_KIND_KEY, selectedClientKind);
+    deeStorage.setItem(ACCOUNTS_CLIENT_SURFACE_KEY, selectedSurfaceForKind(selectedClientKind));
+  } catch (e) {
+    // 存储不可用时静默忽略
+  }
+}
+
+function selectClientKind(kind, surface) {
+  selectedClientKind = normalizeClientKind(kind);
+  selectedClientSurface = clientKindSupportsSurface(selectedClientKind)
+    ? normalizeClientSurface(surface || selectedClientSurface)
+    : 'cli';
+  if (accountsView === 'add') accountsView = 'list';
+  persistClientSelection();
+  renderMainContent();
+}
+
+function toggleClientProxyRecording() {
+  if (!editingAccount || isCodexAccount(editingAccount)) return;
+  editingAccount.client_options = editingAccount.client_options || {};
+  editingAccount.client_options.proxy_recording_enabled = !Boolean(editingAccount.client_options.proxy_recording_enabled);
+  const toggle = document.getElementById('edit_client_proxy_toggle');
+  if (toggle) toggle.classList.toggle('on', editingAccount.client_options.proxy_recording_enabled);
+}
+
+function getProviderPreset(provider) {
+  return providerPresets.find(pp => pp.slug === provider) || null;
+}
+
+function renderDevPipelineAccountOptions(current, selected) {
+  const list = accountsData.accounts || [];
+  const options = [`<option value="" ${!selected ? 'selected' : ''}>活跃账号（当前主账号）</option>`];
+  list
+    .filter(account => account.id)
+    .forEach(account => {
+      const isSelected = account.id === selected ? 'selected' : '';
+      options.push(`<option value="${escAttr(account.id)}" ${isSelected}>${esc(account.name)} · ${esc(account.provider)}</option>`);
+    });
+  return options.join('');
+}
+
+function toggleDevPipelineFields() {
+  const enabled = document.getElementById('edit_dev_pipeline_enabled')?.checked;
+  const fields = document.getElementById('devPipelineFields');
+  if (fields) fields.style.display = enabled ? '' : 'none';
+}
+
+function currentEndpoint(a) {
+  const endpoints = Array.isArray(a?.endpoints) ? a.endpoints : [];
+  const selectedId = selectedEndpointId(a);
+  if (selectedId) return endpoints.find(ep => ep.id === selectedId) || endpoints[0] || null;
+  return endpoints[0] || null;
+}
+
+function endpointKindLabel(kind) {
+  const labels = {
+    open_ai_chat: 'Chat 兼容',
+    open_ai_responses: 'OpenAI Responses 直连',
+    anthropic_messages: 'Anthropic Messages',
+    codex_official: 'Codex 官方',
+    custom_chat: 'Chat 兼容',
+    custom_responses: 'Responses 直连',
+    OpenAiChat: 'Chat 兼容',
+    OpenAiResponses: 'OpenAI Responses 直连',
+    AnthropicMessages: 'Anthropic Messages',
+    CodexOfficial: 'Codex 官方',
+    CustomChat: 'Chat 兼容',
+    CustomResponses: 'Responses 直连',
+  };
+  return labels[kind] || kind || 'Chat 兼容';
+}
+
+function endpointKindIsResponsesDirect(kind) {
+  return kind === 'open_ai_responses'
+    || kind === 'OpenAiResponses'
+    || kind === 'custom_responses'
+    || kind === 'CustomResponses';
+}
+
+function endpointKindIsChat(kind) {
+  return kind === 'open_ai_chat'
+    || kind === 'OpenAiChat'
+    || kind === 'custom_chat'
+    || kind === 'CustomChat';
+}
+
+function endpointKindUsesModelMapping(kind) {
+  return kind === 'open_ai_chat'
+    || kind === 'OpenAiChat'
+    || kind === 'custom_chat'
+    || kind === 'CustomChat'
+    || kind === 'anthropic_messages'
+    || kind === 'AnthropicMessages';
+}
+
+function providerSupportsCodexResponses(provider) {
+  return ['openai', 'minimax', 'mimo'].includes(String(provider || '').toLowerCase());
+}
+
+function isCodexNativeResponsesAccount(account) {
+  return isCodexAccount(account) && providerSupportsCodexResponses(account?.provider);
+}
+
+function endpointKindIsCustomResponses(kind) {
+  return kind === 'custom_responses' || kind === 'CustomResponses';
+}
+
+function normalizeResponsesBaseUrl(url) {
+  let normalized = String(url || '').trim().replace(/\/+$/, '');
+  for (const suffix of ['/chat/completions', '/responses']) {
+    if (normalized.toLowerCase().endsWith(suffix)) {
+      normalized = normalized.slice(0, -suffix.length).replace(/\/+$/, '');
+      break;
+    }
+  }
+  return normalized;
+}
+
+function defaultEndpointImageGenerationEnabled(account, endpoint) {
+  if (endpointIsCodexOfficial(endpoint)) return true;
+  return false;
+}
+
+function endpointImageGenerationEnabled(account, endpoint) {
+  if (typeof endpoint?.image_generation_enabled === 'boolean') return endpoint.image_generation_enabled;
+  return defaultEndpointImageGenerationEnabled(account, endpoint);
+}
+
+function normalizeResponsesKind(kind) {
+  if (kind === 'OpenAiResponses') return 'open_ai_responses';
+  if (kind === 'CustomResponses') return 'custom_responses';
+  if (kind === 'CodexOfficial') return 'codex_official';
+  return kind;
+}
+
+/// 协议类型规范化（忽略大小写/下划线），用于比较“是否等于账号默认”。
+function canonicalEndpointKind(kind) {
+  return String(kind || '').toLowerCase().replace(/_/g, '');
+}
+
+function isResponsesDirectFormAccount(account, endpoint = currentEndpoint(account)) {
+  return isCodexAccount(account)
+    && (isCodexNativeResponsesAccount(account)
+      || endpointKindIsResponsesDirect(endpoint?.kind)
+      || endpointIsCodexOfficial(endpoint));
+}
+
+function endpointKindIsLockedForForm(account, endpoint = currentEndpoint(account)) {
+  return isCodexAccount(account)
+    && (isCodexNativeResponsesAccount(account) || endpointIsCodexOfficial(endpoint));
+}
+
+function legacyModelMapValues(modelMap) {
+  const values = [];
+  const seen = new Set();
+  Object.values(modelMap || {}).forEach(value => {
+    const model = String(value || '').trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    values.push(model);
+  });
+  return values;
+}
+
+function appendKnownModels(endpoint, models) {
+  if (!endpoint) return;
+  if (!Array.isArray(endpoint.known_models)) endpoint.known_models = [];
+  const seen = new Set(
+    endpoint.known_models
+      .map(model => String(model || '').trim())
+      .filter(Boolean)
+  );
+  endpoint.known_models = endpoint.known_models
+    .map(model => String(model || '').trim())
+    .filter(Boolean);
+  (models || []).forEach(value => {
+    const model = String(value || '').trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    endpoint.known_models.push(model);
+  });
+}
+
+function retireCodexModelMapDraft(account) {
+  if (!isCodexAccount(account)) return account;
+  if (!Array.isArray(account.endpoints)) account.endpoints = [];
+  const accountModels = legacyModelMapValues(account.model_map);
+  account.endpoints.forEach(endpoint => {
+    const endpointModels = legacyModelMapValues(endpoint?.model_map);
+    appendKnownModels(endpoint, endpointModels.length ? endpointModels : accountModels);
+    endpoint.model_map = {};
+  });
+  account.model_map = {};
+  return account;
+}
+
+function normalizeResponsesDirectAccount(account, endpoint = currentEndpoint(account)) {
+  if (!isCodexAccount(account)) return account;
+  const forceNativeResponses = isCodexNativeResponsesAccount(account);
+  if (!forceNativeResponses && !endpointKindIsResponsesDirect(endpoint?.kind) && !endpointIsCodexOfficial(endpoint)) return account;
+  if (!Array.isArray(account.endpoints)) account.endpoints = [];
+  if (account.endpoints.length === 0) {
+    account.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(account.provider), account));
+  }
+  retireCodexModelMapDraft(account);
+  const targetEndpointId = endpoint?.id || currentEndpoint(account)?.id || account.endpoints[0]?.id;
+  const endpoints = account.endpoints;
+  endpoints.forEach(endpoint => {
+    if (!forceNativeResponses && endpoint.id !== targetEndpointId) return;
+    if (!forceNativeResponses && !endpointKindIsResponsesDirect(endpoint.kind) && !endpointIsCodexOfficial(endpoint)) return;
+    endpoint.kind = forceNativeResponses ? 'open_ai_responses' : normalizeResponsesKind(endpoint.kind);
+    endpoint.name = endpointKindLabel(endpoint.kind);
+    endpoint.template_id = endpointIsCodexOfficial(endpoint)
+      ? 'codex_official'
+      : (endpointKindIsCustomResponses(endpoint.kind) ? (endpoint.template_id || 'custom_responses') : 'responses_direct');
+    if (!endpointKindIsCustomResponses(endpoint.kind)) {
+      endpoint.base_url = normalizeResponsesBaseUrl(endpoint.base_url || account.upstream);
+      endpoint.path = '';
+    }
+    if (typeof endpoint.image_generation_enabled !== 'boolean') {
+      endpoint.image_generation_enabled = defaultEndpointImageGenerationEnabled(account, endpoint);
+    }
+    endpoint.model_map = {};
+    // model_profiles 保留：模型级启停/协议 override 是用户设置，打开详情时不应清空。
+    endpoint.vision = {
+      ...(endpoint.vision || {}),
+      mode: 'native',
+      unsupported_image_policy: 'strip_with_warning',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: '',
+      api_key: '',
+      model: '',
+      path: 'v1/coding_plan/vlm',
+    };
+    endpoint.context_window_override = null;
+    endpoint.reasoning_effort_override = null;
+    endpoint.thinking_tokens = null;
+  });
+  account.model_map = {};
+  account.vision_enabled = false;
+  account.vision_upstream = '';
+  account.vision_api_key = '';
+  account.vision_model = '';
+  account.vision_endpoint = 'v1/coding_plan/vlm';
+  account.context_window_override = null;
+  account.reasoning_effort_override = null;
+  account.thinking_tokens = null;
+  account.capability_enabled = false;
+  account.capability_account_id = null;
+  account.dev_pipeline_enabled = false;
+  account.dev_pipeline_trigger_mode = 'manual';
+  account.dev_pipeline_command = '/dev-pipeline';
+  account.dev_pipeline_architect_account_id = null;
+  account.dev_pipeline_implementer_account_id = null;
+  account.dev_pipeline_reviewer_account_id = null;
+  account.dev_pipeline_tool_mode = 'controlled_tools';
+  account.dev_pipeline_max_iterations = 3;
+  account.dev_pipeline_show_trace = false;
+  account.dev_pipeline_architect_instruction = '';
+  account.dev_pipeline_implementer_instruction = '';
+  account.dev_pipeline_reviewer_instruction = '';
+  account.translate_enabled = false;
+  return account;
+}
+
+function formatTimeShort(ts) {
+  const n = Number(ts || 0);
+  if (!n) return '—';
+  const d = new Date(n * 1000);
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function setVisionMode(mode) {
+  const input = document.getElementById('edit_vision_mode');
+  if (input) input.value = mode;
+  document.querySelectorAll('.vision-mode-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  toggleVisionFields();
+}
+
+async function handleEndpointKindChange(value, confirmOverride) {
+  if (!editingAccount || !isCodexAccount(editingAccount)) return;
+  const ep = currentEndpoint(editingAccount);
+  const previousKind = ep?.kind || 'open_ai_chat';
+  const kindControl = document.getElementById('edit_endpoint_kind');
+  // 官方/原生协议账号允许切换，但切换前提示确认。
+  if (confirmOverride && value && canonicalEndpointKind(value) !== canonicalEndpointKind(previousKind)) {
+    const ok = await showConfirm('该账号为官方/原生协议账号，上游 API 类型通常固定；切换后该账号将按所选协议请求，可能导致异常。确定继续切换吗？');
+    if (!ok) {
+      if (kindControl) kindControl.value = previousKind;
+      return;
+    }
+  }
+  if (kindControl) kindControl.value = previousKind;
+  syncEditingDraftFromForm({ preserveHiddenResponses: true });
+  const current = currentEndpoint(editingAccount);
+  if (current && value) {
+    current.kind = value;
+    current.name = endpointKindLabel(value);
+    if (endpointKindIsResponsesDirect(value) && !endpointKindIsCustomResponses(value)) {
+      current.path = '';
+      current.template_id = 'responses_direct';
+    } else if (endpointKindUsesModelMapping(value) && current.template_id === 'responses_direct') {
+      current.template_id = value === 'anthropic_messages' ? 'anthropic_messages' : 'chat_compatible';
+    }
+  }
+  if (kindControl) kindControl.value = value;
+  upstreamModels = [];
+  renderMainContent();
+}
+
+function selectedEndpointId(a) {
+  if (!a) return null;
+  if (a._editing_endpoint_id) return a._editing_endpoint_id;
+  const active = activeSelectionForAccount(a);
+  if (active && active.account_id === a.id && active.endpoint_id) {
+    return active.endpoint_id;
+  }
+  return Array.isArray(a.endpoints) && a.endpoints[0] ? a.endpoints[0].id : null;
+}
+
+function activeSelectionKey(kind, surface) {
+  const normalizedKind = kind === 'codex' ? 'codex' : kind;
+  return `${normalizedKind}:${surface || 'cli'}`;
+}
+
+function activeSelectionFor(kind, surface) {
+  const bySurface = accountsData?.active_by_surface || {};
+  return bySurface[activeSelectionKey(kind, surface)] || null;
+}
+
+function activeSelectionForAccount(a) {
+  const kind = accountClientKind(a);
+  if (!a) {
+    return null;
+  }
+  return activeSelectionFor(kind, accountClientSurface(a));
+}
+
+function clientAccountActive(a) {
+  return activeSelectionForAccount(a)?.account_id === a?.id;
+}
+
+function activeAccountIdForSelection(kind, surface) {
+  const normalizedKind = normalizeClientKind(kind);
+  const active = activeSelectionFor(kind, surface);
+  if (active?.account_id) return active.account_id;
+  if (normalizedKind === 'codex') return accountsData.active_account_id || accountsData.active_id;
+  return null;
+}
+
+function visibleAccountsForCurrentSelection(list = accountsData.accounts || []) {
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const activeId = activeAccountIdForSelection(selectedClientKind, activeSurface);
+  return (list || [])
+    .filter(a => accountClientKind(a) === selectedClientKind)
+    .filter(a => accountClientSurface(a) === activeSurface)
+    .map((account, index) => ({ account, index }))
+    .sort((left, right) => {
+      const leftActive = left.account.id === activeId ? 0 : 1;
+      const rightActive = right.account.id === activeId ? 0 : 1;
+      return leftActive - rightActive || left.index - right.index;
+    })
+    .map(item => item.account);
+}
+
+function providerDefaultTemplate(provider) {
+  const templates = endpointTemplates || [];
+  if (provider === 'codex') {
+    return templates.find(t => t.id === 'codex_official')
+      || templates.find(t => t.kind === 'codex_official' || t.kind === 'CodexOfficial')
+      || {
+        id: 'codex_official',
+        label: 'Codex 官方',
+        kind: 'codex_official',
+        default_base_url: 'https://chatgpt.com/backend-api/codex',
+        default_path: 'responses',
+        default_vision_mode: 'native',
+      };
+  }
+  if (provider === 'anthropic') {
+    return templates.find(t => t.id === 'anthropic_messages')
+      || templates.find(t => t.kind === 'anthropic_messages' || t.kind === 'AnthropicMessages')
+      || null;
+  }
+  if (providerSupportsCodexResponses(provider)) {
+    return templates.find(t => t.id === 'responses_direct')
+      || templates.find(t => t.kind === 'open_ai_responses' || t.kind === 'OpenAiResponses')
+      || null;
+  }
+  return templates.find(t => t.id === 'chat_compatible')
+    || templates.find(t => t.kind === 'open_ai_chat' || t.kind === 'OpenAiChat')
+    || templates[0]
+    || null;
+}
+
+function newEndpointId() {
+  return 'endpoint_' + Date.now().toString(16) + '_' + Math.random().toString(16).slice(2, 8);
+}
+
+function createEndpointFromTemplate(template, account) {
+  const tpl = template || providerDefaultTemplate(account?.provider) || {};
+  const hasTemplateBaseUrl = Object.prototype.hasOwnProperty.call(tpl, 'default_base_url');
+  const baseUrl = hasTemplateBaseUrl
+    ? (tpl.default_base_url || account?.upstream || '')
+    : (account?.upstream || 'https://opencode.ai/zen/go/v1');
+  const kind = tpl.kind || 'open_ai_chat';
+  return {
+    id: newEndpointId(),
+    name: tpl.label || endpointKindLabel(kind),
+    kind,
+    base_url: baseUrl,
+    path: tpl.default_path || '',
+    template_id: tpl.id || '',
+    template_version: 1,
+    model_map: { ...(account?.model_map || {}) },
+    known_models: legacyModelMapValues(account?.model_map),
+    model_profiles: {},
+    vision: {
+      mode: 'native',
+      unsupported_image_policy: 'strip_with_warning',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: account?.vision_upstream || '',
+      api_key: account?.vision_api_key || '',
+      model: account?.vision_model || '',
+      path: account?.vision_endpoint || 'v1/coding_plan/vlm',
+    },
+    image_generation_enabled: defaultEndpointImageGenerationEnabled(account, { kind }),
+    custom_headers: { ...(account?.custom_headers || {}) },
+    request_timeout_secs: account?.request_timeout_secs || null,
+    max_retries: account?.max_retries ?? null,
+    context_window_override: account?.context_window_override || null,
+    reasoning_effort_override: account?.reasoning_effort_override || null,
+    thinking_tokens: account?.thinking_tokens || null,
+    fast_mode_enabled: false,
+    fast_service_tier: 'priority',
+    balance_url: account?.balance_url || '',
+  };
+}
+
+function applyProviderSpecificEndpointDefaults(account) {
+  if (!account || accountClientKind(account) !== 'codex') return account;
+  if (String(account.provider || '').toLowerCase() !== 'mimo') return account;
+  (account.endpoints || []).forEach(endpoint => {
+    if (endpointKindIsResponsesDirect(endpoint.kind)) return;
+    if (!endpointKindUsesModelMapping(endpoint.kind)) return;
+    endpoint.vision = {
+      ...(endpoint.vision || {}),
+      mode: 'off',
+      unsupported_image_policy: 'strip_with_warning',
+      glue_strategy: 'final_answer',
+      adapter_id: 'minimax_coding_plan_vlm',
+      base_url: '',
+      api_key: '',
+      model: '',
+      path: 'v1/coding_plan/vlm',
+    };
+    const profiles = endpoint.model_profiles && typeof endpoint.model_profiles === 'object' ? endpoint.model_profiles : {};
+    // 只补默认 vision_mode，不覆盖用户已保存的启停/override 设置。
+    const setDefaultProfile = (model, vision_mode) => {
+      if (profiles[model] && typeof profiles[model] === 'object') {
+        if (profiles[model].vision_mode === undefined) profiles[model].vision_mode = vision_mode;
+      } else {
+        profiles[model] = { enabled: true, vision_mode, endpoint_override: null };
+      }
+    };
+    setDefaultProfile(MIMO_VISION_MODEL, 'native');
+    setDefaultProfile('mimo-v2-omni', 'native');
+    setDefaultProfile(MIMO_CODING_MODEL, 'off');
+    setDefaultProfile('mimo-v2-pro', 'off');
+    endpoint.model_profiles = profiles;
+  });
+  return account;
+}
+
+function ensureAccountEndpoints(a) {
+  if (!a) return [];
+  if (!Array.isArray(a.endpoints)) a.endpoints = [];
+  if (a.endpoints.length === 0) {
+    a.endpoints.push(createEndpointFromTemplate(providerDefaultTemplate(a.provider), a));
+  }
+  if (!selectedEndpointId(a)) a._editing_endpoint_id = a.endpoints[0].id;
+  return a.endpoints;
+}
+
+function navigateAccounts(view) {
+  accountsView = view;
+  if (view === 'list') {
+    editingAccount = null;
+    stopOAuthLoginPolling();
+    oauthLoginState = null;
+  }
+  renderMainContent();
+}
+
+function renderMainContent() {
+  const main = document.getElementById('mainContent');
+  main.classList.toggle('accounts-main', accountsView === 'list');
+  main.classList.toggle('accounts-form-main', accountsView !== 'list');
+  const html = renderAccountsPanel();
+  main.innerHTML = typeof wrapPrimaryPanel === 'function' ? wrapPrimaryPanel('accounts', html) : html;
+  afterRenderAccountsPanel();
+}
+
+function afterRenderAccountsPanel() {
+  if (accountsView === 'edit' && editingAccount && !isCodexAccount(editingAccount) && editingAccount.id) {
+    fetchClientEventsForDetail(editingAccount.id);
+    fetchClientBackupsForDetail(editingAccount.id);
+  }
+}
+
+function renderAccountsPanel() {
+  if (accountsView === 'add') return renderAccountsFormPage(renderAddAccount(), 'accounts-add-shell');
+  if (accountsView === 'edit') return renderAccountsFormPage(renderAccountDetail(), 'accounts-edit-shell');
+  return renderAccountList();
+}
+
+function renderAccountsFormPage(html, className = '') {
+  return `<div class="accounts-page-shell accounts-form-shell ${escAttr(className)}">
+    <div class="accounts-scroll-region accounts-form-scroll">
+      ${html}
+    </div>
+  </div>`;
+}
+
+// ── Level 1: 账号列表 ──
+
+function renderAccountList() {
+  const list = accountsData.accounts || [];
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const activeId = activeAccountIdForSelection(selectedClientKind, activeSurface);
+  const relayMode = isRelayModeForCurrentCodexSelection();
+  const anchorAccountId = loginAnchorAccountIdForList(list, activeSurface);
+  const filtered = visibleAccountsForCurrentSelection(list)
+    .filter(a => !relayMode || isRelayModeMainAccountVisible(a));
+  let cards = '';
+  if (filtered.length === 0) {
+    cards = relayMode
+      ? '<div class="empty-state">中转模式下第三方账号已隔离到中转渠道；暂无官方 OpenAI 或 Codex 登录态账号。</div>'
+      : `<div class="empty-state">暂无${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}${clientKindSupportsSurface(selectedClientKind) ? ' ' + esc(clientSurfaceLabel(activeSurface)) : ''}账号，点击上方按钮创建</div>`;
+  } else {
+    cards = '<div class="accounts-grid">' + filtered.map(a => {
+      const active = a.id === activeId;
+      if (!isCodexAccount(a)) return renderClientAccountCard(a);
+      const official = isCodexOfficialAccount(a);
+      const displayName = official ? (officialAccountEmail(a) || accountDisplayTitle(a)) : accountDisplayTitle(a);
+      return `<div class="account-card account-card-codex${active ? ' active' : ''}${official ? '' : ' no-balance'}">
+        <div class="account-card-mainline">
+          <div class="account-card-primary">
+            <div class="account-card-info">
+              <div class="account-card-titlebar">
+                ${renderProviderBadge(a.provider)}
+                ${accountRuntimeBadge(a)}
+              </div>
+              <div class="account-card-title-switch">
+                ${renderCodexAnchorSwitch(a, anchorAccountId, official && active ? '<span class="active-badge">活跃</span>' : '')}
+              </div>
+              <div class="account-card-body">
+                <div class="account-card-main">
+                  <div class="card-name ${official ? 'official-email-name' : ''}" title="${escAttr(displayName)}">${esc(displayName)}</div>
+                </div>
+              </div>
+              <div class="account-card-body-switch">
+                ${renderCodexExecutionSwitch(a, !official && active ? '<span class="active-badge">活跃</span>' : '')}
+              </div>
+            </div>
+          </div>
+          <div class="account-card-side">
+            <div class="card-balance" id="balance-${escAttr(a.id)}">
+              ${renderAccountBalanceInitial(a)}
+            </div>
+            <div class="card-actions-row">
+              ${active
+                ? renderAccountIconAction('已应用', 'check', '', 'account-applied', true)
+                : renderAccountIconAction('应用', 'check', `applyAccount('${escAttr(a.id)}')`, 'account-apply')}
+              ${renderAccountIconAction('检测当前页面账号', 'test-upstream', `testAccountUpstreamForCard('${escAttr(a.id)}')`, 'account-refresh')}
+              ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', 'codex')`)}
+              ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+  }
+
+  return `<div class="accounts-page-shell">
+    <div class="accounts-static-header">
+      <div class="page-header accounts-page-header">
+        <div><h2>账号管理</h2></div>
+      </div>
+      <div class="accounts-client-row">
+        ${renderClientSwitcher(list)}
+        <div class="page-header-actions">
+          ${relayMode ? renderToolbarIconAction('粘贴中转', 'clipboard', 'pasteRelayChannel()') : ''}
+          ${relayMode ? '' : renderToolbarIconAction('扫描客户端', 'scan', 'scanClientAccounts()')}
+          ${renderToolbarIconAction(relayMode ? '添加中转渠道' : '添加账号', 'plus', relayMode ? 'showRelayChannelModal()' : "navigateAccounts('add')", 'btn-primary')}
+          ${renderToolbarTextAction('DEX 功能入口', 'DEX', "showToast('DEX 功能入口待接入', 'info')", 'btn-ghost account-dex-entry')}
+        </div>
+      </div>
+    </div>
+    <div class="accounts-scroll-region">
+      ${renderRouterStatusOverview()}
+      ${renderRelayChannelsSection()}
+      ${cards}
+    </div>
+  </div>`;
+}
+
+function renderAccountBalanceInitial(a) {
+  const cache = balanceCache[a.id];
+  if (cache && cache.ts > Date.now() - 300000) {
+    return renderBalanceInfo(cache.info, { suppressPoolStatus: true });
+  }
+  // 非官方账号无额度数据，不显示“—”占位。
+  return isCodexOfficialAccount(a) ? renderOfficialCardStatus(a, { suppressPoolStatus: true }) : '';
+}
+
+function renderClientAccountCard(a) {
+  const kind = accountClientKind(a);
+  const surface = accountClientSurface(a);
+  const profile = getClientProfile(kind);
+  const statusId = `client-status-${escAttr(a.id)}`;
+  const active = activeSelectionForAccount(a)?.account_id === a.id;
+  const applied = clientAccountApplied(a);
+  const statusReport = clientAccountStatusReport(a);
+  const statusHtml = renderClientCardStatusSummary(statusReport, applied);
+  return `<div class="account-card client-account-card${active ? ' active' : ''}">
+    <div class="account-card-mainline">
+      <div class="account-card-primary">
+        <div class="account-card-info">
+          <div class="account-card-header">
+            <div class="account-card-titlebar">
+              <span class="client-kind-badge">${clientIcon(kind)}${esc(clientSurfaceTitle(kind, surface))}</span>
+              ${renderProviderBadge(a.provider)}
+              ${active ? '<span class="active-badge">活跃</span>' : (applied ? '<span class="active-badge">已写入</span>' : '')}
+              ${accountRuntimeBadge(a)}
+            </div>
+          </div>
+          <div class="account-card-body">
+            <div class="account-card-main">
+              <div class="card-name">${esc(a.name)}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="account-card-side">
+        <div class="card-balance client-status-box" id="${statusId}">${statusHtml}</div>
+        <div class="card-actions-row">
+          ${renderAccountIconAction(applied ? '重新写入配置' : '写入配置', 'check', `applyClientAccount('${escAttr(a.id)}')`, active ? 'account-apply account-applied' : 'account-apply')}
+          ${renderAccountIconAction('刷新当前页面账号状态', 'refresh', `refreshAllAccountsForCard('${escAttr(a.id)}')`, 'account-refresh')}
+          ${renderAccountIconAction('编辑', 'edit', `editAccount('${escAttr(a.id)}', '${escAttr(kind)}')`)}
+          ${renderAccountIconAction('删除', 'trash', `deleteAccount('${escAttr(a.id)}')`, 'danger')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function relayChannelSurface(channel) {
+  return normalizeClientSurface(channel?.client_surface || channel?.clientSurface || 'desktop');
+}
+
+function relayChannelsForSurface(surface) {
+  const target = normalizeClientSurface(surface || selectedSurfaceForKind('codex'));
+  const store = accountsData?.relay_channels || {};
+  return (Array.isArray(store.channels) ? store.channels : [])
+    .filter(channel => relayChannelSurface(channel) === target);
+}
+
+function relayChannelsStore(surface = selectedSurfaceForKind('codex')) {
+  const store = accountsData?.relay_channels || {};
+  const target = normalizeClientSurface(surface);
+  const activeBySurface = store.active_by_surface || store.activeBySurface || {};
+  const channels = relayChannelsForSurface(surface);
+  const scopedActiveId = activeBySurface[target] || '';
+  const activeId = channels.some(channel => channel.id === scopedActiveId)
+    ? scopedActiveId
+    : (channels.some(channel => channel.id === store.active_id) ? store.active_id : '');
+  return {
+    active_id: activeId || '',
+    active_by_surface: activeBySurface,
+    channels,
+  };
+}
+
+function renderRelayChannelBadge() {
+  return `<span class="badge-provider badge-codex relay-channel-badge"><img src="${providerLogoSrc('codex')}" alt="" aria-hidden="true">中转渠道</span>`;
+}
+
+function relayChannelStatusLabel(status) {
+  const labels = {
+    active: '正常',
+    cooling_down: '冷却',
+    error: '错误',
+    Active: '正常',
+    CoolingDown: '冷却',
+    Error: '错误',
+  };
+  return labels[status] || status || '正常';
+}
+
+function relayChannelSummary(channel) {
+  const parts = [];
+  parts.push(channel.enabled === false ? '已停用' : relayChannelStatusLabel(channel.status));
+  parts.push(`优先级 ${Number(channel.priority || 0)}`);
+  parts.push(`权重 ${Number(channel.weight || 1)}`);
+  parts.push(`生图声明 ${channel.image_generation_enabled ? '开' : '关'}`);
+  parts.push(`成功/失败 ${Number(channel.success || 0)}/${Number(channel.failed || 0)}`);
+  if (channel.next_retry_after) parts.push(`恢复 ${formatRuntimeDate(channel.next_retry_after)}`);
+  if (channel.last_error) parts.push(channel.last_error);
+  return parts.join(' · ');
+}
+
+function renderRelayChannelsSection() {
+  if (!isRelayModeForCurrentCodexSelection()) return '';
+  const store = relayChannelsStore();
+  const channels = store.channels;
+  const officialExecution = activeRelayOfficialAccount();
+  const cards = channels.length ? `<div class="accounts-grid relay-channel-grid">
+    ${channels.map(channel => {
+      const active = channel.id === store.active_id;
+      const status = channel.status || 'active';
+      const enabled = channel.enabled !== false;
+      const issueText = channel.last_error || '';
+      const statsText = `优先级 ${Number(channel.priority || 0)} · 权重 ${Number(channel.weight || 1)} · 成功/失败 ${Number(channel.success || 0)}/${Number(channel.failed || 0)}`;
+      return `<div class="account-card relay-channel-card${active ? ' active' : ''}${enabled ? '' : ' disabled'}" title="${escAttr(relayChannelSummary(channel))}">
+        <div class="account-card-mainline">
+          <div class="account-card-primary">
+            <div class="account-card-info">
+              <div class="account-card-header">
+                <div class="account-card-titlebar">
+                  ${renderRelayChannelBadge()}
+                  ${active ? '<span class="active-badge">当前</span>' : ''}
+                  <span class="runtime-badge runtime-${escAttr(status)}">${esc(relayChannelStatusLabel(status))}</span>
+                  ${enabled ? '' : '<span class="runtime-badge runtime-error">已停用</span>'}
+                </div>
+              </div>
+              <div class="account-card-body">
+                <div class="account-card-main">
+                  <div class="card-name" title="${escAttr(`${channel.name || 'DEX AI 中转'} · ${channel.url || ''}`)}">${esc(channel.name || 'DEX AI 中转')}</div>
+                  ${issueText ? `<div class="relay-channel-error" title="${escAttr(issueText)}">${esc(issueText)}</div>` : ''}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="account-card-side">
+            <div class="card-balance relay-channel-status-inline" title="${escAttr(statsText)}">
+              <span class="account-plan-pill">${esc(statsText)}</span>
+              ${channel.next_retry_after ? `<span class="account-plan-pill">恢复 ${esc(formatRuntimeDate(channel.next_retry_after))}</span>` : ''}
+            </div>
+            <div class="card-actions-row">
+              ${active && officialExecution
+                ? renderAccountIconAction('官方账号执行时作为备用渠道', 'check', '', 'account-applied', true)
+                : active
+                ? renderAccountIconAction('当前渠道', 'check', '', 'account-applied', true)
+                : renderAccountIconAction('设为当前', 'check', `setActiveRelayChannel('${escAttr(channel.id)}')`, 'account-apply')}
+              ${renderAccountIconAction('测试中转渠道', 'test-upstream', `testRelayChannel('${escAttr(channel.id)}')`, 'account-refresh')}
+              ${renderAccountIconAction('编辑', 'edit', `showRelayChannelModal('${escAttr(channel.id)}')`)}
+              ${renderAccountIconAction('删除', 'trash', `deleteRelayChannel('${escAttr(channel.id)}')`, 'danger')}
+            </div>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>` : '<div class="empty-state">暂无中转渠道。点击右上角添加或粘贴 URL/API Key。</div>';
+  const note = officialExecution
+    ? `<div class="relay-channel-note">当前执行源为官方账号「${esc(accountDisplayTitle(officialExecution))}」；中转渠道作为备用/故障切换渠道。</div>`
+    : '';
+  return `<section class="relay-channel-section" aria-label="中转模式渠道" title="中转模式执行源可为官方账号或独立中转渠道；第三方 Chat 账号不会进入主列表。">
+    ${note}
+    ${cards}
+  </section>`;
+}
+
+// ── Level 2: 添加账号 ──
+
+function renderAddAccount() {
+  if (oauthLoginState) return renderOAuthLoginPanel();
+  if (isRelayModeForCurrentCodexSelection()) {
+    return `<div class="breadcrumb add-account-breadcrumb">
+      <button type="button" class="page-back-button add-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+        <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="page-header add-provider-header">
+      <div class="add-provider-title-line">
+        <h2>添加中转渠道</h2>
+        <span class="add-provider-client">${esc(clientSurfaceTitle('codex', selectedSurfaceForKind('codex')))}</span>
+      </div>
+    </div>
+    <div class="provider-picker-shell">
+      <div class="provider-grid">
+        <div class="provider-card" role="button" tabindex="0" aria-label="粘贴中转配置" onclick="pasteRelayChannel()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pasteRelayChannel()}">
+          <div class="provider-icon">${providerIcon('openai', 'OpenAI 兼容中转')}</div>
+          <div class="provider-copy">
+            <div class="provider-name">粘贴中转配置</div>
+            <div class="provider-desc">识别剪贴板中的 URL/API Key JSON 或链接</div>
+          </div>
+          <div class="provider-card-arrow" aria-hidden="true"></div>
+        </div>
+        <div class="provider-card" role="button" tabindex="0" aria-label="手动添加中转渠道" onclick="showRelayChannelModal()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showRelayChannelModal()}">
+          <div class="provider-icon">${providerIcon('custom', '中转渠道')}</div>
+          <div class="provider-copy">
+            <div class="provider-name">手动添加</div>
+            <div class="provider-desc">填写 OpenAI 兼容 URL 和 API Key</div>
+          </div>
+          <div class="provider-card-arrow" aria-hidden="true"></div>
+        </div>
+      </div>
+    </div>`;
+  }
+  let cards = '';
+  if (providerPresets.length === 0) {
+    cards = '<div class="empty-state">加载供应商列表...</div>';
+  } else {
+    const providers = providersForClientKind(selectedClientKind).filter(p =>
+      !(normalizeClientKind(selectedClientKind) === 'codex' && p && p.slug === 'codex')
+    );
+    const surface = selectedSurfaceForKind(selectedClientKind);
+    cards = '<div class="provider-grid">' + renderOfficialAccountCard(selectedClientKind) + providers.map(p => {
+      return `<div class="provider-card" role="button" tabindex="0" aria-label="添加 ${escAttr(p.label)} 账号" onclick="addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addAccount('${escAttr(p.slug)}', '${escAttr(selectedClientKind)}', '${escAttr(surface)}')}">
+        <div class="provider-icon">${providerIcon(p.slug, p.label)}</div>
+        <div class="provider-copy">
+          <div class="provider-name">${esc(p.label)}</div>
+          <div class="provider-desc">${esc(p.description)}</div>
+        </div>
+        <div class="provider-card-arrow" aria-hidden="true"></div>
+      </div>`;
+    }).join('') + '</div>';
+  }
+
+  return `<div class="breadcrumb add-account-breadcrumb">
+    <button type="button" class="page-back-button add-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
+  </div>
+  <div class="page-header add-provider-header">
+    <div class="add-provider-title-line">
+      <h2>选择供应商</h2>
+      <span class="add-provider-client">${esc(CLIENT_KIND_LABELS[selectedClientKind] || '客户端')}${clientKindSupportsSurface(selectedClientKind) ? ' · ' + esc(clientSurfaceLabel(selectedSurfaceForKind(selectedClientKind))) : ''}</span>
+    </div>
+  </div>
+  <div class="provider-picker-shell">${cards}</div>`;
+}
+
+function renderOfficialAccountCard(kind) {
+  const normalized = normalizeClientKind(kind);
+  if (normalized === 'codex') return renderCodexOfficialAccountCard();
+  return renderOfficialOAuthCards(kind);
+}
+
+function renderCodexOfficialAccountCard() {
+  const surface = selectedSurfaceForKind('codex');
+  const surfaceTitle = clientSurfaceTitle('codex', surface);
+  return `<details class="official-add-details">
+    <summary class="provider-card official-login-card official-add-master-card" aria-label="展开 Codex 官方添加方式">
+      <div class="provider-icon">${providerIcon('codex', 'Codex 官方')}</div>
+      <div class="provider-copy">
+        <div class="provider-name">Codex 官方</div>
+        <div class="provider-desc">登录、设备码、认证 JSON 或手动配置</div>
+      </div>
+      <div class="provider-card-arrow" aria-hidden="true"></div>
+    </summary>
+    <div class="official-add-submenu">
+      ${renderOfficialAddSubItem('导入认证 JSON', '导入到账号池', 'importAuthJsonAccounts()')}
+      ${renderOfficialAddSubItem(`官方 ${surfaceTitle} 登录`, 'OAuth 登录', "startOAuthAccountLogin('codex', 'browser')")}
+      ${renderOfficialAddSubItem(`${surfaceTitle} 设备码登录`, '设备码登录', "startOAuthAccountLogin('codex', 'device')")}
+      ${renderOfficialAddSubItem('Codex 官方', '手动配置', `addCodexOfficialAccount('${escAttr(surface)}')`)}
+    </div>
+  </details>`;
+}
+
+function renderOfficialAddSubItem(title, desc, onclick) {
+  return `<div class="provider-card official-login-card official-add-subitem" role="button" tabindex="0" aria-label="${escAttr(title)}" onclick="${onclick}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${onclick}}">
+    <div class="provider-icon">${providerIcon('codex', title)}</div>
+    <div class="provider-copy">
+      <div class="provider-name">${esc(title)}</div>
+      <div class="provider-desc">${esc(desc)}</div>
+    </div>
+    <div class="provider-card-arrow" aria-hidden="true"></div>
+  </div>`;
+}
+
+function addCodexOfficialAccount(surface) {
+  addAccount('codex', 'codex', surface || selectedSurfaceForKind('codex'));
+}
+
+function renderOfficialOAuthCards(kind) {
+  const normalized = normalizeClientKind(kind);
+  const surfaceTitle = clientSurfaceTitle(normalized, selectedSurfaceForKind(normalized));
+  if (normalized === 'codex') {
+    return `<div class="official-login-grid">
+      ${renderOfficialOAuthCard('codex', 'browser', `官方 ${surfaceTitle} 登录`, '使用 OpenAI 官方 OAuth 登录 Codex 账号', 'https://chatgpt.com/backend-api/codex')}
+      ${renderOfficialOAuthCard('codex', 'device', `${surfaceTitle} 设备码登录`, '无法完成本机回调时使用设备码登录', 'auth.openai.com/codex/device')}
+    </div>`;
+  }
+  if (normalized === 'claude_code') {
+    return renderOfficialOAuthCard('claude', 'browser', `官方 ${surfaceTitle} 登录`, '使用 Anthropic OAuth 登录，并由 deecodex 管理 token', 'https://api.anthropic.com');
+  }
+  return '';
+}
+
+function renderOfficialOAuthCard(provider, mode, title, desc, upstream) {
+  const logo = provider === 'claude' ? 'anthropic' : 'codex';
+  return `<div class="provider-card official-login-card" role="button" tabindex="0" aria-label="${escAttr(title)}" onclick="startOAuthAccountLogin('${escAttr(provider)}', '${escAttr(mode)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();startOAuthAccountLogin('${escAttr(provider)}', '${escAttr(mode)}')}">
+    <div class="provider-icon">${providerIcon(logo, title)}</div>
+    <div class="provider-copy">
+      <div class="provider-name">${esc(title)}</div>
+      <div class="provider-desc">${esc(desc)}</div>
+    </div>
+    <div class="provider-card-arrow" aria-hidden="true"></div>
+  </div>`;
+}
+
+function renderOAuthLoginPanel() {
+  const state = oauthLoginState || {};
+  const status = state.status || 'pending';
+  const title = state.provider === 'claude' ? 'Claude 官方登录' : 'Codex 官方登录';
+  const url = state.verification_url || state.url || '';
+  const userCode = state.user_code ? `<div class="oauth-device-code">${esc(state.user_code)}</div>` : '';
+  const statusText = status === 'success' ? '登录完成' : (status === 'error' ? '登录失败' : (status === 'expired' ? '登录已过期' : '等待授权'));
+  return `<div class="breadcrumb add-account-breadcrumb">
+    <button type="button" class="page-back-button add-back-link" onclick="cancelOAuthAccountLogin()" aria-label="返回添加账号">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
+  </div>
+  <div class="page-header add-provider-header oauth-login-header">
+    <h2>${esc(title)}</h2>
+    <p>${esc(statusText)}</p>
+  </div>
+  <div class="oauth-login-panel">
+    <div class="oauth-login-status ${escAttr(status)}">${esc(statusText)}</div>
+    ${userCode}
+    <div class="oauth-login-url" title="${escAttr(url)}">${esc(url)}</div>
+    <div class="oauth-login-actions">
+      ${url ? `<button class="btn btn-primary" onclick="openOAuthLoginUrl()">打开登录页</button>` : ''}
+      ${url ? `<button class="btn btn-ghost" onclick="copyOAuthLoginUrl()">复制链接</button>` : ''}
+      <button class="btn btn-ghost" onclick="pollOAuthAccountLogin()">刷新状态</button>
+      <button class="btn btn-danger" onclick="cancelOAuthAccountLogin()">取消</button>
+    </div>
+    <div class="oauth-login-message">${esc(state.message || '')}</div>
+  </div>`;
+}
+
+function providersForClientKind(kind) {
+  // 所有客户端统一列出全部可用模型厂商（快速配置 / 添加账号通用），
+  // 去掉 Codex 官方 / Anthropic / Google AI 三家。
+  const excluded = new Set(['codex', 'anthropic', 'google-ai']);
+  const list = providerPresets.filter(p => !excluded.has(p.slug));
+  // dsh 走 pi-ai 适配器，支持全部 OpenAI 兼容模型格式，供应商列表与其他客户端一致。
+  return list;
+}
+
+function clientProviderDefaults(kind, provider, preset = null) {
+  const normalized = normalizeClientKind(kind);
+  const p = preset || getProviderPreset(provider) || {};
+  if (normalized === 'claude_code' && provider === 'deepseek') {
+    return {
+      upstream: 'https://api.deepseek.com/anthropic',
+      default_model: 'deepseek-v4-pro[1m]',
+      known_models: ['deepseek-v4-pro[1m]', 'deepseek-v4-pro', 'deepseek-v4-flash'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'kimi') {
+    return {
+      upstream: 'https://api.moonshot.cn/anthropic',
+      default_model: 'kimi-k2.5',
+      known_models: ['kimi-k2.5', 'kimi-k2-turbo-preview', 'kimi-k2-0711-preview'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'minimax') {
+    return {
+      upstream: 'https://api.minimaxi.com/anthropic',
+      default_model: 'MiniMax-M3[1m]',
+      known_models: ['MiniMax-M3[1m]', 'MiniMax-M3', 'MiniMax-M2.7-highspeed[1m]', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.7[1m]', 'MiniMax-M2.7', 'MiniMax-M2', 'MiniMax-M1'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'mimo') {
+    return {
+      upstream: 'https://token-plan-cn.xiaomimimo.com/anthropic',
+      default_model: `${MIMO_CODING_MODEL}${CLAUDE_ONE_M_SUFFIX}`,
+      known_models: [`${MIMO_CODING_MODEL}${CLAUDE_ONE_M_SUFFIX}`, MIMO_CODING_MODEL, 'mimo-v2.5[1m]', 'mimo-v2.5', 'mimo-v2-pro[1m]', 'mimo-v2-pro', 'mimo-v2-omni'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'longcat') {
+    return {
+      upstream: 'https://api.longcat.chat/anthropic',
+      default_model: 'LongCat-Flash-Chat',
+      known_models: [
+        'LongCat-2.0-Preview',
+        'LongCat-Flash-Lite',
+        'LongCat-Flash-Chat',
+        'LongCat-Flash-Thinking-2601',
+        'LongCat-Flash-Omni-2603',
+      ],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'qwen') {
+    return {
+      upstream: 'https://dashscope.aliyuncs.com/apps/anthropic',
+      default_model: 'qwen3.6-plus',
+      known_models: ['qwen3.6-plus', 'qwen-plus', 'qwen-max', 'qwen-turbo'],
+      api_key_env: 'ANTHROPIC_API_KEY',
+    };
+  }
+  if (normalized === 'claude_code' && provider === 'glm') {
+    return {
+      upstream: 'https://open.bigmodel.cn/api/anthropic',
+      default_model: 'glm-5.1',
+      known_models: ['glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.5-air'],
+      api_key_env: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  if (normalized === 'hermes') {
+    // hermes 直连供应商（不走 DEX 网关）。hermes 运行时按 base_url 是否含 /anthropic
+    // 自动切到 Anthropic Messages 传输层（runtime_provider._detect_api_mode_for_url）。
+    // minimax 官方 Anthropic 端点 + DeepSeek 官方 Anthropic 端点（api-docs.deepseek.com/guides/anthropic_api/）；
+    // 其余走各供应商 OpenAI Chat 兼容默认上游。
+    const anthropicEndpoints = {
+      minimax: 'https://api.minimaxi.com/anthropic',
+      deepseek: 'https://api.deepseek.com/anthropic',
+    };
+    return {
+      upstream: anthropicEndpoints[provider] || p.default_upstream || '',
+      default_model: (Array.isArray(p.known_models) && p.known_models[0]) || '',
+      known_models: Array.isArray(p.known_models) ? p.known_models : [],
+      api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: normalized }),
+    };
+  }
+  return {
+    upstream: p.default_upstream || '',
+    default_model: (Array.isArray(p.known_models) && p.known_models[0]) || '',
+    known_models: Array.isArray(p.known_models) ? p.known_models : [],
+    api_key_env: defaultApiKeyEnvForClient({ provider, client_kind: normalized }),
+  };
+}
+
+// ── Level 3: 编辑账号 ──
+
+function renderAccountDetail() {
+  if (!editingAccount) return '<div class="empty-state">账号数据丢失，请返回列表</div>';
+  const a = editingAccount;
+  if (!isCodexAccount(a)) return renderClientAccountDetail();
+  ensureAccountEndpoints(a);
+  const initialEndpoint = currentEndpoint(a) || {};
+  const responsesDirectForm = isResponsesDirectFormAccount(a, initialEndpoint);
+  if (responsesDirectForm && endpointKindIsLockedForForm(a, initialEndpoint)) {
+    normalizeResponsesDirectAccount(a, initialEndpoint);
+  }
+  retireCodexModelMapDraft(a);
+  const ep = currentEndpoint(a) || {};
+  ep.model_map = {};
+  a.model_map = {};
+  const visionMode = ep.vision?.mode || (a.vision_enabled ? 'glue' : 'native');
+  const contextWindow = ep.context_window_override ?? null;
+  const reasoningEffort = ep.reasoning_effort_override ?? null;
+  const thinkingTokens = ep.thinking_tokens ?? null;
+  const fastEnabled = ep.fast_mode_enabled === true;
+  const fastServiceTier = ep.fast_service_tier || 'priority';
+  const customHeaders = ep.custom_headers || {};
+  const requestTimeout = ep.request_timeout_secs ?? null;
+  const maxRetries = ep.max_retries ?? a.max_retries;
+  const knownModels = getProviderKnownModels(a.provider);
+  const responsesDirect = endpointKindIsResponsesDirect(ep.kind);
+  const imageGenerationEnabled = endpointImageGenerationEnabled(a, ep);
+  const usesModelMapping = false;
+  const lockEndpointKind = endpointKindIsLockedForForm(a, ep);
+  const endpointKindOptions = `
+            ${ep.kind === 'custom_chat' || ep.kind === 'CustomChat' ? '<option value="custom_chat" selected hidden>OpenAI Chat 兼容（自定义路径）</option>' : ''}
+            ${ep.kind === 'custom_responses' || ep.kind === 'CustomResponses' ? '<option value="custom_responses" selected hidden>OpenAI Responses 直连（自定义路径）</option>' : ''}
+            <option value="open_ai_chat" ${(ep.kind || 'open_ai_chat') === 'open_ai_chat' || ep.kind === 'OpenAiChat' ? 'selected' : ''}>OpenAI Chat 兼容（推荐）</option>
+            <option value="open_ai_responses" ${ep.kind === 'open_ai_responses' || ep.kind === 'OpenAiResponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
+            <option value="anthropic_messages" ${ep.kind === 'anthropic_messages' || ep.kind === 'AnthropicMessages' ? 'selected' : ''}>Anthropic Messages</option>
+            <option value="codex_official" ${ep.kind === 'codex_official' || ep.kind === 'CodexOfficial' ? 'selected' : ''}>Codex 官方</option>`;
+  const endpointKindControl = lockEndpointKind
+    ? `<select id="edit_endpoint_kind" class="endpoint-kind-locked" onchange="handleEndpointKindChange(this.value, true)">
+          ${endpointKindOptions}
+        </select>
+        <span class="hint endpoint-kind-locked-hint">官方/原生账号协议通常固定；切换后该账号将按所选协议请求，可能无法正常调用，请确认已了解。</span>`
+    : `<select id="edit_endpoint_kind" onchange="handleEndpointKindChange(this.value)">
+          ${endpointKindOptions}
+        </select>
+        <span class="hint">DeepSeek、MiniMax、MiMo 等已确认支持 Responses API 的供应商建议选直连；其他兼容站点再选 OpenAI Chat 兼容。</span>`;
+  const endpointModels = Array.isArray(ep.known_models) ? ep.known_models : [];
+  const defaultEndpointKind = ep.kind || 'open_ai_chat';
+  // 渲染前确保每个已知模型都有 profile 条目；旧数据缺字段时补 enabled=true、override=null
+  const profiles = ep.model_profiles && typeof ep.model_profiles === 'object' ? ep.model_profiles : {};
+  ep.model_profiles = profiles;
+  const modelHead = '<div class="codex-model-head"><span>模型</span><span>状态</span><span>上游协议</span></div>';
+  const modelRows = endpointModels.length
+    ? modelHead + endpointModels.map(m => {
+        const profile = profiles[m] || { enabled: true, vision_mode: 'inherit', endpoint_override: null };
+        profiles[m] = profile;
+        return renderModelRow(m, profile, defaultEndpointKind);
+      }).join('')
+    : modelHead + '<div class="codex-model-empty">尚未获取模型，点击上方按钮从上游拉取</div>';
+  const modelSection = `<section class="account-edit-section">
+    <div class="account-section-head">
+      <div class="section-sub-label">模型列表</div>
+      <div class="account-section-desc">逐行控制模型在 Codex 客户端中的可见性与调用，并可为单个模型指定上游协议。</div>
+      <div class="account-section-actions">
+        <button class="btn btn-ghost" onclick="fetchCodexAccountModels()">从上游获取模型列表</button>
+        <span id="codexModelFetchStatus"></span>
+      </div>
+    </div>
+    <div id="codexAccountModelList" class="codex-model-table">
+      ${modelRows}
+    </div>
+    <div class="section-hint">启用后 Codex 客户端可见且可调用，停用后看不到也调不到；协议默认跟随账号“上游 API 类型”。官方账号使用内置官方模型列表，中转账号可点击上方按钮探测 /models。</div>
+  </section>`;
+  const passthroughModel = responsesDirect || ep.kind === 'codex_official' || ep.kind === 'CodexOfficial';
+  const visionSectionTitle = passthroughModel ? '图片处理' : '其他模型图片处理';
+  const visionTargetLabel = passthroughModel ? '当前端点' : '其他模型';
+  const visionHint = responsesDirect
+    ? 'Responses 直连保留 Codex 原始模型名；这里仅设置图片输入处理策略。'
+    : (ep.kind === 'codex_official' || ep.kind === 'CodexOfficial')
+      ? 'Codex 官方账号使用官方模型名；这里仅设置图片输入处理策略。'
+    : '这里处理当前端点未声明图片能力时的降级策略。';
+  const visionSection = renderAccountVisionSection(responsesDirectForm, visionSectionTitle, visionTargetLabel, visionHint, visionMode, a, ep);
+  const runtimeSection = renderAccountRuntimeSection(responsesDirectForm, fastEnabled, fastServiceTier, contextWindow, reasoningEffort, thinkingTokens);
+  const devPipelineSection = renderAccountDevPipelineSection(responsesDirectForm, a);
+  const endpointPathField = renderAccountEndpointPathField(responsesDirectForm, ep);
+  const imageGenerationField = renderAccountImageGenerationField(responsesDirectForm, imageGenerationEnabled);
+  const providerKeyUrl = PROVIDER_KEY_CONSOLE_URL[String(a.provider || '').toLowerCase()] || '';
+  const providerKeyLabel = getProviderPreset(a.provider)?.label || a.provider || '厂商';
+  return `<div class="breadcrumb account-detail-breadcrumb">
+    <button type="button" class="page-back-button account-back-link" onclick="navigateAccounts('list')" aria-label="返回账号列表">
+      <span class="line-action-icon line-action-icon-back" aria-hidden="true"></span>
+    </button>
+  </div>
+  <div class="page-header account-detail-header">
+    <div class="account-detail-title">
+      <img src="${providerLogoSrc(a.provider)}" alt="" aria-hidden="true">
+      <div>
+        <div class="account-detail-heading">
+          <h2>${esc(accountDisplayTitle(a))}</h2>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="account-form">
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">账号凭据</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field account-name-field">
+          <label>账号名称</label>
+          <input type="text" id="edit_name" value="${escAttr(a.name)}" placeholder="输入账号显示名">
+        </div>
+        <div class="config-field account-key-field">
+          <label>API Key</label>
+          <div class="pass-group ${hasStoredPrimaryApiKey(a) ? 'has-copy' : ''}">
+            <input type="password" id="edit_api_key" value="${escAttr(displayStoredSecret(a.api_key, hasStoredPrimaryApiKey(a)))}" placeholder="输入 API 密钥" autocomplete="off">
+            ${hasStoredPrimaryApiKey(a) ? secretCopyButton('api_key') : ''}
+            <button type="button" class="pass-toggle" onclick="togglePass('edit_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+            </button>
+          </div>
+        </div>
+        <div class="config-field wide">
+          <label>上游 URL</label>
+          <div class="upstream-test-group${providerKeyUrl ? ' has-key-btn' : ''}">
+            <input type="text" id="edit_upstream" value="${escAttr(ep.base_url || a.upstream)}" placeholder="https://api.example.com/v1">
+            ${providerKeyUrl ? `<button type="button" class="btn-open-key" onclick="openProviderApiKeyPage()" title="前往 ${escAttr(providerKeyLabel)} 开放平台获取 API Key"><span>获取 API Key</span><span aria-hidden="true" class="open-key-arrow">↗</span></button>` : ''}
+            <button class="btn btn-ghost" onclick="testUpstreamConnectivity()">测试连通性</button>
+          </div>
+          <div class="inline-test-result">
+            <span id="connectivityResult"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">上游</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>端点名称</label>
+          <input type="text" id="edit_endpoint_name" value="${escAttr(ep.name || '默认配置')}" placeholder="默认配置">
+          <span class="hint">当前上游端点的显示名称，用于区分同一账号下的多个端点。</span>
+        </div>
+        <div class="config-field">
+          <label>上游 API 类型</label>
+          ${endpointKindControl}
+        </div>
+        ${imageGenerationField}
+        <div class="config-field">
+          <label>余额查询 URL <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_balance_url" value="${escAttr(ep.balance_url || '')}" placeholder="留空则自动探测">
+        </div>
+      </div>
+    </section>
+
+    ${renderCodexRouterPanel(a)}
+    ${renderCodexOfficialRuntimePanel(a)}
+
+    ${modelSection}
+    ${visionSection}
+    ${runtimeSection}
+    ${devPipelineSection}
+
+  <div class="collapsible-section">
+    <button class="collapsible-toggle" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+      <span class="arrow">▸</span> 高级端点
+    </button>
+    <div class="collapsible-content">
+      <div class="config-fields nested-fields">
+        ${endpointPathField}
+        <div class="config-field">
+          <label>自定义 HTTP 头 <span class="optional-label">可选</span></label>
+          <textarea class="mono-textarea" id="edit_custom_headers" rows="3" placeholder="每行一个: Header-Name: value&#10;例: X-Org-Id: org-xxx&#10;例: X-Custom-Auth: token123">${escAttr(Object.entries(customHeaders).map(([k, v]) => k + ': ' + v).join('\n'))}</textarea>
+          <span class="hint">每行一个头，格式: 头名称: 头值，将在每次上游请求时附加</span>
+        </div>
+        <div class="config-field">
+          <label>请求超时（秒） <span class="optional-label">可选</span></label>
+          <input type="number" id="edit_request_timeout" value="${requestTimeout || ''}" min="1" max="600" step="1" placeholder="留空使用默认 300s">
+          <span class="hint">此账号的上游请求超时时间，Claude 扩展思考建议设 180-300</span>
+        </div>
+        <div class="config-field">
+          <label>最大重试次数 <span class="optional-label">可选</span></label>
+          <input type="number" id="edit_max_retries" value="${maxRetries ?? ''}" min="0" max="10" step="1" placeholder="留空使用默认 3 次">
+          <span class="hint">上游请求失败（401/429/502/503/连接错误）时的重试次数，0 表示不重试</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="accounts-actions">
+    <button class="btn btn-primary" onclick="saveAccount()">保存账号</button>
+    ${a.id ? `<button class="btn btn-ghost" onclick="editConfigFile('${escAttr(a.id)}')">编辑配置文件</button>` : ''}
+    <button class="btn btn-danger" onclick="deleteAccount('${escAttr(a.id)}')">删除账号</button>
+  </div>
+  </div>`;
+}
+
+
+function renderAccountVisionSection(responsesDirectForm, visionSectionTitle, visionTargetLabel, visionHint, visionMode, a, ep) {
+  return responsesDirectForm ? '' : `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">${visionSectionTitle}</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label>${visionTargetLabel}</label>
+          <input type="hidden" id="edit_vision_mode" value="${escAttr(String(visionMode).toLowerCase())}">
+          <div class="vision-mode-segments" role="group" aria-label="视觉能力">
+            <button type="button" class="vision-mode-option ${visionMode === 'off' || visionMode === 'Off' ? 'active' : ''}" data-mode="off" onclick="setVisionMode('off')">关闭</button>
+            <button type="button" class="vision-mode-option ${visionMode === 'native' || visionMode === 'Native' ? 'active' : ''}" data-mode="native" onclick="setVisionMode('native')">原生</button>
+            <button type="button" class="vision-mode-option ${visionMode === 'glue' || visionMode === 'Glue' ? 'active' : ''}" data-mode="glue" onclick="setVisionMode('glue')">胶水</button>
+          </div>
+          <span class="hint">${visionHint}</span>
+        </div>
+        <div class="config-field">
+          <label>不支持图片时</label>
+          <select id="edit_unsupported_image_policy">
+            <option value="strip_with_warning" ${(ep.vision?.unsupported_image_policy || 'strip_with_warning') === 'strip_with_warning' ? 'selected' : ''}>剥离图片并继续</option>
+            ${endpointKindIsChat(ep.kind) ? `<option value="ocr_then_strip" ${ep.vision?.unsupported_image_policy === 'ocr_then_strip' ? 'selected' : ''}>本机 OCR 后继续</option>` : ''}
+            <option value="reject" ${ep.vision?.unsupported_image_policy === 'reject' ? 'selected' : ''}>拒绝请求并提示</option>
+          </select>
+          <span class="hint">关闭视觉或模型覆盖为关闭时生效</span>
+        </div>
+      </div>
+      <div id="visionFields" style="${visionMode === 'glue' || visionMode === 'Glue' ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>胶水适配器</label>
+            <select id="edit_vision_adapter">
+              <option value="minimax_coding_plan_vlm" ${(ep.vision?.adapter_id || 'minimax_coding_plan_vlm') === 'minimax_coding_plan_vlm' ? 'selected' : ''}>MiniMax Coding Plan VLM</option>
+            </select>
+            <span class="hint">第一版仅实现 MiniMax 胶水适配器</span>
+          </div>
+          <div class="config-field">
+            <label>胶水策略</label>
+            <select id="edit_glue_strategy">
+              <option value="final_answer" ${(ep.vision?.glue_strategy || 'final_answer') === 'final_answer' ? 'selected' : ''}>视觉模型直接回答</option>
+              <option value="caption_then_main" ${ep.vision?.glue_strategy === 'caption_then_main' ? 'selected' : ''}>先识图再交给主模型</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <label>视觉上游 URL</label>
+            <input type="text" id="edit_vision_upstream" value="${escAttr(ep.vision?.base_url || a.vision_upstream || '')}" placeholder="https://api.minimaxi.com">
+          </div>
+          <div class="config-field">
+            <label>视觉 API Key</label>
+            <div class="pass-group ${hasStoredVisionApiKey(a, ep) ? 'has-copy' : ''}">
+              <input type="password" id="edit_vision_api_key" value="${escAttr(displayStoredSecret(ep.vision?.api_key || a.vision_api_key, hasStoredVisionApiKey(a, ep)))}" placeholder="视觉模型密钥" autocomplete="off">
+              ${hasStoredVisionApiKey(a, ep) ? secretCopyButton('vision_api_key') : ''}
+              <button type="button" class="pass-toggle" onclick="togglePass('edit_vision_api_key', this)" title="显示/隐藏视觉 API Key" aria-label="显示或隐藏视觉 API Key">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+              </button>
+            </div>
+          </div>
+          <div class="config-field">
+            <label>视觉模型名</label>
+            <input type="text" id="edit_vision_model" value="${escAttr(ep.vision?.model || a.vision_model || '')}" placeholder="MiniMax-M2.7">
+          </div>
+          <div class="config-field">
+            <label>视觉端点路径</label>
+            <input type="text" id="edit_vision_endpoint" value="${escAttr(ep.vision?.path || a.vision_endpoint || 'v1/coding_plan/vlm')}" placeholder="v1/coding_plan/vlm">
+            <div class="inline-test-row">
+              <button class="btn btn-ghost" onclick="testVisionConnectivity()">测试视觉端点</button>
+              <span id="visionConnectivityResult"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderAccountRuntimeSection(responsesDirectForm, fastEnabled, fastServiceTier, contextWindow, reasoningEffort, thinkingTokens) {
+  return responsesDirectForm ? `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">运行参数</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_fast_enabled" ${fastEnabled ? 'checked' : ''} onchange="toggleFastFields()">
+            GPT Fast 服务层
+          </label>
+          <span class="hint">OpenAI Responses 直连端点生效；仅注入 service_tier。</span>
+        </div>
+      </div>
+      <div id="fastFields" style="${fastEnabled ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>service_tier</label>
+            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="priority">
+          </div>
+        </div>
+      </div>
+    </section>` : `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">运行参数</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_cw_enabled" ${contextWindow ? 'checked' : ''} onchange="toggleContextWindowFields()">
+            上下文窗口覆盖
+          </label>
+          <span class="hint">勾选后 Codex 使用下方 token 数作为该账号上下文。</span>
+        </div>
+        <div class="config-field" id="cwSizeField" style="${contextWindow ? '' : 'display:none;'}">
+          <label>上下文窗口大小 (token)</label>
+          <input type="number" id="edit_cw_size" value="${contextWindow || 1000000}" min="1" max="10000000" step="1" placeholder="1000000">
+          <span class="hint">Codex 有效上下文约为此值 × 95%。</span>
+        </div>
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_reasoning_enabled" ${reasoningEffort ? 'checked' : ''} onchange="toggleReasoningFields()">
+            推理强度覆盖
+          </label>
+          <span class="hint">用于 Claude、R1 等需要固定思考预算的账号。</span>
+        </div>
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_fast_enabled" ${fastEnabled ? 'checked' : ''} onchange="toggleFastFields()">
+            GPT Fast 服务层
+          </label>
+          <span class="hint">仅 OpenAI Responses 直连端点生效；保持推理预算，只注入 service_tier。</span>
+        </div>
+      </div>
+      <div id="reasoningFields" style="${reasoningEffort ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>推理强度</label>
+            <select id="edit_reasoning_effort">
+              <option value="" ${!reasoningEffort ? 'selected' : ''}>不覆盖（跟随 Codex 请求）</option>
+              <option value="low" ${reasoningEffort === 'low' ? 'selected' : ''}>low - 低推理</option>
+              <option value="medium" ${reasoningEffort === 'medium' ? 'selected' : ''}>medium - 中等推理</option>
+              <option value="high" ${reasoningEffort === 'high' ? 'selected' : ''}>high - 高推理</option>
+              <option value="max" ${reasoningEffort === 'max' ? 'selected' : ''}>max - 最大推理</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <label>思考 Token 预算 <span class="optional-label">可选</span></label>
+            <input type="number" id="edit_thinking_tokens" value="${thinkingTokens || ''}" min="1024" max="128000" step="1024" placeholder="留空不设限制，如 16000">
+            <span class="hint">Claude Extended Thinking 的 token 预算，留空则不限制</span>
+          </div>
+        </div>
+      </div>
+      <div id="fastFields" style="${fastEnabled ? '' : 'display:none;'}">
+        <div class="config-fields nested-fields">
+          <div class="config-field">
+            <label>service_tier</label>
+            <input type="text" id="edit_fast_service_tier" value="${escAttr(fastServiceTier)}" placeholder="priority">
+            <span class="hint">默认 priority；旧配置中的 fast 会在请求时自动转为 priority。</span>
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderAccountDevPipelineSection(responsesDirectForm, a) {
+  return responsesDirectForm ? '' : `
+    <section class="account-edit-section">
+      <div class="account-section-head">
+        <div class="section-sub-label">开发协作编排</div>
+      </div>
+      <div class="config-fields">
+        <div class="config-field wide">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_dev_pipeline_enabled" ${a.dev_pipeline_enabled ? 'checked' : ''} onchange="toggleDevPipelineFields()">
+            启用开发协作编排
+          </label>
+          <span class="hint">Codex 中输入触发命令即可进入协作流程，默认以当前活跃账号为主。</span>
+        </div>
+        <div class="dev-pipeline-fields" id="devPipelineFields" style="${a.dev_pipeline_enabled ? '' : 'display:none;'}">
+          <div class="config-fields nested-fields">
+            <div class="config-field">
+              <label>触发方式</label>
+              <select id="edit_dev_pipeline_trigger_mode">
+                <option value="manual" ${(a.dev_pipeline_trigger_mode || 'manual') === 'manual' ? 'selected' : ''}>手动触发</option>
+                <option value="always" ${a.dev_pipeline_trigger_mode === 'always' ? 'selected' : ''}>始终触发</option>
+              </select>
+            </div>
+            <div class="config-field">
+              <label>触发命令</label>
+              <input type="text" id="edit_dev_pipeline_command" value="${escAttr(a.dev_pipeline_command || '/dev-pipeline')}" placeholder="/dev-pipeline">
+            </div>
+            <div class="config-field">
+              <label>方案设计账号</label>
+              <select id="edit_dev_pipeline_architect_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_architect_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>实现填充账号</label>
+              <select id="edit_dev_pipeline_implementer_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_implementer_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>验收收口账号</label>
+              <select id="edit_dev_pipeline_reviewer_account_id">${renderDevPipelineAccountOptions(a, a.dev_pipeline_reviewer_account_id || '')}</select>
+            </div>
+            <div class="config-field">
+              <label>实现阶段工具能力</label>
+              <select id="edit_dev_pipeline_tool_mode">
+                <option value="controlled_tools" ${(a.dev_pipeline_tool_mode || 'controlled_tools') === 'controlled_tools' ? 'selected' : ''}>受控工具执行</option>
+                <option value="patch_only" ${a.dev_pipeline_tool_mode === 'patch_only' ? 'selected' : ''}>仅生成补丁</option>
+                <option value="full_agent" ${a.dev_pipeline_tool_mode === 'full_agent' ? 'selected' : ''}>完整 Codex 执行能力</option>
+              </select>
+              <span class="hint">当前版本会把能力模式注入阶段指令；工具执行仍继承 deecodex 的安全策略。</span>
+            </div>
+            <div class="config-field">
+              <label>最大修正轮数</label>
+              <input type="number" id="edit_dev_pipeline_max_iterations" value="${Number(a.dev_pipeline_max_iterations || 3)}" min="1" max="10" step="1">
+            </div>
+            <div class="config-field">
+              <label class="toggle-label">
+                <input type="checkbox" id="edit_dev_pipeline_show_trace" ${a.dev_pipeline_show_trace ? 'checked' : ''}>
+                在最终回答中显示阶段摘要
+              </label>
+            </div>
+            <div class="config-field">
+              <label>方案角色附加指令</label>
+              <textarea id="edit_dev_pipeline_architect_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_architect_instruction || '')}</textarea>
+            </div>
+            <div class="config-field">
+              <label>实现角色附加指令</label>
+              <textarea id="edit_dev_pipeline_implementer_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_implementer_instruction || '')}</textarea>
+            </div>
+            <div class="config-field">
+              <label>验收角色附加指令</label>
+              <textarea id="edit_dev_pipeline_reviewer_instruction" rows="2" placeholder="可选">${escAttr(a.dev_pipeline_reviewer_instruction || '')}</textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function renderAccountEndpointPathField(responsesDirectForm, ep) {
+  return responsesDirectForm && !endpointKindIsCustomResponses(ep.kind) ? '' : `
+        <div class="config-field">
+          <label>请求路径 <span class="optional-label">可选</span></label>
+          <input type="text" id="edit_endpoint_path" value="${escAttr(ep.path || '')}" placeholder="留空自动使用所选 API 类型">
+          <span class="hint">私有代理或非标准网关才需要填写，例如 /v1/chat/completions。</span>
+        </div>`;
+}
+
+function renderAccountImageGenerationField(responsesDirectForm, imageGenerationEnabled) {
+  return responsesDirectForm ? `
+        <div class="config-field">
+          <label class="toggle-label">
+            <input type="checkbox" id="edit_image_generation_enabled" ${imageGenerationEnabled ? 'checked' : ''}>
+            图片生成
+          </label>
+          <span class="hint">仅端点原生支持 image_generation 时开启；第三方不支持时关闭以避免上游报错。</span>
+        </div>` : '';
+}
+function renderClientModelMappingRows(account) {
+  const kind = accountClientKind(account);
+  const slots = clientModelSlots(kind);
+  const map = clientModelMap(account);
+  const knownKeys = slots.map(slot => slot.key);
+  const modelSource = upstreamModels.length > 0 ? upstreamModels : getProviderKnownModels(account.provider || '');
+  const suggestionsJson = escAttr(JSON.stringify(modelSource || []));
+  const rows = slots.map(slot => ({
+    key: slot.key,
+    label: slot.label || slot.key,
+    target: slot.target || '',
+    description: slot.description || '',
+    required: Boolean(slot.required),
+    value: map[slot.key] || (slot.key === 'default' ? (account.default_model || '') : ''),
+    readonly: true,
+  }));
+  Object.entries(map).forEach(([key, value]) => {
+    if (knownKeys.includes(key)) return;
+    rows.push({ key, label: key, target: '自定义槽位', required: false, value, readonly: false });
+  });
+  return rows.map(row => {
+    const oneMEnabled = hasClaudeOneMSuffix(row.value);
+    const oneMToggle = row.readonly && isClaudeOneMModelSlot(kind, row.key)
+      ? `<label class="claude-one-m-toggle toggle-label${oneMEnabled ? ' on' : ''}" title="开启 1M 上下文后，模型名会追加 ${CLAUDE_ONE_M_SUFFIX}">
+          <input type="checkbox" class="claude-one-m-input" aria-label="${escAttr(row.label)} 1M 上下文" ${oneMEnabled ? 'checked' : ''} onchange="toggleClaudeOneMContext(this)">
+          <span>1M</span>
+        </label>`
+      : '';
+    const slotCell = row.readonly
+      ? `<div class="model-label codex client-model-slot">
+          <strong>${esc(row.label)}${row.required ? ' *' : ''}</strong>
+          <span title="${escAttr(row.description || row.target)}">${esc(row.target)}</span>
+          <input type="hidden" class="client-model-slot-key" value="${escAttr(row.key)}">
+        </div>`
+      : `<div class="model-label client-model-slot custom">
+          <input type="text" class="client-model-slot-key" value="${escAttr(row.key)}" placeholder="槽位名，如 rerank">
+          <span>${esc(row.target)}</span>
+        </div>`;
+    return `<div class="model-row client-model-row client-model-template${oneMToggle ? ' claude-one-m-row' : ''}">
+      ${slotCell}
+      <div class="model-value client-model-value">
+        <div class="model-autocomplete">
+          <input type="text" class="client-model-value-input" value="${escAttr(row.value || '')}" placeholder="留空则不写入该槽位"
+            onfocus="showSuggestions(this)" oninput="filterSuggestions(this); syncClaudeOneMContextToggle(this)" onblur="hideSuggestions(this)" autocomplete="off">
+          <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+        </div>
+        ${oneMToggle || (row.readonly ? '<span class="model-remove-placeholder"></span>' : '<button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function syncClaudeOneMContextToggle(input) {
+  const row = input?.closest?.('.client-model-row');
+  const toggle = row?.querySelector?.('.claude-one-m-toggle');
+  const checkbox = toggle?.querySelector?.('.claude-one-m-input');
+  if (!toggle || !checkbox) return;
+  const enabled = hasClaudeOneMSuffix(input.value);
+  checkbox.checked = enabled;
+  toggle.classList.toggle('on', enabled);
+}
+
+function toggleClaudeOneMContext(checkbox) {
+  const row = checkbox?.closest?.('.client-model-row');
+  const input = row?.querySelector?.('.client-model-value-input');
+  if (!input) return;
+  const base = stripClaudeOneMSuffix(input.value);
+  input.value = checkbox.checked && base ? `${base}${CLAUDE_ONE_M_SUFFIX}` : base;
+  syncClaudeOneMContextToggle(input);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function addClientModelRow() {
+  const container = document.getElementById('clientModelMapRows');
+  if (!container) return;
+  const modelSource = upstreamModels.length > 0 ? upstreamModels : getProviderKnownModels(editingAccount?.provider || '');
+  const suggestionsJson = escAttr(JSON.stringify(modelSource || []));
+  const row = document.createElement('div');
+  row.className = 'model-row client-model-row client-model-template';
+  row.innerHTML = `<div class="model-label client-model-slot custom">
+      <input type="text" class="client-model-slot-key" placeholder="槽位名，如 rerank">
+      <span>自定义槽位</span>
+    </div>
+    <div class="model-value client-model-value">
+      <div class="model-autocomplete">
+        <input type="text" class="client-model-value-input" placeholder="上游模型名"
+          onfocus="showSuggestions(this)" oninput="filterSuggestions(this)" onblur="hideSuggestions(this)" autocomplete="off">
+        <div class="model-suggestions" style="display:none;" data-suggestions="${suggestionsJson}"></div>
+      </div>
+      <button class="model-remove" onclick="removeClientModelRow(this)" title="移除">✕</button>
+    </div>`;
+  container.appendChild(row);
+}
+
+function removeClientModelRow(btn) {
+  btn.closest('.client-model-row')?.remove();
+}
+
+function collectClientModelMap() {
+  const result = {};
+  document.querySelectorAll('#clientModelMapRows .client-model-row').forEach(row => {
+    const key = row.querySelector('.client-model-slot-key')?.value?.trim();
+    const value = row.querySelector('.client-model-value-input')?.value?.trim();
+    if (key && value) result[key] = value;
+  });
+  return result;
+}
+
+function parseOptionalInteger(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// ── 数据加载 ──
+
+let accountsListRenderSignature = '';
+
+function accountListRenderSignature(data) {
+  const activeSurface = selectedSurfaceForKind(selectedClientKind);
+  const cfg = typeof currentConfig !== 'undefined' ? currentConfig : null;
+  const mode = String(data?.codex_router_mode || data?.current_mode || cfg?.codex_router_mode || 'api').toLowerCase();
+  const activeSelection = (data?.active_by_surface || {})[activeSelectionKey(selectedClientKind, activeSurface)] || {};
+  const activeId = activeSelection.account_id || data?.active_account_id || data?.active_id || '';
+  const activeEndpointId = activeSelection.endpoint_id || data?.active_endpoint_id || '';
+  const accounts = (data?.accounts || [])
+    .filter(a => accountClientKind(a) === selectedClientKind)
+    .filter(a => accountClientSurface(a) === activeSurface)
+    .filter(a => !(mode === 'relay' && selectedClientKind === 'codex') || isRelayModeMainAccountVisible(a))
+    .map(a => {
+      const routing = accountRouting(a);
+      const runtime = a?.runtime_state || {};
+      return {
+        id: a.id,
+        name: a.name,
+        provider: a.provider,
+        client_kind: accountClientKind(a),
+        client_surface: accountClientSurface(a),
+        auth_mode: a.auth_mode || 'api_key',
+        active: a.id === activeId,
+        active_endpoint: a.id === activeId ? activeEndpointId : '',
+        upstream: cardUpstream(a),
+        endpoint_kind: cardEndpointKind(a),
+        routing_enabled: routing.enabled,
+        routing_anchor_enabled: routing.anchor_enabled,
+        routing_execution_enabled: routing.execution_enabled,
+        routing_pool: routing.pool,
+        routing_priority: routing.priority,
+        routing_weight: routing.weight,
+        runtime_status: runtime.status || 'active',
+        runtime_next_retry_after: runtime.next_retry_after || null,
+        runtime_success: runtime.success || 0,
+        runtime_failed: runtime.failed || 0,
+      };
+    });
+  const relayStore = data?.relay_channels || {};
+  const relayChannels = (relayStore.channels || [])
+    .filter(channel => relayChannelSurface(channel) === activeSurface)
+    .map(channel => ({
+    id: channel.id,
+    name: channel.name,
+    url: channel.url,
+    client_surface: relayChannelSurface(channel),
+    image_generation_enabled: Boolean(channel.image_generation_enabled),
+    active: channel.id === relayStore.active_id,
+    enabled: channel.enabled !== false,
+    priority: channel.priority || 0,
+    weight: channel.weight || 1,
+    status: channel.status || 'active',
+    next_retry_after: channel.next_retry_after || null,
+    success: channel.success || 0,
+    failed: channel.failed || 0,
+  }));
+  return JSON.stringify({
+    selectedClientKind,
+    selectedClientSurface: selectedSurfaceForKind(selectedClientKind),
+    mode,
+    activeId,
+    activeEndpointId,
+    routerStatus: data?.router_status || null,
+    routerStatusScenarios: data?.router_status_scenarios || null,
+    relayActiveId: (relayStore.active_by_surface || {})[activeSurface] || relayStore.active_id || '',
+    relayChannels,
+    accounts,
+  });
+}
+
+async function loadAccountsData() {
+  try {
+    const prevSignature = accountsListRenderSignature;
+    const result = await invoke('list_accounts');
+    accountsData = result;
+    if (!clientProfiles.length) await loadClientProfiles();
+    if (!providerPresets.length) await loadProviderPresets();
+    if (!endpointTemplates.length) await loadEndpointTemplates();
+    if (accountsView === 'list' && currentPanel === 'accounts') {
+      const nextSignature = accountListRenderSignature(accountsData);
+      const main = document.getElementById('mainContent');
+      if (nextSignature !== prevSignature || !main || !main.querySelector('.accounts-grid')) {
+        accountsListRenderSignature = nextSignature;
+        renderMainContent();
+      }
+    }
+  } catch (e) {
+    showToast('加载账号失败: ' + e, 'error');
+  }
+}
+
+async function loadClientProfiles() {
+  try {
+    clientProfiles = await invoke('get_client_profiles');
+  } catch (e) {
+    showToast('加载客户端分类失败: ' + e, 'error');
+  }
+}
+
+async function loadProviderPresets() {
+  try {
+    providerPresets = await invoke('get_provider_presets');
+  } catch (e) {
+    showToast('加载供应商列表失败: ' + e, 'error');
+  }
+}
+
+async function loadEndpointTemplates() {
+  try {
+    endpointTemplates = await invoke('get_endpoint_templates');
+  } catch (e) {
+    showToast('加载协议模板失败: ' + e, 'error');
+  }
+}
+
+function getProviderKnownModels(provider) {
+  const p = providerPresets.find(pp => pp.slug === provider);
+  return p ? p.known_models : [];
+}
+
+function codexProviderModelMap(provider) {
+  return {};
+}
+
+function defaultApiKeyEnvForClient(account) {
+  const kind = accountClientKind(account);
+  if (kind === 'claude_code' && account.provider === 'deepseek') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'kimi') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'minimax') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'mimo') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'longcat') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' && account.provider === 'qwen') return 'ANTHROPIC_API_KEY';
+  if (kind === 'claude_code' && account.provider === 'glm') return 'ANTHROPIC_AUTH_TOKEN';
+  if (kind === 'claude_code' || account.provider === 'anthropic') return 'ANTHROPIC_API_KEY';
+  if (account.provider === 'deepseek') return 'DEEPSEEK_API_KEY';
+  if (account.provider === 'opencode') return 'OPENCODE_API_KEY';
+  if (account.provider === 'minimax') return 'MINIMAX_API_KEY';
+  if (account.provider === 'mimo') return 'MIMO_API_KEY';
+  if (account.provider === 'longcat') return 'LONGCAT_API_KEY';
+  if (account.provider === 'qwen') return 'DASHSCOPE_API_KEY';
+  if (kind === 'generic_client' || account.provider === 'openai') return 'OPENAI_API_KEY';
+  return 'OPENAI_API_KEY';
+}
+
+function updateClientProviderDefaults() {
+  const provider = document.getElementById('edit_client_provider')?.value || '';
+  const preset = getProviderPreset(provider);
+  if (!preset) return;
+  const defaults = clientProviderDefaults(accountClientKind(editingAccount), provider, preset);
+  const upstream = document.getElementById('edit_upstream');
+  const model = document.getElementById('edit_default_model');
+  const env = document.getElementById('edit_client_api_key_env');
+  const authEnv = document.getElementById('edit_client_auth_env');
+  const hasClientPreset = accountClientKind(editingAccount) === 'claude_code'
+    && ['deepseek', 'kimi', 'minimax', 'mimo', 'longcat', 'qwen', 'glm'].includes(provider);
+  if (upstream && (!upstream.value.trim() || hasClientPreset)) upstream.value = defaults.upstream || '';
+  if (model && (!model.value.trim() || hasClientPreset) && defaults.default_model) {
+    model.value = defaults.default_model;
+  }
+  if (env && (!env.value.trim() || env.value === 'OPENAI_API_KEY' || hasClientPreset)) {
+    env.value = defaults.api_key_env;
+  }
+  if (authEnv) authEnv.value = defaults.api_key_env;
+  if (editingAccount && !isCodexAccount(editingAccount)) {
+    upstreamModels = [];
+    syncEditingDraftFromForm();
+    const clientMap = clientModelMap(editingAccount);
+    const defaultModel = model?.value?.trim() || editingAccount.default_model || '';
+    if (defaultModel && !clientMap.default) {
+      editingAccount.client_options = editingAccount.client_options || {};
+      editingAccount.client_options.model_map = { ...clientMap, default: defaultModel };
+      editingAccount.default_model = defaultModel;
+    }
+    const rows = document.getElementById('clientModelMapRows');
+    if (rows) rows.innerHTML = renderClientModelMappingRows(editingAccount);
+  }
+}
+
+// ── 历史模型配置迁移辅助 ──
+
+function syncEditingDraftFromForm(options = {}) {
+  if (!editingAccount) return;
+  const a = editingAccount;
+  a.client_surface = accountClientSurface(a);
+  a.client_options = a.client_options || {};
+  a.client_options.client_surface = a.client_surface;
+  syncAccountNameAndKeyFromForm(a);
+  if (!isCodexAccount(a)) {
+    syncClientAccountDraftFromForm(a);
+    return;
+  }
+
+  const endpoints = ensureAccountEndpoints(a);
+  const ep = currentEndpoint(a) || endpoints[0];
+  if (!ep) return;
+  retireCodexModelMapDraft(a);
+  syncEndpointBasicsFromForm(a, ep);
+  syncEndpointRoutingFromForm(a, ep);
+  syncEndpointVisionFromForm(a, ep);
+  syncEndpointModelSettingsFromForm(a, ep, options);
+  if (isResponsesDirectFormAccount(a, ep) && !options.preserveHiddenResponses) {
+    normalizeResponsesDirectAccount(a, ep);
+  }
+  retireCodexModelMapDraft(a);
+  a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
+}
+
+function syncAccountNameAndKeyFromForm(a) {
+  const nameInput = document.getElementById('edit_name');
+  if (nameInput) a.name = nameInput.value.trim() || a.name;
+  const keyInput = document.getElementById('edit_api_key');
+  if (keyInput) {
+    const nextKey = keyInput.value.trim();
+    if (nextKey || !hasStoredPrimaryApiKey(a)) a.api_key = nextKey;
+  }
+}
+
+function syncClientAccountDraftFromForm(a) {
+  const provider = document.getElementById('edit_client_provider');
+  if (provider) a.provider = provider.value || a.provider;
+  const upstream = document.getElementById('edit_upstream');
+  if (upstream) a.upstream = upstream.value.trim();
+  const defaultModel = document.getElementById('edit_default_model');
+  if (defaultModel) a.default_model = defaultModel.value.trim();
+  const clientModels = collectClientModelMap();
+  if (Object.keys(clientModels).length) {
+    if (!clientModels.default && a.default_model) clientModels.default = a.default_model;
+    a.client_options.model_map = clientModels;
+    a.default_model = clientModels.default || a.default_model;
+    if (defaultModel) defaultModel.value = a.default_model;
+  } else {
+    delete a.client_options.model_map;
+  }
+  const configPath = document.getElementById('edit_client_config_path');
+  if (configPath) {
+    const value = configPath.value.trim();
+    if (value) a.client_options.config_path = value;
+    else delete a.client_options.config_path;
+  }
+  const apiKeyEnv = document.getElementById('edit_client_api_key_env');
+  if (apiKeyEnv) {
+    const value = apiKeyEnv.value.trim();
+    if (value) a.client_options.api_key_env = value;
+    else delete a.client_options.api_key_env;
+  }
+  const authEnv = document.getElementById('edit_client_auth_env');
+  if (authEnv) {
+    a.client_options.auth_env = authEnv.value || a.client_options.api_key_env || 'ANTHROPIC_API_KEY';
+    a.client_options.api_key_env = a.client_options.auth_env;
+  }
+  const proxyToggle = document.getElementById('edit_client_proxy_toggle');
+  if (proxyToggle) {
+    a.client_options.proxy_recording_enabled = proxyToggle.classList.contains('on');
+  }
+  a.translate_enabled = false;
+  a.endpoints = [];
+}
+
+function syncEndpointBasicsFromForm(a, ep) {
+  const endpointName = document.getElementById('edit_endpoint_name');
+  if (endpointName) ep.name = endpointName.value.trim() || ep.name || '默认配置';
+  const endpointKind = document.getElementById('edit_endpoint_kind');
+  if (endpointKind) ep.kind = endpointKind.value;
+  const upstream = document.getElementById('edit_upstream');
+  if (upstream) {
+    ep.base_url = upstream.value.trim();
+    a.upstream = ep.base_url || a.upstream;
+  }
+  const endpointPath = document.getElementById('edit_endpoint_path');
+  if (endpointPath) ep.path = endpointPath.value.trim();
+  const imageGenerationEnabled = document.getElementById('edit_image_generation_enabled');
+  if (imageGenerationEnabled) ep.image_generation_enabled = imageGenerationEnabled.checked;
+  const balanceUrl = document.getElementById('edit_balance_url');
+  if (balanceUrl) {
+    ep.balance_url = balanceUrl.value.trim();
+    a.balance_url = ep.balance_url;
+  }
+}
+
+function syncEndpointRoutingFromForm(a, ep) {
+  const routingAnchorEnabled = document.getElementById('edit_routing_anchor_enabled');
+  const routingExecutionEnabled = document.getElementById('edit_routing_execution_enabled');
+  const routingPool = document.getElementById('edit_routing_pool');
+  const routingPriority = document.getElementById('edit_routing_priority');
+  const routingWeight = document.getElementById('edit_routing_weight');
+  const routingNativeComputerPolicy = document.getElementById('edit_routing_native_computer_policy');
+  if (routingAnchorEnabled || routingExecutionEnabled || routingPool || routingPriority || routingWeight || routingNativeComputerPolicy) {
+    if (!a.client_options) a.client_options = {};
+    const routing = accountRouting(a);
+    routing.anchor_enabled = routingAnchorEnabled ? routingAnchorEnabled.checked : routing.anchor_enabled;
+    routing.execution_enabled = routingExecutionEnabled ? routingExecutionEnabled.checked : routing.execution_enabled;
+    routing.enabled = Boolean(routing.anchor_enabled || routing.execution_enabled);
+    routing.pool = routingPool ? (routingPool.value.trim() || 'codex-official') : routing.pool;
+    routing.priority = routingPriority ? Number(routingPriority.value || 0) : routing.priority;
+    routing.weight = routingWeight ? Math.max(1, Math.min(100, Number(routingWeight.value || 1))) : routing.weight;
+    routing.native_computer_policy = routingNativeComputerPolicy
+      ? routingNativeComputerPolicy.value
+      : routing.native_computer_policy;
+    a.routing = routing;
+    a.client_options.routing = {
+      enabled: routing.enabled,
+      disabled: !routing.enabled,
+      anchor_enabled: routing.anchor_enabled,
+      execution_enabled: routing.execution_enabled,
+      pool: routing.pool,
+      priority: routing.priority,
+      weight: routing.weight,
+      native_computer_policy: routing.native_computer_policy,
+    };
+  }
+}
+
+function syncEndpointVisionFromForm(a, ep) {
+  if (!ep.vision) ep.vision = {};
+  const visionMode = document.getElementById('edit_vision_mode');
+  if (visionMode) {
+    ep.vision.mode = visionMode.value || 'native';
+    a.vision_enabled = ep.vision.mode !== 'off';
+  }
+  const visionUpstream = document.getElementById('edit_vision_upstream');
+  if (visionUpstream) { ep.vision.base_url = visionUpstream.value.trim(); a.vision_upstream = ep.vision.base_url; }
+  const visionKey = document.getElementById('edit_vision_api_key');
+  if (visionKey) {
+    const nextVisionKey = visionKey.value.trim();
+    if (nextVisionKey || !hasStoredVisionApiKey(a, ep)) {
+      ep.vision.api_key = nextVisionKey;
+      a.vision_api_key = ep.vision.api_key;
+    }
+  }
+  const visionModel = document.getElementById('edit_vision_model');
+  if (visionModel) { ep.vision.model = visionModel.value.trim(); a.vision_model = ep.vision.model; }
+  const visionPath = document.getElementById('edit_vision_endpoint');
+  if (visionPath) { ep.vision.path = visionPath.value.trim() || 'v1/coding_plan/vlm'; a.vision_endpoint = ep.vision.path; }
+  ep.vision.adapter_id = document.getElementById('edit_vision_adapter')?.value || ep.vision.adapter_id || 'minimax_coding_plan_vlm';
+  ep.vision.glue_strategy = document.getElementById('edit_glue_strategy')?.value || ep.vision.glue_strategy || 'final_answer';
+  ep.vision.unsupported_image_policy = document.getElementById('edit_unsupported_image_policy')?.value || ep.vision.unsupported_image_policy || 'strip_with_warning';
+}
+
+function syncEndpointModelSettingsFromForm(a, ep, options) {
+  ep.model_map = {};
+  if (!options.preserveHiddenResponses) {
+    ep.model_profiles = {};
+  }
+  a.model_map = {};
+
+  const cwEnabled = document.getElementById('edit_cw_enabled');
+  if (cwEnabled) {
+    ep.context_window_override = cwEnabled.checked
+      ? parseOptionalInteger(document.getElementById('edit_cw_size')?.value)
+      : null;
+    a.context_window_override = ep.context_window_override;
+  }
+
+  const reasoningEnabled = document.getElementById('edit_reasoning_enabled');
+  if (reasoningEnabled) {
+    ep.reasoning_effort_override = reasoningEnabled.checked
+      ? (document.getElementById('edit_reasoning_effort')?.value || null)
+      : null;
+    ep.thinking_tokens = reasoningEnabled.checked
+      ? parseOptionalInteger(document.getElementById('edit_thinking_tokens')?.value)
+      : null;
+    a.reasoning_effort_override = ep.reasoning_effort_override;
+    a.thinking_tokens = ep.thinking_tokens;
+  }
+
+  const fastEnabled = document.getElementById('edit_fast_enabled');
+  if (fastEnabled) {
+    ep.fast_mode_enabled = fastEnabled.checked;
+    ep.fast_service_tier = fastEnabled.checked
+      ? (document.getElementById('edit_fast_service_tier')?.value.trim() || 'priority')
+      : 'priority';
+  }
+
+  const headersText = document.getElementById('edit_custom_headers');
+  if (headersText) {
+    ep.custom_headers = {};
+    const raw = headersText.value.trim();
+    if (raw) {
+      raw.split('\n').forEach(line => {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 0) {
+          const k = line.substring(0, colonIdx).trim();
+          const v = line.substring(colonIdx + 1).trim();
+          if (k && v) ep.custom_headers[k] = v;
+        }
+      });
+    }
+    a.custom_headers = ep.custom_headers;
+  }
+
+  const timeoutInput = document.getElementById('edit_request_timeout');
+  if (timeoutInput) {
+    ep.request_timeout_secs = parseOptionalInteger(timeoutInput.value);
+    a.request_timeout_secs = ep.request_timeout_secs;
+  }
+  const retriesInput = document.getElementById('edit_max_retries');
+  if (retriesInput) {
+    ep.max_retries = parseOptionalInteger(retriesInput.value);
+    a.max_retries = ep.max_retries;
+  }
+}
+
+function showSuggestions(input) {
+  const wrap = input.closest('.model-autocomplete');
+  if (!wrap) return;
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (!dropdown) return;
+  const suggestions = JSON.parse(dropdown.dataset.suggestions || '[]');
+  renderSuggestionsDropdown(input, dropdown, suggestions);
+  dropdown.style.display = 'block';
+}
+
+function filterSuggestions(input) {
+  const wrap = input.closest('.model-autocomplete');
+  if (!wrap) return;
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (!dropdown) return;
+  const suggestions = JSON.parse(dropdown.dataset.suggestions || '[]');
+  const q = input.value.toLowerCase();
+  const filtered = suggestions.filter(s => s.toLowerCase().includes(q));
+  renderSuggestionsDropdown(input, dropdown, filtered);
+  dropdown.style.display = 'block';
+}
+
+function hideSuggestions(input) {
+  setTimeout(() => {
+    const wrap = input.closest('.model-autocomplete');
+    if (!wrap) return;
+    const dropdown = wrap.querySelector('.model-suggestions');
+    if (dropdown) dropdown.style.display = 'none';
+  }, 150);
+}
+
+function renderSuggestionsDropdown(input, dropdown, items) {
+  if (items.length === 0) { dropdown.innerHTML = ''; return; }
+  dropdown.innerHTML = items.map(s =>
+    `<div class="suggestion-item" onmousedown="event.preventDefault();selectSuggestion(this)">${esc(s)}</div>`
+  ).join('');
+}
+
+function selectSuggestion(item) {
+  const wrap = item.closest('.model-autocomplete');
+  if (!wrap) return;
+  const input = wrap.querySelector('input');
+  if (input) {
+    input.value = item.textContent;
+    syncModelVisionTarget(input);
+    input.focus();
+  }
+  const dropdown = wrap.querySelector('.model-suggestions');
+  if (dropdown) dropdown.style.display = 'none';
+}
+
+function syncModelVisionTarget(input) {
+  const row = input.closest('.model-row');
+  const wrap = row?.querySelector('.model-vision-segments');
+  if (!wrap) return;
+  wrap.dataset.model = input.value.trim();
+}
+
+// ── CRUD 操作 ──
+
+async function startOAuthAccountLogin(provider, mode = 'browser') {
+  try {
+    const result = await invoke('start_oauth_account_login', {
+      provider,
+      clientKind: selectedClientKind,
+      client_kind: selectedClientKind,
+      clientSurface: selectedSurfaceForKind(selectedClientKind),
+      client_surface: selectedSurfaceForKind(selectedClientKind),
+      mode,
+    });
+    oauthLoginState = { ...result, status: 'pending' };
+    if (result.open_error) {
+      showToast('登录页打开失败，请复制链接: ' + result.open_error, 'error');
+    }
+    accountsView = 'add';
+    renderMainContent();
+    startOAuthLoginPolling();
+  } catch (e) {
+    showToast('启动官方登录失败: ' + e, 'error');
+  }
+}
+
+function startOAuthLoginPolling() {
+  stopOAuthLoginPolling();
+  oauthLoginPollTimer = setInterval(() => {
+    pollOAuthAccountLogin();
+  }, Math.max(2000, Number(oauthLoginState?.poll_interval_secs || 3) * 1000));
+}
+
+function stopOAuthLoginPolling() {
+  if (oauthLoginPollTimer) {
+    clearInterval(oauthLoginPollTimer);
+    oauthLoginPollTimer = null;
+  }
+}
+
+async function pollOAuthAccountLogin() {
+  if (!oauthLoginState?.state) return;
+  try {
+    const result = await invoke('poll_oauth_account_login', { state: oauthLoginState.state });
+    oauthLoginState = { ...oauthLoginState, ...result };
+    if (result.status === 'success') {
+      stopOAuthLoginPolling();
+      showToast('官方账号登录成功', 'success');
+      await loadAccountsData();
+      if (result.account) {
+        selectedClientKind = accountClientKind(result.account);
+        selectedClientSurface = accountClientSurface(result.account);
+      }
+      accountsView = 'list';
+      oauthLoginState = null;
+      renderMainContent();
+      return;
+    }
+    if (result.status === 'error' || result.status === 'expired') {
+      stopOAuthLoginPolling();
+    }
+    renderMainContent();
+  } catch (e) {
+    oauthLoginState = { ...(oauthLoginState || {}), status: 'error', message: String(e) };
+    stopOAuthLoginPolling();
+    renderMainContent();
+  }
+}
+
+async function cancelOAuthAccountLogin() {
+  const state = oauthLoginState?.state;
+  stopOAuthLoginPolling();
+  oauthLoginState = null;
+  if (state) {
+    try {
+      await invoke('cancel_oauth_account_login', { state });
+    } catch (_) {}
+  }
+  accountsView = 'add';
+  renderMainContent();
+}
+
+async function openOAuthLoginUrl() {
+  const url = oauthLoginState?.verification_url || oauthLoginState?.url;
+  if (!url) return;
+  try {
+    await invoke('open_external_url', { url });
+    showToast('已打开登录页', 'success');
+  } catch (e) {
+    showToast('打开登录页失败: ' + e, 'error');
+  }
+}
+
+async function copyOAuthLoginUrl() {
+  const url = oauthLoginState?.verification_url || oauthLoginState?.url;
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('登录链接已复制', 'success');
+  } catch (e) {
+    showToast('复制失败: ' + e, 'error');
+  }
+}
+
+async function refreshModelsAfterDesktopCodexSwitch(id) {
+  const account = (accountsData.accounts || []).find(item => item.id === id);
+  if (!account || accountClientKind(account) !== 'codex' || accountClientSurface(account) !== 'desktop') return;
+  try {
+    const models = await invoke('fetch_upstream_models', { accountId: id });
+    if (Array.isArray(models) && models.length) {
+      console.info('[accounts] 已刷新 Codex 桌面端账号模型缓存:', id, models.length);
+    }
+  } catch (e) {
+    console.warn('[accounts] 切换 Codex 桌面端账号后刷新模型缓存失败:', e);
+    showToast('账号已切换，但模型列表刷新失败，可在详情页手动刷新', 'warn');
+  }
+}
+
+async function refreshModelsAfterSavedDesktopCodexAccount(account) {
+  const id = account?.id;
+  if (!id || accountClientKind(account) !== 'codex' || accountClientSurface(account) !== 'desktop') return;
+  try {
+    const models = await invoke('fetch_upstream_models', { accountId: id });
+    if (Array.isArray(models) && models.length) {
+      upstreamModels = models;
+      const endpoint = currentEndpoint(editingAccount);
+      if (endpoint) appendKnownModels(endpoint, models);
+      console.info('[accounts] 已刷新保存后的 Codex 桌面端账号模型缓存:', id, models.length);
+    }
+  } catch (e) {
+    console.warn('[accounts] 保存 Codex 桌面端账号后刷新模型缓存失败:', e);
+    showToast('账号已保存，但模型列表刷新失败，可在详情页手动刷新', 'warn');
+  }
+}
+
+async function clearAccountCooldown(id) {
+  try {
+    await invoke('clear_account_cooldown', { id });
+    showToast('已清除运行态限制', 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('清除运行态限制失败: ' + e, 'error');
+  }
+}
+
+async function resetAccountRuntime(id) {
+  if (!await showConfirm('确定要重置此账号的运行态统计吗？')) return;
+  try {
+    await invoke('reset_account_runtime_state', { id });
+    showToast('运行态已重置', 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('重置运行态失败: ' + e, 'error');
+  }
+}
+
+async function toggleAccountRouting(id, mode = 'execution', nextValue = null) {
+  const account = (accountsData.accounts || []).find(item => item.id === id);
+  const routing = accountRouting(account);
+  const anchorMode = mode === 'anchor';
+  const explicitNext = typeof nextValue === 'boolean' ? nextValue : null;
+  const nextAnchor = anchorMode ? (explicitNext ?? !routing.anchor_enabled) : routing.anchor_enabled;
+  const nextExecution = anchorMode ? routing.execution_enabled : (explicitNext ?? !routing.execution_enabled);
+  try {
+    await invoke('set_account_routing', {
+      id,
+      anchorEnabled: nextAnchor,
+      executionEnabled: nextExecution,
+    });
+    showToast(anchorMode
+      ? (nextAnchor ? '登录态账号已启用' : '登录态账号已停用')
+      : (nextExecution ? '执行候选已启用' : '执行候选已停用'), 'success');
+    await loadAccountsData();
+    refreshEditingAccountAfterManagement(id);
+  } catch (e) {
+    showToast('更新路由设置失败: ' + e, 'error');
+  }
+}
+
+function refreshEditingAccountAfterManagement(id) {
+  if (accountsView !== 'edit' || !editingAccount || editingAccount.id !== id) return;
+  const updated = (accountsData.accounts || []).find(account => account.id === id);
+  if (!updated) return;
+  editingAccount = JSON.parse(JSON.stringify(updated));
+  renderMainContent();
+}
+
+async function applyAccountRoutingFromDetail(id) {
+  if (!editingAccount || !id) return;
+  syncEditingDraftFromForm();
+  const routing = accountRouting(editingAccount);
+  try {
+    const result = await invoke('set_account_routing', {
+      id,
+      anchorEnabled: routing.anchor_enabled,
+      executionEnabled: routing.execution_enabled,
+      pool: routing.pool,
+      priority: routing.priority,
+      weight: routing.weight,
+      nativeComputerPolicy: routing.native_computer_policy,
+    });
+    showToast('路由设置已应用', 'success');
+    await loadAccountsData();
+    editingAccount = accountsData.accounts.find(account => account.id === result.id) || result;
+    if (editingAccount) editingAccount = JSON.parse(JSON.stringify(editingAccount));
+    renderMainContent();
+  } catch (e) {
+    showToast('应用账号池失败: ' + e, 'error');
+  }
+}
+
+function addAccount(provider, clientKind, clientSurface) {
+  const kind = normalizeClientKind(clientKind || selectedClientKind || 'codex');
+  const surface = clientKindSupportsSurface(kind) ? normalizeClientSurface(clientSurface || selectedSurfaceForKind(kind)) : 'cli';
+  const preset = providerPresets.find(p => p.slug === provider);
+  if (!preset) return;
+  if (kind === 'codex' && currentCodexRouterMode() === 'relay') {
+    accountsView = 'list';
+    renderMainContent();
+    showRelayChannelModal(null, {
+      name: provider === 'openai' ? 'OpenAI 兼容中转' : `${preset.label || 'OpenAI 兼容'}中转`,
+      url: preset.default_upstream || '',
+      api_key: '',
+      enabled: true,
+      set_active: true,
+    });
+    return;
+  }
+  const clientProfile = getClientProfile(kind);
+  const defaults = clientProviderDefaults(kind, provider, preset);
+  const codexModelMap = kind === 'codex' ? codexProviderModelMap(provider) : {};
+  editingAccount = {
+    id: '',
+    name: kind === 'codex' ? `${preset.label} ${clientSurfaceLabel(surface)} 账号` : `${clientSurfaceTitle(kind, surface)} · ${preset.label}`,
+    provider: provider,
+    client_kind: kind,
+    client_surface: surface,
+    target: kind,
+    upstream: kind === 'codex' ? preset.default_upstream : defaults.upstream,
+    api_key: '',
+    default_model: kind === 'codex' ? '' : (defaults.default_model || clientProfile?.default_model || ''),
+    client_options: kind === 'codex' ? { client_surface: surface } : {
+      client_surface: surface,
+      api_key_env: defaults.api_key_env,
+      ...(kind === 'claude_code' ? { auth_env: defaults.api_key_env } : {}),
+      model_map: {
+        default: defaults.default_model || clientProfile?.default_model || '',
+      },
+    },
+    last_applied_at: null,
+    last_check: null,
+    model_map: codexModelMap,
+    vision_enabled: false,
+    vision_upstream: '',
+    vision_api_key: '',
+    vision_model: '',
+    vision_endpoint: '',
+    from_codex_config: false,
+    balance_url: '',
+    context_window_override: null,
+    reasoning_effort_override: null,
+    thinking_tokens: null,
+    custom_headers: {},
+    provider_options: preset.provider_options || { capability_labels: preset.capability_labels || [] },
+    request_timeout_secs: null,
+    max_retries: null,
+    translate_enabled: true,
+    capability_enabled: false,
+    capability_account_id: null,
+    dev_pipeline_enabled: false,
+    dev_pipeline_trigger_mode: 'manual',
+    dev_pipeline_command: '/dev-pipeline',
+    dev_pipeline_architect_account_id: null,
+    dev_pipeline_implementer_account_id: null,
+    dev_pipeline_reviewer_account_id: null,
+    dev_pipeline_tool_mode: 'controlled_tools',
+    dev_pipeline_max_iterations: 3,
+    dev_pipeline_show_trace: false,
+    dev_pipeline_architect_instruction: '',
+    dev_pipeline_implementer_instruction: '',
+    dev_pipeline_reviewer_instruction: '',
+  };
+  if (kind === 'codex') {
+    editingAccount.endpoints = [createEndpointFromTemplate(providerDefaultTemplate(provider), editingAccount)];
+    applyProviderSpecificEndpointDefaults(editingAccount);
+    editingAccount._editing_endpoint_id = editingAccount.endpoints[0].id;
+    normalizeResponsesDirectAccount(editingAccount);
+  } else {
+    editingAccount.translate_enabled = false;
+    editingAccount.endpoints = [];
+  }
+  accountsView = 'edit';
+  renderMainContent();
+}
+
+function editAccount(id, expectedKind) {
+  const normalizedExpected = expectedKind ? normalizeClientKind(expectedKind) : '';
+  editingAccount = accountsData.accounts.find(a =>
+    a.id === id && (!normalizedExpected || accountClientKind(a) === normalizedExpected)
+  );
+  if (!editingAccount && normalizedExpected) {
+    const visibleAccounts = (accountsData.accounts || []).filter(a =>
+      accountClientKind(a) === normalizedExpected
+      && accountClientSurface(a) === selectedSurfaceForKind(normalizedExpected)
+    );
+    if (visibleAccounts.length === 1) editingAccount = visibleAccounts[0];
+  }
+  if (!editingAccount) {
+    showToast(normalizedExpected ? `未找到 ${CLIENT_KIND_LABELS[normalizedExpected] || normalizedExpected} 账号` : '账号不存在', 'error');
+    return;
+  }
+  // 深拷贝避免直接修改原数据
+  editingAccount = JSON.parse(JSON.stringify(editingAccount));
+  accountsView = 'edit';
+  renderMainContent();
+}
+
+function serializeAccountForBackend(account) {
+  const payload = JSON.parse(JSON.stringify(account || {}));
+  if (Object.prototype.hasOwnProperty.call(payload, 'client_kind')) {
+    delete payload.target;
+  }
+  delete payload._editing_endpoint_id;
+  return JSON.stringify(payload);
+}
+
+function addAccountInvokeArgs(account) {
+  const clientKind = accountClientKind(account);
+  const clientSurface = accountClientSurface(account);
+  return {
+    provider: account?.provider || 'custom',
+    accountJson: serializeAccountForBackend(account),
+    clientKind,
+    client_kind: clientKind,
+    clientSurface,
+    client_surface: clientSurface,
+  };
+}
+
+async function saveAccount(options = {}) {
+  if (!editingAccount) return;
+  if (options instanceof Event) options = {};
+  const a = editingAccount;
+  const isNewAccount = !a.id;
+
+  syncEditingDraftFromForm();
+  syncModelProfilesFromForm();
+  const preset = getProviderPreset(a.provider);
+  if (!a.provider_options || Object.keys(a.provider_options).length === 0) {
+    a.provider_options = { capability_labels: preset ? (preset.capability_labels || []) : [] };
+  }
+  a.capability_enabled = false;
+  a.capability_account_id = null;
+  const devPipelineEnabled = document.getElementById('edit_dev_pipeline_enabled');
+  if (devPipelineEnabled) a.dev_pipeline_enabled = devPipelineEnabled.checked;
+  const devTriggerMode = document.getElementById('edit_dev_pipeline_trigger_mode');
+  a.dev_pipeline_trigger_mode = devTriggerMode ? devTriggerMode.value : (a.dev_pipeline_trigger_mode || 'manual');
+  const devCommand = document.getElementById('edit_dev_pipeline_command');
+  a.dev_pipeline_command = devCommand ? (devCommand.value.trim() || '/dev-pipeline') : (a.dev_pipeline_command || '/dev-pipeline');
+  a.dev_pipeline_architect_account_id = document.getElementById('edit_dev_pipeline_architect_account_id')?.value || null;
+  a.dev_pipeline_implementer_account_id = document.getElementById('edit_dev_pipeline_implementer_account_id')?.value || null;
+  a.dev_pipeline_reviewer_account_id = document.getElementById('edit_dev_pipeline_reviewer_account_id')?.value || null;
+  a.dev_pipeline_tool_mode = document.getElementById('edit_dev_pipeline_tool_mode')?.value || (a.dev_pipeline_tool_mode || 'controlled_tools');
+  a.dev_pipeline_max_iterations = Math.max(1, Math.min(10, Number(document.getElementById('edit_dev_pipeline_max_iterations')?.value || a.dev_pipeline_max_iterations || 3)));
+  a.dev_pipeline_show_trace = Boolean(document.getElementById('edit_dev_pipeline_show_trace')?.checked);
+  a.dev_pipeline_architect_instruction = document.getElementById('edit_dev_pipeline_architect_instruction')?.value || '';
+  a.dev_pipeline_implementer_instruction = document.getElementById('edit_dev_pipeline_implementer_instruction')?.value || '';
+  a.dev_pipeline_reviewer_instruction = document.getElementById('edit_dev_pipeline_reviewer_instruction')?.value || '';
+  if (a.dev_pipeline_enabled && a.dev_pipeline_trigger_mode === 'manual' && !a.dev_pipeline_command.trim()) {
+    showToast('开发协作编排触发命令不能为空', 'error');
+    return;
+  }
+  const ep = currentEndpoint(a);
+  if (!isCodexAccount(a)) {
+    a.translate_enabled = false;
+    a.endpoints = [];
+    a.model_map = {};
+    a.vision_enabled = false;
+  } else if (ep) {
+    ep.name = endpointKindLabel(ep.kind);
+    a.upstream = ep.base_url || a.upstream;
+    a.balance_url = ep.balance_url || '';
+    ep.model_map = {};
+    a.model_map = {};
+    a.context_window_override = ep.context_window_override ?? null;
+    a.reasoning_effort_override = ep.reasoning_effort_override ?? null;
+    a.thinking_tokens = ep.thinking_tokens ?? null;
+    a.custom_headers = ep.custom_headers || {};
+    a.request_timeout_secs = ep.request_timeout_secs ?? null;
+    a.max_retries = ep.max_retries ?? null;
+    a.translate_enabled = ep.kind === 'open_ai_chat' || ep.kind === 'custom_chat';
+    a._editing_endpoint_id = ep.id;
+  }
+  const editingEndpointId = isCodexAccount(a) ? (ep?.id || selectedEndpointId(a)) : null;
+  a.updated_at = Math.floor(Date.now() / 1000);
+
+  try {
+    let result;
+    if (isNewAccount) {
+      // 新账号
+      result = await invoke('add_account', addAccountInvokeArgs(a));
+      if (!options.silent) showToast('账号已创建', 'success');
+    } else {
+      result = await invoke('update_account', { accountJson: serializeAccountForBackend(a) });
+      if (!options.silent) showToast('账号已保存', 'success');
+    }
+    await refreshModelsAfterSavedDesktopCodexAccount(result);
+    await loadAccountsData();
+    editingAccount = accountsData.accounts.find(ac => ac.id === result.id);
+    if (editingAccount) {
+      editingAccount = JSON.parse(JSON.stringify(editingAccount));
+      editingAccount._editing_endpoint_id = editingEndpointId;
+    }
+    if (isNewAccount && !options.stay) {
+      accountsView = 'list';
+      editingAccount = null;
+    }
+    if (!options.stay) renderMainContent();
+    return result;
+  } catch (e) {
+    if (!options.silent) showToast('保存账号失败: ' + e, 'error');
+    if (options.silent) throw e;
+    return null;
+  }
+}
+
+async function deleteAccount(id) {
+  if (!await showConfirm('确定要删除此账号吗？')) return;
+  try {
+    await invoke('delete_account', { id });
+    showToast('账号已删除', 'success');
+    accountsView = 'list'; editingAccount = null;
+    await loadAccountsData();
+    if (currentPanel === 'accounts') {
+      accountsListRenderSignature = accountListRenderSignature(accountsData);
+      renderMainContent();
+    }
+  } catch (e) {
+    showToast('删除账号失败: ' + e, 'error');
+  }
+}
+
+function fallbackParseRelayConnection(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    const url = String(value.url || value.base_url || value.endpoint || '').trim();
+    const key = String(value.key || value.api_key || value.apikey || '').trim();
+    if (url && key) return { url, key, name: value.name || 'DEX AI 中转' };
+  } catch (_) {}
+  const urlMatch = raw.match(/https?:\/\/[^\s"'`，,}]+/i);
+  const keyMatch = raw.match(/sk-[A-Za-z0-9_\-]{12,}/);
+  if (urlMatch && keyMatch) return { url: urlMatch[0], key: keyMatch[0], name: 'DEX AI 中转' };
+  return null;
+}
+
+function relayChannelDraft(id) {
+  const existing = id ? relayChannelsStore().channels.find(channel => channel.id === id) : null;
+  return JSON.parse(JSON.stringify(existing || {
+    id: '',
+    name: 'DEX AI 中转',
+    url: 'https://api.dexai.vip/v1',
+    api_key: '',
+    client_surface: selectedSurfaceForKind('codex'),
+    image_generation_enabled: false,
+    enabled: true,
+    priority: 0,
+    weight: 1,
+    set_active: true,
+  }));
+}
+
+function showRelayChannelModal(id, seed = null) {
+  const existing = document.getElementById('relayChannelModal');
+  if (existing) existing.remove();
+  const draft = seed ? { ...relayChannelDraft(id), ...seed } : relayChannelDraft(id);
+  const hasStoredKey = Boolean(draft.api_key_present);
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'relayChannelModal';
+  overlay.innerHTML = `<div class="modal-box relay-channel-modal">
+    <div class="modal-header">
+      <h3>${draft.id ? '编辑中转渠道' : '添加中转渠道'}</h3>
+      <button class="modal-close" id="relayChannelCloseBtn" type="button">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="relay_channel_id" value="${escAttr(draft.id || '')}">
+      <div class="account-form relay-channel-form">
+        <section class="account-edit-section">
+          <div class="account-section-head">
+            <div>
+              <div class="section-sub-label">渠道凭据</div>
+              <div class="account-section-desc">中转渠道独立保存 URL 和 API Key，用于中转模式切换与故障切换。</div>
+            </div>
+          </div>
+          <div class="config-fields">
+            <div class="config-field account-name-field">
+              <label>渠道名称</label>
+              <input type="text" id="relay_channel_name" value="${escAttr(draft.name || 'DEX AI 中转')}" placeholder="DEX AI 中转">
+            </div>
+            <div class="config-field account-key-field">
+              <label>API Key</label>
+              <div class="pass-group">
+                <input type="password" id="relay_channel_api_key" value="${escAttr(draft.api_key || '')}" placeholder="${hasStoredKey ? '已保存，留空保持不变' : '输入中转 API Key'}" autocomplete="off">
+                <button type="button" class="pass-toggle" onclick="togglePass('relay_channel_api_key', this)" title="显示/隐藏 API Key" aria-label="显示或隐藏 API Key">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+                </button>
+              </div>
+              <span class="hint">编辑已有渠道时留空会继续使用已保存 Key。</span>
+            </div>
+            <div class="config-field wide">
+              <label>中转 Base URL</label>
+              <div class="upstream-test-group">
+                <input type="text" id="relay_channel_url" value="${escAttr(draft.url || 'https://api.dexai.vip/v1')}" placeholder="https://api.dexai.vip/v1">
+                <button class="btn btn-ghost" id="relayChannelTestBtn" type="button">测试连通性</button>
+              </div>
+              <div class="inline-test-result"><span id="relayChannelTestResult"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="account-edit-section">
+          <div class="account-section-head">
+            <div>
+              <div class="section-sub-label">渠道策略</div>
+              <div class="account-section-desc">图片生成能力默认不声明；只有确认上游原生支持 image_generation 时再开启。</div>
+            </div>
+          </div>
+          <div class="config-fields">
+            <div class="config-field">
+              <label class="toggle-label">
+                <input type="checkbox" id="relay_channel_enabled" ${draft.enabled !== false ? 'checked' : ''}>
+                启用此渠道
+              </label>
+            </div>
+            <div class="config-field">
+              <label class="toggle-label">
+                <input type="checkbox" id="relay_channel_set_active" ${draft.set_active || draft.id === relayChannelsStore().active_id ? 'checked' : ''}>
+                设为当前渠道
+              </label>
+            </div>
+            <div class="config-field">
+              <label class="toggle-label">
+                <input type="checkbox" id="relay_channel_image_generation_enabled" ${draft.image_generation_enabled ? 'checked' : ''}>
+                声明图片生成能力
+              </label>
+              <span class="hint">默认关闭，避免向 Codex 误声明未验证能力。</span>
+            </div>
+            <div class="config-field">
+              <label>优先级</label>
+              <input type="number" id="relay_channel_priority" value="${Number(draft.priority || 0)}" min="-1000" max="1000" step="1">
+            </div>
+            <div class="config-field">
+              <label>权重</label>
+              <input type="number" id="relay_channel_weight" value="${Number(draft.weight || 1)}" min="1" max="100" step="1">
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="client-apply-modal-actions">
+      <button class="btn btn-primary" id="relayChannelSaveBtn" type="button">保存</button>
+      <button class="btn btn-ghost" id="relayChannelCancelBtn" type="button">取消</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const cleanup = () => overlay.remove();
+  document.getElementById('relayChannelCloseBtn').onclick = cleanup;
+  document.getElementById('relayChannelCancelBtn').onclick = cleanup;
+  overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(); });
+  document.getElementById('relayChannelSaveBtn').onclick = async () => {
+    const ok = await saveRelayChannelFromModal();
+    if (ok) cleanup();
+  };
+  document.getElementById('relayChannelTestBtn').onclick = () => testRelayChannelFromModal();
+}
+
+function relayChannelPayloadFromModal() {
+  return {
+    id: document.getElementById('relay_channel_id')?.value || '',
+    name: document.getElementById('relay_channel_name')?.value?.trim() || 'DEX AI 中转',
+    url: document.getElementById('relay_channel_url')?.value?.trim() || '',
+    api_key: document.getElementById('relay_channel_api_key')?.value?.trim() || '',
+    client_surface: normalizeClientSurface(editingRelayChannelSurface()),
+    image_generation_enabled: Boolean(document.getElementById('relay_channel_image_generation_enabled')?.checked),
+    enabled: Boolean(document.getElementById('relay_channel_enabled')?.checked),
+    set_active: Boolean(document.getElementById('relay_channel_set_active')?.checked),
+    priority: Number(document.getElementById('relay_channel_priority')?.value || 0),
+    weight: Math.max(1, Number(document.getElementById('relay_channel_weight')?.value || 1)),
+  };
+}
+
+function editingRelayChannelSurface() {
+  const id = document.getElementById('relay_channel_id')?.value || '';
+  if (id) {
+    const channel = (accountsData?.relay_channels?.channels || []).find(channel => channel.id === id);
+    if (channel) return relayChannelSurface(channel);
+  }
+  return selectedSurfaceForKind('codex');
+}
+
+async function saveRelayChannelFromModal() {
+  const payload = relayChannelPayloadFromModal();
+  const existing = payload.id ? relayChannelsStore().channels.find(channel => channel.id === payload.id) : null;
+  if (!payload.url) { showToast('请填写中转 URL', 'error'); return false; }
+  if (!payload.api_key && !existing?.api_key_present) { showToast('请填写中转 API Key', 'error'); return false; }
+  try {
+    const result = await invoke('save_relay_channel', { channelJson: JSON.stringify(payload) });
+    window.DexTelemetry?.track?.(payload.id ? 'relay_channel_update' : 'relay_channel_add', {
+      client_surface: payload.client_surface || 'desktop',
+      enabled: payload.enabled !== false,
+      set_active: payload.set_active === true,
+      image_generation_enabled: payload.image_generation_enabled === true,
+    });
+    accountsData.relay_channels = result;
+    accountsListRenderSignature = accountListRenderSignature(accountsData);
+    renderMainContent();
+    showToast('中转渠道已保存', 'success');
+    return true;
+  } catch (e) {
+    showToast('保存中转渠道失败: ' + e, 'error');
+    return false;
+  }
+}
+
+async function pasteRelayChannel() {
+  try {
+    if (!navigator.clipboard?.readText) throw new Error('剪贴板不可用');
+    const text = await navigator.clipboard.readText();
+    let conn = null;
+    if (typeof window.parseDexRelayConnection === 'function') {
+      try { conn = window.parseDexRelayConnection(text); } catch (_) {}
+    }
+    conn = conn || fallbackParseRelayConnection(text);
+    if (!conn?.url || !conn?.key) {
+      showToast('剪贴板中未识别到中转 URL/API Key', 'error');
+      return;
+    }
+    showRelayChannelModal(null, {
+      name: conn.name || 'DEX AI 中转',
+      url: conn.url,
+      api_key: conn.key,
+      enabled: true,
+      set_active: true,
+    });
+  } catch (e) {
+    showToast('读取剪贴板失败: ' + e, 'error');
+  }
+}
+
+async function setActiveRelayChannel(id) {
+  try {
+    const result = await invoke('set_active_relay_channel', { id });
+    accountsData.relay_channels = result;
+    accountsListRenderSignature = accountListRenderSignature(accountsData);
+    renderMainContent();
+    showToast('已切换中转渠道', 'success');
+  } catch (e) {
+    showToast('切换中转渠道失败: ' + e, 'error');
+  }
+}
+
+async function deleteRelayChannel(id) {
+  if (!await showConfirm('确定要删除此中转渠道吗？')) return;
+  try {
+    const result = await invoke('delete_relay_channel', { id });
+    accountsData.relay_channels = result;
+    accountsListRenderSignature = accountListRenderSignature(accountsData);
+    renderMainContent();
+    showToast('中转渠道已删除', 'success');
+  } catch (e) {
+    showToast('删除中转渠道失败: ' + e, 'error');
+  }
+}
+
+async function testRelayChannel(id) {
+  try {
+    const result = await invoke('test_relay_channel', { id });
+    showToast(result.ok ? `中转连通正常 (${result.latency_ms}ms)` : (result.message || '中转连通失败'), result.ok ? 'success' : 'error');
+  } catch (e) {
+    showToast('测试中转渠道失败: ' + e, 'error');
+  }
+}
+
+async function testRelayChannelFromModal() {
+  const payload = relayChannelPayloadFromModal();
+  const existing = payload.id ? relayChannelsStore().channels.find(channel => channel.id === payload.id) : null;
+  const resultEl = document.getElementById('relayChannelTestResult');
+  if (!payload.url) {
+    if (resultEl) resultEl.innerHTML = '<span class="status-error">请先填写中转 URL</span>';
+    showToast('请先填写中转 URL', 'error');
+    return;
+  }
+  if (!payload.api_key && !existing?.api_key_present) {
+    if (resultEl) resultEl.innerHTML = '<span class="status-error">请先填写中转 API Key</span>';
+    showToast('请先填写中转 API Key', 'error');
+    return;
+  }
+  if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
+  try {
+    const result = await invoke('test_relay_channel', { channelJson: JSON.stringify(payload) });
+    if (resultEl) resultEl.innerHTML = result.ok
+      ? `<span class="status-ok">连通 (${result.latency_ms}ms)</span>`
+      : `<span class="status-error">${esc(result.message || '连通失败')}</span>`;
+    showToast(result.ok ? `中转连通正常 (${result.latency_ms}ms)` : (result.message || '中转连通失败'), result.ok ? 'success' : 'error');
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    showToast('测试中转渠道失败: ' + e, 'error');
+  }
+}
+
+async function importAuthJsonAccounts() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if (!files.length) return;
+    try {
+      const payload = await Promise.all(files.map(async file => ({
+        name: file.name,
+        content: await file.text(),
+      })));
+      const result = await invoke('import_auth_json_accounts', {
+        authFilesJson: JSON.stringify(payload),
+        clientSurface: selectedSurfaceForKind('codex'),
+        client_surface: selectedSurfaceForKind('codex'),
+      });
+      const failedCount = Array.isArray(result.failed) ? result.failed.length : 0;
+      showToast((result.message || '认证 JSON 导入完成') + (failedCount ? `，失败 ${failedCount} 个` : ''), failedCount ? 'info' : 'success');
+      await loadAccountsData();
+      const importedAccounts = Array.isArray(result.accounts) ? result.accounts : [];
+      const preferred = importedAccounts[0];
+      if (preferred) {
+        selectedClientKind = accountClientKind(preferred);
+        selectedClientSurface = accountClientSurface(preferred);
+      }
+      accountsView = 'list';
+      if (currentPanel === 'accounts') renderMainContent();
+      else if (currentPanel === 'config') renderPanel('config');
+    } catch (e) {
+      showToast('认证 JSON 导入失败: ' + e, 'error');
+    }
+  };
+  input.oncancel = () => input.remove();
+  input.click();
+}
+
+async function scanClientAccounts() {
+  try {
+    const previousKind = selectedClientKind;
+    const previousSurface = selectedSurfaceForKind(previousKind);
+    const result = await invoke('import_client_accounts');
+    showToast(result.message || '客户端扫描完成', 'success');
+    await loadAccountsData();
+    if (Number(result.imported || 0) > 0) {
+      const importedAccounts = Array.isArray(result.accounts) ? result.accounts : [];
+      const hasPreviousKind = (accountsData.accounts || []).some(account =>
+        accountClientKind(account) === previousKind
+        && accountClientSurface(account) === previousSurface
+      );
+      const preferred = importedAccounts.find(account =>
+        accountClientKind(account) === previousKind
+        && accountClientSurface(account) === previousSurface
+      ) || (hasPreviousKind ? { client_kind: previousKind, client_surface: previousSurface } : importedAccounts[0]);
+      if (preferred) {
+        selectedClientKind = accountClientKind(preferred);
+        selectedClientSurface = accountClientSurface(preferred);
+      }
+      accountsView = 'list';
+      if (currentPanel === 'accounts') renderMainContent();
+      else if (currentPanel === 'config') renderPanel('config');
+    }
+  } catch (e) {
+    showToast('客户端扫描失败: ' + e, 'error');
+  }
+}
+
+function renderClientReport(report) {
+  if (!report) return '';
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const diff = Array.isArray(report.diff) ? report.diff : [];
+  const changedFiles = Array.isArray(report.changed_files) ? report.changed_files : [];
+  const backupPaths = Array.isArray(report.backup_paths) ? report.backup_paths : (report.backup_path ? [report.backup_path] : []);
+  const levelClass = report.ok ? 'status-ok' : 'status-error';
+  const envPath = report.env_path ? `<div class="client-report-path">${esc(report.env_path)}</div>` : '';
+  const meta = [
+    report.risk_level ? `风险 ${report.risk_level}` : '',
+    report.schema_ok === false ? 'Schema 异常' : 'Schema 正常',
+    report.recoverable === false ? '不可自动恢复' : '可恢复',
+    report.secret_source ? `密钥: ${report.secret_source}` : '',
+  ].filter(Boolean);
+  return `<div class="client-report">
+    <div class="${levelClass}">${esc(report.message || (report.ok ? '检查通过' : '检查失败'))}</div>
+    ${meta.length ? `<div class="client-report-meta">${meta.map(item => `<span>${esc(item)}</span>`).join('')}</div>` : ''}
+    ${report.config_path ? `<div class="client-report-path">${esc(report.config_path)}</div>` : ''}
+    ${envPath}
+    ${changedFiles.length ? `<div class="client-report-files"><strong>变更文件</strong>${changedFiles.map(path => `<span title="${escAttr(path)}">${esc(trunc(path, 72))}</span>`).join('')}</div>` : ''}
+    ${backupPaths.length ? `<div class="client-report-files"><strong>备份</strong>${backupPaths.map(path => `<span title="${escAttr(path)}">${esc(trunc(path, 72))}</span>`).join('')}</div>` : ''}
+    ${diagnostics.length ? `<div class="client-report-list">${diagnostics.map(d => `<div class="client-report-item ${escAttr(d.level || 'info')}">${esc(d.message || d.code || '')}</div>`).join('')}</div>` : ''}
+    ${diff.length ? `<div class="client-report-diff">${diff.map(line => `<code>${esc(line)}</code>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function secretCopyButton(secretKind) {
+  const label = secretKind === 'vision_api_key' ? '复制已保存视觉 API Key' : '复制已保存 API Key';
+  return `<button type="button" class="secret-copy-btn" onclick="copyEditingAccountSecret('${escAttr(secretKind)}')" title="${escAttr(label)}" aria-label="${escAttr(label)}">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path></svg>
+  </button>`;
+}
+
+function showClientApplyConfirm(report) {
+  return new Promise(resolve => {
+    const existing = document.getElementById('clientApplyConfirmModal');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'clientApplyConfirmModal';
+    overlay.innerHTML = `<div class="modal-box client-apply-modal">
+      <div class="modal-header">
+        <h3>写入前预检</h3>
+        <button class="modal-close" id="clientApplyCloseBtn" type="button">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="client-apply-modal-intro ${report.ok ? 'status-ok' : 'status-error'}">
+          ${esc(report.ok ? '预检通过，请确认脱敏 diff 后写入外部客户端配置。' : '预检未通过，已阻止写入外部客户端配置。')}
+        </div>
+        ${renderClientReport(report)}
+      </div>
+      <div class="client-apply-modal-actions">
+        <button class="btn btn-primary" id="clientApplyOkBtn" type="button" ${report.ok ? '' : 'disabled'}>确认写入</button>
+        <button class="btn btn-ghost" id="clientApplyCancelBtn" type="button">取消</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    function cleanup(value) {
+      overlay.remove();
+      resolve(value);
+    }
+    document.getElementById('clientApplyCloseBtn').onclick = () => cleanup(false);
+    document.getElementById('clientApplyCancelBtn').onclick = () => cleanup(false);
+    document.getElementById('clientApplyOkBtn').onclick = () => cleanup(Boolean(report.ok));
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) cleanup(false);
+    });
+  });
+}
+
+async function fetchClientEventsForDetail(id) {
+  const el = document.getElementById('clientEventLog');
+  if (!el || !id) return;
+  el.innerHTML = '<span class="status-muted">加载中...</span>';
+  try {
+    const events = await invoke('get_account_events', { accountId: id, limit: 12 });
+    el.innerHTML = renderClientEventLog(Array.isArray(events) ? events : []);
+  } catch (e) {
+    el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+  }
+}
+
+function renderClientEventLog(events) {
+  if (!events.length) return '<span class="status-muted">暂无配置事件</span>';
+  return events.map(event => {
+    const ok = event.ok !== false;
+    const action = accountEventActionLabel(event.action);
+    const time = formatTimeShort(event.ts);
+    const message = event.message || '';
+    const details = event.details || {};
+    const backupPaths = Array.isArray(details.backup_paths) ? details.backup_paths : [];
+    const path = details.source_path || details.config_path || details.backup_path || backupPaths[0] || '';
+    const source = path ? `<span title="${escAttr(path)}">${esc(trunc(path, 52))}</span>` : '';
+    return `<div class="client-event-item ${ok ? 'ok' : 'error'}">
+      <div class="client-event-dot"></div>
+      <div class="client-event-main">
+        <div class="client-event-line">
+          <strong>${esc(action)}</strong>
+          <time>${esc(time)}</time>
+        </div>
+        <div class="client-event-message">${esc(message)}</div>
+        ${source ? `<div class="client-event-source">${source}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function accountEventActionLabel(action) {
+  const labels = {
+    client_account_import: '导入账号',
+    client_account_status: '状态刷新',
+    client_account_dry_run: '配置预检',
+    client_account_apply: '写入配置',
+    client_account_restore: '恢复备份',
+    client_config_open: '编辑配置',
+    client_config_save: '保存配置',
+    claude_desktop_developer_mode: '开发者模式',
+  };
+  return labels[action] || action || '配置事件';
+}
+
+async function fetchClientBackupsForDetail(id) {
+  const el = document.getElementById('clientBackupList');
+  if (!el || !id) return;
+  el.innerHTML = '<span class="status-muted">加载中...</span>';
+  try {
+    const backups = await invoke('list_client_backups', { accountId: id });
+    el.innerHTML = renderClientBackupList(id, Array.isArray(backups) ? backups : []);
+  } catch (e) {
+    el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+  }
+}
+
+function renderClientBackupList(id, backups) {
+  if (!backups.length) return '<span class="status-muted">暂无备份</span>';
+  return backups.slice(0, 12).map(backup => {
+    const time = formatTimeShort(backup.created_at);
+    const sizeKb = Math.max(1, Math.round(Number(backup.size || 0) / 1024));
+    return `<div class="client-backup-item">
+      <div class="client-backup-main">
+        <strong>${esc(backup.kind || 'config')}</strong>
+        <span title="${escAttr(backup.path)}">${esc(trunc(backup.path || '', 68))}</span>
+        <em>${esc(time)} · ${sizeKb} KB</em>
+      </div>
+      <button class="btn btn-ghost btn-small" onclick="restoreClientBackup('${escAttr(id)}', '${escAttr(backup.path || '')}')">恢复</button>
+    </div>`;
+  }).join('');
+}
+
+async function restoreClientBackup(id, backupPath) {
+  if (!backupPath) return;
+  if (!await showConfirm('确定恢复这个客户端配置备份吗？当前配置会先再次备份。')) return;
+  try {
+    const report = await invoke('restore_client_backup', { accountId: id, backupPath });
+    showToast(report.ok ? '客户端备份已恢复' : '恢复后仍有诊断问题', report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    fetchClientEventsForDetail(id);
+    fetchClientBackupsForDetail(id);
+  } catch (e) {
+    showToast('恢复客户端备份失败: ' + e, 'error');
+  }
+}
+
+function refreshClientSwitcherIssues() {
+  const switcher = document.querySelector('.client-switcher');
+  if (switcher) switcher.outerHTML = renderClientSwitcher(accountsData.accounts || []);
+}
+
+async function dryRunEditingClientAccount() {
+  if (!editingAccount) return;
+  syncEditingDraftFromForm();
+  const statusEl = document.getElementById('clientDryRunStatus');
+  const preview = document.getElementById('clientApplyPreview');
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">预检中...</span>';
+  try {
+    const report = await invoke('test_client_account', { accountJson: serializeAccountForBackend(editingAccount) });
+    if (statusEl) statusEl.innerHTML = report.ok ? '<span class="status-ok">预检通过</span>' : '<span class="status-error">预检有问题</span>';
+    if (preview) preview.innerHTML = renderClientReport(report);
+    if (editingAccount.id) fetchClientEventsForDetail(editingAccount.id);
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">预检失败</span>';
+    if (preview) preview.innerHTML = `<div class="status-error">${esc(String(e))}</div>`;
+  }
+}
+
+async function refreshClientAccountStatus(id) {
+  try {
+    const report = await invoke('refresh_client_status', { accountId: id });
+    showToast(report.ok ? '客户端状态正常' : '客户端状态有问题', report.ok ? 'success' : 'error');
+    const account = (accountsData.accounts || []).find(item => item.id === id);
+    if (account) {
+      account._client_status_report = report;
+      account.last_check = { ok: report.ok, message: report.message, details: report };
+    }
+    if (accountsView === 'list') {
+      renderMainContent();
+      refreshClientSwitcherIssues();
+      return;
+    }
+    const el = document.getElementById('client-status-' + id);
+    if (el) el.innerHTML = renderClientStatusSummary(report);
+    const preview = document.getElementById('clientApplyPreview');
+    if (preview) preview.innerHTML = renderClientReport(report);
+    refreshClientSwitcherIssues();
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('刷新客户端状态失败: ' + e, 'error');
+  }
+}
+
+async function refreshClaudeDesktopDeveloperMode(id) {
+  const input = document.getElementById('claudeDesktopDevModeSwitch');
+  const label = document.getElementById('claudeDesktopDevModeLabel');
+  const hint = document.getElementById('claudeDesktopDevModeHint');
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (!input) return;
+  input.disabled = true;
+  if (label) label.textContent = '读取中...';
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    const state = await invoke('get_claude_desktop_developer_mode');
+    const enabled = Boolean(state.enabled);
+    input.checked = enabled;
+    input.disabled = false;
+    const restartRequired = Boolean(state.restart_required);
+    if (label) label.textContent = enabled
+      ? (restartRequired ? '已开启（重启后确认）' : '已开启')
+      : (restartRequired ? '已关闭（需重启）' : '已关闭');
+    if (restartBtn) restartBtn.disabled = !restartRequired;
+    if (hint) {
+      const entries = Array.isArray(state.entries) ? state.entries.filter(item => item.exists) : [];
+      const paths = entries.map(item => item.path).filter(Boolean);
+      const runtimeDirs = Array.isArray(state.runtime?.user_data_dirs) ? state.runtime.user_data_dirs : [];
+      hint.textContent = restartRequired
+        ? `设置已落盘，Claude 正在运行，重启后生效${runtimeDirs.length ? ` · ${runtimeDirs.join(' · ')}` : ''}`
+        : paths.length
+        ? `同步 ${state.enabled_count || 0}/${paths.length} 个 Claude 设置文件`
+        : '未找到现有设置文件，开启时会创建 Claude 默认配置';
+      hint.title = paths.join('\n');
+    }
+  } catch (e) {
+    input.disabled = true;
+    if (label) label.textContent = '读取失败';
+    if (hint) hint.textContent = String(e);
+  }
+}
+
+async function toggleClaudeDesktopDeveloperMode(id, enabled) {
+  const input = document.getElementById('claudeDesktopDevModeSwitch');
+  const label = document.getElementById('claudeDesktopDevModeLabel');
+  const hint = document.getElementById('claudeDesktopDevModeHint');
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (!input) return;
+  input.disabled = true;
+  if (label) label.textContent = enabled ? '开启中...' : '关闭中...';
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    const args = { enabled };
+    if (id) args.accountId = id;
+    const result = await invoke('set_claude_desktop_developer_mode', args);
+    input.checked = Boolean(result.enabled);
+    input.disabled = false;
+    const restartRequired = Boolean(result.restart_required);
+    if (label) label.textContent = result.enabled
+      ? (restartRequired ? '已开启（重启后确认）' : '已开启')
+      : (restartRequired ? '已关闭（需重启）' : '已关闭');
+    if (restartBtn) restartBtn.disabled = !restartRequired;
+    if (hint) {
+      const paths = Array.isArray(result.changed_files) ? result.changed_files : [];
+      const runtimeDirs = Array.isArray(result.runtime?.user_data_dirs) ? result.runtime.user_data_dirs : [];
+      hint.textContent = restartRequired
+        ? `已写入 ${paths.length || 0} 个设置文件，Claude 正在运行，重启后生效${runtimeDirs.length ? ` · ${runtimeDirs.join(' · ')}` : ''}`
+        : (paths.length ? `已写入 ${paths.length} 个 Claude 设置文件` : '设置已保存');
+      hint.title = paths.join('\n');
+    }
+    showToast(
+      restartRequired ? `${result.message || 'Claude 开发者模式已更新'}，重启 Claude 后生效` : (result.message || 'Claude 开发者模式已更新'),
+      restartRequired ? 'info' : 'success'
+    );
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('更新 Claude 开发者模式失败: ' + e, 'error');
+    refreshClaudeDesktopDeveloperMode();
+  }
+}
+
+async function restartClaudeDesktopForDevMode() {
+  const restartBtn = document.getElementById('claudeDesktopRestartBtn');
+  if (restartBtn) restartBtn.disabled = true;
+  try {
+    await invoke('dex_toggle_desktop_client', { kind: 'claude_desktop', running: true });
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    await invoke('dex_toggle_desktop_client', { kind: 'claude_desktop', running: false });
+    showToast('Claude 已重启，请稍后确认开发者模式状态', 'success');
+    setTimeout(() => refreshClaudeDesktopDeveloperMode(), 1500);
+  } catch (e) {
+    showToast('重启 Claude 失败: ' + e, 'error');
+    if (restartBtn) restartBtn.disabled = false;
+  }
+}
+
+async function openClientConfig(id) {
+  try {
+    const result = await invoke('open_client_config', { accountId: id });
+    showToast('已交给系统打开: ' + trunc(result.path || '', 64), 'success');
+    fetchClientEventsForDetail(id);
+  } catch (e) {
+    showToast('打开配置文件失败: ' + e, 'error');
+  }
+}
+
+async function editConfigFile(id) {
+  if (!id) return;
+  try {
+    const file = await invoke('get_account_config_file', { accountId: id });
+    showConfigEditorModal(id, file);
+  } catch (e) {
+    showToast('读取配置文件失败: ' + e, 'error');
+  }
+}
+
+function showConfigEditorModal(id, file) {
+  const existing = document.getElementById('configEditorModal');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'configEditorModal';
+  const statusText = file.exists ? `已加载 · ${Number(file.size_bytes || 0)} bytes` : '文件不存在，将按当前账号生成初始内容';
+  overlay.innerHTML = `<div class="modal-box config-editor-modal">
+    <div class="modal-header">
+      <h3>编辑配置文件</h3>
+      <button class="modal-close" id="configEditorCloseBtn" type="button">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="config-editor-meta">
+        <strong>${esc(file.label || '配置文件')}</strong>
+        <span title="${escAttr(file.path || '')}">${esc(file.path || '')}</span>
+        <em>${esc((file.format || '').toUpperCase())} · ${esc(statusText)}</em>
+      </div>
+      <div id="configEditorValidation">${renderConfigValidation(file.validation)}</div>
+      <textarea id="configEditorContent" class="config-editor-textarea" spellcheck="false">${esc(file.content || '')}</textarea>
+    </div>
+    <div class="config-editor-actions">
+      <span id="configEditorSaveStatus"></span>
+      <button class="btn btn-ghost" id="configEditorValidateBtn" type="button">校验/编译</button>
+      <button class="btn btn-ghost" id="configEditorSystemOpenBtn" type="button">系统打开</button>
+      <button class="btn btn-primary" id="configEditorSaveBtn" type="button">保存</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const cleanup = () => overlay.remove();
+  document.getElementById('configEditorCloseBtn').onclick = cleanup;
+  overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(); });
+  document.getElementById('configEditorValidateBtn').onclick = async () => {
+    const content = document.getElementById('configEditorContent')?.value || '';
+    const status = document.getElementById('configEditorSaveStatus');
+    if (status) status.innerHTML = '<span class="status-muted">校验中...</span>';
+    try {
+      const validation = await invoke('validate_account_config_file', { accountId: id, content });
+      document.getElementById('configEditorValidation').innerHTML = renderConfigValidation(validation);
+      if (status) status.innerHTML = validation.ok ? '<span class="status-ok">校验通过</span>' : '<span class="status-error">校验失败</span>';
+    } catch (e) {
+      if (status) status.innerHTML = '<span class="status-error">校验异常</span>';
+      showToast('配置校验失败: ' + e, 'error');
+    }
+  };
+  document.getElementById('configEditorSaveBtn').onclick = async () => {
+    const content = document.getElementById('configEditorContent')?.value || '';
+    const status = document.getElementById('configEditorSaveStatus');
+    if (status) status.innerHTML = '<span class="status-muted">保存中...</span>';
+    try {
+      const result = await invoke('save_account_config_file', { accountId: id, content });
+      document.getElementById('configEditorValidation').innerHTML = renderConfigValidation(result.validation);
+      if (!result.ok) {
+        if (status) status.innerHTML = '<span class="status-error">未保存</span>';
+        showToast(result.message || '配置校验未通过，未保存', 'error');
+        return;
+      }
+      if (status) status.innerHTML = `<span class="status-ok">已保存${result.backup_path ? '，已备份' : ''}</span>`;
+      showToast('配置文件已保存', 'success');
+      fetchClientEventsForDetail(id);
+      fetchClientBackupsForDetail(id);
+    } catch (e) {
+      if (status) status.innerHTML = '<span class="status-error">保存失败</span>';
+      showToast('保存配置文件失败: ' + e, 'error');
+    }
+  };
+  document.getElementById('configEditorSystemOpenBtn').onclick = () => openClientConfig(id);
+}
+
+function renderConfigValidation(validation) {
+  const result = validation || {};
+  const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics : [];
+  const cls = result.ok ? 'status-ok' : 'status-error';
+  const label = result.ok ? '语法正常' : '需要修正';
+  return `<div class="config-editor-validation">
+    <strong class="${cls}">${label}</strong>
+    ${diagnostics.map(item => `<span class="${item.level === 'error' ? 'status-error' : (item.level === 'warning' ? 'status-warn' : 'status-muted')}">${esc(item.message || '')}</span>`).join('')}
+  </div>`;
+}
+
+async function saveAndApplyClientAccount(id) {
+  const saved = await saveAccount({ silent: true, stay: true });
+  if (!saved) {
+    showToast('写入前保存账号失败', 'error');
+    return;
+  }
+  showToast('账号已保存，开始预检写入配置', 'success');
+  await applyClientAccount(saved.id || id);
+}
+
+async function applyClientAccount(id) {
+  try {
+    showToast('正在执行写入前预检', 'info');
+    const dryReport = await invoke('apply_client_account', { accountId: id, dryRun: true });
+    const statusEl = document.getElementById('client-status-' + id);
+    if (statusEl) statusEl.innerHTML = renderClientStatusSummary(dryReport);
+    fetchClientEventsForDetail(id);
+    if (!await showClientApplyConfirm(dryReport)) {
+      if (!dryReport.ok) showToast('预检未通过，已取消写入', 'error');
+      return;
+    }
+    const report = await invoke('apply_client_account', { accountId: id, dryRun: false });
+    showToast(report.ok ? '客户端配置已写入' : '客户端配置写入后仍有问题', report.ok ? 'success' : 'error');
+    await loadAccountsData();
+    if (accountsView === 'list') {
+      renderMainContent();
+      refreshClientSwitcherIssues();
+      return;
+    }
+    const el = document.getElementById('client-status-' + id);
+    if (el) el.innerHTML = renderClientStatusSummary(report);
+    fetchClientEventsForDetail(id);
+    fetchClientBackupsForDetail(id);
+  } catch (e) {
+    showToast('写入客户端配置失败: ' + e, 'error');
+  }
+}
+
+function renderClientStatusSummary(report) {
+  const command = report.command || {};
+  const version = command.version || (command.installed ? '已安装' : '未检测到');
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const hasError = diagnostics.some(item => item.level === 'error');
+  const cls = hasError ? 'status-error' : (report.ok ? 'status-ok' : 'status-warn');
+  const risk = report.risk_level ? `风险 ${report.risk_level}` : (report.schema_ok === false ? 'Schema 异常' : '');
+  return `<div class="client-status-summary">
+    <span class="${cls}">${esc(version)}</span>
+    ${risk ? `<span>${esc(risk)}</span>` : ''}
+  </div>`;
+}
+
+// ── 模型获取与余额查询 ──
+
+let balanceCache = {};
+
+async function applyAccount(id) {
+  try {
+    await invoke('switch_account', { id });
+    accountsData.active_id = id;
+    await refreshModelsAfterDesktopCodexSwitch(id);
+    showToast('已切换活跃账号', 'success');
+    await loadAccountsData();
+  } catch (e) {
+    showToast('切换账号失败: ' + e, 'error');
+  }
+}
+
+function isRedactedSecret(value) {
+  return typeof value === 'string' && value.includes('****');
+}
+
+function displayStoredSecret(value, hasStored) {
+  if (!hasStored) return '';
+  const text = String(value || '').trim();
+  if (!text) return '****';
+  return isRedactedSecret(text) ? text : maskKey(text);
+}
+
+function hasStoredPrimaryApiKey(account = editingAccount) {
+  return Boolean(
+    account?.id
+    && (account.api_key_present || isRedactedSecret(account.api_key || ''))
+  );
+}
+
+function hasStoredVisionApiKey(account = editingAccount, endpoint = currentEndpoint(account)) {
+  return Boolean(
+    account?.id
+    && (
+      account.vision_api_key_present
+      || isRedactedSecret(account.vision_api_key || '')
+      || isRedactedSecret(endpoint?.vision?.api_key || '')
+    )
+  );
+}
+
+async function copyEditingAccountSecret(secretKind) {
+  if (!editingAccount?.id) {
+    showToast('请先保存账号后再复制密钥', 'error');
+    return;
+  }
+  try {
+    const endpoint = currentEndpoint(editingAccount);
+    await invoke('copy_account_secret', {
+      accountId: editingAccount.id,
+      secretKind,
+      endpointId: endpoint?.id || null,
+    });
+    showToast(secretKind === 'vision_api_key' ? '视觉 API Key 已复制' : 'API Key 已复制', 'success');
+  } catch (e) {
+    showToast('复制密钥失败: ' + e, 'error');
+  }
+}
+
+function buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind, options = {}) {
+  const args = { upstream, endpointKind };
+  if (editingAccount?.id && (options.forceStored || isRedactedSecret(apiKey) || (!apiKey && hasStoredPrimaryApiKey(editingAccount)))) {
+    args.accountId = editingAccount.id;
+  } else {
+    args.apiKey = apiKey || '';
+  }
+  return args;
+}
+
+function buildEditingVisionProbeArgs(upstream, apiKey, visionPath, adapterId) {
+  const args = { upstream, visionPath, adapterId };
+  if (editingAccount?.id && (isRedactedSecret(apiKey) || (!apiKey && hasStoredVisionApiKey(editingAccount)))) {
+    args.accountId = editingAccount.id;
+    const endpointId = currentEndpoint(editingAccount)?.id;
+    if (endpointId) args.endpointId = endpointId;
+  } else {
+    args.apiKey = apiKey || '';
+  }
+  return args;
+}
+
+async function fetchClientModels() {
+  const statusEl = document.getElementById('clientModelFetchStatus');
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">获取中...</span>';
+  try {
+    const upstream = document.getElementById('edit_upstream')?.value?.trim();
+    const apiKey = document.getElementById('edit_api_key')?.value?.trim() || '';
+    if (!upstream) { showToast('请先填写目标客户端 Base URL', 'error'); return; }
+    const provider = document.getElementById('edit_client_provider')?.value || editingAccount?.provider || '';
+    const endpointKind = accountClientKind(editingAccount) === 'claude_code' || provider === 'anthropic'
+      ? 'anthropic_messages'
+      : 'open_ai_chat';
+    upstreamModels = await invoke('fetch_upstream_models', buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind));
+    if (upstreamModels.length > 0) {
+      if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${upstreamModels.length} 个模型</span>`;
+      syncEditingDraftFromForm();
+      const rows = document.getElementById('clientModelMapRows');
+      if (rows) rows.innerHTML = renderClientModelMappingRows(editingAccount);
+    } else {
+      if (statusEl) statusEl.innerHTML = '<span class="status-muted">上游未返回模型</span>';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">获取失败</span>';
+    showToast('获取客户端模型列表失败: ' + e, 'error');
+  }
+}
+
+async function fetchCodexAccountModels() {
+  const statusEl = document.getElementById('codexModelFetchStatus');
+  if (statusEl) statusEl.innerHTML = '<span class="status-muted">获取中...</span>';
+  // 新账号（未保存）与已保存账号统一用表单当前值请求；key 未改/已脱敏时回落存储 key。
+  const upstream = document.getElementById('edit_upstream')?.value?.trim();
+  const apiKeyInput = document.getElementById('edit_api_key');
+  const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+  const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
+  if (!upstream) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">请先填写上游 URL</span>';
+    showToast('请先填写上游 URL', 'error');
+    return;
+  }
+  try {
+    const models = await invoke('fetch_upstream_models', buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind));
+    if (Array.isArray(models) && models.length) {
+      const endpoint = currentEndpoint(editingAccount);
+      if (endpoint) {
+        endpoint.known_models = models;
+        ensureModelProfiles(endpoint, models);
+      }
+      renderCodexModelList();
+      if (statusEl) statusEl.innerHTML = `<span class="status-ok">获取到 ${models.length} 个模型</span>`;
+      showToast(`已获取 ${models.length} 个模型`, 'success');
+    } else {
+      if (statusEl) statusEl.innerHTML = '<span class="status-muted">上游未返回模型</span>';
+      showToast('上游未返回模型', 'warn');
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span class="status-error">获取失败</span>';
+    showToast('获取模型列表失败: ' + e, 'error');
+  }
+}
+
+/// 保证 endpoint.model_profiles 对 known_models 中每个模型都有 profile 条目。
+/// 已存在的 profile 保留用户的启用/停用与 override 设置；新增模型默认启用=true。
+function ensureModelProfiles(endpoint, models) {
+  if (!endpoint || !Array.isArray(models)) return;
+  if (!endpoint.model_profiles || typeof endpoint.model_profiles !== 'object') {
+    endpoint.model_profiles = {};
+  }
+  const seen = new Set();
+  for (const m of models) {
+    if (!m || typeof m !== 'string') continue;
+    if (seen.has(m)) continue;
+    seen.add(m);
+    if (!endpoint.model_profiles[m]) {
+      endpoint.model_profiles[m] = { enabled: true, vision_mode: 'inherit', endpoint_override: null };
+    } else if (endpoint.model_profiles[m].enabled === undefined) {
+      endpoint.model_profiles[m].enabled = true;
+    }
+  }
+}
+
+/// 渲染单个模型的启用开关 + 协议 override 下拉。
+function renderModelRow(m, profile, defaultEndpointKind) {
+  const enabled = profile.enabled !== false;
+  const enabledChecked = enabled ? 'checked' : '';
+  const overrideValue = profile.endpoint_override || '';
+  const defaultKind = defaultEndpointKind || 'open_ai_chat';
+  // 下拉始终显示实际生效的协议（override 或账号默认），不显示“账号默认”文案；
+  // 选择与账号相同的协议时视为跟随账号，保存时不写 override。
+  const effectiveKind = overrideValue || defaultKind;
+  const effectiveCanonical = canonicalEndpointKind(effectiveKind);
+  const knownKinds = ['openaichat', 'openairesponses', 'anthropicmessages'];
+  const isKnown = knownKinds.indexOf(effectiveCanonical) !== -1;
+  return `
+    <div class="codex-model-row${enabled ? '' : ' disabled'}" data-model="${escAttr(m)}">
+      <span class="codex-model-name" title="${escAttr(m)}">${esc(m)}</span>
+      <label class="codex-model-toggle toggle-label" title="启用：客户端可见且可调用；停用：仅账号管理界面保留">
+        <input type="checkbox" class="model-enabled-toggle" data-model="${escAttr(m)}" aria-label="启用 ${escAttr(m)}" ${enabledChecked} onchange="toggleCodexModelRowState(this)">
+      </label>
+      <select class="codex-model-select model-override-select" data-model="${escAttr(m)}" data-default-kind="${escAttr(defaultKind)}" title="为该模型选择上游协议类型；选择与账号相同的协议即跟随账号">
+        ${isKnown ? '' : `<option value="" selected>${esc(endpointKindLabel(effectiveKind))}</option>`}
+        <option value="open_ai_chat" ${effectiveCanonical === 'openaichat' ? 'selected' : ''}>OpenAI Chat 兼容</option>
+        <option value="open_ai_responses" ${effectiveCanonical === 'openairesponses' ? 'selected' : ''}>OpenAI Responses 直连</option>
+        <option value="anthropic_messages" ${effectiveCanonical === 'anthropicmessages' ? 'selected' : ''}>Anthropic Messages</option>
+      </select>
+    </div>`;
+}
+
+function renderCodexModelList() {
+  const listEl = document.getElementById('codexAccountModelList');
+  if (!listEl || !editingAccount) return;
+  const endpoint = currentEndpoint(editingAccount);
+  if (!endpoint) {
+    listEl.innerHTML = '<div class="codex-model-empty">尚未选择端点</div>';
+    return;
+  }
+  const defaultEndpointKind = endpoint.kind || 'open_ai_chat';
+  const models = Array.isArray(endpoint.known_models) ? endpoint.known_models : [];
+  const profiles = endpoint.model_profiles && typeof endpoint.model_profiles === 'object'
+    ? endpoint.model_profiles
+    : {};
+  endpoint.model_profiles = profiles;
+  const modelHead = '<div class="codex-model-head"><span>模型</span><span>状态</span><span>上游协议</span></div>';
+  if (!models.length) {
+    listEl.innerHTML = modelHead + '<div class="codex-model-empty">尚未获取模型，点击上方按钮从上游拉取</div>';
+    return;
+  }
+  listEl.innerHTML = modelHead + models.map(m => {
+    const profile = profiles[m] || { enabled: true, vision_mode: 'inherit', endpoint_override: null };
+    profiles[m] = profile;
+    return renderModelRow(m, profile, defaultEndpointKind);
+  }).join('');
+}
+
+/// 切换某行模型启用状态时同步行的视觉态（停用行弱化模型名）。
+function toggleCodexModelRowState(input) {
+  const row = input && input.closest ? input.closest('.codex-model-row') : null;
+  if (row) row.classList.toggle('disabled', !input.checked);
+}
+
+/// 把 UI 上的模型启用/override 状态同步回 editingAccount 的 endpoint.model_profiles。
+/// saveAccount() 在 syncEditingDraftFromForm 之后调用，避免丢失用户编辑。
+function syncModelProfilesFromForm() {
+  if (!editingAccount) return;
+  const endpoint = currentEndpoint(editingAccount);
+  if (!endpoint) return;
+  const profiles = endpoint.model_profiles && typeof endpoint.model_profiles === 'object'
+    ? endpoint.model_profiles
+    : {};
+  endpoint.model_profiles = profiles;
+  const toggles = document.querySelectorAll('#codexAccountModelList .model-enabled-toggle');
+  toggles.forEach(input => {
+    const model = input.getAttribute('data-model');
+    if (!model) return;
+    const profile = profiles[model] || { vision_mode: 'inherit', endpoint_override: null };
+    profile.enabled = input.checked;
+    profiles[model] = profile;
+  });
+  const selects = document.querySelectorAll('#codexAccountModelList .model-override-select');
+  selects.forEach(select => {
+    const model = select.getAttribute('data-model');
+    if (!model) return;
+    const profile = profiles[model] || { enabled: true, vision_mode: 'inherit' };
+    const selectedKind = select.value || '';
+    const defaultKind = select.getAttribute('data-default-kind') || 'open_ai_chat';
+    // 选中协议等于账号默认时视为跟随账号，不写 override。
+    profile.endpoint_override = selectedKind && canonicalEndpointKind(selectedKind) !== canonicalEndpointKind(defaultKind) ? selectedKind : null;
+    profiles[model] = profile;
+  });
+}
+
+/// 打开国产厂商的 API Key 申请/控制台页面。
+function providerApiKeyConsoleUrl(provider) {
+  return PROVIDER_KEY_CONSOLE_URL[String(provider || '').toLowerCase()] || '';
+}
+
+async function openProviderApiKeyPageFor(provider) {
+  const url = providerApiKeyConsoleUrl(provider);
+  if (!url) {
+    showToast('该厂商暂无配置 API Key 申请地址', 'info');
+    return;
+  }
+  try {
+    await invoke('open_external_url', { url });
+  } catch (e) {
+    showToast('打开厂商控制台失败: ' + e, 'error');
+  }
+}
+
+async function openProviderApiKeyPage() {
+  if (!editingAccount) return;
+  await openProviderApiKeyPageFor(editingAccount.provider);
+}
+
+async function testUpstreamConnectivity() {
+  const upstream = document.getElementById('edit_upstream')?.value?.trim();
+  if (!upstream) { showToast('请先填写上游 URL', 'error'); return; }
+  const keyInput = document.getElementById('edit_api_key');
+  const apiKey = keyInput ? keyInput.value.trim() : '';
+  const resultEl = document.getElementById('connectivityResult');
+  if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
+  try {
+    const endpointKind = document.getElementById('edit_endpoint_kind')?.value || 'open_ai_chat';
+    const result = await invoke('test_upstream_connectivity', buildEditingUpstreamProbeArgs(upstream, apiKey, endpointKind));
+    if (result.ok) {
+      const models = result.model_count != null ? `，${result.model_count} 个模型` : '';
+      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${models})</span>`;
+      showToast(`上游连通正常 (${result.latency_ms}ms${models})`, 'success');
+    } else if (result.error) {
+      if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(result.error)}</span>`;
+      showToast('连通失败: ' + result.error, 'error');
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span class="status-warn">HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      showToast(`上游返回 HTTP ${result.status}`, 'error');
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    showToast('连通测试异常: ' + e, 'error');
+  } finally {
+    await refreshBalanceFromFormConnectivity();
+  }
+}
+
+async function testVisionConnectivity() {
+  const upstream = document.getElementById('edit_vision_upstream')?.value?.trim();
+  if (!upstream) { showToast('请先填写视觉上游 URL', 'error'); return; }
+  const keyInput = document.getElementById('edit_vision_api_key');
+  const apiKey = keyInput ? keyInput.value.trim() : '';
+  const resultEl = document.getElementById('visionConnectivityResult');
+  if (resultEl) resultEl.innerHTML = '<span class="status-muted">检测中...</span>';
+  try {
+    const visionPath = document.getElementById('edit_vision_endpoint')?.value?.trim() || 'v1/coding_plan/vlm';
+    const adapterId = document.getElementById('edit_vision_adapter')?.value || 'minimax_coding_plan_vlm';
+    const result = await invoke('test_vision_connectivity', buildEditingVisionProbeArgs(upstream, apiKey, visionPath, adapterId));
+    if (result.ok) {
+      const detail = result.detail ? `，${esc(result.detail)}` : '';
+      if (resultEl) resultEl.innerHTML = `<span class="status-ok">连通 (${result.status}, ${result.latency_ms}ms${detail})</span>`;
+      showToast(`视觉上游连通正常 (${result.latency_ms}ms)`, 'success');
+    } else if (result.error) {
+      if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(result.error)}</span>`;
+      showToast('视觉上游连通失败: ' + result.error, 'error');
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span class="status-warn">HTTP ${result.status} (${result.latency_ms}ms)</span>`;
+      showToast(`视觉上游返回 HTTP ${result.status}`, 'error');
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    showToast('视觉连通测试异常: ' + e, 'error');
+  }
+}
+
+async function fetchBalanceForCard(a) {
+  const el = document.getElementById('balance-' + a.id);
+  if (!el) return;
+  const cacheKey = a.id;
+  // 5 分钟内使用缓存
+  if (balanceCache[cacheKey] && balanceCache[cacheKey].ts > Date.now() - 300000) {
+    el.innerHTML = renderBalanceInfo(balanceCache[cacheKey].info, { suppressPoolStatus: true });
+    return;
+  }
+  el.innerHTML = '<span class="balance-loading">...</span>';
+  try {
+    const info = await invoke('fetch_balance', { accountId: a.id });
+    balanceCache[cacheKey] = { info, ts: Date.now() };
+    el.innerHTML = renderBalanceInfo(info, { suppressPoolStatus: true });
+  } catch (e) {
+    el.innerHTML = '<span class="balance-na">不可用</span>';
+  }
+}
+
+async function refreshBalanceForCard(id) {
+  const a = (accountsData.accounts || []).find(acc => acc.id === id);
+  if (!a) return;
+  delete balanceCache[id];
+  await fetchBalanceForCard(a);
+}
+
+async function refreshOfficialQuotaFromDetail(id) {
+  const box = document.getElementById('official-quota-' + id);
+  if (box) box.innerHTML = '<span class="balance-loading">刷新中...</span>';
+  delete balanceCache[id];
+  try {
+    const info = await invoke('fetch_balance', { accountId: id });
+    balanceCache[id] = { info, ts: Date.now() };
+    if (box) box.innerHTML = renderBalanceInfo(info);
+    const official = info?.official || null;
+    if (official) {
+      editingAccount.client_options = editingAccount.client_options || {};
+      editingAccount.client_options.oauth_quota = official;
+    }
+    const fresh = await invoke('list_accounts');
+    accountsData = fresh;
+    refreshEditingAccountAfterManagement(id);
+    showToast('额度状态已刷新', 'success');
+  } catch (e) {
+    if (box) box.innerHTML = `<span class="balance-na">${esc(String(e))}</span>`;
+    showToast('刷新额度失败: ' + e, 'error');
+  }
+}
+
+async function refreshBalanceFromFormConnectivity() {
+  if (!editingAccount || !editingAccount.id || !isCodexAccount(editingAccount)) return;
+  await refreshOfficialQuotaFromDetail(editingAccount.id);
+}
+
+let accountListRefreshInFlight = false;
+
+async function testAccountUpstreamForCard(id) {
+  await refreshAllAccountsForCard(id);
+}
+
+async function refreshAllAccountsForCard(id) {
+  if (accountListRefreshInFlight) {
+    showToast('账号检测正在进行', 'info');
+    return;
+  }
+  const accounts = accountsForAccountListRefresh(id);
+  if (!accounts.length) return;
+
+  accountListRefreshInFlight = true;
+  let okCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+  const target = accounts.find(account => account.id === id);
+  const targetName = target ? accountDisplayTitle(target) : '';
+  const scopeLabel = clientKindSupportsSurface(selectedClientKind)
+    ? clientSurfaceTitle(selectedClientKind, selectedSurfaceForKind(selectedClientKind))
+    : (CLIENT_KIND_LABELS[selectedClientKind] || '当前页面');
+  showToast(`${targetName ? `${targetName} 触发，` : ''}开始检测 ${scopeLabel} ${accounts.length} 个账号`, 'info');
+
+  for (const account of accounts) {
+    const el = accountCardStatusElement(account);
+    if (el) el.innerHTML = '<span class="balance-loading">检测中...</span>';
+  }
+
+  try {
+    const results = await mapWithConcurrency(accounts, 4, account => (
+      isCodexAccount(account)
+        ? refreshCodexAccountConnectivityForCard(account)
+        : refreshClientAccountStatusForCard(account)
+    ));
+    for (const result of results) {
+      if (result?.skipped) skippedCount += 1;
+      else if (result?.ok) okCount += 1;
+      else failedCount += 1;
+    }
+    await loadAccountsData();
+    if (accountsView === 'list' && currentPanel === 'accounts') {
+      accountsListRenderSignature = '';
+      renderMainContent();
+      refreshClientSwitcherIssues();
+    }
+    const checkedCount = okCount + failedCount;
+    const skippedText = skippedCount ? `，跳过 ${skippedCount} 个` : '';
+    const failedText = failedCount ? `，失败 ${failedCount} 个` : '';
+    showToast(`${scopeLabel} 检测完成：成功 ${okCount}/${checkedCount}${failedText}${skippedText}`, failedCount ? 'error' : 'success');
+  } finally {
+    accountListRefreshInFlight = false;
+  }
+}
+
+function accountsForAccountListRefresh(preferredId) {
+  const accounts = visibleAccountsForCurrentSelection(accountsData.accounts || [])
+    .filter(account => account?.id)
+    .filter(account => !isRelayModeForCurrentCodexSelection() || isRelayModeMainAccountVisible(account));
+  return accounts
+    .map((account, index) => ({ account, index }))
+    .sort((left, right) => {
+      const leftPreferred = left.account.id === preferredId ? 0 : 1;
+      const rightPreferred = right.account.id === preferredId ? 0 : 1;
+      return leftPreferred - rightPreferred || left.index - right.index;
+    })
+    .map(item => item.account);
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const concurrency = Math.max(1, Math.min(Number(limit) || 1, items.length));
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        results[index] = { ok: false, error };
+      }
+    }
+  }));
+  return results;
+}
+
+function accountCardStatusElement(account) {
+  if (!account?.id) return null;
+  return document.getElementById(isCodexAccount(account) ? 'balance-' + account.id : 'client-status-' + account.id);
+}
+
+async function refreshCodexAccountConnectivityForCard(a) {
+  const el = accountCardStatusElement(a);
+  const upstream = cardUpstream(a);
+  if (!upstream) {
+    if (el) el.innerHTML = '<span class="balance-na">未配置</span>';
+    return { ok: false, skipped: true };
+  }
+  try {
+    const result = await invoke('test_upstream_connectivity', {
+      accountId: a.id,
+      upstream,
+      endpointKind: cardEndpointKind(a),
+    });
+    delete balanceCache[a.id];
+    await fetchBalanceForCard(a);
+    return { ok: Boolean(result.ok) };
+  } catch (e) {
+    if (el) el.innerHTML = `<span class="balance-na">${esc(String(e))}</span>`;
+    return { ok: false };
+  }
+}
+
+async function refreshClientAccountStatusForCard(a) {
+  const el = accountCardStatusElement(a);
+  try {
+    const report = await invoke('refresh_client_status', { accountId: a.id });
+    a._client_status_report = report;
+    a.last_check = { ok: report.ok, message: report.message, details: report };
+    if (el) el.innerHTML = renderClientCardStatusSummary(report, clientAccountApplied(a));
+    return { ok: Boolean(report.ok) };
+  } catch (e) {
+    if (el) el.innerHTML = `<span class="status-error">${esc(String(e))}</span>`;
+    return { ok: false };
+  }
+}
+
+function balanceQuotaText(current, total = null) {
+  if (current != null && current !== '' && total != null && total !== '') return `${current}/${total}`;
+  if (current != null && current !== '') return String(current);
+  if (total != null && total !== '') return String(total);
+  return '—';
+}
+
+function renderBalanceInfo(info, options = {}) {
+  if (info.mode === 'official_oauth') {
+    return renderOfficialQuotaInfo(info, options);
+  }
+  if (info.mode === 'token_credit') {
+    const remaining = info.credit_remaining;
+    const limit = info.credit_limit;
+    const pct = limit > 0 ? Math.round(remaining / limit * 100) : 0;
+    const safePct = Math.max(0, Math.min(pct, 100));
+    const label = info.credit_label ? ` (${info.credit_label})` : '';
+    return `<div class="balance-pill balance-credit">
+      <span class="balance-credit-text"><span class="balance-card-mark" aria-hidden="true"></span>$${remaining != null ? remaining.toFixed(2) : '—'}${limit != null ? ' / $' + limit.toFixed(2) : ''}${label}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${safePct}%"></div></div>
+    </div>`;
+  }
+  if (info.mode === 'subscription') {
+    return `<div class="balance-pill balance-plan">
+      <span class="balance-quota"><em>5h</em><strong>${balanceQuotaText(info.hours_5_remaining)}</strong></span>
+      <span class="balance-quota"><em>周</em><strong>${balanceQuotaText(info.weekly_remaining, info.weekly_limit)}</strong></span>
+    </div>`;
+  }
+  if (info.mode === 'coding_plan' && info.model_remains) {
+    const coding = info.model_remains.find(m => m.model_name === 'MiniMax-M*') || info.model_remains[0];
+    if (!coding) return '<div class="balance-pill balance-empty"><span class="balance-na">无模型数据</span></div>';
+    const iRemain = coding.interval_total - coding.interval_used;
+    const wRemain = coding.weekly_total - coding.weekly_used;
+    return `<div class="balance-pill balance-plan">
+      <span class="balance-quota"><em>5h</em><strong>${iRemain}/${coding.interval_total}</strong></span>
+      <span class="balance-quota"><em>周</em><strong>${wRemain}/${coding.weekly_total}</strong></span>
+    </div>`;
+  }
+  return '<div class="balance-pill balance-empty"><span class="balance-na">不支持</span></div>';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 键盘快捷键

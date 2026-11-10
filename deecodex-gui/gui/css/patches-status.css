@@ -1,0 +1,56 @@
+/* 服务概览顶部标签：版本号与支持项目使用同一套 pill，支持项目心形改为红色实心。 */
+.status-overview-shell .gateway-version-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+}
+
+.status-overview-shell .gateway-version,
+.status-overview-shell .support-project-btn,
+[data-theme="light"] .status-overview-shell .gateway-version,
+[data-theme="light"] .status-overview-shell .support-project-btn,
+[data-theme="dark"] .status-overview-shell .gateway-version,
+[data-theme="dark"] .status-overview-shell .support-project-btn {
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 3px 9px !important;
+  border-radius: 9px !important;
+  font-size: 12.5px !important;
+  font-weight: 430 !important;
+  font-variation-settings: "wght" 430 !important;
+  line-height: 1 !important;
+}
+
+.status-overview-shell .support-project-btn {
+  margin-left: 0;
+  gap: 6px;
+}
+
+[data-theme="light"] .status-overview-shell .support-project-btn {
+  border-color: rgba(29,29,31,0.12) !important;
+  background: #ffffff !important;
+  color: #8a8f98 !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.035) !important;
+}
+
+[data-theme="dark"] .status-overview-shell .support-project-btn {
+  border-color: var(--content-border) !important;
+  background: var(--content-surface) !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+}
+
+.status-overview-shell .support-project-btn:hover,
+.status-overview-shell .support-project-btn:focus-visible {
+  border-color: rgba(255,59,48,0.28) !important;
+  background: rgba(255,59,48,0.055) !important;
+  color: #ff3b30 !important;
+}
+
+.support-project-icon {
+  background: #ff3b30;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 21.35 10.55 20.03C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35Z'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 21.35 10.55 20.03C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35Z'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+}
+

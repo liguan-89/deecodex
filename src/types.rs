@@ -1,0 +1,616 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+
+// ── Responses API (inbound from Codex CLI) ──────────────────────────────────
+
+#[allow(dead_code)] // reserved fields for API compat
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ResponsesRequest {
+    pub model: String,
+    #[serde(default)]
+    pub input: ResponsesInput,
+    #[serde(default)]
+    pub previous_response_id: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<Value>,
+    #[serde(default)]
+    pub stream: bool,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<ReasoningConfig>,
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
+    #[serde(default)]
+    pub store: Option<bool>,
+    #[serde(default)]
+    pub metadata: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub truncation: Option<String>,
+    #[serde(default)]
+    pub background: Option<bool>,
+    #[serde(default)]
+    pub conversation: Option<Value>,
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    #[serde(default)]
+    pub include_obfuscation: Option<bool>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(default)]
+    pub prompt: Option<Value>,
+    #[serde(default)]
+    pub prompt_cache_key: Option<String>,
+    #[serde(default)]
+    pub prompt_cache_retention: Option<String>,
+    #[serde(default)]
+    pub prompt_cache_options: Option<Value>,
+    #[serde(default)]
+    pub safety_identifier: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub stream_options: Option<Value>,
+    #[serde(default)]
+    pub text: Option<Value>,
+    #[serde(default)]
+    pub top_logprobs: Option<u32>,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+#[allow(dead_code)] // reserved fields for API compat
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ReasoningConfig {
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ResponsesInput {
+    Text(String),
+    Messages(Vec<Value>),
+}
+
+impl Default for ResponsesInput {
+    fn default() -> Self {
+        Self::Messages(Vec::new())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct ContentPart {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ResponsesResponse {
+    pub id: String,
+    pub object: &'static str,
+    pub model: String,
+    pub output: Vec<ResponsesOutputItem>,
+    pub usage: ResponsesUsage,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ResponsesOutputItem {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<ContentPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct ResponsesUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+}
+
+// ── Chat Completions (outbound to provider) ──────────────────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_split: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Request token usage stats in the final streaming chunk (DeepSeek)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+    /// Provider-specific web search activation via web_search_options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_options: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StreamOptions {
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ChatMessage {
+    pub role: String,
+    /// Can be a plain string or a multimodal array
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// 部分 provider（MiniMax / 一些 Anthropic 风格接口）用 `reasoning` 字符串
+    /// 字段回传思考内容，与 `reasoning_content` 语义等价；序列化时与上游字段名对齐。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_details: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatResponse {
+    pub choices: Vec<ChatChoice>,
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatChoice {
+    pub message: ChatMessage,
+}
+
+#[allow(dead_code)] // reserved fields for upstream API compat
+#[derive(Debug, Deserialize, Clone)]
+pub struct ChatUsage {
+    #[serde(default)]
+    pub prompt_tokens: u32,
+    #[serde(default)]
+    pub completion_tokens: u32,
+    #[serde(default)]
+    pub total_tokens: u32,
+    /// DeepSeek returns nested token breakdown inside completion_tokens_details
+    #[serde(default)]
+    pub completion_tokens_details: Option<TokenDetails>,
+    /// DeepSeek context caching stats
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: Option<u32>,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<CachedTokenDetails>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TokenDetails {
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
+}
+
+#[allow(dead_code)] // reserved for upstream API compat
+#[derive(Debug, Deserialize, Clone)]
+pub struct CachedTokenDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+// ── SSE streaming types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ChatStreamChunk {
+    pub choices: Vec<ChatStreamChoice>,
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatStreamChoice {
+    pub delta: ChatDelta,
+    #[allow(dead_code)]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ChatDelta {
+    #[allow(dead_code)]
+    pub role: Option<String>,
+    pub content: Option<String>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    /// 部分 provider 用 `reasoning` 字符串字段回传思考内容（与
+    /// `reasoning_content` 语义等价），按 cc-switch 的 3 档穷举顺序兜底提取。
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub reasoning_details: Option<Value>,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<DeltaToolCall>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DeltaToolCall {
+    #[serde(default)]
+    pub index: usize,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub function: Option<DeltaFunction>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DeltaFunction {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+// ── Model mapping ────────────────────────────────────────────────────────────
+
+pub type ModelMap = HashMap<String, String>;
+
+pub fn resolve_model(model: &str, map: &ModelMap) -> String {
+    map.get(model).cloned().unwrap_or_else(|| model.to_string())
+}
+
+/// Map Codex reasoning.effort to DeepSeek reasoning_effort + thinking params.
+///
+/// | Codex effort | reasoning_effort | thinking            |
+/// |-------------|-----------------|---------------------|
+/// | none        | (none)          | {"type":"disabled"} |
+/// | minimal     | (none)          | {"type":"disabled"} |
+/// | low         | (none)          | {"type":"disabled"} |
+/// | medium      | "high"          | {"type":"disabled"} |
+/// | high        | "high"          | {"type":"enabled"}  |
+/// | xhigh/max   | "max"           | {"type":"enabled"}  |
+/// | ultra       | "max"           | {"type":"enabled"}  |
+/// | default     | "high"          | {"type":"disabled"} |
+pub fn map_effort(effort: Option<&str>) -> (Option<String>, Option<Value>) {
+    match effort.unwrap_or("medium") {
+        "none" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "minimal" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "low" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "medium" => (None, Some(serde_json::json!({"type": "disabled"}))),
+        "high" => (
+            Some("high".into()),
+            Some(serde_json::json!({"type": "enabled"})),
+        ),
+        "xhigh" | "max" | "ultra" => (
+            Some("max".into()),
+            Some(serde_json::json!({"type": "enabled"})),
+        ),
+        _ => (None, Some(serde_json::json!({"type": "disabled"}))),
+    }
+}
+
+/// Format token usage for logging: "in→out [reason=N] [hit=N] [miss=N]"
+pub fn format_usage(usage: Option<&ChatUsage>) -> String {
+    match usage {
+        None => "?".into(),
+        Some(u) => {
+            let mut s = format!("in={} out={}", u.prompt_tokens, u.completion_tokens);
+            if let Some(ref det) = u.completion_tokens_details {
+                if let Some(rt) = det.reasoning_tokens {
+                    if rt > 0 {
+                        s.push_str(&format!(" reason={rt}"));
+                    }
+                }
+            }
+            if let Some(hit) = u.prompt_cache_hit_tokens {
+                if hit > 0 {
+                    s.push_str(&format!(" hit={hit}"));
+                }
+            }
+            if let Some(miss) = u.prompt_cache_miss_tokens {
+                if miss > 0 {
+                    s.push_str(&format!(" miss={miss}"));
+                }
+            }
+            s
+        }
+    }
+}
+
+/// Format optional thinking state: "on" | "off" | "-"
+pub fn fmt_thinking(t: &Option<serde_json::Value>) -> &str {
+    match t {
+        Some(v) if v.get("type").and_then(|t| t.as_str()) == Some("disabled") => "off",
+        Some(_) => "on",
+        None => "-",
+    }
+}
+
+/// Format optional effort: "xhigh" | "high" | "-" etc
+pub fn fmt_effort(e: &Option<String>) -> &str {
+    match e {
+        Some(s) => s.as_str(),
+        None => "-",
+    }
+}
+
+/// Format optional reasoning effort from Codex: "xhigh" | "medium" | "low" | "-"
+pub fn fmt_codex_effort(e: Option<&str>) -> &str {
+    match e {
+        Some(s) => s,
+        None => "-",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn responses_request_preserves_gpt_5_6_reasoning_and_prompt_cache_fields() {
+        let req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.6-sol",
+            "input": "hi",
+            "reasoning": {
+                "effort": "ultra",
+                "context": "all_turns",
+                "mode": "pro"
+            },
+            "prompt_cache_options": {
+                "mode": "explicit",
+                "ttl": "30m"
+            }
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(req).unwrap();
+
+        assert_eq!(serialized["reasoning"]["effort"], "ultra");
+        assert_eq!(serialized["reasoning"]["context"], "all_turns");
+        assert_eq!(serialized["reasoning"]["mode"], "pro");
+        assert_eq!(serialized["prompt_cache_options"]["mode"], "explicit");
+        assert_eq!(serialized["prompt_cache_options"]["ttl"], "30m");
+    }
+
+    // ── resolve_model ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_model_found() {
+        let mut map: ModelMap = HashMap::new();
+        map.insert("gpt-4".into(), "deepseek-v4".into());
+        assert_eq!(resolve_model("gpt-4", &map), "deepseek-v4");
+    }
+
+    #[test]
+    fn test_resolve_model_not_found() {
+        let map: ModelMap = HashMap::new();
+        assert_eq!(resolve_model("gpt-4", &map), "gpt-4");
+    }
+
+    #[test]
+    fn test_resolve_model_empty_map() {
+        let map: ModelMap = HashMap::new();
+        assert_eq!(resolve_model("claude-opus", &map), "claude-opus");
+    }
+
+    // ── map_effort (remaining cases) ─────────────────────────────
+
+    #[test]
+    fn test_map_effort_medium_explicit() {
+        let (eff, think) = map_effort(Some("medium"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_high() {
+        let (eff, think) = map_effort(Some("high"));
+        assert_eq!(eff, Some("high".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_unknown() {
+        let (eff, think) = map_effort(Some("bogus"));
+        assert_eq!(eff, None);
+        assert_eq!(think, Some(json!({"type": "disabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_ultra_uses_max_thinking() {
+        let (eff, think) = map_effort(Some("ultra"));
+        assert_eq!(eff, Some("max".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
+    }
+
+    #[test]
+    fn test_map_effort_max_stays_enabled() {
+        let (eff, think) = map_effort(Some("max"));
+        assert_eq!(eff, Some("max".into()));
+        assert_eq!(think, Some(json!({"type": "enabled"})));
+    }
+
+    // ── format_usage (remaining cases) ──────────────────────────
+
+    #[test]
+    fn test_format_usage_none() {
+        assert_eq!(format_usage(None), "?");
+    }
+
+    #[test]
+    fn test_format_usage_cache_hit() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: Some(40),
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("hit=40"));
+    }
+
+    #[test]
+    fn test_format_usage_cache_miss() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: Some(20),
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("miss=20"));
+    }
+
+    #[test]
+    fn test_format_usage_cache_hit_and_miss() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: None,
+            prompt_cache_hit_tokens: Some(40),
+            prompt_cache_miss_tokens: Some(20),
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(s.contains("hit=40"));
+        assert!(s.contains("miss=20"));
+    }
+
+    #[test]
+    fn test_format_usage_zero_reasoning_not_shown() {
+        let usage = ChatUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            completion_tokens_details: Some(TokenDetails {
+                reasoning_tokens: Some(0),
+            }),
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_tokens_details: None,
+        };
+        let s = format_usage(Some(&usage));
+        assert!(!s.contains("reason="));
+    }
+
+    // ── fmt_thinking ──────────────────────────────────────────
+
+    #[test]
+    fn test_fmt_thinking_disabled() {
+        let t = Some(json!({"type": "disabled"}));
+        assert_eq!(fmt_thinking(&t), "off");
+    }
+
+    #[test]
+    fn test_fmt_thinking_enabled() {
+        let t = Some(json!({"type": "enabled"}));
+        assert_eq!(fmt_thinking(&t), "on");
+    }
+
+    #[test]
+    fn test_fmt_thinking_none() {
+        let t: Option<Value> = None;
+        assert_eq!(fmt_thinking(&t), "-");
+    }
+
+    #[test]
+    fn test_fmt_thinking_unknown_type() {
+        let t = Some(json!({"type": "partial"}));
+        assert_eq!(fmt_thinking(&t), "on");
+    }
+
+    // ── fmt_effort ────────────────────────────────────────────
+
+    #[test]
+    fn test_fmt_effort_some() {
+        let e = Some("high".into());
+        assert_eq!(fmt_effort(&e), "high");
+    }
+
+    #[test]
+    fn test_fmt_effort_none() {
+        let e: Option<String> = None;
+        assert_eq!(fmt_effort(&e), "-");
+    }
+
+    // ── fmt_codex_effort ──────────────────────────────────────
+
+    #[test]
+    fn test_fmt_codex_effort_some() {
+        assert_eq!(fmt_codex_effort(Some("xhigh")), "xhigh");
+    }
+
+    #[test]
+    fn test_fmt_codex_effort_none() {
+        assert_eq!(fmt_codex_effort(None), "-");
+    }
+}

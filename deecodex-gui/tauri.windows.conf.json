@@ -1,0 +1,37 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DEX AI",
+        "width": 1000,
+        "height": 650,
+        "resizable": true,
+        "decorations": false,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": [
+      "../deecodex-plugins/plugins/deecodex-weixin",
+      "../deecodex-plugins/plugins/deecodex-debug",
+      "../deecodex-plugins/templates/node-tool",
+      "../deecodex-plugins/templates/node-automation",
+      "../deecodex-plugins/templates/python-datasource",
+      "resources/opencode/opencode-windows-x64.exe"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5MTA5RUEzQUQ1NEE0RDQKUldUVXBGU3RvNTRRT1ZLa0lGU1lLa3lEZy9XWnVQY0Q4SjFNczR0RUlCYnlBRnhRNTBTRzVjK2oK",
+      "endpoints": [
+        "https://api.liguan.me/releases/dex-ai/windows/latest.json"
+      ]
+    }
+  }
+}

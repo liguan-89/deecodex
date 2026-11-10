@@ -1,0 +1,55 @@
+/* Collapsible section */
+.collapsible-section {
+  margin-top: 16px;
+}
+.collapsible-toggle {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); cursor: pointer;
+  padding: 8px 0; text-transform: uppercase; letter-spacing: 0.06em;
+  background: none; border: none; width: 100%; text-align: left;
+  transition: color var(--transition);
+}
+.collapsible-toggle:hover { color: var(--text-primary); }
+.collapsible-toggle .arrow {
+  font-size: 9px; transition: transform var(--transition); color: var(--text-muted);
+}
+.collapsible-toggle.open .arrow { transform: rotate(90deg); }
+.collapsible-content {
+  display: none; padding-bottom: 12px;
+}
+.collapsible-content.open { display: block; }
+
+/* Accounts bottom actions */
+.accounts-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+  padding: 16px 0 2px;
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+}
+.accounts-actions .btn {
+  min-width: 112px;
+  flex: 0 1 140px;
+}
+
+/* Section label for model mapping */
+.section-sub-label {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 650;
+  color: var(--text-heading); margin-top: 14px; margin-bottom: 6px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-sub-label::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+

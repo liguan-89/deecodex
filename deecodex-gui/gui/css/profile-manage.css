@@ -1,0 +1,659 @@
+/* ═══════════════════════════════════════════════════════════════
+   个人中心 · 登录后管理界面（v6 · 账号管理模型表单风格）
+   复用账号管理的分区表单视觉：account-edit-section + section-sub-label
+   + config-fields/config-field；内容区默认留白与滚动，登录页不受影响。
+   深色默认 + [data-theme="light"] 覆盖。
+   ═══════════════════════════════════════════════════════════════ */
+
+.main.profile-manage-main {
+  /* 保留内容区外 8px 外框线（--status-outer-gap），内容框内用内边距撑出与账号管理一致的留白 */
+  --status-outer-gap: 8px;
+  --status-shell-radius: calc(var(--main-content-radius, 22px) - var(--status-outer-gap));
+  height: 100vh;
+  margin: 0;
+  padding: 8px;
+  overflow: hidden !important;
+}
+[data-theme="dark"] .main.profile-manage-main {
+  background: var(--shell-chrome-bg) !important;
+}
+[data-theme="light"] .main.profile-manage-main {
+  margin: 0;
+  padding: 8px;
+  height: 100vh;
+  border-radius: 0;
+  background: #f7f8fa !important;
+}
+
+.pm-shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 主窗格：约束主体（边框 / 背景对比 / 阴影） ───────────────── */
+.pm-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #2f4268;
+  border: 1px solid #556d95;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), 0 2px 10px rgba(0, 0, 0, 0.22);
+}
+
+.pm-panel-center {
+  min-height: 420px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.pm-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  background: rgba(10, 132, 255, 0.14);
+  color: #4da3ff;
+}
+.pm-mark svg {
+  width: 24px;
+  height: 24px;
+}
+.pm-loading-title {
+  margin: 2px 0 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pm-loading-text {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ── 顶栏 ─────────────────────────────────────────────────────── */
+.pm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  /* 顶部留白与登录页品牌区（约 26px）一致，标题不贴内容框顶 */
+  padding: 24px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.pm-title h2 {
+  margin: 0;
+  font-size: 18px;
+  /* 与账号管理标题 h2 一致：字重 430、主标题色、行高 1.2 */
+  font-weight: 430;
+  letter-spacing: -0.01em;
+  color: var(--text-heading);
+  line-height: 1.2;
+}
+.pm-title p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── 按钮：与账号管理 .btn 设计规范一致 ──────────────────────── */
+.pm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+.pm-btn-primary {
+  background: rgba(88, 166, 255, 0.106);
+  border-color: rgba(88, 166, 255, 0.24);
+  color: #58a6ff;
+}
+.pm-btn-primary:hover {
+  background: rgba(88, 166, 255, 0.18);
+}
+.pm-btn-danger {
+  background: transparent;
+  border-color: rgba(255, 60, 92, 0.3);
+  color: #ff6b5e;
+}
+.pm-btn-danger:hover {
+  background: rgba(255, 60, 92, 0.12);
+}
+.pm-btn-ghost {
+  background: #1b202a;
+  border-color: rgba(218, 226, 240, 0.114);
+  color: #b8c2d0;
+}
+.pm-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #eef3fb;
+}
+.pm-btn[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pm-badge {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(168, 190, 226, 0.16);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ── 账号卡 ───────────────────────────────────────────────────── */
+.pm-account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.pm-avatar {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 700;
+}
+.pm-account-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pm-account-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pm-account-line strong {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pm-account-main p {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.pm-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 6px 2px;
+}
+.pm-tag {
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(168, 190, 226, 0.16);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 550;
+  vertical-align: 1px;
+}
+.pm-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.pm-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.pm-status.is-ok { color: var(--text-secondary); }
+.pm-status.is-warn { color: var(--amber, #ff9f0a); }
+.pm-status.is-off { color: var(--text-muted); }
+
+/* ── 折叠卡内组件（开关 / 信息网格 / 次级折叠） ───────────────── */
+.pm-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 2px 2px 4px;
+}
+.pm-toggle-copy {
+  min-width: 0;
+}
+.pm-toggle-copy strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pm-toggle-copy p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pm-switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  cursor: pointer;
+}
+.pm-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+.pm-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.2s;
+}
+.pm-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s;
+}
+.pm-switch input:checked + .pm-switch-track {
+  background: #0a84ff;
+}
+.pm-switch input:checked + .pm-switch-track::after {
+  transform: translateX(16px);
+}
+
+.pm-meta-lines {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(168, 190, 226, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pm-meta-lines strong {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.pm-meta-status {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.pm-sub {
+  margin-top: 10px;
+  border-top: 1px solid rgba(168, 190, 226, 0.12);
+}
+.pm-sub summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 11px 2px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--accent, #4da3ff);
+  user-select: none;
+}
+.pm-sub summary::-webkit-details-marker { display: none; }
+.pm-sub[open] summary {
+  color: var(--text-secondary);
+}
+.pm-sub-body {
+  padding: 2px 2px 14px;
+}
+.pm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.pm-field > span {
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+.pm-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(168, 190, 226, 0.24);
+  border-radius: 8px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.pm-input:focus {
+  border-color: #0a84ff;
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.16);
+}
+.pm-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.pm-conn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 2px 12px;
+}
+.pm-conn-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.pm-conn-dot.is-ok { background: var(--green, #34c759); }
+.pm-conn-dot.is-warn { background: var(--amber, #ff9f0a); }
+.pm-conn-dot.is-error { background: var(--red, #ff453a); }
+.pm-conn-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pm-conn-copy strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.pm-conn-copy p {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.pm-svc {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 2px 4px;
+  border-top: 1px solid rgba(168, 190, 226, 0.12);
+}
+.pm-svc > span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pm-err {
+  margin-bottom: 10px;
+  padding: 8px 11px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ff6b5e;
+  background: rgba(217, 79, 58, 0.1);
+  border: 1px solid rgba(217, 79, 58, 0.26);
+  border-radius: 8px;
+}
+
+/* ── 窄窗口适配 ───────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .pm-account {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 640px) {
+  .pm-head {
+    padding: 0 0 14px;
+  }
+}
+
+/* ── 亮色主题覆盖 ─────────────────────────────────────────────── */
+[data-theme="light"] .pm-panel {
+  background: #ffffff;
+  border-color: rgba(29, 29, 31, 0.2);
+  box-shadow: 0 20px 50px rgba(29, 29, 31, 0.14), 0 2px 10px rgba(29, 29, 31, 0.08);
+}
+[data-theme="light"] .pm-head {
+  border-bottom-color: rgba(29, 29, 31, 0.08);
+}
+[data-theme="light"] .pm-avatar {
+  background: rgba(29, 29, 31, 0.05);
+}
+[data-theme="light"] .pm-badge,
+[data-theme="light"] .pm-tag {
+  background: rgba(29, 29, 31, 0.07);
+  color: #3a3a3c;
+}
+[data-theme="light"] .pm-meta-lines,
+[data-theme="light"] .pm-svc,
+[data-theme="light"] .pm-sub {
+  border-color: rgba(29, 29, 31, 0.08);
+}
+[data-theme="light"] .pm-btn-ghost {
+  background: #ffffff;
+  color: #505761;
+  border-color: rgba(29, 29, 31, 0.14);
+}
+[data-theme="light"] .pm-btn-ghost:hover {
+  background: rgba(29, 29, 31, 0.05);
+  color: #1d1d1f;
+}
+[data-theme="light"] .pm-btn-primary {
+  background: #ffffff;
+  color: #0a6fd8;
+  border-color: rgba(10, 132, 255, 0.18);
+}
+[data-theme="light"] .pm-btn-primary:hover {
+  background: #f0f7ff;
+}
+[data-theme="light"] .pm-btn-danger {
+  background: transparent;
+  color: #d92d20;
+  border-color: rgba(217, 45, 32, 0.22);
+}
+[data-theme="light"] .pm-input {
+  background: #ffffff;
+  border-color: rgba(29, 29, 31, 0.16);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   账号管理模型表单风格（v6）
+   复用 accounts 表单外壳与分区样式，登录页保持不动。
+   ═══════════════════════════════════════════════════════════════ */
+.profile-form-shell {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 圆角矩形内容框 + 内容内边距（表单不贴框边缘，内容到窗口 ≈ 账号管理） */
+  border-radius: var(--status-shell-radius, 14px);
+  padding: 24px 28px 20px;
+  overflow: hidden;
+}
+.main.profile-manage-main .profile-form-shell {
+  /* 覆盖 .primary-page-shell：固定内容框高度，表单在内滚动 */
+  height: 100% !important;
+  border-radius: var(--status-shell-radius, 14px) !important;
+  padding: 24px 28px 20px !important;
+  overflow: hidden !important;
+}
+.profile-form-shell > .accounts-page-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.profile-form-shell .accounts-scroll-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px 28px 0;
+}
+.profile-account-form {
+  width: 100%;
+  max-width: none;
+}
+.profile-form-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 折叠分区（账号云同步 / 偏好设置 / 设备与服务 / 匿名统计） ── */
+.profile-collapse summary {
+  list-style: none;
+  cursor: pointer;
+}
+.profile-collapse summary::-webkit-details-marker {
+  display: none;
+}
+.profile-collapse-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 10px;
+  user-select: none;
+}
+.profile-collapse-head .section-sub-label {
+  margin: 0;
+}
+.profile-collapse-head .pm-badge {
+  margin-left: auto;
+}
+.profile-collapse-head::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.2s ease;
+  color: var(--text-muted);
+}
+.profile-collapse[open] .profile-collapse-head::after {
+  transform: rotate(45deg);
+}
+.profile-collapse-body {
+  padding: 6px 0 18px;
+}
+
+/* ── 账号管理同款表格（待授权 / 已授权 / 设备 / 授权记录） ── */
+.profile-model-table {
+  max-height: none;
+}
+.profile-model-head {
+  grid-template-columns: minmax(140px, 1.6fr) minmax(96px, auto) minmax(150px, 1fr);
+}
+.profile-model-row {
+  min-height: 44px;
+}
+.profile-model-name .pm-tag {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+.profile-model-status {
+  justify-self: start;
+}
+.profile-model-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.profile-model-actions {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.profile-model-actions .pm-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+.profile-model-row.disabled {
+  opacity: 0.6;
+}
+
+
+/* 个人中心 · 法律与隐私入口 */
+.pm-legal-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 14px 2px 4px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pm-legal-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-heading);
+  margin-right: 4px;
+}
+.pm-link-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.pm-link-btn:hover {
+  color: var(--accent);
+}
+.pm-legal-links .pm-dot {
+  opacity: 0.5;
+}
+
+/* 分区头计数徽标：避免被 grid 的 1fr 列拉伸成大长条 */
+.profile-account-form .account-section-head .pm-badge {
+  width: fit-content;
+  justify-self: start;
+  align-self: center;
+  margin-left: 4px;
+}

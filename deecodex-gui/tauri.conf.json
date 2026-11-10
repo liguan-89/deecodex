@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "DEX AI",
+  "version": "4.4.7",
+  "identifier": "com.deecodex.app",
+  "mainBinaryName": "deecodex-gui",
+  "build": {
+    "frontendDist": "gui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "DEX AI",
+        "width": 1000,
+        "height": 650,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/.deecodex/wb-resources/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "createUpdaterArtifacts": true,
+    "resources": [
+      "../deecodex-plugins/plugins/deecodex-weixin",
+      "../deecodex-plugins/plugins/deecodex-mobile-codex",
+      "../deecodex-plugins/plugins/deecodex-desktop-sync",
+      "../deecodex-plugins/plugins/deecodex-debug",
+      "../deecodex-plugins/templates/node-tool",
+      "../deecodex-plugins/templates/node-automation",
+      "../deecodex-plugins/templates/python-datasource"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ]
+      },
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGREI4RTQ5MUI1ODE3OApSV1I0Z2JXUjVMajlCdys3dWZQTmVoRGppQ0lxSk43U0xlNXRzbU84MmFCcTgwWFBqMGptL21tUgo=",
+      "endpoints": [
+        "https://api.liguan.me/releases/dex-ai/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

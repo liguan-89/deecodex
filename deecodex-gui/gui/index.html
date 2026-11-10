@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DEX AI · 控制台</title>
+<link rel="stylesheet" href="css/base.css?v=20260818b">
+<link rel="stylesheet" href="css/status.css">
+<link rel="stylesheet" href="css/config.css">
+<link rel="stylesheet" href="css/diagnostics.css">
+<link rel="stylesheet" href="css/help.css">
+<link rel="stylesheet" href="css/controls.css">
+<link rel="stylesheet" href="css/scrollbar.css">
+<link rel="stylesheet" href="css/history-overview.css">
+<link rel="stylesheet" href="css/history-balance.css">
+<link rel="stylesheet" href="css/history-providers.css">
+<link rel="stylesheet" href="css/history-model-mapping.css">
+<link rel="stylesheet" href="css/history-account-form.css?v=20260818a">
+<link rel="stylesheet" href="css/history-quick-config.css?v=20260818d">
+<link rel="stylesheet" href="css/history-misc.css">
+<link rel="stylesheet" href="css/threads.css">
+<link rel="stylesheet" href="css/plugins.css?v=20260816194500">
+<link rel="stylesheet" href="css/profile-login.css?v=20260819d">
+<link rel="stylesheet" href="css/profile-manage.css?v=20260819a">
+<link rel="stylesheet" href="css/overlays.css?v=20260819a">
+<link rel="stylesheet" href="css/light-theme.css">
+<link rel="stylesheet" href="css/dex.css">
+<link rel="stylesheet" href="css/light-density.css?v=20260818b">
+<link rel="stylesheet" href="css/status-shell.css?v=20260818b">
+<link rel="stylesheet" href="css/accounts.css?v=20260818e">
+<link rel="stylesheet" href="css/accounts-forms.css?v=20260818l">
+<link rel="stylesheet" href="css/threads-light.css">
+<link rel="stylesheet" href="css/plugins-light.css">
+<link rel="stylesheet" href="css/dex-light.css">
+<link rel="stylesheet" href="css/dark-theme.css?v=20260818b">
+<link rel="stylesheet" href="css/dex-dark.css">
+<link rel="stylesheet" href="css/patches-dex.css">
+<link rel="stylesheet" href="css/patches-accounts.css?v=20260818a">
+<link rel="stylesheet" href="css/patches-threads.css">
+<link rel="stylesheet" href="css/patches-status.css">
+<link rel="stylesheet" href="css/patches-quick-config.css">
+<link rel="stylesheet" href="css/patches-help.css?v=20260817a">
+<link rel="stylesheet" href="css/client-dock.css?v=20260820a">
+<link rel="stylesheet" href="css/restore.css?v=20260818j">
+</head>
+<body>
+
+<div class="app">
+  <div class="window-drag-strip" data-window-drag-region aria-hidden="true"></div>
+  <!-- 自定义窗口控制（Windows frameless：最小化/最大化/关闭；macOS 用系统红绿灯，自动隐藏）。
+       图标用 SVG：统一样式与尺寸，随窗口/DPI 自适应，最大化时由 JS 换成“还原”双框。 -->
+  <div class="window-controls" aria-label="窗口控制">
+    <button type="button" class="window-control" id="windowMinimizeBtn" title="最小化" aria-label="最小化">
+      <svg class="wc-icon" viewBox="0 0 12 12" aria-hidden="true"><line x1="2" y1="6" x2="10" y2="6"/></svg>
+    </button>
+    <button type="button" class="window-control" id="windowMaximizeBtn" title="最大化" aria-label="最大化">
+      <svg class="wc-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" fill="none"/></svg>
+    </button>
+    <button type="button" class="window-control window-control-close" id="windowCloseBtn" title="关闭" aria-label="关闭">
+      <svg class="wc-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10"/></svg>
+    </button>
+  </div>
+
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand" data-window-drag-region>
+      <h1>DEX AI</h1>
+    </div>
+
+    <nav class="sidebar-nav" id="sidebarNav"></nav>
+
+    <div class="sidebar-footer">
+      <div class="status-bar" id="statusBar">
+        <span class="indicator ok" id="connDot"></span>
+        <span id="connLabel">服务运行中</span>
+      </div>
+      <div class="theme-toggle" id="themeToggle">
+        <button class="theme-toggle-btn active" data-theme="dark" title="深色模式" aria-label="深色模式">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A7.5 7.5 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"></path></svg>
+        </button>
+        <button class="theme-toggle-btn" data-theme="light" title="亮色模式" aria-label="亮色模式">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 3v2"></path><path d="M12 19v2"></path><path d="M3 12h2"></path><path d="M19 12h2"></path><path d="M5.6 5.6 7 7"></path><path d="M17 17l1.4 1.4"></path><path d="M18.4 5.6 17 7"></path><path d="M7 17l-1.4 1.4"></path></svg>
+        </button>
+        <button class="theme-toggle-btn" data-theme="auto" title="自动切换" aria-label="自动切换">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 4a8 8 0 0 1 0 16z"></path></svg>
+        </button>
+      </div>
+      <button class="save-btn" id="sidebarSaveBtn" onclick="saveConfig()">保存配置</button>
+      <div class="sidebar-status" id="sidebarMsg"></div>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ═══ -->
+  <main class="main" id="mainContent"></main>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<div class="qr-overlay" id="qrOverlay" aria-hidden="true">
+  <div class="qr-dialog">
+    <div class="qr-title">扫码登录</div>
+    <div id="qrOverlayContent">
+      <span style="color:var(--text-muted);">等待二维码...</span>
+    </div>
+    <div class="qr-account" id="qrOverlayAccount"></div>
+    <button class="qr-close" id="qrCloseBtn" type="button">关闭</button>
+  </div>
+</div>
+
+<script src="nav/fragments.js?v=3.1.1"></script>
+
+<script src="js/tauri-api.js?v=3.1.2"></script>
+<script src="js/ui-core.js?v=3.1.1"></script>
+<script src="js/theme-config.js?v=3.1.3"></script>
+<script src="js/telemetry.js?v=3.1.1"></script>
+<script src="js/formatters.js?v=3.1.1"></script>
+<script src="js/log-viewer.js?v=3.1.1"></script>
+<script src="js/service-management.js?v=3.1.3"></script>
+<script src="js/setup-wizard.js?v=3.1.1"></script>
+<script src="js/panels-core.js?v=3.1.13"></script>
+<script src="js/dock-tips.js?v=1.0.1"></script>
+<script src="js/request-history.js?v=3.1.1"></script>
+<script src="js/threads.js?v=3.1.1"></script>
+<script src="js/accounts.js?v=20260818t"></script>
+<script src="js/client-lifecycle.js?v=20260818r"></script>
+<script src="js/plugins.js?v=3.1.5"></script>
+<script src="js/plugins-events.js?v=3.1.1"></script>
+<script src="js/plugins-dev.js?v=3.1.2"></script>
+<script src="js/plugins-detail.js?v=3.1.7"></script>
+<script src="js/plugins-market.js?v=3.1.6"></script>
+<script src="js/plugins-wb.js?v=1.0.1"></script>
+<link rel="stylesheet" href="vendor/xterm/xterm.min.css">
+<script src="vendor/xterm/xterm.min.js?v=5.5.0"></script>
+<script src="vendor/xterm/addon-fit.min.js?v=0.10.0"></script>
+<script src="js/debug.js?v=0.1.0"></script>
+<script src="js/plugins-exports.js?v=3.1.1"></script>
+<script src="js/dex-agent-state.js?v=3.2.0"></script>
+<script src="js/dex-assistant-registry.js?v=3.2.0"></script>
+<script src="js/dex-render-markdown.js?v=3.2.0"></script>
+<script src="js/dex-assistant-opencode.js?v=3.2.0"></script>
+<script src="js/dex-assistant-agent.js?v=3.2.0"></script>
+<script src="js/dex-assistant.js?v=3.2.0"></script>
+<script src="js/dex-assistant-messages.js?v=3.2.0"></script>
+<script src="js/dex-assistant-controls.js?v=3.2.0"></script>
+<script src="js/dex-assistant-attachments.js?v=3.2.0"></script>
+<script src="js/dex-assistant-search.js?v=3.2.0"></script>
+<script src="js/dex-assistant-shortcuts.js?v=3.2.0"></script>
+<script src="js/legal-content.js?v=1.0.0"></script>
+<script src="js/profile-login.js?v=1.0.2"></script>
+<script src="js/placeholder-pages.js?v=3.1.5"></script>
+<script src="js/app-shell.js?v=20260818f"></script>
+<script src="js/startup.js?v=3.1.1"></script>
+</body>
+</html>

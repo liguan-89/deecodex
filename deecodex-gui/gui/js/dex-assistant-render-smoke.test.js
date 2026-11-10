@@ -1,0 +1,197 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const expectedOrder = [
+  'dex-agent-state.js',
+  'dex-assistant-registry.js',
+  'dex-render-markdown.js',
+  'dex-assistant-opencode.js',
+  'dex-assistant-agent.js',
+  'dex-assistant.js',
+  'dex-assistant-messages.js',
+  'dex-assistant-controls.js',
+  'dex-assistant-attachments.js',
+  'dex-assistant-search.js',
+  'dex-assistant-shortcuts.js',
+  'placeholder-pages.js',
+];
+const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const cssFiles = Array.from(indexHtml.matchAll(/<link rel="stylesheet" href="css\/([^"]+)\.css">/g)).map(m => m[1]);
+const appCss = cssFiles
+  .map(f => fs.readFileSync(path.join(__dirname, '..', 'css', `${f}.css`), 'utf8'))
+  .join('\n');
+const dexAssistantSource = fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8');
+const loadedDexScripts = Array.from(indexHtml.matchAll(/<script src="js\/(dex-[^"?]+\.js|placeholder-pages\.js)\?/g))
+  .map(match => match[1])
+  .filter(file => expectedOrder.includes(file));
+assert.deepStrictEqual(loadedDexScripts, expectedOrder);
+assert(!dexAssistantSource.includes('dex-inline-style'));
+assert(appCss.includes('.dex-spinner'));
+assert(appCss.includes('.dex-confirm-command'));
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const context = {
+  console,
+  module: undefined,
+  setTimeout: () => 0,
+  clearTimeout() {},
+  window: {},
+  document: {
+    head: { appendChild() {} },
+    addEventListener() {},
+    getElementById() { return null; },
+    querySelector() { return null; },
+    createElement() {
+      return {
+        id: '',
+        textContent: '',
+        className: '',
+        innerHTML: '',
+        addEventListener() {},
+        appendChild() {},
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        remove() {},
+      };
+    },
+  },
+  deeStorage: {
+    data: {},
+    getItem(key) { return this.data[key] || ''; },
+    setItem(key, value) { this.data[key] = String(value); },
+    removeItem(key) { delete this.data[key]; },
+  },
+  DeeCodexTauri: {
+    invoke: async () => ({}),
+    listen: undefined,
+  },
+  showToast() {},
+  switchPanel() {},
+  loadAccountsData: async () => {},
+  loadPluginsData: async () => {},
+  esc: escapeHtml,
+  escAttr: escapeHtml,
+};
+context.window = context;
+context.window.deeStorage = context.deeStorage;
+context.window.DeeCodexTauri = context.DeeCodexTauri;
+
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-agent-state.js'), 'utf8'), context, { filename: 'dex-agent-state.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-registry.js'), 'utf8'), context, { filename: 'dex-assistant-registry.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-render-markdown.js'), 'utf8'), context, { filename: 'dex-render-markdown.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-agent.js'), 'utf8'), context, { filename: 'dex-assistant-agent.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant.js'), 'utf8'), context, { filename: 'dex-assistant.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-messages.js'), 'utf8'), context, { filename: 'dex-assistant-messages.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-controls.js'), 'utf8'), context, { filename: 'dex-assistant-controls.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-attachments.js'), 'utf8'), context, { filename: 'dex-assistant-attachments.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-search.js'), 'utf8'), context, { filename: 'dex-assistant-search.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'dex-assistant-shortcuts.js'), 'utf8'), context, { filename: 'dex-assistant-shortcuts.js' });
+vm.runInContext(fs.readFileSync(path.join(__dirname, 'placeholder-pages.js'), 'utf8'), context, { filename: 'placeholder-pages.js' });
+
+assert.strictEqual(typeof context.renderDexAssistant, 'function');
+assert.strictEqual(typeof context.renderProfile, 'function');
+assert.strictEqual(typeof context.window.dexAgent.run, 'function');
+assert.strictEqual(typeof context.dexBuildSystemPrompt, 'function');
+assert.strictEqual(typeof context.dexLoadDynamicContext, 'function');
+assert.strictEqual(typeof context.dexAppendMessage, 'function');
+assert.strictEqual(typeof context.dexShowInlineConfirm, 'function');
+assert.strictEqual(typeof context.dexLoadAccounts, 'function');
+assert.strictEqual(typeof context.dexLoadModels, 'function');
+assert.strictEqual(typeof context.dexUpdateTokenCount, 'function');
+assert.strictEqual(typeof context.dexAttachLastFile, 'function');
+assert.strictEqual(typeof context.dexToggleSearch, 'function');
+assert.strictEqual(typeof context.dexBindShortcuts, 'function');
+
+const dexHtml = context.renderDexAssistant();
+assert(dexHtml.includes('primary-page-shell-dex-assistant'));
+assert(dexHtml.includes('id="dexMessages"'));
+assert(dexHtml.includes('id="dexInput"'));
+assert(dexHtml.includes('id="dexAccountMenu"'));
+assert(dexHtml.includes('onclick="dexSendMessage()"'));
+assert(dexHtml.includes('onclick="dexAttachLastFile(event)"'));
+
+const welcome = context.dexWelcomeHTML();
+assert(welcome.includes('AI 链总览'));
+assert(welcome.includes('插件状态'));
+
+const profileHtml = context.renderProfile();
+assert(profileHtml.includes('个人中心'));
+assert(!profileHtml.includes('DEX助手'));
+
+(async () => {
+  const modelMenu = { innerHTML: '' };
+  context.document.getElementById = id => (id === 'dexModelMenu' ? modelMenu : null);
+  context.DeeCodexTauri.invoke = async (cmd, args) => {
+    if (cmd === 'get_dex_assistant_account') {
+      return {
+        id: 'openai-account',
+        known_models: ['gpt-5.3-codex'],
+        endpoints: [{ known_models: ['mimo-v2.5'] }],
+        model_map: { legacy: 'legacy-model' },
+      };
+    }
+    if (cmd === 'fetch_upstream_models') {
+      assert.strictEqual(args.accountId, 'openai-account');
+      return ['gpt-5.5', 'gpt-5.4'];
+    }
+    return {};
+  };
+  context.dexLoadModels();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert(modelMenu.innerHTML.includes('gpt-5.5'));
+  assert(modelMenu.innerHTML.includes('gpt-5.4'));
+  assert(!modelMenu.innerHTML.includes('gpt-5.3-codex'));
+  assert(modelMenu.innerHTML.includes('mimo-v2.5'));
+  assert(modelMenu.innerHTML.includes('legacy-model'));
+
+  const accountMenu = { innerHTML: '', style: { display: '' } };
+  const accountBtn = { innerHTML: '' };
+  context.document.getElementById = id => {
+    if (id === 'dexAccountMenu') return accountMenu;
+    if (id === 'dexAccountBtn') return accountBtn;
+    if (id === 'dexModelMenu') return modelMenu;
+    return null;
+  };
+  context.DeeCodexTauri.invoke = async (cmd, args) => {
+    if (cmd === 'list_accounts') {
+      return {
+        active_by_surface: { 'codex:desktop': { account_id: 'desktop-account' } },
+        accounts: [
+          { id: 'cli-account', name: 'CLI Account', client_kind: 'codex', client_surface: 'cli' },
+          { id: 'desktop-account', name: 'Desktop Account', client_kind: 'codex', client_surface: 'desktop' },
+        ],
+      };
+    }
+    if (cmd === 'set_dex_assistant_account') {
+      assert.strictEqual(args.accountId, 'desktop-account');
+      return { id: 'desktop-account', name: 'Desktop Account', client_kind: 'codex', client_surface: 'desktop' };
+    }
+    if (cmd === 'get_dex_assistant_account') return { id: 'desktop-account' };
+    if (cmd === 'fetch_upstream_models') return [];
+    return {};
+  };
+  context.dexLoadAccounts();
+  await new Promise(resolve => setImmediate(resolve));
+  assert(accountMenu.innerHTML.includes('Desktop Account'));
+  assert(accountMenu.innerHTML.includes('CLI Account'));
+  assert(accountBtn.innerHTML.includes('Codex'));
+  assert(accountBtn.innerHTML.includes('桌面'));
+  await context.dexSelectAccount('desktop-account');
+  assert(accountBtn.innerHTML.includes('Desktop Account'));
+
+  console.log('dex assistant render smoke ok');
+})().catch(error => {
+  console.error(error);
+  process.exit(1);
+});

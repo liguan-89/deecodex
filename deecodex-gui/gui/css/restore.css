@@ -1,0 +1,176 @@
+/* 恢复：动态类名被死类清理误删的规则（修复 +号/图标/面板样式回归） */
+.balance-sub-label {
+  font-size: 10px;
+}
+.provider-logo-qwen {
+  width: 42px;
+}
+.provider-logo-glm {
+  height: 25px;
+  max-width: none;
+}
+.provider-logo-opencode,
+.provider-logo-custom {
+  height: 38px;
+}
+.provider-logo-longcat {
+  height: 39px;
+  max-width: 66px;
+}
+.provider-logo-openai {
+  height: 43px;
+}
+.provider-logo-google-ai {
+  height: 41px;
+}
+.provider-logo-anthropic,
+.provider-logo-claude {
+  height: 43px;
+}
+/* ── 插件市场 ── */
+.primary-page-shell-plugins {
+  container: plugin-page / inline-size;
+}
+.plugin-feature-card-datasource,
+.plugin-feature-card-automation {
+  background: rgba(255,255,255,0.028);
+}
+.line-action-icon-import { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v10'/%3E%3Cpath d='m8.5 10.5 3.5 3.5 3.5-3.5'/%3E%3Cpath d='M5 18h14'/%3E%3C/svg%3E"); }
+.line-action-icon-plus { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5v14'/%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E"); }
+.line-action-icon-edit { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19.5h4.2L18.6 9.1a2 2 0 0 0-2.8-2.8L5.4 16.7 4 19.5Z'/%3E%3Cpath d='m14.4 7.7 2.8 2.8'/%3E%3C/svg%3E"); }
+.line-action-icon-refresh,
+.line-action-icon-test-upstream { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12h4l2.1-5 3.8 10 2.1-5h4'/%3E%3C/svg%3E"); }
+.line-action-icon-unarchive { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 8h14v11H5z'/%3E%3Cpath d='M4 5h16v3H4z'/%3E%3Cpath d='m12 16-3-3'/%3E%3Cpath d='m12 16 3-3'/%3E%3Cpath d='M12 10v6'/%3E%3C/svg%3E"); }
+.line-action-icon-clock { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='7.5'/%3E%3Cpath d='M12 8v4.4l3 1.8'/%3E%3C/svg%3E"); }
+.line-action-icon-reset { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7.2 8.1A6.5 6.5 0 1 1 6 12'/%3E%3Cpath d='M7 4.8v3.6h3.6'/%3E%3C/svg%3E"); }
+.line-action-icon-pause { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6.5v11'/%3E%3Cpath d='M15 6.5v11'/%3E%3C/svg%3E"); }
+.line-action-icon-play { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.5 6.5 17 12l-8.5 5.5Z'/%3E%3C/svg%3E"); }
+/* 高级设置收口：和账号管理保持同一套“白底、细线、紧凑清单”语言。 */
+[data-theme="light"] .primary-page-shell-config {
+  --config-line: rgba(29,29,31,0.105);
+  --config-line-soft: rgba(29,29,31,0.068);
+  --config-muted: #858b95;
+  --config-text: #202124;
+  --config-soft-bg: rgba(247,248,250,0.72);
+}
+.primary-page-shell-sessions {
+  padding-top: 52px;
+}
+.primary-page-shell-threads .thread-client-tabs .client-logo-box {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: 10px;
+}
+.primary-page-shell-threads .codex-thread-actions {
+  margin: 0 0 8px;
+}
+/* 线程聚合细节：刷新图标换成干净单环，列表列宽避免过早截断。 */
+.line-action-icon-thread-refresh {
+  --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.28' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19.2 9.2A7.4 7.4 0 1 0 20 12'/%3E%3Cpath d='M19.2 4.8v4.4h-4.4'/%3E%3C/svg%3E");
+}
+/* 使用帮助页独立压住旧格式，保持白底轻量阅读风格。 */
+[data-theme="light"] .primary-page-shell-help,
+[data-theme="dark"] .primary-page-shell-help {
+  padding-top: 0 !important;
+}
+[data-theme="light"] .primary-page-shell-help .help-section code {
+  padding: 1px 4px;
+  border: 1px solid rgba(29,29,31,0.06);
+  border-radius: 4px;
+  background: #f7f8fa;
+  color: #3f4652;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+[data-theme="light"] .primary-page-shell-help .code-block {
+  margin: 10px 0 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--sink-border);
+  border-radius: var(--sink-radius);
+  background: #fbfcfe;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .primary-page-shell-help .help-toc a,
+[data-theme="dark"] .primary-page-shell-help .code-block {
+  border-color: var(--sink-border) !important;
+  background: var(--sink-bg) !important;
+  box-shadow: none !important;
+}
+[data-theme="dark"] .primary-page-shell-help .help-toc a {
+  color: var(--text-secondary) !important;
+}
+[data-theme="dark"] .primary-page-shell-help .help-section h3,
+[data-theme="dark"] .primary-page-shell-help .code-block pre {
+  color: var(--text-heading) !important;
+}
+[data-theme="dark"] .primary-page-shell-help .help-section p,
+[data-theme="dark"] .primary-page-shell-help .help-section li {
+  color: var(--text-secondary) !important;
+}
+/* 顶部账号导航：粘贴使用剪贴板图标，DEX 作为功能入口占位按钮。 */
+.line-action-icon-clipboard { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 4.5h6l.8 2H18a2 2 0 0 1 2 2v9.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8.5a2 2 0 0 1 2-2h2.2L9 4.5Z'/%3E%3Cpath d='M8.5 6.5h7'/%3E%3Cpath d='M8 11h8'/%3E%3Cpath d='M8 15h5.5'/%3E%3C/svg%3E"); }
+
+/* 恢复：账号 provider 徽章 / DEX 消息 / 日志级别 动态类样式 */
+.log-level-error {
+  color: #ff3c5c; background: var(--red-dim);
+}
+
+.log-level-warn {
+  color: #f09040; background: var(--amber-dim);
+}
+
+.log-level-info {
+  color: #00c8e8; background: var(--accent-dim);
+}
+
+.log-level-debug {
+  color: var(--text-muted); background: rgba(58,79,114,0.15);
+}
+
+.log-level-unknown {
+  color: var(--text-muted); background: transparent;
+}
+
+.badge-kimi {
+  background: rgba(88,166,255,0.10); color: #58a6ff; border: 1px solid rgba(88,166,255,0.22);
+}
+
+.badge-minimax {
+  background: rgba(168,123,255,0.10); color: #a87bff; border: 1px solid rgba(168,123,255,0.22);
+}
+
+.badge-glm {
+  background: rgba(0,214,143,0.10); color: var(--green); border: 1px solid rgba(0,214,143,0.22);
+}
+
+.badge-openai {
+  background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2);
+}
+
+.badge-opencode {
+  background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,200,232,0.2);
+}
+
+.badge-anthropic {
+  background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2);
+}
+
+.badge-google-ai {
+  background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2);
+}
+
+.badge-hermes {
+  background: rgba(124,92,255,0.12); color: #a995ff; border: 1px solid rgba(124,92,255,0.26);
+}
+
+.badge-custom {
+  background: rgba(107,127,168,0.08); color: var(--text-secondary); border: 1px solid var(--border-subtle);
+}
+
+/* ── 用户气泡：霓虹玻璃 ── */
+.dex-msg-user {
+  display: flex; justify-content: flex-end;
+}

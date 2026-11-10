@@ -1,0 +1,14 @@
+{
+  "bundle": {
+    "resources": [
+      "../deecodex-plugins/plugins/deecodex-weixin",
+      "../deecodex-plugins/plugins/deecodex-mobile-codex",
+      "../deecodex-plugins/plugins/deecodex-desktop-sync",
+      "../deecodex-plugins/plugins/deecodex-debug",
+      "../deecodex-plugins/templates/node-tool",
+      "../deecodex-plugins/templates/node-automation",
+      "../deecodex-plugins/templates/python-datasource",
+      "resources/opencode/opencode-darwin-arm64"
+    ]
+  }
+}

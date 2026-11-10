@@ -1,0 +1,184 @@
+use serde_json::{json, Value};
+use std::path::Path;
+use std::time::Duration;
+use tauri::State;
+
+use crate::ServerManager;
+
+const DESKTOP_INDEX_STABILIZE_ATTEMPTS: usize = 4;
+const DESKTOP_INDEX_STABILIZE_DELAY_MS: u64 = 1_500;
+
+pub async fn get_threads_status_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let status =
+        deecodex::codex_threads::status(&data_dir).map_err(|e| format!("获取线程状态失败: {e}"))?;
+
+    let managed_provider = status.managed_provider.clone();
+    let active_provider = managed_provider.clone();
+
+    Ok(json!({
+        "summary": status.summary,
+        "total": status.total,
+        "managed_provider": managed_provider,
+        "non_deecodex_count": status.non_deecodex_count,
+        "non_unified_count": status.non_deecodex_count,
+        "provider_unified_count": status.provider_unified_count,
+        "codex_visible_count": status.codex_visible_count,
+        "missing_preview_count": status.missing_preview_count,
+        "missing_user_event_count": status.missing_user_event_count,
+        "current_cwd_visible_count": status.current_cwd_visible_count,
+        "desktop_project_indexed_count": status.desktop_project_indexed_count,
+        "desktop_project_pending_count": status.desktop_project_pending_count,
+        "desktop_project_repair_blocked": status.desktop_project_repair_blocked,
+        "desktop_recent_visible_count": status.desktop_recent_visible_count,
+        "desktop_recent_pending_count": status.desktop_recent_pending_count,
+        "desktop_recent_repair_blocked": status.desktop_recent_repair_blocked,
+        "source_summary": status.source_summary,
+        "context_window": status.context_window,
+        "migrated": status.migrated,
+        "codex_desktop_running": status.codex_desktop_running,
+        "calibration_needed": false,
+        "active_provider": active_provider,
+    }))
+}
+
+pub async fn list_threads_impl() -> Result<Value, String> {
+    let threads =
+        deecodex::codex_threads::list_all().map_err(|e| format!("获取线程列表失败: {e}"))?;
+    serde_json::to_value(threads).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn get_thread_sources_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let sources = deecodex::client_threads::get_thread_sources(&data_dir);
+    serde_json::to_value(sources).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn list_client_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let list = deecodex::client_threads::list_client_threads(&data_dir);
+    serde_json::to_value(list).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn migrate_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = deecodex::codex_threads::migrate(&data_dir).map_err(|e| format!("归一失败: {e}"))?;
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn normalize_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = normalize_desktop_threads_stabilized(&data_dir).await?;
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+async fn normalize_desktop_threads_stabilized(
+    data_dir: &Path,
+) -> Result<deecodex::codex_threads::MigrationDiff, String> {
+    let mut diff = deecodex::codex_threads::normalize_desktop_threads(data_dir)
+        .map_err(|e| format!("归一失败: {e}"))?;
+    if !diff.codex_desktop_running || diff.desktop_project_fixed_count == 0 {
+        return Ok(diff);
+    }
+
+    for attempt in 1..=DESKTOP_INDEX_STABILIZE_ATTEMPTS {
+        tokio::time::sleep(Duration::from_millis(DESKTOP_INDEX_STABILIZE_DELAY_MS)).await;
+        let status = deecodex::codex_threads::status(data_dir)
+            .map_err(|e| format!("复查线程状态失败: {e}"))?;
+        if status.desktop_project_pending_count == 0 {
+            break;
+        }
+
+        tracing::warn!(
+            attempt,
+            pending = status.desktop_project_pending_count,
+            "Codex Desktop 项目索引被运行态回写，重新归一"
+        );
+        diff = deecodex::codex_threads::normalize_desktop_threads(data_dir)
+            .map_err(|e| format!("归一失败: {e}"))?;
+    }
+
+    Ok(diff)
+}
+
+pub async fn restore_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff = deecodex::codex_threads::restore(&data_dir).map_err(|e| format!("还原失败: {e}"))?;
+    // 还原后若服务未运行，清理 Codex config.toml 中的 deecodex 注入
+    if !manager.is_running().await {
+        deecodex::codex_config::remove();
+    }
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn calibrate_threads_impl(manager: State<'_, ServerManager>) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    let diff =
+        deecodex::codex_threads::calibrate(&data_dir).map_err(|e| format!("校准失败: {e}"))?;
+    serde_json::to_value(diff).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 列出 Time Machine 本地快照（线程快照恢复入口）。
+pub async fn list_thread_snapshots_impl() -> Result<Value, String> {
+    let snaps = deecodex::snapshot_restore::list_snapshots()
+        .map_err(|e| format!("获取快照列表失败: {e}"))?;
+    serde_json::to_value(snaps).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 预览从指定快照恢复线程的效果（只读，不写入）。
+pub async fn preview_thread_snapshot_restore_impl(snapshot_name: String) -> Result<Value, String> {
+    let snaps = deecodex::snapshot_restore::list_snapshots()
+        .map_err(|e| format!("获取快照列表失败: {e}"))?;
+    let snap = snaps
+        .into_iter()
+        .find(|s| s.name == snapshot_name)
+        .ok_or_else(|| format!("快照不存在: {snapshot_name}"))?;
+    let preview = deecodex::snapshot_restore::preview_restore(&snap)
+        .map_err(|e| format!("预览恢复失败: {e}"))?;
+    serde_json::to_value(preview).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 执行从指定快照恢复线程（备份 → 合并 → 复制 rollout → 校验）。
+pub async fn execute_thread_snapshot_restore_impl(snapshot_name: String) -> Result<Value, String> {
+    let snaps = deecodex::snapshot_restore::list_snapshots()
+        .map_err(|e| format!("获取快照列表失败: {e}"))?;
+    let snap = snaps
+        .into_iter()
+        .find(|s| s.name == snapshot_name)
+        .ok_or_else(|| format!("快照不存在: {snapshot_name}"))?;
+    let result = deecodex::snapshot_restore::execute_restore(&snap)
+        .map_err(|e| format!("快照恢复失败: {e}"))?;
+    serde_json::to_value(result).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn get_thread_content_impl(thread_id: String) -> Result<Value, String> {
+    let content = deecodex::codex_threads::get_thread_content(&thread_id)
+        .map_err(|e| format!("获取线程内容失败: {e}"))?;
+    serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn get_client_thread_content_impl(
+    client_kind: String,
+    native_id: String,
+    thread_key: Option<String>,
+) -> Result<Value, String> {
+    let kind = deecodex::client_threads::parse_client_kind(&client_kind)
+        .ok_or_else(|| format!("未知客户端类型: {client_kind}"))?;
+    let content = deecodex::client_threads::get_client_thread_content(
+        kind,
+        &native_id,
+        thread_key.as_deref(),
+    )
+    .map_err(|e| format!("获取线程内容失败: {e}"))?;
+    serde_json::to_value(content).map_err(|e| format!("序列化失败: {e}"))
+}
+
+pub async fn delete_thread_impl(
+    manager: State<'_, ServerManager>,
+    thread_id: String,
+) -> Result<Value, String> {
+    let data_dir = manager.data_dir.lock().await.clone();
+    deecodex::codex_threads::delete_thread(&data_dir, &thread_id)
+        .map_err(|e| format!("删除线程失败: {e}"))?;
+    Ok(json!({ "ok": true, "message": "线程已永久删除" }))
+}

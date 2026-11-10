@@ -1,0 +1,159 @@
+/* ── QR 弹窗 ── */
+.qr-overlay {
+  display: none; position: fixed; z-index: 9999;
+  left: 0; top: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.7);
+  justify-content: center; align-items: center;
+}
+.qr-overlay.show { display: flex; }
+.qr-dialog {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 24px;
+  text-align: center; max-width: 360px; width: 90%;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.qr-dialog img {
+  max-width: 240px; background: white; padding: 12px;
+  border-radius: 8px; display: block; margin: 0 auto;
+}
+.qr-dialog .qr-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
+.qr-dialog .qr-hint { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+.qr-dialog .qr-account { font-size: 11px; color: var(--accent); margin-top: 4px; }
+.qr-dialog .qr-close {
+  margin-top: 14px; padding: 6px 24px;
+  background: var(--accent-dim); border: 1px solid rgba(0,200,232,0.3);
+  color: var(--accent); border-radius: var(--radius-sm);
+  cursor: pointer; font-family: var(--font-mono); font-size: 11px;
+}
+
+/* 联系作者 / 赞助弹窗：三码并排（复用 qr-overlay 弹窗样式） */
+.qr-dialog-wide {
+  max-width: 560px;
+  width: 92%;
+}
+.qr-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 2px;
+}
+.qr-fig {
+  margin: 0;
+  min-width: 0;
+}
+.qr-fig img {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.qr-fig figcaption {
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* 隐私政策 / 服务条款弹窗：复用 qr-overlay 容器，宽版左对齐可滚动 */
+.qr-dialog.legal-dialog {
+  max-width: 780px;
+  width: 92%;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  text-align: left;
+}
+.qr-dialog.legal-dialog .qr-title {
+  text-align: center;
+  flex: 0 0 auto;
+}
+.qr-dialog.legal-dialog #qrOverlayContent {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  text-align: left;
+}
+.qr-dialog.legal-dialog .qr-close {
+  display: block;
+  margin: 18px auto 0;
+  flex: 0 0 auto;
+}
+.legal-doc {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.legal-doc .legal-doc-head {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.legal-doc .legal-doc-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.legal-doc .legal-doc-meta {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.legal-doc h4 {
+  margin: 16px 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.legal-doc p {
+  margin: 6px 0;
+}
+.legal-doc ul {
+  margin: 6px 0 6px 18px;
+  padding: 0;
+}
+.legal-doc li {
+  margin: 4px 0;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   亮色主题 — Daylight Instrument
+   ══════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --bg-root: #ffffff;
+  --bg-surface: rgba(255,255,255,0.86);
+  --bg-elevated: rgba(255,255,255,0.96);
+  --bg-card: rgba(255,255,255,0.98);
+  --bg-input: rgba(255,255,255,0.98);
+  --bg-deeper: rgba(246, 248, 251, 0.92);
+
+  --border: rgba(60, 64, 72, 0.18);
+  --border-subtle: rgba(60, 64, 72, 0.11);
+  --border-default: rgba(60, 64, 72, 0.18);
+  --border-active: #0a84ff;
+  --border-glow: rgba(10, 132, 255, 0.18);
+
+  --text-primary: #1d1d1f;
+  --text-secondary: #4f5a67;
+  --text-muted: #7c8796;
+  --text-heading: #1d1d1f;
+  --fg: #1d1d1f;
+
+  --accent: #0a84ff;
+  --accent-dim: rgba(10, 132, 255, 0.08);
+  --accent-soft: rgba(10, 132, 255, 0.12);
+  --amber: #b78243;
+  --amber-dim: rgba(183, 130, 67, 0.085);
+  --green: #00c853;
+  --green-dim: rgba(0, 200, 83, 0.09);
+  --red: #d92d20;
+  --red-dim: rgba(217, 45, 32, 0.085);
+  --glass-bg: rgba(255,255,255,0.96);
+  --glass-strong: rgba(255,255,255,1);
+  --glass-border: rgba(60, 64, 72, 0.14);
+  --glass-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 10px 24px rgba(16,24,40,0.035);
+
+  color-scheme: light;
+}

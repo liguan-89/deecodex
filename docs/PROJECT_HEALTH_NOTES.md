@@ -1,0 +1,86 @@
+# 项目健康记录
+
+记录日期：2026-05-25
+
+本记录用于保存本轮项目巡检发现的结构债和后续拆分建议。当前轮次只修阻断和高频踩坑点，不做大范围 UI 或架构拆分。
+
+## 本轮已处理
+
+- 主项目、GUI 和插件宿主的 clippy 阻断项已收口到局部结构调整。
+- 用户可见品牌继续迁移到 `DEX AI`，内部兼容名继续保留 `deecodex`。
+- Codex 额度查询 User-Agent 改为随当前包版本生成，移除旧的 `3.0beta` 硬编码。
+- GUI 初始化移除开发机本机绝对路径，只保留仓库相对路径和打包资源路径。
+- 插件市场卡片点击行为按未安装、已安装、可更新三类区分。
+- 插件市场前端已从单个 `plugins.js` 拆成状态、事件、开发入口、详情、市场和导出模块。
+- 插件市场前端新增加载顺序、重复函数和基础渲染 smoke test。
+- 后端插件 Tauri 命令已从 `commands/mod.rs` 拆到 `commands/plugins.rs`，外部命令名保持不变。
+- DEX Markdown 链接只允许 `http:` 和 `https:` 协议渲染成可点击链接。
+- DEX Markdown 渲染器已从页面文件抽出，并补链接、表格和代码块 smoke test。
+- DEX 助手前端主体已从 `placeholder-pages.js` 拆到 `dex-assistant.js`，个人中心占位页保持独立。
+- DEX 助手附件输入和对话搜索已拆成独立脚本，避免继续堆进主 Agent 文件。
+- DEX 助手运行态补丁样式已从 JS 注入迁移到 `app.css`，减少页面初始化副作用。
+- DEX 助手快捷键绑定已拆成独立脚本，主 Agent 文件继续减负。
+- DEX 助手消息气泡、工具结果、确认卡片和思考状态已拆成 `dex-assistant-messages.js`。
+- DEX 助手面板控制、模型菜单、状态刷新和 token 计数已拆成 `dex-assistant-controls.js`。
+- DEX 助手能力注册表、系统 Prompt、动态工具清单和能力包辅助函数已拆成 `dex-assistant-registry.js`。
+- DEX 助手 Agent 请求循环、工具执行和历史持久化已拆成 `dex-assistant-agent.js`。
+- DEX 后端进程探测已拆成 `deecodex-gui/src/commands/dex_process.rs`，`dex.rs` 保留同名 Tauri wrapper。
+- DEX 后端 CLI/只读命令辅助函数已拆成 `deecodex-gui/src/commands/dex_cli.rs`，相关单测随私有 helper 迁移。
+- DEX 后端客户端 Dock 生命周期逻辑已拆成 `deecodex-gui/src/commands/dex_clients.rs`，对外 IPC 命令路径保持不变。
+- DEX 后端工作区工具已拆成 `deecodex-gui/src/commands/dex_workspace.rs`，读文件、列目录、执行 shell、搜索日志和工作区上下文保持原命令入口。
+- DEX 后端聊天协议转换已拆成 `deecodex-gui/src/commands/dex_protocol.rs`，活跃账号解析、Responses 请求体转换和 Responses 响应回填测试随模块迁移。
+- DEX 后端诊断/环境信息已拆成 `deecodex-gui/src/commands/dex_diagnostics.rs`，端口检测、环境信息、健康概览、自检、请求分析和系统资源检测保持原命令入口。
+- DEX 后端 AI 工具链/客户端环境检测已拆成 `deecodex-gui/src/commands/dex_toolchain.rs`，Claude、Hermes 检查和工具链总览保持原命令入口。
+- DEX 后端运维/配置/报告工具已拆成 `deecodex-gui/src/commands/dex_ops.rs`，配置备份、差异、成本、测速、线程清理、自动调优、网络检查、SSL 和报告导出保持原命令入口。
+- DEX 后端工具执行路由已拆成 `deecodex-gui/src/commands/dex_tool_executor.rs`，`dex_execute_tool` 仍保留原 Tauri 命令入口。
+- DEX 后端聊天主链路已拆成 `deecodex-gui/src/commands/dex_chat.rs`，`dex_chat` 仍保留原 Tauri 命令入口。
+- GUI 升级检查和升级执行已拆成 `deecodex-gui/src/commands/upgrade.rs`，`check_upgrade` 和 `run_upgrade` 仍保留原 Tauri 命令入口。
+- GUI 会话管理、请求历史统计和文件选择对话框已拆成 `sessions.rs`、`request_history.rs`、`dialogs.rs`，原 Tauri 命令名保持不变。
+- GUI 线程聚合命令已拆成 `deecodex-gui/src/commands/threads.rs`，聚合、还原、校准、线程内容读取和删除的 Tauri 命令入口保持不变。
+
+## 保留的兼容边界
+
+- crate 名、二进制名、配置目录 `~/.deecodex` 不迁移。
+- Codex provider id `deecodex` 不迁移。
+- 已有账号字段、历史配置字段和数据目录结构不迁移。
+- 文档中的命令名和路径示例继续使用现有兼容名称。
+
+## 大文件风险
+
+- `deecodex-gui/gui/css/app.css` 约 18922 行，主题覆盖和页面样式混在一起，后续 UI 调整容易互相污染。
+- `deecodex-gui/src/commands/mod.rs` 已拆出插件、升级、会话、请求历史、文件选择和线程聚合命令，但账号、额度、连通性检测等命令仍集中在同一文件。
+- `deecodex-gui/src/commands/dex.rs` 已拆出进程探测、CLI 辅助、客户端生命周期、工作区工具、聊天协议转换、诊断/环境信息、AI 工具链检测、运维/配置/报告工具、工具执行路由和聊天主链路；当前主要承担 Tauri 命令 facade 和少量公共 helper。
+- 插件市场前端已拆分为多个 `plugins-*` 模块，后续继续避免把新增能力回灌进单个大文件。
+- `src/handlers.rs` 约 8071 行，HTTP handler、图片代理、官方账号和历史记录逻辑继续膨胀。
+
+## 样式债
+
+- `app.css` 中亮色、暗色和页面专用覆盖层较多，后续需要按页面 shell、通用控件、主题覆盖拆分。
+- 插件管理、线程聚合、账号管理已经多次经历局部覆盖，继续修改前应先确认是否存在旧规则压过新规则。
+- 危险按钮应统一走 `btn-danger` 或页面既有 danger 类，不再写内联红色背景。
+- 新页面应复用统一内容框，不把局部实验结构反向扩散到全局页面。
+
+## 插件市场后续建议
+
+- 保持市场扫描、安装预览、已安装详情、开发入口和事件流的前端模块边界。
+- 保持后端插件命令在 `commands/plugins.rs` 的模块边界，新增插件 IPC 不再回灌到 `commands/mod.rs`。
+- 市场更新判断和插件账号资产隔离已有基础测试，后续新增插件资产类型时继续扩展覆盖。
+- 插件风险等级和权限说明需要形成稳定文档，减少前端写死解释。
+
+## DEX 助手后续建议
+
+- DEX Markdown 渲染器已独立为 `dex-render-markdown.js`，后续继续补更完整的 Markdown 边界测试。
+- DEX 助手前端主体已独立为 `dex-assistant.js`，注册表、Agent、附件、搜索、快捷键、消息列表和面板控制也已拆出。
+- DEX 后端拆分应继续保持 `dex.rs` facade 模式：Tauri 命令名和 `commands::dex::*` 注册路径不动，真实实现移动到小模块。
+- DEX 输出区、输入区和工具调用 UI 应继续保持透明结构层，避免再次叠出多层内容框。
+- DEX 工具执行结果需要统一轻量样式，避免输出块比主内容更重。
+
+## 待决设计项
+
+- 官方 Codex、OpenAI Responses 和自定义 Responses 直连端点理论上不需要 Responses -> Chat 翻译层；但是否绕过本地服务仍未决定。若未来实现，应区分两种模式：`DEX 增强代理` 继续走本地薄代理以保留账号池、请求历史、OAuth 刷新、配额状态和 DEX 助手活跃账号；`直连上游` 则允许不启动服务直接写入上游地址和凭据，并在界面明确提示账号池、请求历史和 DEX 增强能力不可用。该项风险中等偏大，当前不改默认行为。
+
+## 验收提醒
+
+- GUI 代码改完不强制在本机启动 Tauri 开发版实测，不能只用浏览器打开 `gui/index.html`；如确需 GUI 验证，使用局域网 Mac mini（<LAN_MAC_MINI>:22）实测。
+- 构建或测试前先用 `pgrep -x cargo || true` 检查并发 cargo。
+- 不提交 `.deecodex-dev/` 和 `deecodex-gui/.deecodex-dev/`。

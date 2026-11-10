@@ -1,0 +1,921 @@
+/* ═══════════════════════════════════════════════════════════════
+ * 客户端启动 Dock（服务概览 · 唯一权威源）
+ *
+ * 分层：1 基础结构 → 2 基础图标/角标 → 3 light → 4 dark → 5 响应式
+ * 迁移自 status-shell.css / dark-theme.css / patches-accounts.css，
+ * 归并冲突并去掉 !important：同一属性只保留最终生效值。
+ * 级联前提：本文件在 index.html 中最后引入（restore.css 之前），
+ * 且 dark 规则统一使用 .status-overview-shell 作用域保证特异性。
+ * ═══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 基础结构 ─────────────────────────────────────────────── */
+.client-dock-panel {
+  overflow: visible;
+}
+
+.client-dock-title {
+  margin-bottom: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14.4px;
+  font-weight: 430;
+  line-height: 1.2;
+  letter-spacing: 0;
+  font-variation-settings: "wght" 430;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.client-dock-tips-hint {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 390;
+  font-variation-settings: "wght" 390;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.client-dock-tips-btn {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+
+.client-dock-tips-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.client-dock-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(72px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.client-dock-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 128px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 14px 8px 13px;
+  border: 0;
+  border-radius: 22px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  text-align: center;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  appearance: none;
+}
+
+/* 第二行（第 7-12 个）整体上移 20px，让两行更紧凑 */
+.client-dock-item:nth-child(n+7) {
+  margin-top: -20px;
+}
+
+.client-dock-item:hover {
+  transform: translateY(-1px);
+}
+
+.client-dock-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.16);
+}
+
+.client-dock-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+}
+
+.client-dock-icon .client-logo-box {
+  width: 54px !important;
+  height: 54px !important;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.client-dock-icon .client-logo-img {
+  display: block;
+  width: 54px;
+  height: 54px;
+  margin: 0;
+  object-fit: cover;
+  object-position: center;
+}
+
+.client-dock-runtime {
+  position: absolute;
+  right: 0;
+  bottom: 2px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bg-card);
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+
+.client-dock-runtime.live {
+  background: #00c853;
+  box-shadow: 0 0 6px rgba(0,200,83,0.65);
+}
+
+.client-dock-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  z-index: 12;
+  width: max-content;
+  max-width: 168px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 13px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.16);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 420;
+  font-variation-settings: "wght" 420;
+  line-height: 1.32;
+  letter-spacing: 0;
+  opacity: 0;
+  pointer-events: none;
+  white-space: normal;
+  transform: translate(-50%, 2px) scale(0.98);
+  transform-origin: 50% 100%;
+  transition:
+    opacity 140ms ease,
+    transform 180ms cubic-bezier(.2,.9,.25,1.18),
+    visibility 0s linear 140ms;
+  visibility: hidden;
+}
+
+.client-dock-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.client-dock-item:hover .client-dock-bubble,
+.client-dock-item:focus-visible .client-dock-bubble {
+  opacity: 1;
+  transform: translate(-50%, -4px) scale(1);
+  transition-delay: 90ms;
+  visibility: visible;
+}
+
+.client-dock-state-row {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 7px);
+  gap: 5px;
+  min-height: 7px;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms;
+}
+
+.client-dock-item:hover .client-dock-state-row,
+.client-dock-item:focus-visible .client-dock-state-row,
+.client-dock-item:active .client-dock-state-row {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.client-dock-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  opacity: 0.72;
+}
+
+.client-dock-item.is-installed .client-dock-state-dot.install,
+.client-dock-item.has-account .client-dock-state-dot.account,
+.client-dock-item.process-running .client-dock-state-dot.runtime {
+  background: var(--green);
+  opacity: 1;
+}
+
+.client-dock-item.needs-install .client-dock-state-dot.install,
+.client-dock-item.needs-account .client-dock-state-dot.account,
+.client-dock-item.config-pending.has-account .client-dock-state-dot.account {
+  background: var(--amber);
+  opacity: 1;
+}
+
+.client-dock-label {
+  position: absolute;
+  top: 100px;
+  left: 50%;
+  z-index: 8;
+  max-width: none;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -1px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  white-space: nowrap;
+}
+
+.client-dock-item:hover .client-dock-label,
+.client-dock-item:focus-visible .client-dock-label {
+  opacity: 1;
+  transform: translate(-50%, 2px);
+}
+
+.client-dock-item.on .client-dock-label {
+  font-weight: 430;
+  font-variation-settings: "wght" 430;
+}
+
+/* 客户端 Dock 右键菜单（覆盖所有客户端图标） */
+.client-dock-menu {
+  position: fixed;
+  z-index: 2000;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: #1c2940;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  font-family: var(--font-sans);
+  animation: client-dock-menu-in 120ms ease;
+}
+
+[data-theme="light"] .client-dock-menu {
+  background: #ffffff;
+}
+
+@keyframes client-dock-menu-in {
+  from { transform: translateY(-4px) scale(0.98); }
+  to { transform: none; }
+}
+
+.client-dock-menu-header {
+  margin-bottom: 4px;
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-dock-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.client-dock-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  appearance: none;
+}
+
+.client-dock-menu-item:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.client-dock-menu-item.danger:hover {
+  background: rgba(255, 69, 58, 0.10);
+  color: #ff453a;
+}
+
+.client-dock-menu-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  background: currentColor;
+}
+
+.client-dock-menu-icon-config {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h10'/%3E%3Cpath d='M18 7h2'/%3E%3Ccircle cx='16' cy='7' r='2'/%3E%3Cpath d='M4 17h2'/%3E%3Cpath d='M10 17h10'/%3E%3Ccircle cx='8' cy='17' r='2'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h10'/%3E%3Cpath d='M18 7h2'/%3E%3Ccircle cx='16' cy='7' r='2'/%3E%3Cpath d='M4 17h2'/%3E%3Cpath d='M10 17h10'/%3E%3Ccircle cx='8' cy='17' r='2'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+
+.client-dock-menu-icon-update {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.64-6.36'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.64-6.36'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+
+.client-dock-menu-icon-quit {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v8'/%3E%3Cpath d='M6.4 6.4a8 8 0 1 0 11.2 0'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v8'/%3E%3Cpath d='M6.4 6.4a8 8 0 1 0 11.2 0'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+
+.client-dock-menu-icon-uninstall {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2'/%3E%3Cpath d='M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6'/%3E%3Cpath d='M10 11v6'/%3E%3Cpath d='M14 11v6'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2'/%3E%3Cpath d='M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6'/%3E%3Cpath d='M10 11v6'/%3E%3Cpath d='M14 11v6'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+
+.client-dock-menu-icon-clean {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21'/%3E%3Cpath d='M22 21H7'/%3E%3Cpath d='m5 11 9 9'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21'/%3E%3Cpath d='M22 21H7'/%3E%3Cpath d='m5 11 9 9'/%3E%3C/svg%3E") center / 15px 15px no-repeat;
+}
+
+/* ── 2. 基础图标 / 角标 ─────────────────────────────────────── */
+.status-overview-shell .client-dock-icon .surface-icon-stack {
+  width: 54px;
+  height: 54px;
+  display: inline-grid;
+  place-items: center;
+  position: relative !important;
+}
+
+.status-overview-shell .client-dock-icon .surface-glyph {
+  left: 1px;
+  bottom: 1px;
+  z-index: 4;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(29,29,31,0.12), 0 1px 2px rgba(16,24,40,0.10);
+}
+
+/* 小角标随主图标 44→54px 等比放大（15px→18px），仅作用于服务概览 Dock，不影响账号/历史页角标 */
+.status-overview-shell .client-dock-icon .surface-glyph.surface-cli::before {
+  left: 4.5px;
+  top: 5px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid #5f6672;
+  border-bottom: 1.6px solid #5f6672;
+}
+
+.status-overview-shell .client-dock-icon .surface-glyph.surface-cli::after {
+  right: 4.5px;
+  bottom: 5px;
+  width: 5px;
+  height: 2px;
+  border-radius: 999px;
+  background: #5f6672;
+}
+
+.status-overview-shell .client-dock-icon .surface-glyph.surface-desktop::before {
+  left: 3.5px;
+  top: 5px;
+  width: 11px;
+  height: 7px;
+  border: 1.6px solid #5f6672;
+  border-radius: 2.5px;
+}
+
+.status-overview-shell .client-dock-icon .surface-glyph.surface-desktop::after {
+  left: 6.5px;
+  bottom: 4px;
+  width: 5px;
+  height: 2.5px;
+  border-bottom: 1.6px solid #5f6672;
+}
+
+.status-overview-shell .client-dock-icon .surface-glyph.surface-web {
+  background-size: 13px 13px;
+}
+
+/* 插件中心入口：圆角矩形 SVG 图标，与客户端图标同尺寸（54px 盒子）。
+   颜色走 CSS 变量分层：base 为暗色默认值，[data-theme="light"] 覆盖为亮色值。 */
+.client-dock-plugin-center {
+  --plugin-tile-bg: rgba(218, 226, 240, 0.07);
+  --plugin-tile-edge: rgba(218, 226, 240, 0.16);
+  --plugin-tile-cell: #7f8998;
+  --plugin-tile-cell-accent: var(--accent);
+  --plugin-tile-bg-hover: rgba(88, 166, 255, 0.12);
+  --plugin-tile-edge-hover: var(--accent);
+  --plugin-tile-cell-hover: #aeb9ca;
+}
+
+.client-dock-plugin-center .client-dock-plugin-icon {
+  display: block;
+  width: 54px;
+  height: 54px;
+  overflow: visible;
+}
+
+.client-dock-plugin-center .plugin-tile-bg {
+  fill: var(--plugin-tile-bg);
+  transition: fill 160ms ease;
+}
+
+.client-dock-plugin-center .plugin-tile-edge {
+  stroke: var(--plugin-tile-edge);
+  transition: stroke 160ms ease;
+}
+
+.client-dock-plugin-center .plugin-tile-cell {
+  fill: var(--plugin-tile-cell);
+  transition: fill 160ms ease;
+}
+
+.client-dock-plugin-center .plugin-tile-cell-accent {
+  fill: var(--plugin-tile-cell-accent);
+}
+
+/* 插件中心补齐与客户端图标一致的状态点占位，保证图标与第二排同一水平线；
+   该占位仅用于对齐，任何状态下都不显示。 */
+.client-dock-plugin-center .client-dock-state-row {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: none !important;
+}
+
+.client-dock-plugin-center:hover .plugin-tile-bg {
+  fill: var(--plugin-tile-bg-hover);
+}
+
+.client-dock-plugin-center:hover .plugin-tile-edge {
+  stroke: var(--plugin-tile-edge-hover);
+}
+
+.client-dock-plugin-center:hover .plugin-tile-cell {
+  fill: var(--plugin-tile-cell-hover);
+}
+
+/* ── 3. Light 主题 ──────────────────────────────────────────── */
+[data-theme="light"] .status-overview-shell .operations-panel,
+[data-theme="light"] .status-overview-shell .client-dock-panel {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-plugin-center {
+  --plugin-tile-bg: #f0f2f6;
+  --plugin-tile-edge: rgba(29, 29, 31, 0.12);
+  --plugin-tile-cell: #6b7382;
+  --plugin-tile-cell-accent: #2f7fe0;
+  --plugin-tile-bg-hover: #e2e8f2;
+  --plugin-tile-edge-hover: rgba(10, 132, 255, 0.6);
+  --plugin-tile-cell-hover: #454c59;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-panel {
+  overflow: visible;
+}
+
+[data-theme="light"] .main.status-main .status-overview-shell .client-dock-panel {
+  margin-top: clamp(12px, 2.8vh, 26px);
+  padding-bottom: 2px;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(18px, 3.2vw, 42px);
+  padding-top: 44px;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item {
+  min-height: 120px;
+  padding: 8px 2px 10px;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="light"] .main.status-main .status-overview-shell .client-dock-item {
+  min-height: clamp(98px, 16vh, 122px);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible,
+[data-theme="light"] .status-overview-shell .client-dock-item.on:hover,
+[data-theme="light"] .status-overview-shell .client-dock-item.on:focus-visible {
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  transform: none;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-panel:hover .gateway-section-title {
+  color: #202124;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-icon {
+  transform-origin: center;
+  transition: opacity 140ms ease, filter 140ms ease, transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-icon .client-logo-img {
+  object-position: center;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-icon,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon {
+  opacity: 1;
+  filter: none;
+  transform: translateY(-3px) scale(1.12) rotate(-1.5deg);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item.process-running .client-dock-icon {
+  opacity: 1;
+  filter: none;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-runtime {
+  right: -5px;
+  bottom: -3px;
+  border-color: #ffffff;
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18), box-shadow 140ms ease;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item:hover .client-dock-runtime,
+[data-theme="light"] .status-overview-shell .client-dock-item:focus-visible .client-dock-runtime {
+  transform: scale(1.16);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-label {
+  border: 1px solid rgba(29,29,31,0.10);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 4px 12px rgba(20,24,30,0.08);
+  color: #3f4650;
+  font-size: 12px;
+  font-weight: 390;
+  font-variation-settings: "wght" 390;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-bubble {
+  border-color: rgba(29,29,31,0.10);
+  background: rgba(255,255,255,0.98);
+  color: #28303a;
+  box-shadow: 0 12px 26px rgba(20,24,30,0.11);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-state-dot {
+  background: #c5cbd3;
+  box-shadow: 0 0 0 1px rgba(29,29,31,0.04);
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item.is-installed .client-dock-state-dot.install,
+[data-theme="light"] .status-overview-shell .client-dock-item.has-account .client-dock-state-dot.account,
+[data-theme="light"] .status-overview-shell .client-dock-item.process-running .client-dock-state-dot.runtime {
+  background: #00c853;
+}
+
+[data-theme="light"] .status-overview-shell .client-dock-item.needs-install .client-dock-state-dot.install,
+[data-theme="light"] .status-overview-shell .client-dock-item.needs-account .client-dock-state-dot.account,
+[data-theme="light"] .status-overview-shell .client-dock-item.config-pending.has-account .client-dock-state-dot.account {
+  background: #aa6a2a;
+}
+
+/* ── 4. Dark 主题（归并 dark-theme.css + patches-accounts.css 的最终值） ── */
+[data-theme="dark"] .status-overview-shell .client-dock-grid {
+  gap: clamp(18px, 3.2vw, 42px);
+  padding-top: 44px;
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-item {
+  min-height: 120px;
+  padding: 8px 2px 10px;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-panel:hover .gateway-section-title {
+  color: var(--text-heading);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-icon .client-logo-img {
+  margin: 0;
+  filter: none;
+  object-position: center;
+}
+
+/* 图标状态：取消未启动减弱，hover/focus/运行中保持原有效果 */
+[data-theme="dark"] .status-overview-shell .client-dock-item:hover .client-dock-icon,
+[data-theme="dark"] .status-overview-shell .client-dock-item:focus-visible .client-dock-icon {
+  opacity: 1;
+  filter: none;
+  transform: translateY(-3px) scale(1.12) rotate(-1.5deg);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-item.process-running .client-dock-icon {
+  opacity: 1;
+  filter: none;
+}
+
+/* 图标角标 */
+[data-theme="dark"] .status-overview-shell .client-dock-icon .surface-glyph {
+  background-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(29,29,31,0.12), 0 1px 2px rgba(16,24,40,0.10);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-runtime {
+  border-color: var(--content-bg);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-bubble {
+  border-color: rgba(218, 226, 240, 0.13);
+  background: #171c25;
+  color: var(--text-primary);
+  box-shadow: 0 14px 28px rgba(0,0,0,0.28);
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-label {
+  position: absolute;
+  top: 96px;
+  left: 50%;
+  z-index: 8;
+  max-width: none;
+  padding: 4px 8px;
+  border: 1px solid var(--content-border);
+  border-radius: 999px;
+  background: var(--content-surface-soft);
+  box-shadow: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -1px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .status-overview-shell .client-dock-item:hover .client-dock-label,
+[data-theme="dark"] .status-overview-shell .client-dock-item:focus-visible .client-dock-label {
+  opacity: 1;
+  transform: translate(-50%, 2px);
+}
+
+/* ── 5. 响应式 ──────────────────────────────────────────────── */
+@media (max-width: 920px) {
+  .client-dock-grid {
+    grid-template-columns: repeat(3, minmax(84px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .client-dock-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-dock-item {
+    min-height: 120px;
+  }
+}
+
+@media (max-width: 920px) {
+  [data-theme="dark"] .status-overview-shell .client-dock-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  [data-theme="dark"] .status-overview-shell .client-dock-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 6. 功能提示（常驻提示条 / 首次引导卡 / 「?」面板） ─────────── */
+.client-dock-first-tips {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.client-dock-first-tips-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.client-dock-first-tips-head strong {
+  font-size: 13px;
+  font-weight: 560;
+  font-variation-settings: "wght" 560;
+}
+
+.client-dock-first-tips ul {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.client-dock-first-tips li {
+  margin: 3px 0;
+}
+
+.client-dock-first-tips-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.client-dock-first-tips-close:hover {
+  color: var(--text-primary);
+}
+
+.client-dock-first-tips-ok {
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.client-dock-first-tips-ok:hover {
+  filter: brightness(1.08);
+}
+
+.dock-tips-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 12, 20, 0.55);
+}
+
+.dock-tips-modal {
+  width: min(520px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  /* 用实色背景，避免 rgba 的 --bg-card 造成半透明穿透效果 */
+  background: var(--content-bg);
+  color: var(--text-primary);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+.dock-tips-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dock-tips-modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dock-tips-modal-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.dock-tips-modal-close:hover {
+  color: var(--text-primary);
+}
+
+.dock-tips-modal-body {
+  padding: 14px 16px 18px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.dock-tips-section {
+  margin-bottom: 14px;
+}
+
+.dock-tips-section h4 {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.dock-tips-actions,
+.dock-tips-clients {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dock-tips-actions li {
+  padding: 3px 0;
+}
+
+.dock-tips-clients {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 12px;
+}
+
+.dock-tips-clients li {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: var(--content-surface-soft);
+}
+
+.dock-tips-clients li b {
+  font-size: 12.5px;
+  font-weight: 560;
+  font-variation-settings: "wght" 560;
+}
+
+.dock-tips-clients li span {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.dock-tips-note {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+}
+
+[data-theme="light"] .dock-tips-overlay {
+  background: rgba(20, 24, 30, 0.35);
+}

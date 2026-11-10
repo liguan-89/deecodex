@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>下载 DEX AI</title>
+  <meta name="description" content="DEX AI 桌面客户端下载：支持 macOS 和 Windows。" />
+
+  <style>
+    :root {
+      --bg:        #ffffff;
+      --surface:   #f7f7f8;
+      --border:    #e5e5e8;
+      --ink:       #18181b;
+      --ink-soft:  #52525b;
+      --ink-mute:  #8a8a92;
+      --accent:    #2563eb;
+      --accent-ink:#ffffff;
+
+      --body:      -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+      --radius:    8px;
+      --gutter:    24px;
+      --max:       960px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--body);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img { display: block; max-width: 100%; height: auto; }
+
+    .page {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 var(--gutter) 64px;
+    }
+
+    /* —— header ————————————————————— */
+    header {
+      padding: 48px 0 32px;
+    }
+    .brand {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: -0.01em;
+    }
+    header h1 {
+      margin: 24px 0 8px;
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+    header h1 .version {
+      display: inline-block;
+      margin-left: 12px;
+      padding: 3px 10px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink-soft);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      vertical-align: middle;
+    }
+    header p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+    }
+
+    /* —— section —————————————————— */
+    section {
+      margin-top: 40px;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin: 0 0 16px;
+    }
+
+    /* —— download cards —————————— */
+    .downloads {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .download-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      background: var(--bg);
+    }
+    .download-card.dim { opacity: 0.55; }
+    .platform {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .platform .arch {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--ink-mute);
+    }
+    .meta-line {
+      margin: 8px 0 16px;
+      font-size: 12.5px;
+      color: var(--ink-mute);
+    }
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    .download-btn:hover { background: #1d4ed8; text-decoration: none; }
+    .download-btn.disabled {
+      background: var(--surface);
+      color: var(--ink-mute);
+      border: 1px solid var(--border);
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+    .filename {
+      margin-top: 10px;
+      font-size: 11.5px;
+      color: var(--ink-mute);
+      word-break: break-all;
+    }
+    .alt-link {
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    /* —— features ————————————————— */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .feature {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+    }
+    .feature-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14.5px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .feature-title .icon {
+      font-size: 16px;
+      line-height: 1;
+    }
+    .feature-desc {
+      font-size: 13px;
+      color: var(--ink-soft);
+      line-height: 1.5;
+      margin: 0;
+    }
+
+    /* —— screenshot —————————————— */
+    .screenshot {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    .screenshot .shot {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: #fafaf7;
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .screenshot .shot img {
+      display: block;
+      width: 100%;
+      max-height: 720px;
+      object-fit: contain;
+      border-radius: 4px;
+      background: #fff;
+    }
+    .screenshot .shot .cap {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--ink-mute);
+      text-align: center;
+    }
+
+    /* —— notes ——————————————————— */
+    .notes {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      background: var(--surface);
+    }
+    .notes-content { font-size: 14.5px; line-height: 1.65; }
+    .notes-content :where(h1, h2, h3) {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink);
+      margin: 1.2em 0 0.4em;
+    }
+    .notes-content :where(h1) { font-size: 18px; margin-top: 0; }
+    .notes-content p { margin: 0.5em 0; color: var(--ink-soft); }
+    .notes-content :where(ul) { padding-left: 1.4em; margin: 0.4em 0; }
+    .notes-content li { margin: 0.25em 0; color: var(--ink-soft); }
+    .notes-content code {
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.9em;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .notes-loading { color: var(--ink-mute); }
+
+    /* —— community —————————————— */
+    .community {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: start;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .community-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .community-info h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .community-info p {
+      margin: 0 0 8px;
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+    .community-info .warn {
+      margin-top: 10px;
+      padding: 8px 12px;
+      font-size: 12.5px;
+      color: #b45309;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 6px;
+    }
+    .qr {
+      width: 240px;
+      aspect-ratio: 1 / 1;
+      padding: 10px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .qr img { width: 100%; height: 100%; object-fit: contain; }
+    .qr-cap {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--ink-mute);
+      text-align: center;
+    }
+
+    /* —— footer —————————————————— */
+    footer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      font-size: 12.5px;
+      color: var(--ink-mute);
+    }
+
+    /* —— error ——————————————————— */
+    .error {
+      margin: 16px 0;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #b91c1c;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: var(--radius);
+    }
+
+    /* —— responsive ————————————— */
+    @media (max-width: 640px) {
+      :root { --gutter: 16px; }
+      header { padding: 32px 0 24px; }
+      header h1 { font-size: 22px; }
+      .downloads, .features { grid-template-columns: 1fr; }
+      .community { grid-template-columns: 1fr; }
+      .community-row { grid-template-columns: 1fr; }
+      .qr { width: 160px; margin: 0 auto; }
+      footer { flex-direction: column; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+
+    <header>
+      <div class="brand">DEX AI</div>
+      <h1>下载桌面客户端<span class="version" id="version-badge" hidden></span></h1>
+      <p>macOS 和 Windows 版本。已安装的用户可应用内升级。</p>
+    </header>
+
+    <div id="error-box" class="error" hidden></div>
+
+    <!-- community -->
+    <section>
+      <div class="section-title">加入交流群</div>
+      <div class="community-row">
+        <div class="community">
+          <div class="community-info">
+            <h3>交流群</h3>
+            <p>反馈问题、跟进新版本、聊本地 AI 网关这件事本身。</p>
+            <div class="warn">⚠ 入群方式请在开源仓库 README 或项目主页获取最新指引。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- screenshot -->
+    <section>
+      <div class="section-title">应用预览</div>
+      <div class="screenshot">
+        <div class="shot">
+          <a href="screenshot-app.png" target="_blank"><img src="screenshot-app.png" alt="DEX AI 服务概览" /></a>
+          <div class="cap">服务概览</div>
+        </div>
+        <div class="shot">
+          <a href="screenshot-chat.png" target="_blank"><img src="screenshot-chat.png" alt="DEX AI 聊天界面" /></a>
+          <div class="cap">聊天 · 多模型选择</div>
+        </div>
+        <div class="shot">
+          <a href="screenshot-plugins.png" target="_blank"><img src="screenshot-plugins.png" alt="DEX AI 插件市场" /></a>
+          <div class="cap">插件市场</div>
+        </div>
+        <div class="shot">
+          <a href="screenshot-menu.png" target="_blank"><img src="screenshot-menu.png" alt="DEX AI 用户菜单" /></a>
+          <div class="cap">账号 · 用户菜单</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- downloads -->
+    <section>
+      <div class="section-title">下载</div>
+      <div class="downloads">
+        <div class="download-card" id="card-mac">
+          <div class="platform">
+            macOS
+            <span class="arch">Apple Silicon · arm64</span>
+          </div>
+          <div class="meta-line"><span id="mac-size">.dmg</span></div>
+          <a id="btn-mac" class="download-btn" href="#" hidden>下载 .dmg</a>
+          <div id="filename-mac" class="filename" hidden></div>
+          <div class="alt-link">
+            <span id="link-mac-other-wrap">
+              Intel Mac：<a id="link-mac-other" href="#">下载 x86_64 版本</a>
+            </span>
+          </div>
+        </div>
+
+        <div class="download-card" id="card-win">
+          <div class="platform">
+            Windows
+            <span class="arch">x86_64 · Windows 10+</span>
+          </div>
+          <div class="meta-line"><span id="win-size">.exe</span></div>
+          <a id="btn-win" class="download-btn" href="#" hidden>下载安装程序</a>
+          <div id="filename-win" class="filename" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- features -->
+    <section>
+      <div class="section-title">功能</div>
+      <div class="features">
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>多账号 · 多端点</div>
+          <p class="feature-desc">一套配置管理 OpenAI / Anthropic / Codex / 第三方中转；同供应商多端点并存。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>Codex 协议兼容</div>
+          <p class="feature-desc">Chat Completions ↔ Responses 自动翻译，Codex 桌面客户端零配置接入第三方模型。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>智能模型路由</div>
+          <p class="feature-desc">按账号 / 端点 / 视觉策略路由；跨供应商自动剥离不兼容参数。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>Provider 熔断</div>
+          <p class="feature-desc">连续 5 次失败打开熔断器，60 秒内阻断该 provider，避免上游 5xx 雪崩。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>DEX 助手</div>
+          <p class="feature-desc">内置 AI 助手面板，工具调用 / 附件输入 / 快捷键，与本地工作区联动。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>插件市场</div>
+          <p class="feature-desc">安装 / 更新 / 卸载；按未安装、已安装、可更新三态区分点击行为。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>诊断 & 日志</div>
+          <p class="feature-desc">端口探测、健康概览、网络检查、SSL 校验、自检报告导出。</p>
+        </div>
+        <div class="feature">
+          <div class="feature-title"><span class="icon">●</span>应用内自动更新</div>
+          <p class="feature-desc">Tauri updater 签名更新；强制策略下旧版必须升级到最新。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- notes -->
+    <section>
+      <div class="section-title">本次更新</div>
+      <div class="notes">
+        <div id="notes" class="notes-content notes-loading">加载中…</div>
+      </div>
+    </section>
+
+    <footer>
+      <span>DEX AI · 本地 AI 网关</span>
+      <span>反馈：请在开源仓库提交 Issue</span>
+    </footer>
+
+  </main>
+
+  <script>
+    // Tauri updater 在 macOS 和 Windows 上分别维护独立的 latest.json：
+    //   macOS   → /releases/dex-ai/latest.json            (platforms.darwin-aarch64)
+    //   Windows → /releases/dex-ai/windows/latest.json    (platforms.windows-x86_64)
+    const MAC_MANIFEST = "/releases/dex-ai/latest.json";
+    const WIN_MANIFEST = "/releases/dex-ai/windows/latest.json";
+
+    const PLATFORM = {
+      isMac: /Mac|iPhone|iPad|iPod/.test(navigator.platform) || /Mac/.test(navigator.userAgent),
+      isWin: /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent),
+    };
+
+    function showError(msg) {
+      const box = document.getElementById("error-box");
+      box.textContent = msg;
+      box.hidden = false;
+    }
+
+    function fileNameFromUrl(url) {
+      try {
+        const path = new URL(url, window.location.href).pathname;
+        return decodeURIComponent(path.split("/").filter(Boolean).pop() || url);
+      } catch {
+        const name = String(url).split("/").pop() || String(url);
+        try { return decodeURIComponent(name); } catch { return name; }
+      }
+    }
+
+    function setDownloadUrl(url, btnId, filenameId) {
+      const btn = document.getElementById(btnId);
+      if (!url || !btn) return false;
+      btn.href = url;
+      btn.hidden = false;
+      if (filenameId) {
+        const fname = document.getElementById(filenameId);
+        if (fname) {
+          fname.textContent = fileNameFromUrl(url);
+          fname.hidden = false;
+        }
+      }
+      return true;
+    }
+
+    function manifestPlatformUrl(manifest, platformKey) {
+      const platform = manifest && manifest.platforms && manifest.platforms[platformKey];
+      return platform && platform.url ? platform.url : null;
+    }
+
+    function explicitDownloadUrl(manifest, platformKey, extensions) {
+      const platform = manifest && manifest.platforms && manifest.platforms[platformKey];
+      const candidates = [
+        platform && platform.download_url,
+        platform && platform.downloadUrl,
+        platform && platform.dmg_url,
+        platform && platform.dmgUrl,
+        manifest && manifest.downloads && manifest.downloads[platformKey] && manifest.downloads[platformKey].url,
+      ].filter(Boolean);
+      return candidates.find((url) => extensions.some((ext) => String(url).toLowerCase().endsWith(ext))) || null;
+    }
+
+    function macDmgUrl(manifest, arch, allowVersionFallback = false) {
+      const platformKey = "darwin-" + arch;
+      const explicit = explicitDownloadUrl(manifest, platformKey, [".dmg"]);
+      if (explicit) return explicit;
+      if (!manifest || !manifest.version) return null;
+
+      const filename = `DEX AI_${manifest.version}_${arch}.dmg`;
+      const updaterUrl = manifestPlatformUrl(manifest, platformKey);
+      if (updaterUrl) {
+        try {
+          const u = new URL(updaterUrl, window.location.href);
+          const dir = u.pathname.slice(0, u.pathname.lastIndexOf("/") + 1);
+          u.pathname = dir + encodeURIComponent(filename);
+          u.search = "";
+          u.hash = "";
+          return u.href;
+        } catch { /* fall through */ }
+      }
+      if (!allowVersionFallback) return null;
+      return `/releases/dex-ai/${manifest.version}/mac/${encodeURIComponent(filename)}`;
+    }
+
+    function applyManifest(manifest, platformKey, btnId, filenameId) {
+      return setDownloadUrl(manifestPlatformUrl(manifest, platformKey), btnId, filenameId);
+    }
+
+    function setVersion(version) {
+      if (!version) return;
+      const badge = document.getElementById("version-badge");
+      badge.textContent = "v" + version;
+      badge.hidden = false;
+    }
+
+    function humanSize(bytes) {
+      if (!bytes) return "";
+      const mb = bytes / (1024 * 1024);
+      return ".dmg · " + mb.toFixed(1) + " MB";
+    }
+
+    async function probeSize(url) {
+      try {
+        const r = await fetch(url, { method: "HEAD" });
+        if (!r.ok) return null;
+        const cl = r.headers.get("content-length");
+        return cl ? parseInt(cl, 10) : null;
+      } catch { return null; }
+    }
+
+    function renderNotes(notes) {
+      const el = document.getElementById("notes");
+      el.classList.remove("notes-loading");
+      if (!notes) { el.textContent = "（无更新说明）"; return; }
+      const lines = notes.split(/\r?\n/);
+      const html = [];
+      let inList = false, inCode = false, para = [];
+      const flushPara = () => { if (para.length) { html.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
+      const flushList = () => { if (inList) { html.push("</ul>"); inList = false; } };
+      function inline(s) {
+        return s
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      }
+      for (const line of lines) {
+        if (line.startsWith("```")) {
+          flushPara(); flushList();
+          if (inCode) { html.push("</code></pre>"); inCode = false; }
+          else { html.push("<pre><code>"); inCode = true; }
+          continue;
+        }
+        if (inCode) { html.push(line.replace(/</g, "&lt;") + "\n"); continue; }
+        const h = line.match(/^(#{1,3})\s+(.*)$/);
+        if (h) { flushPara(); flushList(); html.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+        const li = line.match(/^\s*[-*]\s+(.*)$/);
+        if (li) { flushPara(); if (!inList) { html.push("<ul>"); inList = true; } html.push("<li>" + inline(li[1]) + "</li>"); continue; }
+        if (line.trim() === "") { flushPara(); flushList(); continue; }
+        para.push(line);
+      }
+      flushPara(); flushList();
+      if (inCode) html.push("</code></pre>");
+      el.innerHTML = html.join("");
+    }
+
+    async function loadManifest(url) {
+      const r = await fetch(url, { cache: "no-cache" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return await r.json();
+    }
+
+    (async () => {
+      let macManifest = null, winManifest = null, firstErr = null;
+      try { macManifest = await loadManifest(MAC_MANIFEST); }
+      catch (e) { firstErr = firstErr || ("macOS 清单加载失败：" + e.message); }
+      try { winManifest = await loadManifest(WIN_MANIFEST); }
+      catch (e) { firstErr = firstErr || ("Windows 清单加载失败：" + e.message); }
+
+      const version = (macManifest && macManifest.version) || (winManifest && winManifest.version);
+      if (version) setVersion(version);
+
+      let macOk = false, winOk = false;
+      if (macManifest) {
+        macOk = setDownloadUrl(macDmgUrl(macManifest, "aarch64", true), "btn-mac", "filename-mac");
+        const intel = setDownloadUrl(macDmgUrl(macManifest, "x86_64"), "link-mac-other", null);
+        if (!intel) { const w = document.getElementById("link-mac-other-wrap"); if (w) w.style.display = "none"; }
+      }
+      if (winManifest) {
+        winOk = applyManifest(winManifest, "windows-x86_64", "btn-win", "filename-win");
+      }
+
+      if (macOk) {
+        const sz = await probeSize(document.getElementById("btn-mac").href);
+        if (sz) document.getElementById("mac-size").textContent = ".dmg · " + (sz / 1048576).toFixed(1) + " MB";
+      }
+      if (winOk) {
+        const sz = await probeSize(document.getElementById("btn-win").href);
+        if (sz) document.getElementById("win-size").textContent = ".exe · " + (sz / 1048576).toFixed(1) + " MB";
+      }
+
+      if (!macOk) {
+        const btn = document.getElementById("btn-mac");
+        btn.hidden = false;
+        btn.classList.add("disabled");
+        btn.textContent = "暂不可用";
+        document.getElementById("card-mac").classList.add("dim");
+      }
+      if (!winOk) {
+        const btn = document.getElementById("btn-win");
+        btn.hidden = false;
+        btn.classList.add("disabled");
+        btn.textContent = "暂不可用";
+        document.getElementById("card-win").classList.add("dim");
+      }
+
+      if (macManifest) renderNotes(macManifest.notes);
+      else if (winManifest) renderNotes(winManifest.notes);
+      else {
+        const el = document.getElementById("notes");
+        el.classList.remove("notes-loading");
+        el.textContent = "（更新说明暂不可用）";
+      }
+
+      if (firstErr && !macOk && !winOk) showError(firstErr + "。请检查网络后刷新。");
+      else if (firstErr) console.warn(firstErr);
+
+      if (PLATFORM.isMac) document.getElementById("card-win").classList.add("dim");
+      else if (PLATFORM.isWin) document.getElementById("card-mac").classList.add("dim");
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1219 @@
+/* 使用帮助 2.0：贴合 DEX AI UI 的小白图文教程 */
+.primary-page-shell-help .help-guide-header {
+  margin-bottom: 12px;
+}
+
+.primary-page-shell-help .help-guide-header p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.primary-page-shell-help .help-guide-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 18px;
+  align-items: stretch;
+  margin: 0 0 18px;
+  padding: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(10,132,255,0.16);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 8% 18%, rgba(10,132,255,0.18), transparent 30%),
+    radial-gradient(circle at 88% 10%, rgba(52,199,89,0.16), transparent 28%),
+    linear-gradient(135deg, rgba(255,255,255,0.92), rgba(246,250,255,0.92));
+  box-shadow: 0 20px 60px rgba(16, 34, 66, 0.10);
+}
+
+.primary-page-shell-help .help-guide-kicker,
+.primary-page-shell-help .guide-mode-badge {
+  display: inline-flex;
+  width: fit-content;
+  margin-bottom: 9px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(10,132,255,0.11);
+  color: #0a6fd8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.primary-page-shell-help .help-guide-hero h3 {
+  margin: 0 0 8px;
+  color: #101828;
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.18;
+  letter-spacing: -0.03em;
+}
+
+.primary-page-shell-help .help-guide-hero h3::before { content: none; }
+
+.primary-page-shell-help .help-guide-hero p {
+  max-width: 720px;
+  margin: 0;
+  color: #526071;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.primary-page-shell-help .help-guide-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.primary-page-shell-help .help-guide-hero-actions span {
+  padding: 7px 10px;
+  border: 1px solid rgba(10,132,255,0.12);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.76);
+  color: #445066;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.primary-page-shell-help .help-guide-mode-result {
+  display: grid;
+  place-content: center;
+  padding: 18px;
+  border: 1px solid rgba(10,132,255,0.18);
+  border-radius: 20px;
+  background: #ffffffcc;
+  text-align: center;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.62), 0 16px 40px rgba(16,34,66,0.10);
+}
+
+.primary-page-shell-help .help-guide-mode-result small {
+  color: #7b8797;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.primary-page-shell-help .help-guide-mode-result strong {
+  display: block;
+  margin: 5px 0;
+  color: #0a84ff;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+
+.primary-page-shell-help .help-guide-mode-result span {
+  color: #526071;
+  font-size: 12px;
+}
+
+.primary-page-shell-help .help-guide-toc {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  padding: 8px 0 10px;
+  background: linear-gradient(180deg, var(--content-bg, var(--bg-content, #fff)) 78%, transparent);
+}
+
+.primary-page-shell-help .help-guide-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) 34px minmax(280px, 0.85fr);
+  gap: 14px;
+  align-items: center;
+  margin: 12px 0 14px;
+}
+
+.primary-page-shell-help .guide-screen {
+  position: relative;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid rgba(17, 29, 53, 0.08);
+  border-radius: 24px;
+  background: #fbfcff;
+  box-shadow: 0 20px 50px rgba(16, 34, 66, 0.10);
+}
+
+.primary-page-shell-help .guide-window-dots {
+  position: absolute;
+  left: 18px;
+  top: 16px;
+  display: flex;
+  gap: 7px;
+}
+
+.primary-page-shell-help .guide-window-dots i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ff605c;
+  box-shadow: 16px 0 0 #ffbd44, 32px 0 0 #00ca4e;
+}
+
+.primary-page-shell-help .guide-sidebar {
+  position: absolute;
+  left: 18px;
+  top: 44px;
+  bottom: 18px;
+  width: 170px;
+  padding: 16px 12px;
+  border-radius: 18px;
+  background: #f3f6fb;
+}
+
+.primary-page-shell-help .guide-sidebar b {
+  display: block;
+  margin: 0 0 14px 6px;
+  color: #111827;
+  font-size: 22px;
+  letter-spacing: -0.04em;
+}
+
+.primary-page-shell-help .guide-sidebar span,
+.primary-page-shell-help .guide-sidebar em {
+  display: block;
+  margin: 5px 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  color: #586477;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.primary-page-shell-help .guide-sidebar span.active {
+  background: #fff;
+  color: #0a84ff;
+  box-shadow: 0 10px 24px rgba(16,34,66,0.08);
+}
+
+.primary-page-shell-help .guide-sidebar em {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  color: #19a66a;
+}
+
+.primary-page-shell-help .guide-main-panel {
+  position: absolute;
+  left: 208px;
+  right: 18px;
+  top: 44px;
+  bottom: 18px;
+  padding: 18px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 20px;
+  background: #fff;
+}
+
+.primary-page-shell-help .guide-panel-title {
+  margin-bottom: 12px;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 850;
+  letter-spacing: -0.03em;
+}
+
+.primary-page-shell-help .guide-mode-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.primary-page-shell-help .guide-mode-pill {
+  padding: 10px 8px;
+  border: 1px solid #e6ebf3;
+  border-radius: 14px;
+  color: #607087;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.primary-page-shell-help .guide-mode-pill.selected {
+  border-color: rgba(10,132,255,0.42);
+  background: #eef6ff;
+  color: #0a6fd8;
+  box-shadow: 0 10px 22px rgba(10,132,255,0.10);
+}
+
+.primary-page-shell-help .guide-mode-pill.muted {
+  opacity: .58;
+}
+
+.primary-page-shell-help .guide-main-panel label {
+  display: block;
+  margin: 10px 0 5px;
+  color: #667386;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.primary-page-shell-help .guide-input {
+  padding: 11px 12px;
+  border: 1px solid #e3e9f2;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: #42526a;
+  font-size: 12px;
+}
+
+.primary-page-shell-help .guide-input.secret {
+  letter-spacing: 2px;
+}
+
+.primary-page-shell-help .guide-main-panel button {
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: #0a84ff;
+  color: #fff;
+  font-weight: 900;
+  box-shadow: 0 12px 28px rgba(10,132,255,0.25);
+}
+
+.primary-page-shell-help .guide-flow-arrow {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #101828;
+  color: #fff;
+  font-weight: 900;
+  animation: guideArrowPulse 2.4s ease-in-out infinite;
+}
+
+.primary-page-shell-help .guide-screen-codex {
+  min-height: 330px;
+  padding: 58px 22px 22px;
+}
+
+.primary-page-shell-help .guide-codex-title {
+  color: #111827;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+
+.primary-page-shell-help .guide-model-select {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 16px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid rgba(10,132,255,0.22);
+  border-radius: 14px;
+  background: #f2f8ff;
+}
+
+.primary-page-shell-help .guide-model-select span {
+  color: #65758c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.primary-page-shell-help .guide-model-select strong {
+  color: #0a6fd8;
+  font-size: 13px;
+}
+
+.primary-page-shell-help .guide-chat-line {
+  max-width: 86%;
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.primary-page-shell-help .guide-chat-line.user {
+  margin-left: auto;
+  background: #0a84ff;
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+
+.primary-page-shell-help .guide-chat-line.assistant {
+  background: #f2f4f8;
+  color: #48566b;
+  border-bottom-left-radius: 5px;
+}
+
+.primary-page-shell-help .guide-cursor {
+  position: absolute;
+  z-index: 5;
+  width: 18px;
+  height: 24px;
+  background: #101828;
+  clip-path: polygon(0 0, 0 100%, 32% 75%, 50% 100%, 67% 91%, 49% 67%, 82% 67%);
+  filter: drop-shadow(0 8px 14px rgba(16,24,40,.24));
+  animation: guideCursorMove 6.4s ease-in-out infinite;
+}
+
+.primary-page-shell-help .guide-number {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 3px solid #fff;
+  border-radius: 999px;
+  background: #ff7a1a;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 950;
+  box-shadow: 0 12px 26px rgba(255,122,26,.30);
+}
+.primary-page-shell-help .guide-number.n2 { left: 402px; top: 116px; }
+.primary-page-shell-help .guide-number.n3 { right: 38px; bottom: 36px; }
+.primary-page-shell-help .guide-number.n4 { right: 28px; top: 104px; }
+
+@keyframes guideArrowPulse {
+  0%, 100% { transform: translateX(0); opacity: .76; }
+  50% { transform: translateX(4px); opacity: 1; }
+}
+
+.primary-page-shell-help .help-guide-caption-grid,
+.primary-page-shell-help .guide-trouble-grid,
+.primary-page-shell-help .guide-glossary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.primary-page-shell-help .help-guide-caption-grid div,
+.primary-page-shell-help .guide-trouble-grid div,
+.primary-page-shell-help .guide-glossary div {
+  padding: 12px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(16,34,66,0.06);
+}
+
+.primary-page-shell-help .help-guide-caption-grid b {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: #0a84ff;
+  color: #fff;
+  font-size: 12px;
+}
+
+.primary-page-shell-help .help-guide-caption-grid span,
+.primary-page-shell-help .guide-trouble-grid span,
+.primary-page-shell-help .guide-glossary span {
+  color: #5a687c;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.primary-page-shell-help .help-guide-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.primary-page-shell-help .guide-pick-card,
+.primary-page-shell-help .guide-mode-tutorial {
+  padding: 18px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 18px 46px rgba(16,34,66,0.08);
+}
+
+.primary-page-shell-help .guide-pick-card.primary {
+  border-color: rgba(10,132,255,0.24);
+  background: linear-gradient(180deg, #f1f8ff, #fff);
+}
+
+.primary-page-shell-help .guide-pick-card.advanced {
+  border-style: dashed;
+}
+
+.primary-page-shell-help .guide-pick-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 12px;
+  border-radius: 15px;
+  background: #eef6ff;
+  font-size: 22px;
+}
+
+.primary-page-shell-help .guide-pick-card h4,
+.primary-page-shell-help .guide-mode-intro h4 {
+  margin: 0 0 8px;
+  color: #101828;
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+}
+
+.primary-page-shell-help .guide-pick-card p,
+.primary-page-shell-help .guide-mode-intro p,
+.primary-page-shell-help .guide-note {
+  color: #58677b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.primary-page-shell-help .guide-pick-card ul {
+  margin: 10px 0 0;
+}
+
+.primary-page-shell-help .guide-mode-tutorial {
+  display: grid;
+  gap: 16px;
+}
+
+.primary-page-shell-help .guide-mode-tutorial.relay {
+  background: linear-gradient(180deg, #f2f8ff, #fff 46%);
+}
+
+.primary-page-shell-help .guide-mode-tutorial.api {
+  background: linear-gradient(180deg, #f2fff8, #fff 46%);
+}
+
+.primary-page-shell-help .guide-mode-tutorial.smart {
+  background: linear-gradient(180deg, #fff8ef, #fff 46%);
+}
+
+.primary-page-shell-help .guide-steps-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.primary-page-shell-help .guide-steps-list.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-steps-list div {
+  padding: 13px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,.82);
+}
+
+.primary-page-shell-help .guide-steps-list b {
+  display: block;
+  margin-bottom: 8px;
+  color: #0a84ff;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.primary-page-shell-help .guide-steps-list strong,
+.primary-page-shell-help .guide-trouble-grid b,
+.primary-page-shell-help .guide-glossary b {
+  display: block;
+  margin-bottom: 6px;
+  color: #101828;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.primary-page-shell-help .guide-steps-list span {
+  display: block;
+  color: #5a687c;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.primary-page-shell-help .guide-do-dont,
+.primary-page-shell-help .guide-smart-diagram {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.primary-page-shell-help .guide-do-dont div,
+.primary-page-shell-help .guide-smart-diagram div {
+  padding: 14px;
+  border-radius: 16px;
+}
+
+.primary-page-shell-help .guide-do-dont .do {
+  border: 1px solid rgba(25,166,106,0.20);
+  background: rgba(25,166,106,0.08);
+}
+
+.primary-page-shell-help .guide-do-dont .dont {
+  border: 1px solid rgba(255,122,26,0.22);
+  background: rgba(255,122,26,0.08);
+}
+
+.primary-page-shell-help .guide-do-dont b {
+  display: block;
+  margin-bottom: 5px;
+  color: #101828;
+  font-size: 13px;
+}
+
+.primary-page-shell-help .guide-do-dont span {
+  color: #58677b;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.primary-page-shell-help .guide-smart-diagram {
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+  align-items: center;
+}
+
+.primary-page-shell-help .guide-smart-diagram div {
+  border: 1px solid rgba(17,29,53,0.08);
+  background: #fff;
+  color: #101828;
+  font-size: 13px;
+  font-weight: 850;
+  text-align: center;
+}
+
+.primary-page-shell-help .guide-smart-diagram small {
+  color: #68768a;
+  font-weight: 600;
+}
+
+.primary-page-shell-help .guide-smart-diagram > span {
+  color: #0a84ff;
+  font-weight: 950;
+}
+
+.primary-page-shell-help .guide-codex-table {
+  overflow: hidden;
+  margin: 12px 0;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(16,34,66,0.07);
+}
+
+.primary-page-shell-help .guide-codex-table > div {
+  display: grid;
+  grid-template-columns: 0.82fr 1.25fr 1.35fr;
+  gap: 12px;
+  padding: 13px 15px;
+  border-bottom: 1px solid rgba(17,29,53,0.07);
+  color: #58677b;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.primary-page-shell-help .guide-codex-table.compact > div {
+  grid-template-columns: .75fr 1.15fr 1.2fr;
+}
+
+.primary-page-shell-help .guide-codex-table > div:last-child { border-bottom: 0; }
+
+.primary-page-shell-help .guide-codex-table .head {
+  background: #f4f8ff;
+  color: #101828;
+  font-weight: 900;
+}
+
+.primary-page-shell-help .guide-note {
+  padding: 11px 13px;
+  border: 1px solid rgba(10,132,255,.14);
+  border-radius: 14px;
+  background: rgba(10,132,255,.06);
+}
+
+[data-theme="dark"] .primary-page-shell-help .help-guide-hero,
+[data-theme="dark"] .primary-page-shell-help .guide-screen,
+[data-theme="dark"] .primary-page-shell-help .guide-pick-card,
+[data-theme="dark"] .primary-page-shell-help .guide-mode-tutorial,
+[data-theme="dark"] .primary-page-shell-help .guide-codex-table,
+[data-theme="dark"] .primary-page-shell-help .help-guide-caption-grid div,
+[data-theme="dark"] .primary-page-shell-help .guide-trouble-grid div,
+[data-theme="dark"] .primary-page-shell-help .guide-glossary div {
+  border-color: var(--sink-border) !important;
+  background: var(--sink-bg) !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 1180px) {
+  .primary-page-shell-help .help-guide-stage,
+  .primary-page-shell-help .help-guide-picker,
+  .primary-page-shell-help .guide-steps-list,
+  .primary-page-shell-help .guide-steps-list.compact {
+    grid-template-columns: 1fr;
+  }
+  .primary-page-shell-help .guide-flow-arrow { display: none; }
+  .primary-page-shell-help .help-guide-caption-grid,
+  .primary-page-shell-help .guide-trouble-grid,
+  .primary-page-shell-help .guide-glossary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .primary-page-shell-help .help-guide-hero,
+  .primary-page-shell-help .guide-do-dont,
+  .primary-page-shell-help .guide-smart-diagram,
+  .primary-page-shell-help .help-guide-caption-grid,
+  .primary-page-shell-help .guide-trouble-grid,
+  .primary-page-shell-help .guide-glossary {
+    grid-template-columns: 1fr;
+  }
+  .primary-page-shell-help .guide-screen-dex { min-height: 620px; }
+  .primary-page-shell-help .guide-sidebar { right: 18px; width: auto; bottom: auto; height: 230px; }
+  .primary-page-shell-help .guide-main-panel { left: 18px; top: 292px; }
+  .primary-page-shell-help .guide-codex-table > div,
+  .primary-page-shell-help .guide-codex-table.compact > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+/* 修正帮助动画：配置入口在服务概览的 Codex Desktop 快速配置，不在使用帮助页 */
+.primary-page-shell-help .guide-panel-title.small {
+  margin-top: 16px;
+  font-size: 15px;
+}
+
+.primary-page-shell-help .guide-number.n1 { left: 142px; top: 92px; }
+
+/* 教程修正：窗口按钮真实 3 个点，Codex Desktop 使用项目真实图标 */
+.primary-page-shell-help .guide-window-dots i {
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  background: #ff605c !important;
+}
+
+.primary-page-shell-help .guide-window-dots i:nth-child(2) { background: #ffbd44 !important; }
+.primary-page-shell-help .guide-window-dots i:nth-child(3) { background: #00ca4e !important; }
+.primary-page-shell-help .guide-window-dots i:nth-child(n+4) { display: none !important; }
+
+.primary-page-shell-help .guide-inline-tip {
+  margin: -4px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(10,132,255,0.16);
+  border-radius: 12px;
+  background: rgba(10,132,255,0.07);
+  color: #31506f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+/* 教程修正：按真实客户端 dock 图标展示 Codex 桌面快捷配置入口 */
+.primary-page-shell-help .guide-client-dock-demo {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  width: 168px;
+  margin: 0 auto 12px;
+  padding: 14px 12px 10px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 22px;
+  background: linear-gradient(180deg, #ffffff, #f7faff);
+  box-shadow: 0 16px 34px rgba(16,34,66,0.10);
+}
+
+.primary-page-shell-help .guide-client-dock-icon {
+  position: relative;
+  width: 74px;
+  height: 74px;
+}
+
+.primary-page-shell-help .guide-client-dock-icon img {
+  width: 74px;
+  height: 74px;
+  border-radius: 19px;
+  box-shadow: 0 10px 24px rgba(55,89,255,0.18);
+}
+
+.primary-page-shell-help .guide-surface-badge {
+  position: absolute;
+  left: -9px;
+  bottom: 2px;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 2px solid #fff;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #5b6473;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: 0 6px 14px rgba(16,34,66,0.14);
+}
+
+.primary-page-shell-help .guide-right-click-hint {
+  position: absolute;
+  right: -16px;
+  top: -18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 4px 9px;
+  border: 2px solid #0a84ff;
+  border-radius: 10px;
+  background: #eff7ff;
+  color: #0a66d0;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 10px 22px rgba(10,132,255,0.28);
+}
+
+.primary-page-shell-help .guide-client-dock-dots {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+
+.primary-page-shell-help .guide-client-dock-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #3b8f72;
+}
+
+.primary-page-shell-help .guide-client-dock-label {
+  padding: 6px 13px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 999px;
+  background: #fff;
+  color: #101828;
+  font-size: 13px;
+  font-weight: 750;
+  box-shadow: 0 6px 14px rgba(16,34,66,0.06);
+}
+
+/* 教程入口细节修正：右键提示角标不能盖住 Codex 图标 */
+.primary-page-shell-help .guide-main-panel .guide-right-click-hint {
+  position: absolute !important;
+  right: -12px !important;
+  top: -14px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 3px 8px !important;
+  border: 1.8px solid #0a84ff !important;
+  border-radius: 9px !important;
+  background: #eef7ff !important;
+  box-shadow: 0 8px 18px rgba(10,132,255,0.22) !important;
+  color: #0a66d0 !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+}
+
+.primary-page-shell-help .guide-client-dock-demo {
+  width: 142px !important;
+  padding-top: 18px !important;
+}
+
+.primary-page-shell-help .guide-client-dock-icon,
+.primary-page-shell-help .guide-client-dock-icon img {
+  width: 64px !important;
+  height: 64px !important;
+}
+
+.primary-page-shell-help .guide-surface-badge {
+  left: -8px !important;
+  bottom: 0 !important;
+  width: 24px !important;
+  height: 24px !important;
+}
+
+/* 帮助首屏补图：把中转模式讲成 Codex 图标 + Token/Key 流程 */
+.primary-page-shell-help .help-hero-picture {
+  position: relative;
+  width: 168px;
+  height: 118px;
+  margin: 0 auto 14px;
+}
+
+.primary-page-shell-help .hero-codex-orb {
+  position: absolute;
+  left: 10px;
+  top: 24px;
+  display: grid;
+  place-items: center;
+  width: 70px;
+  height: 70px;
+  border-radius: 24px;
+  background: linear-gradient(145deg, #ffffff, #eef6ff);
+  box-shadow: 0 14px 34px rgba(55,89,255,0.16);
+}
+
+.primary-page-shell-help .hero-codex-orb img {
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+}
+
+.primary-page-shell-help .hero-token-card {
+  position: absolute;
+  right: 0;
+  top: 10px;
+  width: 78px;
+  padding: 10px 11px;
+  border: 1px solid rgba(25,166,106,0.22);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f2fff8, #ffffff);
+  box-shadow: 0 12px 28px rgba(25,166,106,0.10);
+  text-align: left;
+}
+
+.primary-page-shell-help .hero-token-card span,
+.primary-page-shell-help .hero-key-chip {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.primary-page-shell-help .hero-token-card b {
+  display: block;
+  margin-top: 3px;
+  color: #19a66a;
+  font-size: 16px;
+}
+
+.primary-page-shell-help .hero-flow-line {
+  position: absolute;
+  left: 74px;
+  right: 68px;
+  top: 58px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0a84ff, #19a66a);
+}
+
+.primary-page-shell-help .hero-flow-line::after {
+  content: '';
+  position: absolute;
+  right: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #19a66a;
+  box-shadow: 0 0 0 4px rgba(25,166,106,0.12);
+}
+
+.primary-page-shell-help .hero-key-chip {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #eef6ff;
+  color: #0a6fd8;
+}
+
+.primary-page-shell-help .guide-glossary-full {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-glossary-full div {
+  min-height: 112px;
+}
+
+@media (max-width: 1180px) {
+  .primary-page-shell-help .guide-glossary-full {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .primary-page-shell-help .guide-glossary-full {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 使用帮助 2.1：补齐小白教程新增模块和真实入口标识 */
+.primary-page-shell-help .guide-entry-map,
+.primary-page-shell-help .guide-check-grid,
+.primary-page-shell-help .guide-field-map,
+.primary-page-shell-help .guide-success-flow,
+.primary-page-shell-help .guide-account-grid,
+.primary-page-shell-help .guide-nav-map {
+  display: grid;
+  gap: 12px;
+}
+
+.primary-page-shell-help .guide-entry-map {
+  grid-template-columns: 1fr auto 1fr auto 1fr;
+  align-items: stretch;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(10,132,255,0.14);
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(241,248,255,.94), rgba(255,255,255,.94));
+  box-shadow: 0 16px 36px rgba(16,34,66,0.07);
+}
+
+.primary-page-shell-help .guide-entry-map > i {
+  align-self: center;
+  color: #0a84ff;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.primary-page-shell-help .entry-map-card,
+.primary-page-shell-help .guide-check-grid article,
+.primary-page-shell-help .guide-field-map div,
+.primary-page-shell-help .guide-success-flow div,
+.primary-page-shell-help .guide-account-grid article,
+.primary-page-shell-help .guide-nav-map div {
+  position: relative;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(17,29,53,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,.88);
+  box-shadow: 0 10px 24px rgba(16,34,66,0.06);
+}
+
+.primary-page-shell-help .entry-map-card small,
+.primary-page-shell-help .guide-field-map b,
+.primary-page-shell-help .guide-nav-map b,
+.primary-page-shell-help .guide-account-grid h4,
+.primary-page-shell-help .guide-check-grid b,
+.primary-page-shell-help .guide-success-flow b {
+  display: block;
+  margin: 0 0 6px;
+  color: #101828;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.primary-page-shell-help .entry-map-card small {
+  color: #0a6fd8;
+  font-size: 11px;
+  letter-spacing: .04em;
+}
+
+.primary-page-shell-help .entry-map-card b {
+  display: block;
+  color: #101828;
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+
+.primary-page-shell-help .entry-map-card span,
+.primary-page-shell-help .guide-check-grid span,
+.primary-page-shell-help .guide-field-map span,
+.primary-page-shell-help .guide-success-flow span,
+.primary-page-shell-help .guide-account-grid p,
+.primary-page-shell-help .guide-account-grid li,
+.primary-page-shell-help .guide-nav-map span {
+  color: #58677b;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.primary-page-shell-help .entry-map-card.action {
+  border-color: rgba(10,132,255,.24);
+  background: linear-gradient(180deg, #eff7ff, #fff);
+}
+
+.primary-page-shell-help .entry-mini-action {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border: 1.8px solid #0a84ff;
+  border-radius: 999px;
+  background: #eef7ff;
+  color: #0a66d0;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+  box-shadow: 0 8px 18px rgba(10,132,255,.18);
+}
+
+.primary-page-shell-help .guide-check-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-check-grid article::before {
+  content: '';
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #0a84ff, #70b7ff);
+  box-shadow: 0 10px 22px rgba(10,132,255,.18);
+}
+
+.primary-page-shell-help .guide-warning-line {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,122,26,.22);
+  border-radius: 15px;
+  background: rgba(255,122,26,.08);
+  color: #8a4b08;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.primary-page-shell-help .guide-field-map {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-field-map div {
+  padding-left: 16px;
+}
+
+.primary-page-shell-help .guide-field-map div::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 4px;
+  border-radius: 999px;
+  background: #0a84ff;
+  opacity: .76;
+}
+
+.primary-page-shell-help .guide-success-flow {
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+  align-items: stretch;
+}
+
+.primary-page-shell-help .guide-success-flow > span {
+  align-self: center;
+  color: #19a66a;
+  font-weight: 950;
+}
+
+.primary-page-shell-help .guide-success-flow div {
+  border-color: rgba(25,166,106,.16);
+  background: linear-gradient(180deg, #f3fff8, #fff);
+}
+
+.primary-page-shell-help .guide-account-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-account-grid article {
+  padding: 18px;
+}
+
+.primary-page-shell-help .guide-account-grid h4 {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.primary-page-shell-help .guide-account-grid p {
+  margin: 0 0 10px;
+}
+
+.primary-page-shell-help .guide-account-grid ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.primary-page-shell-help .guide-trouble-grid-wide {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-trouble-grid-wide div:nth-child(4),
+.primary-page-shell-help .guide-trouble-grid-wide div:nth-child(5),
+.primary-page-shell-help .guide-trouble-grid-wide div:nth-child(6),
+.primary-page-shell-help .guide-trouble-grid-wide div:nth-child(7) {
+  border-color: rgba(255,122,26,.18);
+  background: linear-gradient(180deg, #fff8ef, #fff);
+}
+
+.primary-page-shell-help .guide-nav-map {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.primary-page-shell-help .guide-nav-map div:first-child {
+  border-color: rgba(10,132,255,.26);
+  background: linear-gradient(180deg, #edf6ff, #fff);
+}
+
+[data-theme="dark"] .primary-page-shell-help .guide-entry-map,
+[data-theme="dark"] .primary-page-shell-help .entry-map-card,
+[data-theme="dark"] .primary-page-shell-help .guide-check-grid article,
+[data-theme="dark"] .primary-page-shell-help .guide-field-map div,
+[data-theme="dark"] .primary-page-shell-help .guide-success-flow div,
+[data-theme="dark"] .primary-page-shell-help .guide-account-grid article,
+[data-theme="dark"] .primary-page-shell-help .guide-nav-map div {
+  border-color: var(--sink-border) !important;
+  background: var(--sink-bg) !important;
+  box-shadow: none !important;
+}
+
+/* 最终校准：鼠标尖点落在 Codex 图标右上角「右键」提示角标处 */
+.primary-page-shell-help .guide-cursor {
+  transform-origin: 2px 2px;
+}
+
+@media (max-width: 1180px) {
+  .primary-page-shell-help .guide-entry-map,
+  .primary-page-shell-help .guide-check-grid,
+  .primary-page-shell-help .guide-field-map,
+  .primary-page-shell-help .guide-success-flow,
+  .primary-page-shell-help .guide-account-grid,
+  .primary-page-shell-help .guide-trouble-grid-wide,
+  .primary-page-shell-help .guide-nav-map {
+    grid-template-columns: 1fr;
+  }
+  .primary-page-shell-help .guide-entry-map > i,
+  .primary-page-shell-help .guide-success-flow > span {
+    display: none;
+  }
+}
+
+/* 使用帮助 2.2：按用户截图校准真实 UI 名称与鼠标落点 */
+.primary-page-shell-help .guide-check-grid article {
+  counter-increment: help-check-step;
+}
+
+.primary-page-shell-help .guide-check-grid article::before {
+  content: counter(help-check-step) !important;
+  display: grid !important;
+  place-items: center !important;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 950;
+}
+
+.primary-page-shell-help .guide-screen-dex .guide-main-panel {
+  overflow: visible;
+}
+
+.primary-page-shell-help .guide-client-dock-demo {
+  overflow: visible;
+}
+
+.primary-page-shell-help .guide-number.n2 {
+  right: 30px !important;
+  top: 112px !important;
+}
+
+@keyframes guideCursorMove {
+  0%, 12% { left: 110px; top: 92px; transform: scale(1); }
+  16% { transform: scale(.88); }
+  30%, 42% { left: calc(50% + 134px); top: 132px; transform: scale(1); }
+  46% { transform: scale(.88); }
+  60%, 72% { left: calc(100% - 92px); top: calc(100% - 66px); transform: scale(1); }
+  76% { transform: scale(.88); }
+  100% { left: 110px; top: 92px; transform: scale(1); }
+}

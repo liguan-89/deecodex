@@ -1,0 +1,116 @@
+/* 线程聚合：详情返回必须保持 primary shell，操作按钮统一线条图标并居中对齐。 */
+.primary-page-shell-threads .detail-panel {
+  min-height: calc(100vh - 160px);
+}
+
+.primary-page-shell-threads .thread-actions-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 62px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.primary-page-shell-threads .thread-row-action {
+  width: 26px !important;
+  min-width: 26px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8b929d;
+  font-size: 0;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.primary-page-shell-threads .thread-row-action .line-action-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.primary-page-shell-threads .thread-row-action.is-archived {
+  color: #0a84ff;
+}
+
+.primary-page-shell-threads .thread-row-action:hover {
+  background: rgba(10,132,255,0.07);
+  color: #0a6fd8;
+}
+
+.primary-page-shell-threads .thread-row-action.danger:hover {
+  background: rgba(217,45,32,0.065);
+  color: var(--red);
+}
+
+[data-theme="dark"] .primary-page-shell-threads .thread-row-action {
+  color: #8e98a8;
+}
+
+[data-theme="dark"] .primary-page-shell-threads .thread-row-action:hover {
+  background: rgba(88,166,255,0.12);
+  color: #58a6ff;
+}
+
+[data-theme="dark"] .primary-page-shell-threads .thread-row-action.danger:hover {
+  background: rgba(255,92,111,0.13);
+  color: #ff6f82;
+}
+
+/* 线程聚合：压缩标题列，把右侧信息列整体左移，确保归档/删除按钮留在行卡片内。 */
+.primary-page-shell-threads .threads-table th:nth-child(1) { width: 45% !important; }
+.primary-page-shell-threads .threads-table th:nth-child(2) { width: 11% !important; }
+.primary-page-shell-threads .threads-table th:nth-child(3) { width: 17% !important; }
+.primary-page-shell-threads .threads-table th:nth-child(4) { width: 17% !important; }
+.primary-page-shell-threads .threads-table th:nth-child(5) { width: 10% !important; }
+
+.primary-page-shell-threads .threads-table td:nth-child(1),
+.primary-page-shell-threads .threads-table th:nth-child(1) {
+  padding-left: 12px !important;
+  padding-right: 8px !important;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(2),
+.primary-page-shell-threads .threads-table th:nth-child(2),
+.primary-page-shell-threads .threads-table td:nth-child(3),
+.primary-page-shell-threads .threads-table th:nth-child(3),
+.primary-page-shell-threads .threads-table td:nth-child(4),
+.primary-page-shell-threads .threads-table th:nth-child(4) {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+
+.primary-page-shell-threads .threads-table td:nth-child(5),
+.primary-page-shell-threads .threads-table th:nth-child(5) {
+  width: auto !important;
+  min-width: 76px;
+  padding-left: 4px !important;
+  padding-right: 10px !important;
+  text-align: center !important;
+}
+
+.primary-page-shell-threads .thread-actions-cell {
+  overflow: hidden !important;
+  text-align: center !important;
+}
+
+.primary-page-shell-threads .thread-actions-inline {
+  min-width: 58px;
+  justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .primary-page-shell-threads .threads-table th:nth-child(1) { width: 44% !important; }
+  .primary-page-shell-threads .threads-table th:nth-child(2) { width: 12% !important; }
+  .primary-page-shell-threads .threads-table th:nth-child(3) { width: 16% !important; }
+  .primary-page-shell-threads .threads-table th:nth-child(4) { width: 16% !important; }
+  .primary-page-shell-threads .threads-table th:nth-child(5) { width: 12% !important; }
+}
+

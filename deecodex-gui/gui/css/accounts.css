@@ -1,0 +1,1004 @@
+/* 账号管理动作收敛为导航栏同源的线条图标，不在卡片层重复显示能力标签。 */
+.line-action-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+}
+
+.line-action-icon::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  -webkit-mask: var(--line-action-icon) center / 18px 18px no-repeat;
+  mask: var(--line-action-icon) center / 18px 18px no-repeat;
+}
+.line-action-icon-scan { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 4H5.5A1.5 1.5 0 0 0 4 5.5V7'/%3E%3Cpath d='M17 4h1.5A1.5 1.5 0 0 1 20 5.5V7'/%3E%3Cpath d='M20 17v1.5a1.5 1.5 0 0 1-1.5 1.5H17'/%3E%3Cpath d='M7 20H5.5A1.5 1.5 0 0 1 4 18.5V17'/%3E%3Cpath d='M7 12h10'/%3E%3C/svg%3E"); }
+.line-action-icon-check { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5.2 12.4 4.1 4.1 9.5-9'/%3E%3C/svg%3E"); }
+.line-action-icon-trash { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7h14'/%3E%3Cpath d='M9 7V5.5h6V7'/%3E%3Cpath d='M8 10v8'/%3E%3Cpath d='M12 10v8'/%3E%3Cpath d='M16 10v8'/%3E%3Cpath d='M7 7l.8 13h8.4L17 7'/%3E%3C/svg%3E"); }
+.line-action-icon-archive { --line-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.12' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7h14v12H5z'/%3E%3Cpath d='M4 5h16v2H4z'/%3E%3Cpath d='M9 11h6'/%3E%3C/svg%3E"); }
+
+.accounts-page-header .page-header-actions {
+  gap: 10px;
+}
+
+.accounts-page-header .account-toolbar-icon {
+  width: 42px;
+  min-width: 42px;
+  min-height: 38px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.accounts-client-row .account-toolbar-icon,
+[data-theme="light"] .accounts-client-row .account-toolbar-icon {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 !important;
+  border-radius: 11px !important;
+  border: 1px solid rgba(0,0,0,0.16) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 5px 12px rgba(20,24,30,0.052) !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+}
+
+.accounts-client-row .account-toolbar-icon .line-action-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.accounts-client-row .account-toolbar-icon:hover,
+[data-theme="light"] .accounts-client-row .account-toolbar-icon:hover {
+  border-color: rgba(0,0,0,0.22) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 7px 14px rgba(20,24,30,0.06) !important;
+}
+
+.account-card-mainline {
+  grid-template-columns: minmax(0, 1fr) minmax(214px, 236px);
+}
+
+.account-card-primary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.account-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.account-icon-btn:disabled {
+  cursor: default;
+}
+
+.account-icon-btn:disabled .line-action-icon {
+  opacity: 0.72;
+}
+
+[data-theme="light"] .accounts-page-header .account-toolbar-icon,
+[data-theme="light"] .account-icon-btn {
+  border-color: rgba(29,29,31,0.12) !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.035) !important;
+}
+
+[data-theme="light"] .accounts-page-header .account-toolbar-icon:hover,
+[data-theme="light"] .account-icon-btn:hover {
+  border-color: rgba(29,29,31,0.18) !important;
+  background: #f5f7fa !important;
+  color: #202124 !important;
+  box-shadow: none !important;
+}
+
+[data-theme="light"] .account-toolbar-icon.btn-primary,
+[data-theme="light"] .account-icon-btn.account-apply {
+  color: #0a6fd8 !important;
+}
+
+[data-theme="light"] .account-icon-btn.account-applied {
+  color: #199764 !important;
+  background: rgba(28,181,123,0.07) !important;
+  border-color: rgba(28,181,123,0.18) !important;
+}
+
+[data-theme="light"] .account-icon-btn.danger:hover {
+  color: var(--red) !important;
+  background: rgba(217,45,32,0.07) !important;
+  border-color: rgba(217,45,32,0.16) !important;
+}
+
+/* 账号卡片右侧收束成一条无外框控制带，状态与动作同层显示。 */
+.account-card-side {
+  display: grid;
+  grid-template-columns: minmax(52px, max-content) auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-left: 0;
+  border-left: 0;
+  min-height: 46px;
+}
+
+.account-card .card-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  width: auto;
+  min-height: 32px;
+  margin-top: 0;
+  padding-left: 10px;
+  overflow: visible;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+
+.account-icon-btn {
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  border: 0 !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+.account-icon-btn + .account-icon-btn {
+  margin-left: 3px;
+  border-left: 0 !important;
+}
+
+.account-icon-btn:hover {
+  background: rgba(107,127,168,0.08) !important;
+}
+
+.account-icon-btn.account-applied {
+  background: transparent !important;
+}
+
+.card-balance,
+[data-theme="light"] .card-balance {
+  min-height: 32px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.balance-pill {
+  min-height: 32px;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.balance-empty {
+  justify-content: flex-end;
+}
+
+.balance-empty .balance-na {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-style: normal;
+}
+
+[data-theme="light"] .account-card .card-actions-row,
+[data-theme="light"] .balance-pill {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 账号客户端入口：8 个客户端共用一条滑槽，数量作为 App 风格角标贴在图标上。 */
+.accounts-static-header .client-switcher,
+[data-theme="light"] .accounts-static-header .client-switcher {
+  width: auto !important;
+  max-width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto !important;
+  justify-content: space-between;
+  gap: 19px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+
+.accounts-static-header .client-tab,
+[data-theme="light"] .accounts-static-header .client-tab {
+  width: 44px !important;
+  min-width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  padding: 0 !important;
+  border-radius: 12px !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+
+.accounts-static-header .client-tab:hover,
+[data-theme="light"] .accounts-static-header .client-tab:hover {
+  background: rgba(29,29,31,0.035) !important;
+}
+
+.accounts-static-header .client-tab.active,
+[data-theme="light"] .accounts-static-header .client-tab.active {
+  width: 44px !important;
+  min-width: 44px !important;
+  border-color: rgba(10,132,255,0.34) !important;
+  background: rgba(10,132,255,0.08) !important;
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.14), 0 6px 14px rgba(10,132,255,0.10) !important;
+}
+
+.accounts-static-header .client-tab.active::after,
+[data-theme="light"] .accounts-static-header .client-tab.active::after {
+  content: none !important;
+}
+
+.accounts-static-header .client-tab .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab .client-logo-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: #fff;
+  /* 用 1px 外环代替 border，避免 border-box 吃掉内容宽度导致 42px 图标整体偏右下 1px。 */
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.24), 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075);
+  overflow: hidden;
+  transform-origin: center;
+  transition:
+    box-shadow 140ms ease,
+    transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+.accounts-static-header .client-tab:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab.account-surface-tab .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab .surface-icon-stack {
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+.accounts-static-header .client-tab:hover:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab:focus-visible:not(.account-surface-tab) .client-logo-box,
+.accounts-static-header .client-tab.account-surface-tab:hover .surface-icon-stack,
+.accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab:hover:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible:not(.account-surface-tab) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab:hover .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-icon-stack {
+  transform: translateY(-2px) scale(1.045);
+}
+
+.accounts-static-header .client-tab:hover .client-logo-box,
+.accounts-static-header .client-tab:focus-visible .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:hover .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible .client-logo-box {
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.18), 0 1px 2px rgba(20,24,30,0.08), 0 6px 14px rgba(20,24,30,0.06);
+}
+
+.accounts-static-header .client-tab:hover .client-logo-img,
+.accounts-static-header .client-tab:focus-visible .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-tab:hover .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-tab:focus-visible .client-logo-img {
+  transform: scale(1.02);
+}
+
+.accounts-static-header .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-img {
+  /* 放大到 50px + 负边距：让 logo 图案撑满 42px 圆角框（各品牌源图自带约 7% 内边距）。 */
+  width: 50px;
+  height: 50px;
+  margin: -4px;
+  object-fit: cover;
+  object-position: center;
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18);
+}
+
+.accounts-static-header .client-logo-generic_client .client-logo-img,
+[data-theme="light"] .accounts-static-header .client-logo-generic_client .client-logo-img {
+  /* 通用客户端源图本身就是完整深色圆角卡片，保持 42px 撑满，不放大。 */
+  width: 42px;
+  height: 42px;
+  margin: 0;
+  object-fit: cover;
+  object-position: center;
+}
+
+.accounts-static-header .client-tab em,
+[data-theme="light"] .accounts-static-header .client-tab em,
+.accounts-static-header .client-tab.active em,
+[data-theme="light"] .accounts-static-header .client-tab.active em {
+  position: absolute;
+  top: -7px;
+  right: -8px;
+  z-index: 3;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #edf1f6;
+  color: #838b98;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.92);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.accounts-static-header .client-tab.active em,
+[data-theme="light"] .accounts-static-header .client-tab.active em {
+  right: -8px;
+  background: #eef1f6;
+  color: #8b93a1;
+}
+
+.accounts-static-header .surface-glyph {
+  left: 1px;
+  bottom: 1px;
+  z-index: 4;
+  transition: transform 180ms cubic-bezier(.2,.9,.25,1.18), box-shadow 140ms ease;
+}
+
+.accounts-static-header .client-tab.account-surface-tab:hover .surface-glyph,
+.accounts-static-header .client-tab.account-surface-tab:focus-visible .surface-glyph {
+  transform: scale(1.08);
+}
+
+[data-theme="light"] .account-icon-btn {
+  color: #5f6772 !important;
+}
+
+[data-theme="light"] .account-icon-btn + .account-icon-btn {
+  border-left-color: rgba(29,29,31,0.10) !important;
+}
+
+[data-theme="light"] .account-card .card-actions-row {
+  border-left-color: transparent !important;
+}
+
+[data-theme="light"] .account-icon-btn:hover {
+  background: rgba(245,247,250,0.95) !important;
+}
+
+[data-theme="light"] .account-icon-btn.account-apply,
+[data-theme="light"] .account-icon-btn.account-applied {
+  color: #0a6fd8 !important;
+}
+
+[data-theme="light"] .account-icon-btn.danger:hover {
+  color: var(--red) !important;
+  background: rgba(217,45,32,0.055) !important;
+}
+
+[data-theme="light"] .client-switcher {
+  gap: 12px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+[data-theme="light"] .client-tab {
+  min-height: 50px !important;
+  padding: 6px 10px !important;
+  border-radius: 12px !important;
+  border-color: transparent;
+  background: transparent;
+}
+
+[data-theme="light"] .client-tab:hover {
+  background: rgba(29,29,31,0.045);
+}
+
+[data-theme="light"] .client-tab.active {
+  border-color: rgba(29,29,31,0.10);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.04), 0 8px 18px rgba(20,24,30,0.035);
+}
+
+/* 密码输入统一为一个控件，避免眼睛按钮像独立胶囊挂在右侧。 */
+.config-field .pass-group,
+[data-theme="light"] .config-field .pass-group {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+  min-height: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px !important;
+  background: var(--bg-input);
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.config-field .pass-group:focus-within,
+[data-theme="light"] .config-field .pass-group:focus-within {
+  border-color: rgba(10,132,255,0.34);
+  box-shadow: 0 0 0 3px rgba(10,132,255,0.08);
+}
+
+.config-field .pass-group input,
+[data-theme="light"] .config-field .pass-group input {
+  min-height: 32px;
+  padding: 6px 44px 6px 10px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.config-field .pass-group.has-copy input,
+[data-theme="light"] .config-field .pass-group.has-copy input {
+  padding-right: 76px !important;
+}
+
+.config-field .pass-group button,
+[data-theme="light"] .config-field .pass-group button {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 !important;
+  transform: translateY(-50%);
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary);
+}
+
+.config-field .pass-group .secret-copy-btn,
+[data-theme="light"] .config-field .pass-group .secret-copy-btn {
+  right: 38px;
+}
+
+[data-theme="light"] .config-field .pass-group {
+  border-color: var(--sink-border);
+  background-color: #ffffff;
+  box-shadow: var(--sink-shadow);
+}
+
+[data-theme="light"] .config-field .pass-group button {
+  border-left-color: transparent !important;
+  color: #5f6772;
+}
+
+.config-field .pass-group button:hover,
+[data-theme="light"] .config-field .pass-group button:hover,
+.config-field .pass-group button[aria-pressed="true"],
+[data-theme="light"] .config-field .pass-group button[aria-pressed="true"] {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+}
+
+.pass-toggle svg,
+.secret-copy-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.config-field .pass-group input:focus,
+[data-theme="light"] .config-field .pass-group input:focus {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.config-field .pass-group input:focus + button,
+[data-theme="light"] .config-field .pass-group input:focus + button {
+  border-left-color: transparent !important;
+}
+
+/* 全局开关：白/灰胶囊轨道 + 圆形滑块 + ON/OFF 文案，不使用蓝色底。 */
+:root {
+  --switch-track-off: #ffffff;
+  --switch-track-on: #d9dde3;
+  --switch-border: rgba(29,29,31,0.14);
+  --switch-border-on: rgba(29,29,31,0.18);
+  --switch-knob-off: #cfd5dd;
+  --switch-knob-on: #ffffff;
+  --switch-shadow: 0 1px 2px rgba(20,24,30,0.045);
+}
+
+.toggle-label,
+.check-row,
+.config-filter-toggle,
+.history-toggle {
+  gap: 7px !important;
+}
+
+.toggle-label input[type="checkbox"],
+.check-row input[type="checkbox"],
+.config-filter-toggle input[type="checkbox"] {
+  appearance: none !important;
+  width: 36px !important;
+  height: 20px !important;
+  min-width: 36px !important;
+  min-height: 20px !important;
+  flex: 0 0 36px !important;
+  padding: 0 !important;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 999px !important;
+  background: var(--switch-track-off) !important;
+  box-shadow: var(--switch-shadow) !important;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.toggle-label input[type="checkbox"]::before,
+.check-row input[type="checkbox"]::before,
+.config-filter-toggle input[type="checkbox"]::before {
+  content: none !important;
+  display: none !important;
+}
+
+.toggle-label input[type="checkbox"]::after,
+.check-row input[type="checkbox"]::after,
+.config-filter-toggle input[type="checkbox"]::after {
+  content: "" !important;
+  position: absolute !important;
+  top: 2px !important;
+  left: 3px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--switch-knob-off) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.12) !important;
+  transform: none !important;
+  transition: transform var(--transition), background var(--transition);
+}
+
+.toggle-label input[type="checkbox"]:checked,
+.check-row input[type="checkbox"]:checked,
+.config-filter-toggle input[type="checkbox"]:checked {
+  border-color: var(--switch-border-on) !important;
+  background: var(--switch-track-on) !important;
+}
+
+.toggle-label input[type="checkbox"]:checked::before,
+.check-row input[type="checkbox"]:checked::before,
+.config-filter-toggle input[type="checkbox"]:checked::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  left: 6px !important;
+  top: 50% !important;
+  width: 7px !important;
+  height: 7px !important;
+  border-radius: 999px !important;
+  background: #34c759 !important;
+  box-shadow: 0 0 5px rgba(52,199,89,0.32) !important;
+  transform: translateY(-50%) !important;
+  z-index: 1 !important;
+}
+
+.toggle-label input[type="checkbox"]:checked::after,
+.check-row input[type="checkbox"]:checked::after,
+.config-filter-toggle input[type="checkbox"]:checked::after {
+  background: var(--switch-knob-on) !important;
+  transform: translateX(16px) !important;
+}
+
+.toggle-label input[type="checkbox"]:focus-visible,
+.check-row input[type="checkbox"]:focus-visible,
+.config-filter-toggle input[type="checkbox"]:focus-visible,
+.history-toggle:focus-visible .toggle-dot {
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(95,103,114,0.12), var(--switch-shadow) !important;
+}
+
+.history-toggle .toggle-dot {
+  width: 36px !important;
+  height: 20px !important;
+  min-width: 36px !important;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 999px !important;
+  background: var(--switch-track-off) !important;
+  box-shadow: var(--switch-shadow) !important;
+  position: relative;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.history-toggle .toggle-dot::before {
+  content: none !important;
+  display: none !important;
+}
+
+.history-toggle .toggle-dot::after {
+  top: 2px !important;
+  left: 3px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: var(--switch-knob-off) !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.12) !important;
+  transition: transform var(--transition), background var(--transition) !important;
+}
+
+.history-toggle.on .toggle-dot {
+  border-color: var(--switch-border-on) !important;
+  background: var(--switch-track-on) !important;
+}
+
+.history-toggle.on .toggle-dot::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  left: 6px !important;
+  top: 50% !important;
+  width: 7px !important;
+  height: 7px !important;
+  border-radius: 999px !important;
+  background: #34c759 !important;
+  box-shadow: 0 0 5px rgba(52,199,89,0.32) !important;
+  transform: translateY(-50%) !important;
+  z-index: 1 !important;
+}
+
+.history-toggle.on .toggle-dot::after {
+  background: var(--switch-knob-on) !important;
+  transform: translateX(16px) !important;
+}
+
+/* 三段式滑块统一参考主题切换：外层胶囊 + 选中浮块。 */
+.vision-mode-segments,
+.model-vision-segments,
+[data-theme="light"] .vision-mode-segments,
+[data-theme="light"] .model-vision-segments {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--switch-border) !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+  box-shadow: var(--switch-shadow) !important;
+  overflow: hidden;
+}
+
+.model-vision-segments,
+[data-theme="light"] .model-vision-segments {
+  width: var(--vision-segment-width, 192px);
+  min-width: 0;
+  min-height: var(--model-map-control-height, 34px);
+  align-self: center;
+}
+
+.vision-mode-segments,
+[data-theme="light"] .vision-mode-segments {
+  width: var(--vision-segment-width, 192px);
+  max-width: 100%;
+  min-height: var(--model-map-control-height, 34px);
+}
+
+.vision-mode-option,
+.model-vision-segments button,
+[data-theme="light"] .vision-mode-option,
+[data-theme="light"] .model-vision-segments button {
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1;
+}
+
+.model-vision-segments button,
+[data-theme="light"] .model-vision-segments button {
+  min-height: 26px !important;
+  padding: 0 7px !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+}
+
+.vision-mode-option:hover,
+.model-vision-segments button:hover,
+[data-theme="light"] .vision-mode-option:hover,
+[data-theme="light"] .model-vision-segments button:hover {
+  color: var(--text-primary) !important;
+  background: rgba(29,29,31,0.035) !important;
+}
+
+.vision-mode-option.active,
+.model-vision-segments button.active,
+[data-theme="light"] .vision-mode-option.active,
+[data-theme="light"] .model-vision-segments button.active {
+  color: var(--text-primary) !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 4px 10px rgba(20,24,30,0.045) !important;
+}
+
+/* 模型映射表格：明确三列，预设行不渲染隐藏删除占位，避免右侧溢出。 */
+.model-map-head:not(.client-model-template) {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) var(--vision-segment-width, 192px);
+  column-gap: 20px;
+  padding-right: 0;
+}
+
+.model-map-head:not(.client-model-template) span:nth-child(3) {
+  grid-column: auto;
+  text-align: center;
+}
+
+.client-model-map-table {
+  --codex-model-label-width: 164px;
+  --model-map-control-height: 34px;
+}
+
+.client-model-map-table .client-model-map-head,
+.client-model-map-table .client-model-row,
+.client-model-map-table .client-model-row.claude-one-m-row {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) 24px;
+  column-gap: 20px;
+}
+
+.client-model-map-table.claude-one-m-table .client-model-map-head,
+.client-model-map-table.claude-one-m-table .client-model-row {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(0, 1.45fr) 70px;
+}
+
+.client-model-map-table .client-model-map-head {
+  margin-top: 0;
+  padding: 0 0 8px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.client-model-map-table .client-model-row,
+[data-theme="light"] .client-model-map-table .client-model-row {
+  margin-top: 0;
+  padding: 5px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot {
+  width: var(--codex-model-label-width);
+  max-width: 100%;
+  min-height: var(--model-map-control-height);
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  padding: 0 10px;
+  border: 1px solid rgba(29,29,31,0.08);
+  border-radius: 9px;
+  background: rgba(245,247,250,0.78);
+  color: var(--text-primary);
+  white-space: normal;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot.custom {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-model-map-table .model-row .model-label.client-model-slot span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-model-map-table .client-model-value .model-autocomplete,
+.client-model-map-table .client-model-value input {
+  min-width: 0;
+  width: 100%;
+}
+
+.client-model-map-table .client-model-value input {
+  box-sizing: border-box;
+  min-height: var(--model-map-control-height);
+  padding: 0 14px !important;
+  border-radius: 9px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.client-model-map-table .model-remove,
+.client-model-map-table .model-remove-placeholder {
+  width: 24px;
+  min-width: 24px;
+  justify-self: center;
+}
+
+.client-model-map-table .claude-one-m-toggle,
+[data-theme="light"] .client-model-map-table .claude-one-m-toggle {
+  justify-self: center;
+}
+
+@media (max-width: 1000px) {
+  .client-model-map-table {
+    --codex-model-label-width: 130px;
+  }
+
+  .client-model-map-table .client-model-map-head,
+  .client-model-map-table .client-model-row,
+  .client-model-map-table .client-model-row.claude-one-m-row {
+    grid-template-columns: minmax(130px, 0.62fr) minmax(0, 1.38fr) 22px;
+    column-gap: 12px;
+  }
+
+  .client-model-map-table.claude-one-m-table .client-model-map-head,
+  .client-model-map-table.claude-one-m-table .client-model-row {
+    grid-template-columns: minmax(130px, 0.62fr) minmax(0, 1.38fr) 58px;
+  }
+
+  .client-model-map-table .claude-one-m-toggle,
+  [data-theme="light"] .client-model-map-table .claude-one-m-toggle {
+    width: 58px;
+    min-width: 58px;
+  }
+}
+
+
+/* 模型管理面板：每行可启用/停用 + 单模型协议 override。 */
+.codex-model-table {
+  width: 100%;
+  min-width: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.codex-model-head,
+.codex-model-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 1.4fr) minmax(48px, auto) minmax(150px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+}
+
+.codex-model-head {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.codex-model-name {
+  min-width: 0;
+  justify-self: start;
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.02));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-model-toggle {
+  justify-self: start;
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+
+.codex-model-toggle input[type="checkbox"] {
+  margin: 0 !important;
+}
+
+.codex-model-row.disabled .codex-model-name {
+  opacity: 0.55;
+}
+
+.codex-model-select {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 4px 26px 4px 10px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%236b7fa8' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.codex-model-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+@media (max-width: 1000px) {
+  .codex-model-head,
+  .codex-model-row {
+    grid-template-columns: minmax(60px, 1.2fr) minmax(44px, auto) minmax(120px, 1fr);
+    gap: 10px;
+    padding: 7px 10px;
+  }
+}
+
+.codex-model-empty {
+  padding: 14px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.section-hint {
+  margin-top: 8px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  opacity: 0.86;
+}
+
+.account-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

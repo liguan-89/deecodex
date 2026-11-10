@@ -1,0 +1,69 @@
+{
+  "id": "example-node-automation",
+  "name": "Example Node Automation",
+  "version": "1.0.0",
+  "description": "Node 自动化插件模板",
+  "author": "DEX AI",
+  "kind": "automation",
+  "tags": ["template", "node", "automation"],
+  "entry": {
+    "runtime": "node",
+    "script": "index.js",
+    "args": []
+  },
+  "features": [
+    {
+      "id": "example-automation",
+      "kind": "automation",
+      "label": "示例自动化",
+      "description": "提供 run/status/stop 三个标准动作",
+      "methods": {
+        "run": "automation.run",
+        "status": "automation.status",
+        "stop": "automation.stop"
+      },
+      "params_schema": {
+        "run": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "title": "任务",
+              "default": "health-check",
+              "description": "要执行的任务名称"
+            },
+            "dry_run": {
+              "type": "boolean",
+              "title": "试运行",
+              "default": true,
+              "description": "只验证流程，不产生外部副作用"
+            }
+          },
+          "required": ["task"]
+        },
+        "status": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "stop": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    }
+  ],
+  "permissions": [],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "default_task": {
+        "type": "string",
+        "default": "health-check",
+        "description": "默认任务名称"
+      }
+    }
+  },
+  "min_deecodex_version": "0.1.0"
+}

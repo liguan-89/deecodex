@@ -1,0 +1,254 @@
+/* ── Scrollbar ── */
+/* 全局隐藏滚动条 UI（横向 + 纵向），保留页面滚动能力。
+   覆盖 Tauri WebView（WebKit ::-webkit-scrollbar）与 Firefox（scrollbar-width）两套实现；
+   !important 确保不被后加载的主题/补丁样式重新显示滚动条。 */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.main::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 3px; }
+.main::-webkit-scrollbar-track, .sidebar::-webkit-scrollbar-track { background: transparent; }
+.main::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 2px; }
+.main::-webkit-scrollbar-thumb:hover, .sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+.empty-state {
+  text-align: center; padding: 48px 20px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+}
+#threadsProviderBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 20px;
+  margin: 0 0 8px;
+  padding: 0 1px;
+}
+#threadsProviderBreakdown .tag {
+  padding: 2px 7px;
+  font-size: 9px;
+}
+.thread-source-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+}
+.thread-source-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.thread-source-tab.active {
+  border-color: rgba(0, 200, 232, 0.45);
+  color: var(--text-primary);
+  background: var(--accent-dim);
+}
+.thread-source-tab.has-issues em {
+  color: var(--amber);
+}
+.thread-source-tab em {
+  min-width: 14px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 10px;
+  text-align: center;
+}
+.codex-thread-actions {
+  margin: 0 0 8px;
+}
+.codex-thread-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+.codex-thread-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.codex-thread-muted {
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.thread-source-diagnostics {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 8px;
+}
+.thread-source-note {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border: 1px solid rgba(240,144,64,0.25);
+  border-radius: var(--radius-sm);
+  background: var(--amber-dim);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.thread-source-note strong {
+  color: var(--amber);
+  white-space: nowrap;
+}
+.threads-list-head {
+  margin: 8px 0 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-heading);
+  letter-spacing: 0.04em;
+}
+.threads-list-head::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 1px;
+  margin-right: 7px;
+  vertical-align: middle;
+  background: var(--accent);
+}
+.threads-table-wrap {
+  max-height: min(62vh, 620px);
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.threads-error-cell {
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.threads-table {
+  width: 100%; table-layout: fixed; border-collapse: collapse;
+}
+.threads-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 6px 9px; border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.threads-table th:nth-child(1) { width: 44%; }
+.threads-table th:nth-child(2) { width: 13%; }
+.threads-table th:nth-child(3) { width: 20%; }
+.threads-table th:nth-child(4) { width: 16%; }
+.threads-table th:nth-child(5) { width: 7%; }
+.threads-table td {
+  padding: 5px 9px; border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.threads-table td:first-child {
+  color: var(--text-primary); overflow: hidden; white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.threads-table .tag {
+  padding: 2px 6px;
+  font-size: 9px;
+}
+.td-title-text {
+  display: inline-block; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: middle;
+}
+.thread-meta-line {
+  display: inline-block;
+  margin-left: 7px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  vertical-align: middle;
+}
+
+.tag {
+  display: inline-block; font-family: var(--font-mono); font-size: 9px;
+  font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm);
+  letter-spacing: 0.05em; text-transform: uppercase;
+}
+.tag-current { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,214,143,0.2); }
+.tag-other { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(240,144,64,0.2); }
+.tag-warning { background: rgba(220, 72, 72, 0.10); color: #dc4848; border: 1px solid rgba(220, 72, 72, 0.20); }
+
+@media (max-width: 980px) {
+  .plugin-console {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "tabs"
+      "categories"
+      "filter"
+      "tools"
+      "controls";
+    align-items: stretch;
+  }
+  .plugin-mode-tabs {
+    width: 100%;
+  }
+  .plugin-mode-tabs button {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+  .plugin-category-tabs {
+    width: 100%;
+  }
+  .plugin-dev-head {
+    grid-template-columns: 1fr;
+  }
+  .plugin-filter-bar {
+    grid-template-columns: 1fr;
+  }
+  .plugin-controls {
+    justify-content: flex-start;
+  }
+  .plugin-controls {
+    min-width: 0;
+  }
+  .pc-account-row {
+    grid-template-columns: 1fr;
+  }
+  .pc-account-actions {
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+.session-empty {
+  color: var(--text-muted); font-family: var(--font-mono);
+  font-size: 11px; text-align: center; padding: 20px;
+}

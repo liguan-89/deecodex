@@ -1,0 +1,59 @@
+[workspace]
+members = ["deecodex-gui"]
+resolver = "2"
+
+[package]
+name = "deecodex"
+version = "4.4.7"
+edition = "2021"
+description = "DeepSeek API → Codex CLI 兼容代理 · 本地 Responses 增强层"
+license = "MIT"
+repository = "https://github.com/liguan-89/DEXAI"
+keywords = ["codex", "deepseek", "llm", "proxy", "responses-api"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+name = "deecodex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "deecodex"
+path = "src/main.rs"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+[dependencies]
+axum = { version = "0.7", features = ["json", "multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "system-proxy", "socks"] }
+tokio-tungstenite = { version = "0.24", features = ["connect"] }
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+bytes = "1"
+pin-project-lite = "0.2"
+eventsource-stream = "0.2"
+async-stream = "0.3"
+tokio-stream = "0.1"
+base64 = "0.22"
+getrandom = "0.2"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting"] }
+tiktoken-rs = "0.11"
+prometheus = "0.14"
+toml_edit = "0.22"
+which = "7"
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+notify = "6"

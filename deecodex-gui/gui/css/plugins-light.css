@@ -1,0 +1,117 @@
+/* 插件安装工具条只负责排列控件，避免外层边框形成重复容器。 */
+.plugin-console,
+[data-theme="light"] .plugin-console {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-guide-header,
+[data-theme="dark"] .primary-page-shell-help .help-guide-header {
+  margin-top: var(--status-shell-vpad, 0);
+}
+
+[data-theme="light"] .primary-page-shell-help .page-header {
+  margin-bottom: 14px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 22px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--sink-border);
+  border-radius: 999px;
+  background: #fff;
+  color: #4b5563;
+  box-shadow: var(--sink-shadow);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-toc a:hover {
+  border-color: rgba(10,132,255,0.24);
+  background: #f6faff;
+  color: #0a6fd8;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section {
+  margin-bottom: 26px;
+  scroll-margin-top: 112px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section h3 {
+  margin-bottom: 10px;
+  color: #202124;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section h3::before {
+  content: '';
+  width: 9px;
+  height: 2px;
+  border-radius: 999px;
+  background: #0a84ff;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section p,
+[data-theme="light"] .primary-page-shell-help .help-section li {
+  color: #5f6672;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul {
+  margin: 8px 0 12px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul li {
+  padding: 3px 0 3px 15px;
+}
+
+[data-theme="light"] .primary-page-shell-help .help-section ul li::before {
+  content: '';
+  top: 13px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #a0a7b2;
+}[data-theme="light"] .primary-page-shell-help .help-section code
+
+[data-theme="light"] .primary-page-shell-help .code-block {
+  margin: 10px 0 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--sink-border);
+  border-radius: var(--sink-radius);
+  background: #fbfcfe;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+[data-theme="light"] .primary-page-shell-help .code-block pre {
+  color: #202124;
+  font-size: 12px;
+  line-height: 1.65;
+}
+

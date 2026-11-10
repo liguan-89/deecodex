@@ -1,0 +1,125 @@
+/* 快捷配置模式卡片：三种模式同一高度，长描述不再撑高卡片。 */
+.codex-quick-mode-grid {
+  grid-auto-rows: 92px;
+  align-items: stretch;
+}
+
+.codex-quick-mode-card {
+  height: 92px;
+  min-height: 92px;
+  align-items: center;
+}
+
+.codex-quick-mode-main {
+  align-self: center;
+}
+
+.codex-quick-mode-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.codex-quick-mode-badge {
+  align-self: start;
+}
+
+/* 快捷配置中转 URL 免责声明：显示在输入框内侧右边，但不参与表单值。 */
+.codex-quick-url-field {
+  position: relative;
+  display: block;
+}
+
+.codex-quick-url-field input {
+  width: 100%;
+}
+
+.codex-quick-url-field .codex-quick-relay-disclaimer {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  max-width: 42%;
+  overflow: hidden;
+  color: #202124;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 650;
+  font-variation-settings: "wght" 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+[data-theme="dark"] .codex-quick-url-field .codex-quick-relay-disclaimer {
+  color: var(--text-primary);
+}
+
+/* 快捷配置字段压缩为两行：账号/模型一行，URL/API Key 一行。 */
+.codex-quick-fields {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.codex-quick-fields .codex-quick-upstream-field,
+.codex-quick-fields .codex-quick-key-field {
+  grid-column: auto !important;
+  min-width: 0;
+}
+
+.codex-quick-key-field .input-with-action {
+  gap: 6px;
+}
+
+.codex-quick-key-field .btn-open-key {
+  min-width: 0;
+  padding-inline: 10px;
+}
+
+.codex-quick-key-field #codexQuickPasteRelayBtn span,
+.codex-quick-key-field #codexQuickOpenDeepseekBtn span:first-child {
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .codex-quick-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 快捷配置两行布局修正：覆盖全局 config-field 的 span 6，四个字段严格占 2x2。 */
+.codex-quick-fields.config-fields {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+
+.codex-quick-fields.config-fields > .config-field,
+.codex-quick-fields.config-fields > .config-field.wide,
+.codex-quick-fields.config-fields > .codex-quick-upstream-field,
+.codex-quick-fields.config-fields > .codex-quick-key-field {
+  grid-column: auto / span 1 !important;
+  min-width: 0 !important;
+}
+
+.codex-quick-fields.config-fields > .config-field:nth-child(1) { grid-column: 1 !important; grid-row: 1 !important; }
+.codex-quick-fields.config-fields > .config-field:nth-child(2) { grid-column: 2 !important; grid-row: 1 !important; }
+.codex-quick-fields.config-fields > .config-field:nth-child(3) { grid-column: 1 !important; grid-row: 2 !important; }
+.codex-quick-fields.config-fields > .config-field:nth-child(4) { grid-column: 2 !important; grid-row: 2 !important; }
+
+@media (max-width: 680px) {
+  .codex-quick-fields.config-fields {
+    grid-template-columns: 1fr !important;
+  }
+  .codex-quick-fields.config-fields > .config-field,
+  .codex-quick-fields.config-fields > .config-field:nth-child(n) {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+}
+

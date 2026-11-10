@@ -1,0 +1,53 @@
+# Environment & secrets
+.env
+
+# Runtime
+deecodex.pid
+codex-relay.pid
+logs/
+.deecodex/
+deecodex-gui/app-session-*.js
+deecodex-gui/app-session-*.js.map
+
+# 本地开发数据（Tauri dev 运行目录）
+.dev-tauri-data/
+.dev-user-data/
+
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*.swo
+*~
+
+# Backups
+*.bak
+
+# Rust build
+target/
+target-local/
+target-mac/
+target-win/
+target-linux/
+pyproject.toml
+douyin-notes.md
+编译二进制/
+功能/
+稳定版/
+deecodex-gui/gui/nav/fragments.js
+
+# 构建产物
+dist/
+
+# 捆绑的 opencode 二进制（scripts/fetch-opencode.sh 生成）
+deecodex-gui/resources/opencode/
+
+# 设计草稿/素材（未接入应用；如需入库请先移出或取消忽略）
+deecodex-gui/gui/design/
+deecodex-gui/gui/preview.html
+deecodex-gui/icons/logo-concepts/
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

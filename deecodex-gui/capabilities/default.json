@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口默认能力：授予核心事件监听/窗口能力（DEX 助手 opencode 引擎与流式渲染依赖 event.listen）",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:default",
+    "core:window:default"
+  ]
+}

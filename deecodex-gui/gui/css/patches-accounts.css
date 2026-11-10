@@ -1,0 +1,364 @@
+/* 中转渠道编辑复用账号表单视觉，不走大尺寸配置编辑器。 */
+.relay-channel-modal {
+  width: min(860px, calc(100vw - 32px));
+  max-width: 860px;
+  max-height: min(820px, calc(100vh - 28px));
+  overflow: hidden;
+}
+.relay-channel-modal .modal-body {
+  padding: 16px 20px 6px;
+  overflow-y: auto;
+}
+.relay-channel-form {
+  width: 100%;
+  max-width: none;
+  padding-bottom: 0;
+}
+.relay-channel-form .account-edit-section:last-child {
+  padding-bottom: 8px;
+}
+
+/* 账号列表：复用统一 account-card，标签区只承载身份与路由开关。 */
+.account-card-titlebar {
+  flex-wrap: nowrap !important;
+  align-items: center;
+  gap: 7px !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: 100%;
+  overflow: visible !important;
+  white-space: nowrap;
+}
+.account-card-titlebar > * {
+  flex: 0 0 auto;
+}
+/* 账号路由开关两行布局：左列放徽章/账号名，右列放登录/执行，两行开关列对齐。 */
+.account-card-codex .account-card-info {
+  display: grid;
+  /* 左列固定为徽章宽度(118px)，名称随之截断；开关列紧跟其后，靠近徽章/名称且跨卡片对齐。 */
+  grid-template-columns: 118px 112px;
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  row-gap: 8px;
+  align-items: center;
+}
+.account-card-codex .account-card-titlebar {
+  grid-column: 1;
+  grid-row: 1;
+}
+.account-card-codex .account-card-title-switch,
+.account-card-codex .account-card-body-switch {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.account-card-codex .account-card-title-switch {
+  grid-row: 1;
+}
+.account-card-codex .account-card-body-switch {
+  grid-row: 2;
+}
+.account-card-codex .account-card-body {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+}
+/* 代码x账号卡：长名截断到徽章宽度；只有激活条目允许横向滚动查看完整名称，悬停不滚动。 */
+.account-card.account-card-codex .card-name {
+  max-width: 100%;
+}
+.account-card.account-card-codex.active .card-name {
+  overflow-x: auto !important;
+  text-overflow: clip !important;
+  scrollbar-width: none;
+}
+.account-card.account-card-codex.active .card-name::-webkit-scrollbar {
+  display: none;
+}
+.account-card.account-card-codex .card-name:hover {
+  overflow-x: hidden !important;
+  text-overflow: ellipsis !important;
+}
+/* 非官方账号无额度内容，去掉右侧动作区多余的竖线分隔符（::before）。 */
+.account-card-codex.no-balance .card-actions-row {
+  border-left: 0 !important;
+}
+.account-card-codex.no-balance .card-actions-row::before {
+  display: none;
+}
+/* 亮色主题会给动作行加 gap:7px，导致按钮内容超过固定 148px 列向左溢出、把分隔符顶到额度条；
+   这里对 codex 账号卡强制 gap:0，让 148px 动作列按设计容纳（按钮间距由 margin 3px 控制）。 */
+.account-card-codex .card-actions-row {
+  gap: 0 !important;
+}
+/* 账号列表卡片：供应商徽章固定宽度，避免不同名称导致条目内容跨卡片错位。 */
+.accounts-grid .account-card .badge-provider {
+  width: 118px;
+  justify-content: center;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+.account-card-primary,
+.account-card-info,
+.account-card-main {
+  min-width: 0 !important;
+}
+.account-card-side {
+  margin-left: auto !important;
+  max-width: none !important;
+  justify-self: end !important;
+}
+/* 账号卡片主列稳定（仅宽屏两列布局）：右侧状态/动作列固定宽度，避免动态内容
+   （额度条/状态文本等）挤压左侧信息区，导致路由开关等右锚定元素跨卡片错位。
+   中转渠道卡保持自适应（其右侧统计文本较长），窄屏保持单列媒体查询。 */
+@media (min-width: 921px) {
+  .account-card:not(.relay-channel-card) > .account-card-mainline {
+    grid-template-columns: minmax(0, 1fr) 330px !important;
+  }
+  /* 右侧状态/动作列：额度列按内容自适应（放开 5h/7d 条到自然宽度），动作列固定 148px；
+     额度条与分割符留 24px 间距，避免压到按钮左侧竖线。 */
+  .account-card:not(.relay-channel-card) .account-card-side {
+    grid-template-columns: minmax(0, max-content) 148px !important;
+    gap: 24px !important;
+  }
+}
+.card-balance,
+[data-theme="light"] .card-balance {
+  max-width: none !important;
+  justify-content: flex-end !important;
+}
+
+/* 路由开关：带语义文本，避免裸开关不可理解。 */
+.account-routing-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.account-mini-switch {
+  display: inline-flex;
+  align-items: center;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 20px !important;
+  flex: 0 0 auto !important;
+  gap: 5px;
+  margin: 0 0 0 2px !important;
+  cursor: pointer;
+  overflow: visible !important;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.account-mini-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.account-mini-switch .account-switch-caption {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+.account-mini-switch .account-switch-track {
+  position: relative;
+  display: block;
+  width: 30px;
+  height: 18px;
+  flex: 0 0 30px;
+  border-radius: 999px;
+  background: rgba(107,127,168,0.18);
+  border: 1px solid var(--border-subtle);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.account-mini-switch .account-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+  transition: transform 0.15s ease;
+}
+.account-mini-switch input:checked + .account-switch-track {
+  background: rgba(28,181,123,0.20);
+  border-color: rgba(28,181,123,0.32);
+}
+.account-mini-switch.anchor-switch input:checked + .account-switch-track {
+  background: rgba(10,111,216,0.18);
+  border-color: rgba(10,111,216,0.30);
+}
+.account-mini-switch input:checked + .account-switch-track::after {
+  transform: translateX(12px);
+}
+
+/* 额度状态右对齐到动作分隔线，释放左侧账号标签空间。 */
+.card-balance .balance-official {
+  min-width: 0 !important;
+  align-items: flex-end !important;
+}
+.card-balance .official-card-status {
+  min-width: 190px;
+  max-width: 220px;
+}
+.card-balance .official-quota-bars {
+  justify-self: end !important;
+  margin-left: auto !important;
+}
+.official-card-status strong,
+.official-card-status span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-channel-card .account-card-titlebar {
+  margin-bottom: 0;
+}
+.relay-channel-card .account-card-body {
+  margin-top: 0 !important;
+}
+.relay-channel-card .card-name {
+  margin-bottom: 0 !important;
+}
+.relay-channel-status-inline {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end !important;
+  max-width: 230px !important;
+  min-width: 0;
+  overflow: hidden;
+}
+.relay-channel-status-inline .account-plan-pill {
+  max-width: 230px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-channel-card .relay-channel-status-inline:empty {
+  display: none;
+}
+
+/* 长账号名默认截断，悬停可横向滚动查看完整内容，避免撑开账号卡片。 */
+.account-card .card-name,
+.account-card .official-email-name {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+.account-card .card-name:hover,
+.account-card .official-email-name:hover {
+  overflow-x: auto !important;
+  text-overflow: clip !important;
+  scrollbar-width: none;
+}
+.account-card .card-name:hover::-webkit-scrollbar,
+.account-card .official-email-name:hover::-webkit-scrollbar {
+  display: none;
+}
+.accounts-client-row .account-toolbar-text,
+[data-theme="light"] .accounts-client-row .account-toolbar-text {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 0 !important;
+  border-radius: 11px !important;
+  border: 1px solid rgba(0,0,0,0.16) !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.08), 0 5px 12px rgba(20,24,30,0.052) !important;
+  color: #5f6772 !important;
+  font-size: 12px !important;
+  font-weight: 760 !important;
+  letter-spacing: 0 !important;
+  line-height: 1 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.accounts-client-row .account-toolbar-text:hover,
+[data-theme="light"] .accounts-client-row .account-toolbar-text:hover {
+  border-color: rgba(0,0,0,0.22) !important;
+  background: #fff !important;
+  color: #202124 !important;
+  box-shadow: 0 1px 2px rgba(20,24,30,0.10), 0 7px 14px rgba(20,24,30,0.06) !important;
+}
+
+/* 中转渠道 badge 复用 codex 标签视觉，保留 codex logo。 */
+.relay-channel-badge {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.relay-channel-badge img {
+  width: 20px;
+  height: 20px;
+  margin-left: -2px;
+}
+
+/* 中转卡片不要压缩，跟账号卡片使用同一套高度节奏。 */
+.relay-channel-card {
+  padding: 14px 16px !important;
+}
+.relay-channel-card .account-card-mainline {
+  min-height: 58px !important;
+  align-items: center;
+}
+
+/* 账号顶部 dock：当前客户端强显示，其他客户端弱显示，复用服务概览的层级感。 */
+[data-theme="light"] .accounts-static-header .client-tab:not(.active) .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:not(.active) .surface-icon-stack {
+  opacity: 0.56;
+  filter: saturate(0.72) contrast(0.96);
+}
+[data-theme="light"] .accounts-static-header .client-tab:not(.active):hover .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:not(.active):focus-visible .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab:not(.active):hover .surface-icon-stack,
+[data-theme="light"] .accounts-static-header .client-tab:not(.active):focus-visible .surface-icon-stack {
+  opacity: 0.84;
+  filter: saturate(0.9) contrast(0.98);
+}
+[data-theme="light"] .accounts-static-header .client-tab.active .client-logo-box,
+[data-theme="light"] .accounts-static-header .client-tab.active .surface-icon-stack {
+  opacity: 1;
+  filter: none;
+}
+
+/* 暗色模式下 Hermes/通用客户端保持亮色模式白底图标容器。 */
+[data-theme="dark"] .accounts-static-header .client-logo-hermes,
+[data-theme="dark"] .accounts-static-header .client-logo-generic_client {
+  background: #fff !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.24), 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075) !important;
+}
+[data-theme="dark"] .accounts-static-header .client-logo-hermes .client-logo-img,
+[data-theme="dark"] .accounts-static-header .client-logo-generic_client .client-logo-img {
+  filter: none !important;
+}
+
+/* 账号顶部 dock 暗色修正：按客户端类型强命中，避免图片或透明背景继续吃暗色容器。 */
+[data-theme="dark"] .accounts-static-header .client-tab.client-kind-hermes .client-logo-box,
+[data-theme="dark"] .accounts-static-header .client-tab.client-kind-generic_client .client-logo-box {
+  background: #fff !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.24), 0 1px 2px rgba(20,24,30,0.10), 0 5px 12px rgba(20,24,30,0.075) !important;
+}
+
+[data-theme="dark"] .accounts-static-header .client-tab.client-kind-hermes .client-logo-img,
+[data-theme="dark"] .accounts-static-header .client-tab.client-kind-generic_client .client-logo-img {
+  filter: none !important;
+}
+
+/* 通用客户端图标自身就是完整卡片，暗色模式下保持撑满；Hermes 不再缩进，与其它图标统一 42px。 */
+[data-theme="dark"] .accounts-static-header .client-tab.client-kind-generic_client .client-logo-img {
+  width: 42px !important;
+  height: 42px !important;
+  margin: 0 !important;
+  border-radius: 10px;
+  object-fit: cover !important;
+}

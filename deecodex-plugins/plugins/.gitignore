@@ -1,0 +1,4 @@
+deecodex-mobile-codex/*
+!deecodex-mobile-codex/.keep
+deecodex-desktop-sync/*
+!deecodex-desktop-sync/.keep
